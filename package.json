@@ -19,6 +19,7 @@
   ],
   "scripts": {
     "prepare": "node tools/npm/prepare.js",
-    "test": "node --test tools/npm/launcher.test.js"
+    "install:cli": "node tools/npm/install.js",
+    "test": "node --test tools/npm/launcher.test.js tools/npm/install.test.js"
   }
 }

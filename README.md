@@ -213,29 +213,83 @@ dotnet build OmniCore.slnx
 dotnet test --solution OmniCore.slnx
 ```
 
-### Instalar el comando `omni` con npm
+### Instalar `omni` en Windows
 
-En Windows, la CLI se puede instalar directamente desde Git, sin publicarla en npm.
-Con npm 11, autorice el script `prepare`, que compila el paquete durante la instalación:
+Esta instalación de desarrollo compila el checkout elegido y registra `omni`
+con npm. Requiere Git, **Node.js 20 o posterior con npm** y el **SDK de .NET
+10.0.401**, o una banda posterior de .NET 10 admitida por `global.json`.
+El SDK incluye el runtime necesario para ejecutar la aplicación.
+
+Desde el repositorio clonado en el paso anterior, en PowerShell:
 
 ```powershell
-npm.cmd install --global --foreground-scripts --install-links --allow-scripts=omnicore-cli@0.1.0 "git+https://github.com/juancgomezm-s/OmniCore.git#main"
+.\scripts\install.ps1
 omni.cmd --help
 omni
 ```
 
-En npm 10 o anterior, omita `--allow-scripts=omnicore-cli@0.1.0`.
+Utiliza el prefijo global de npm ya configurado. Para elegir otra carpeta:
+`.\scripts\install.ps1 -Prefix "$env:LOCALAPPDATA\OmniCore-cli"`; agrega esa
+carpeta al `PATH` del usuario. No es necesario cambiar la política de scripts
+de npm ni publicar el paquete en el registro.
 
-Ejecute `omni` desde la carpeta del proyecto para abrir la TUI. También está
-disponible `omni tui`; `omni --help` muestra la ayuda. Sin argumentos,
-entrada y salida deben estar conectadas a una terminal interactiva. Para
-scripts, utilice un subcomando explícito, como `omni sim --json`.
+### Instalar en Linux / Debian / WSL
 
-La instalación requiere Git, Node.js 20 o posterior y el SDK de .NET 10.0.401 o
-una banda posterior de .NET 10, según `global.json`. `npm` compila la CLI durante
-la instalación; después, `omni` necesita el runtime de .NET 10. Para actualizarla,
-repite el comando de instalación. Esta distribución framework-dependent sólo
-está preparada para Windows; Linux queda pendiente.
+Dentro de Linux deben estar disponibles **Git, Bash, Node.js 20+ con npm y
+el SDK de .NET 10** indicado arriba. Son instalaciones de Linux; tener las
+herramientas solamente en Windows no basta. Comprueba `node --version`,
+`npm --version` y `dotnet --info` en esa terminal. Instrucciones oficiales:
+[Node.js](https://nodejs.org/en/download) y
+[.NET para Debian](https://learn.microsoft.com/dotnet/core/install/linux-debian).
+En WSL, utiliza una terminal interactiva como Windows Terminal.
+
+```bash
+git clone https://github.com/juancgomezm-s/OmniCore.git
+cd OmniCore
+bash scripts/install.sh
+export PATH="$HOME/.local/bin:$PATH"
+omni --help
+omni
+```
+
+Instala en `~/.local`, sin `sudo`; conserva la línea de `PATH` en `~/.profile`
+si todavía no la tienes. Puedes elegir otro destino con
+`bash scripts/install.sh --prefix "$HOME/aplicaciones/omnicore"` y agregar
+su subcarpeta `bin` al `PATH`. Conserva también `dotnet` en el `PATH`:
+esta distribución npm necesita el **runtime .NET 10** al ejecutarse.
+
+### Actualizar la aplicación instalada
+
+Cierra las instancias de OmniCore que usan la instalación que vas a actualizar.
+En un clon limpio de la rama `main`, descarga los cambios y repite el instalador:
+
+```powershell
+git pull --ff-only
+.\scripts\install.ps1
+omni.cmd --help
+```
+
+En Linux, los dos primeros pasos son `git pull --ff-only` y
+`bash scripts/install.sh`; comprueba con `omni --help`. Si elegiste un prefijo,
+reutiliza el mismo al actualizar. El instalador compila y verifica el arranque
+antes de pedir a npm que reemplace el paquete. Si la compilación, comprobación
+o creación del paquete falla, no inicia la sustitución. Propaga cualquier error
+de npm; una instalación fallida no se acredita como actualización correcta.
+Muestra la ruta del `.tgz` preparado, que se conserva para reinstalarlo con
+`npm install --global --ignore-scripts <ruta-al-tgz>` (y el mismo `--prefix`,
+si corresponde). Este archivo ya contiene la CLI compilada.
+
+Los scripts instalan el contenido del checkout actual; no descargan cambios ni
+modifican cuentas, preferencias, sesiones o workspaces. `main` es el canal de
+desarrollo. Para fijar una revisión, usa `git checkout <SHA>` antes de instalar;
+no se presenta como una release estable. El servicio de actualización desde
+GitHub Releases y los comandos `omni update ...` siguen previstos en
+[M10](docs/plans/github-updates.md).
+
+Ejecuta `omni` desde la carpeta del proyecto para abrir la interfaz integrada
+con categorías laterales de preferencias. También está disponible `omni tui`.
+Sin argumentos necesita una terminal interactiva; para scripts, utiliza un
+subcomando explícito, como `omni sim --json`.
 
 ### Configurar OpenRouter
 

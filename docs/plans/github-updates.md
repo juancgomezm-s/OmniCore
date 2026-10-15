@@ -6,6 +6,12 @@ Solicitud del usuario del 2026-10-12, incorporada al plan el 2026-10-13.
 [plan M8–M10](m8-m10-user-localization.md). La instalación npm desde Git ya
 existe; todavía no existe un servicio de actualizaciones de OmniCore.
 
+**Instalación manual actualizada (2026-10-15):** `scripts/install.ps1` y
+`scripts/install.sh` compilan el checkout actual, verifican el arranque y entregan
+a npm un paquete preparado. Repetirlos actualiza la instalación; Linux usa
+`~/.local` por defecto. Uso y requisitos en el README. Este recorrido manual
+no implementa el servicio de releases, comprobación ni rollback de M10.
+
 ## Distribución y canales
 
 Usar GitHub Releases del repositorio `juancgomezm-s/OmniCore` como origen de
