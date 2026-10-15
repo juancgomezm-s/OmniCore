@@ -353,3 +353,21 @@ dos de mapeos reales y el gate Git (`windows-wal-git-final.log`). Los hooks y la
 pruebas temporales de diagnóstico se retiran; quedan tres jobs de aceptación y
 una focal Windows previa dentro de la matriz, además de la integral completa.
 La ejecución final debe aprobar los tres; esta evidencia local no sustituye CI.
+
+La integral Debian sobre b673091 terminó: **4557 total, 4538 PASS, 19 SKIP,
+0 FAIL**, 11m37s, build sin warnings/errores y exit real 0 registrado en
+`acceptance-b673-exit.txt`. Ambas distribuciones también se publicaron y sus seis
+escenarios/cuatro PTY finalizaron correctamente.
+
+La revisión del entorno del smoke detectó que eliminar DOTNET_ROOT conservaba
+PATH del SDK. Los dos scripts se endurecen: PATH privado vacío, eliminación de
+DOTNET_HOST_PATH y variantes ROOT y comprobación explícita de `which(dotnet)`.
+Los intentos anteriores no acreditan aislamiento de PATH. El código C# no cambia;
+se repite la ejecución real de ambos paquetes bajo el entorno corregido antes de
+la aceptación remota definitiva.
+
+La repetición con PATH vacío sobre los binarios Debian b673091 ya está aprobada:
+seis escenarios por paquete, verificación del journal y cuatro PTY reales con
+Escape/exit 0, evidencia `strict-sdk-path-b673/`. También se comprobó el aislamiento
+con los binarios previos 0789, sin atribuirlos al código final. La fuente C# no
+cambia en este último ajuste de scripts/evidencia.
