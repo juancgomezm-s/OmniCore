@@ -78,6 +78,28 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     private readonly string? _stateFile;
 
     private readonly IArtifactStore? _artifacts;
+
+    internal ArtifactRef ImportUserAttachment(byte[] bytes, string fileName)
+    {
+        if (_artifacts is not IBinaryArtifactStore binary)
+            throw new InvalidOperationException("Binary attachment storage is unavailable.");
+        if (string.IsNullOrWhiteSpace(fileName) || fileName.Length > 260)
+            throw new InvalidDataException("Attachment filename is invalid.");
+        var safeName = Path.GetFileName(fileName.Replace('\\', '/'));
+        if (safeName.Length is < 1 or > 180 || safeName.Any(char.IsControl))
+            throw new InvalidDataException("Attachment filename is invalid.");
+        var mediaType = AttachmentContentMaterializer.DetectMediaType(bytes);
+        AttachmentContentMaterializer.ValidateAttachmentBytes(mediaType, bytes);
+        AttachmentContentMaterializer.ValidateBeforePublication(bytes, safeName);
+        var original = binary.PutBytes(bytes, mediaType, ArtifactKind.Other, Sensitivity.Sensitive) with { FileName = safeName };
+        if (_artifacts is null) return original;
+        var extracted = AttachmentContentMaterializer.CreateExtractedTextSnapshot(original, bytes, _artifacts);
+        return extracted is null ? original : original with
+        {
+            ExtractedTextSnapshot = extracted.Value.Snapshot,
+            ExtractorId = extracted.Value.ExtractorId,
+        };
+    }
     private IPlatformPaths? _sidebarPaths;
     public void ConfigureSidebarPaths(IPlatformPaths paths) => _sidebarPaths = paths;
     private SidebarConfiguration SidebarSettings() => new(_sidebarPaths ?? OmniHost.CreatePlatformPaths(), _workspaceRoot ?? Environment.CurrentDirectory);
@@ -3383,7 +3405,23 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                         return ReceiveSteeringCommand(command, fields, commandId);
                     }
                     var text = fields.TryGetValue("text", out var t) ? t : "";
-                    if (text.Length == 0)
+                    ArtifactRef[] attachments = [];
+                    if (fields.TryGetValue("attachments", out var attachmentsJson))
+                    {
+                        if (!trustedUserAction || _artifacts is not IBinaryArtifactStore binaryStore)
+                            return CommandOutcomeAck(command.MessageId, "error", "attachments_require_trusted_binary_store",
+                                RuntimeCommandOutcome.Rejected(), null, 0, commandId);
+                        attachments = AttachmentReferences.Decode(attachmentsJson);
+                        foreach (var reference in attachments)
+                        {
+                            var bytes = binaryStore.GetBytes(reference.Hash, reference.Size);
+                            if (bytes is null || AttachmentContentMaterializer.DetectMediaType(bytes) != reference.MediaType)
+                                return CommandOutcomeAck(command.MessageId, "error", "attachment_missing_or_corrupt",
+                                    RuntimeCommandOutcome.Rejected(), null, 0, commandId);
+                            AttachmentContentMaterializer.ValidateAttachmentBytes(reference.MediaType, bytes);
+                        }
+                    }
+                    if (text.Length == 0 && attachments.Length == 0)
                     {
                         if (explicitOutcome)
                         {
@@ -3409,7 +3447,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                             throw new FormatException("mode de session.input inválido");
                     }
                     var startsRun = control.ActiveRun(session) is null;
-                    _lastRunId = control.SendInput(session, text, mode, ConsumePromptOrigin());
+                    _lastRunId = control.SendInput(session, text, mode, ConsumePromptOrigin(), attachments);
                     if (startsRun && _lastRunId is { } startedRun)
                         DispatchRunStartLifecycle(session, startedRun);
                     _lastSessionId = session;

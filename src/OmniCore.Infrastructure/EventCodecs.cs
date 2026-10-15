@@ -174,12 +174,14 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.MemoryUsed())
             // v1 → v2 añadieron un campo opcional: upcaster trivial (ADR-0013, tabla de cambios).
             .WithUpcaster(new IdentityUpcaster(EventType.Of("user_input.received"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("user_input.received"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("workspace.root_established"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("interaction.requested"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("interaction.resolved"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.succeeded"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.succeeded"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("lane.created"), 1))
@@ -591,7 +593,7 @@ public sealed class Typed
         Of(EventType.Of("run.awaiting_input"), EventJsonContext.Default.RunAwaitingInput);
 
     public static CodecPair UserInputReceived() =>
-        Of(EventType.Of("user_input.received"), EventJsonContext.Default.UserInputReceived, currentVersion: 2);
+        Of(EventType.Of("user_input.received"), EventJsonContext.Default.UserInputReceived, currentVersion: 3);
 
     public static CodecPair FollowUpQueued() =>
         Of(EventType.Of("followup.queued"), EventJsonContext.Default.FollowUpQueued);
@@ -923,7 +925,7 @@ public sealed class Typed
         Of(EventType.Of("toolcall.started"), EventJsonContext.Default.ToolCallStarted, currentVersion: 3);
 
     public static CodecPair ToolCallSucceeded() =>
-        Of(EventType.Of("toolcall.succeeded"), EventJsonContext.Default.ToolCallSucceeded, currentVersion: 2);
+        Of(EventType.Of("toolcall.succeeded"), EventJsonContext.Default.ToolCallSucceeded, currentVersion: 3);
 
     public static CodecPair ToolCallFailed() =>
         Of(EventType.Of("toolcall.failed"), EventJsonContext.Default.ToolCallFailed, currentVersion: 2);

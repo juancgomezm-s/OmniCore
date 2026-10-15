@@ -215,7 +215,7 @@ public sealed class ProtocolMapper
             ["modelId"] = e.ModelId, ["reasoningKind"] = e.ReasoningKind ?? "",
             ["reasoningBudgetTokens"] = e.ReasoningBudgetTokens?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "",
         },
-        UserInputReceived e => new() { ["text"] = _redaction.Redact(InputText(e.InputPartsJson)) },
+        UserInputReceived e => InputFields(e),
         AssistantMessageRecorded e => new() { ["text"] = _redaction.Redact(ArtifactText(e.ContentRef)) },
         TurnStarted e => new() { ["turnId"] = e.TurnId.ToString(), ["laneId"] = e.LaneId.ToString() },
         TurnCompleted e => new() { ["turnId"] = e.TurnId.ToString() },
@@ -334,6 +334,16 @@ public sealed class ProtocolMapper
         }
 
         return partsJson;
+    }
+
+    private Dictionary<string, string> InputFields(UserInputReceived input)
+    {
+        var fields = new Dictionary<string, string>(StringComparer.Ordinal)
+        { ["text"] = _redaction.Redact(InputText(input.InputPartsJson)) };
+        if (input.Attachments is { Count: > 0 } attachments)
+            fields["attachments"] = System.Text.Json.JsonSerializer.Serialize(attachments.ToArray(),
+                AttachmentReferenceJsonContext.Default.ArtifactRefArray);
+        return fields;
     }
 
     private string QuestionnaireText(ArtifactRef? content)

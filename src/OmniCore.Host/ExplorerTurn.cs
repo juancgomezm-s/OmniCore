@@ -1884,8 +1884,16 @@ public sealed class ExplorerTurn
                         _redaction.Redact(planError ?? outcome.Summary ?? ""),
                         SafeToolArguments(call.ToolName, call.ArgumentsJson)));
 
+                    var resultBlocks = new List<ContentBlock> { new TextBlock(resultText) };
+                    if (succeeded && outcome.Artifact is { } resultArtifact
+                        && resultArtifact.MediaType.StartsWith("image/", StringComparison.Ordinal))
+                    {
+                        if (!_selection.InputModalities.Contains("image", StringComparer.Ordinal))
+                            throw new NotSupportedException("The effective model/provider route does not support image tool results.");
+                        resultBlocks.Add(AttachmentContentMaterializer.Read(resultArtifact, _artifacts));
+                    }
                     var toolResult = new ModelMessage(MessageRole.Tool, new ContentBlock[] {
-                        new ToolResultBlock(call.Id, new ContentBlock[] { new TextBlock(resultText) }, !succeeded),
+                        new ToolResultBlock(call.Id, resultBlocks, !succeeded),
                     });
                     messages.Add(toolResult);
                 }
@@ -2736,9 +2744,18 @@ public sealed class ExplorerTurn
                             ? new[] { root.GetString() ?? "" }
                             : Array.Empty<string>();
                     var text = string.Join("\n", parts.Where(static part => part.Length > 0));
-                    if (text.Length > 0)
-                        AppendHistory(new ModelMessage(MessageRole.User,
-                            new ContentBlock[] { new TextBlock(_redaction.Redact(text)) }));
+                    var content = new List<ContentBlock>();
+                    if (text.Length > 0) content.Add(new TextBlock(_redaction.Redact(text)));
+                    foreach (var reference in input.Attachments ?? Array.Empty<ArtifactRef>())
+                    {
+                        var attachment = AttachmentContentMaterializer.Read(reference, _artifacts);
+                        if (attachment is ImageBlock && !_selection.InputModalities.Contains("image", StringComparer.Ordinal))
+                            throw new NotSupportedException("The effective model/provider route does not declare image input support.");
+                        if (attachment is DocumentBlock document)
+                            attachment = document with { ExtractedText = _redaction.Redact(document.ExtractedText) };
+                        content.Add(attachment);
+                    }
+                    if (content.Count > 0) AppendHistory(new ModelMessage(MessageRole.User, content));
                 }
                 catch (System.Text.Json.JsonException) { }
             }
@@ -2800,8 +2817,16 @@ public sealed class ExplorerTurn
                         ToolCallRejected e => "error: " + _redaction.Redact(e.Reason),
                         _ => "error",
                     };
+                var resultBlocks = new List<ContentBlock> { new TextBlock(content) };
+                if (payload is ToolCallSucceeded { ResultArtifact: { } resultArtifact }
+                    && resultArtifact.MediaType.StartsWith("image/", StringComparison.Ordinal))
+                {
+                    if (!_selection.InputModalities.Contains("image", StringComparer.Ordinal))
+                        throw new NotSupportedException("The effective model/provider route does not support image tool results.");
+                    resultBlocks.Add(AttachmentContentMaterializer.Read(resultArtifact, _artifacts));
+                }
                 AppendHistory(new ModelMessage(MessageRole.Tool, new ContentBlock[] {
-                    new ToolResultBlock(callId!, new ContentBlock[] { new TextBlock(content) },
+                    new ToolResultBlock(callId!, resultBlocks,
                         isQuestionnaireCall ? content.Contains("\"status\":\"invalid\"", StringComparison.Ordinal)
                             : payload is not ToolCallSucceeded)
                 }));
@@ -3132,7 +3157,8 @@ public sealed class ExplorerTurn
                 firstUser = false;
             }
 
-            entries.Add(new ConversationContextEntry(id, kind, RenderMessage(safe), preserve));
+            entries.Add(new ConversationContextEntry(id, kind, RenderMessage(safe), preserve,
+                ImageBudgetOverhead(safe)));
             messageById.Add(id, safe);
             runById.Add(id, messageOwners.TryGetValue(messages[i], out var owner) ? owner : runId);
         }
@@ -3284,7 +3310,7 @@ public sealed class ExplorerTurn
             contributor.RecordUsed(sessionId, includedMemories, usedAt, CancellationToken.None);
     }
 
-    private static ModelMessage ProjectConversationMessage(ModelMessage original, ContextItem item,
+    internal static ModelMessage ProjectConversationMessage(ModelMessage original, ContextItem item,
         ContextDecision decision, int compressionCharacters)
     {
         var externalized = item.Provenance.Refs?.Any(reference => reference.StartsWith("artifact=sha256:",
@@ -3299,9 +3325,9 @@ public sealed class ExplorerTurn
         if (decision is not (ContextDecision.Compressed or ContextDecision.TruncatedByBudget)) return original;
 
         var charLimit = decision == ContextDecision.TruncatedByBudget
-            ? Math.Max(32, item.EstimatedTokens * 4)
+            ? Math.Max(0, item.EstimatedTokens - item.TokenBudgetOverhead) * 4
             : compressionCharacters;
-        var blockLimit = Math.Max(32, charLimit / Math.Max(1, original.Content.Count));
+        var blockLimit = Math.Max(0, charLimit / Math.Max(1, original.Content.Count));
         var compacted = new List<ContentBlock>();
         foreach (var block in original.Content)
         {
@@ -3316,12 +3342,20 @@ public sealed class ExplorerTurn
                         "{\"_omnicore_compressed\":true,\"preview\":\"" + preview + "\"}"));
                     break;
                 case ToolResultBlock result:
-                    compacted.Add(result with { Content = result.Content.Select(content => content is TextBlock text
-                        ? (ContentBlock)new TextBlock(TrimBody(text.Text, blockLimit)) : content).ToArray() });
+                    compacted.Add(result with { Content = result.Content.Select(content => CompactBlock(content, blockLimit)).ToArray() });
                     break;
                 case CitationBlock citation:
                     compacted.Add(citation with { Text = TrimBody(citation.Text, blockLimit),
                         SourceRef = TrimBody(citation.SourceRef, blockLimit) });
+                    break;
+                case DocumentBlock document:
+                    compacted.Add(document with { ExtractedText = TrimBody(document.ExtractedText, blockLimit) });
+                    break;
+                case ImageBlock image:
+                    // Binary content is never compressed as text. The context planner reserves
+                    // an estimated image cost; if the protected current input cannot fit, it
+                    // raises the existing overflow barrier before provider dispatch.
+                    compacted.Add(image);
                     break;
                 case ReasoningBlock:
                     compacted.Add(new TextBlock("[older reasoning omitted]"));
@@ -3333,6 +3367,14 @@ public sealed class ExplorerTurn
         }
         return new ModelMessage(original.Role, compacted.ToArray());
     }
+
+    private static ContentBlock CompactBlock(ContentBlock block, int limit) => block switch
+    {
+        TextBlock text => new TextBlock(TrimBody(text.Text, limit)),
+        DocumentBlock document => document with { ExtractedText = TrimBody(document.ExtractedText, limit) },
+        ToolResultBlock nested => nested with { Content = nested.Content.Select(child => CompactBlock(child, limit)).ToArray() },
+        _ => block,
+    };
 
     private static string TrimBody(string content, int maxCharacters)
     {
@@ -3514,6 +3556,12 @@ public sealed class ExplorerTurn
                 case TextBlock text:
                     blocks.Add(new TextBlock(_redaction.Redact(text.Text)));
                     break;
+                case DocumentBlock document:
+                    blocks.Add(document with { ExtractedText = _redaction.Redact(document.ExtractedText) });
+                    break;
+                case ImageBlock image:
+                    blocks.Add(image);
+                    break;
                 case ToolCallBlock call:
                     blocks.Add(new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
                         SafeToolArguments(call.ToolName, call.ArgumentsJson)));
@@ -3575,7 +3623,7 @@ public sealed class ExplorerTurn
         return result.ToArray();
     }
 
-    private static string RenderMessage(ModelMessage message)
+    internal static string RenderMessage(ModelMessage message)
     {
         var parts = new List<string>();
         foreach (var block in message.Content)
@@ -3589,14 +3637,20 @@ public sealed class ExplorerTurn
                     parts.Add("tool call " + call.ToolName + " " + call.ArgumentsJson);
                     break;
                 case ToolResultBlock result:
-                    parts.Add("tool result " + string.Join(" ", result.Content.OfType<TextBlock>()
-                        .Select(text => text.Text)));
+                    parts.Add("tool result " + string.Join(" ", result.Content.Select(RenderContentBlock)));
                     break;
                 case ReasoningBlock reasoning when reasoning.VisibleText is not null:
                     parts.Add(reasoning.VisibleText);
                     break;
                 case CitationBlock citation:
                     parts.Add(citation.Text + " " + citation.SourceRef);
+                    break;
+                case DocumentBlock document:
+                    parts.Add("document " + document.FileName + " " + document.ExtractedText);
+                    break;
+                case ImageBlock image:
+                    parts.Add("image " + image.MediaType + " encoded-bytes=" + image.Bytes.Length
+                        + " (provider image token usage is unknown; conservative estimated reservation is applied)");
                     break;
                 case ProviderOpaqueBlock:
                     parts.Add("[estado opaco del provider]");
@@ -3605,6 +3659,30 @@ public sealed class ExplorerTurn
         }
 
         return message.Role.ToString() + ": " + string.Join(" ", parts);
+    }
+
+    private static string RenderContentBlock(ContentBlock block) => block switch
+    {
+        TextBlock text => text.Text,
+        DocumentBlock document => "document " + document.FileName + " " + document.ExtractedText,
+        ImageBlock image => "image " + image.MediaType + " encoded-bytes=" + image.Bytes.Length,
+        ToolCallBlock call => "tool call " + call.ToolName + " " + call.ArgumentsJson,
+        ToolResultBlock result => "tool result " + string.Join(" ", result.Content.Select(RenderContentBlock)),
+        CitationBlock citation => citation.Text + " " + citation.SourceRef,
+        ReasoningBlock reasoning when reasoning.VisibleText is not null => reasoning.VisibleText,
+        _ => string.Empty,
+    };
+
+    internal static int ImageBudgetOverhead(ModelMessage message)
+    {
+        static int Estimate(ContentBlock block) => block switch
+        {
+            ImageBlock image => Math.Min(32_768, Math.Max(256, (image.Bytes.Length + 511) / 512)),
+            ToolResultBlock result => result.Content.Sum(Estimate),
+            _ => 0,
+        };
+
+        return checked(message.Content.Sum(Estimate));
     }
 
     private ArtifactRef PersistContextSnapshot(ContextSnapshot snapshot, long tokenBudget)

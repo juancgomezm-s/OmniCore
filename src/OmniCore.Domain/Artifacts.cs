@@ -36,7 +36,17 @@ public record ArtifactRef(
     string MediaType,
     ArtifactKind Kind,
     Sensitivity Sensitivity,
-    bool Redacted = false) { }
+    bool Redacted = false)
+{
+    /// <summary>Safe basename for user-supplied immutable attachments; never a source path.</summary>
+    public string? FileName { get; init; }
+
+    /// <summary>Immutable extracted-text snapshot linked to its original document attachment.</summary>
+    public ArtifactRef? ExtractedTextSnapshot { get; init; }
+
+    /// <summary>Stable extractor implementation/version identity for replay across upgrades.</summary>
+    public string? ExtractorId { get; init; }
+}
 
 /// <summary>Tamaño de contexto usable y presupuesto de tokens de una política (spec §26, ADR-0042).</summary>
 public record ContextBudget(

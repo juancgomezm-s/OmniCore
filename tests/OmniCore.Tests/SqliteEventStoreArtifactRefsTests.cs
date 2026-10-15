@@ -109,7 +109,8 @@ public sealed class SqliteEventStoreArtifactRefsTests
         var journal = TempJournal();
         var session = SessionId.New();
 
-        var ref1 = MakeRef("deadbeef", 999, "custom/type", ArtifactKind.Other, Sensitivity.Sensitive, true);
+        var ref1 = MakeRef("deadbeef", 999, "custom/type", ArtifactKind.Other, Sensitivity.Sensitive, true)
+            with { FileName = "invoice; final|v2\\file.png" };
         var refs = new[] { ref1 };
 
         var store = new SqliteEventStore(journal);
@@ -267,6 +268,7 @@ public sealed class SqliteEventStoreArtifactRefsTests
         Assert.Equal(expected.Kind, actual.Kind);
         Assert.Equal(expected.Sensitivity, actual.Sensitivity);
         Assert.Equal(expected.Redacted, actual.Redacted);
+        Assert.Equal(expected.FileName, actual.FileName);
     }
 
     private static void TryDelete(string path)

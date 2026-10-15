@@ -44,6 +44,8 @@ public sealed partial class TuiApp
     private bool _followConversationEnd;
     private bool _renderingConversation;
     private FrameView? _composerFrame;
+    private Label? _attachmentChips;
+    private readonly List<TuiAttachmentReference> _pendingAttachments = [];
     private FrameView? _conversationFrame;
     private Label? _help;
     private int _mainColumnInset;
@@ -389,8 +391,10 @@ public sealed partial class TuiApp
         _sidebarAttention = new Label { Id = "omni-help", X = 2, Y = 9, Width = Dim.Fill(1), Height = 1 };
         _sidebar.Add(new Label { Id = "omni-heading", X = 2, Y = 0, Text = _localization.Resolve("shell.workspace_heading") }, _sidebarDetails, settings,
             _sidebarSession, previous, next, _sidebarNavigation, _sidebarAttention, _sidebarContent);
-        var composerFrame = _composerFrame = new FrameView { Id = "omni-composer", X = 1, Y = Pos.AnchorEnd(6), Width = Dim.Fill(1), Height = 3, BorderStyle = LineStyle.None };
+        var composerFrame = _composerFrame = new FrameView { Id = "omni-composer", X = 1, Y = Pos.AnchorEnd(7), Width = Dim.Fill(1), Height = 4, BorderStyle = LineStyle.None };
         composerFrame.Add(new View { Id = "omni-composer-accent", X = 0, Y = 0, Width = 1, Height = Dim.Fill() });
+        _attachmentChips = new Label { Id = "omni-attachments", X = 4, Y = 0, Width = Dim.Fill(2), Height = 1, Text = "" };
+        composerFrame.Add(_attachmentChips);
         _composer = new ComposerView { X = 4, Y = 1, Width = Dim.Fill(2), Height = 1, Text = "", Multiline = true,
             WordWrap = true, EnterKeyAddsLine = true };
         composerFrame.Add(new Label { Id = "omni-heading", X = 2, Y = 1, Text = "›" });
@@ -399,6 +403,8 @@ public sealed partial class TuiApp
         _composer.ContentsChanged += (_, _) => { UpdateComposerHeight(); UpdateAutocomplete(); };
         _composer.KeyDown += (_, key) =>
         {
+            if (key.KeyCode == (KeyCode.V | KeyCode.CtrlMask)) { PasteClipboard(); key.Handled = true; return; }
+            if (key.KeyCode == (KeyCode.O | KeyCode.CtrlMask)) { PickAttachments(); key.Handled = true; return; }
             if (key.KeyCode == (KeyCode.Enter | KeyCode.ShiftMask)) { _composer.InsertText("\n"); key.Handled = true; return; }
             if (key.KeyCode == KeyCode.Enter) { SubmitComposer(); key.Handled = true; return; }
             if (_commandList is null || _commandSuggestions.Length == 0) return;
@@ -480,10 +486,10 @@ public sealed partial class TuiApp
             .Sum(line => Math.Max(1, (Terminal.Gui.Text.StringExtensions.GetColumns(line, false) + width - 1) / width));
         _composerRows = Math.Clamp(wanted, 1, Math.Max(1, Math.Min(8, _window.Frame.Height / 3)));
         _composer.Height = _composerRows;
-        _composerFrame.Height = _composerRows + 2;
-        _composerFrame.Y = Pos.AnchorEnd(_composerRows + 5);
-        if (_conversationFrame is not null) _conversationFrame.Height = Dim.Fill(_composerRows + 6);
-        if (_commandHelper is not null) _commandHelper.Y = Pos.AnchorEnd(_composerRows + 5 + _commandHelper.Frame.Height);
+        _composerFrame.Height = _composerRows + 3;
+        _composerFrame.Y = Pos.AnchorEnd(_composerRows + 6);
+        if (_conversationFrame is not null) _conversationFrame.Height = Dim.Fill(_composerRows + 7);
+        if (_commandHelper is not null) _commandHelper.Y = Pos.AnchorEnd(_composerRows + 6 + _commandHelper.Frame.Height);
     }
 
     private void UpdateAutocomplete()
@@ -626,6 +632,39 @@ public sealed partial class TuiApp
             .Read().CommandAliases);
         // Whitespace is grammar for commands, but remains literal in a conversation prompt.
         var input = HumanCommandAliases.NormalizeSlashSyntax(aliases.NormalizeSlashHead(rawInput.Trim()));
+        if (input == "/attach" || input.StartsWith("/attach ", StringComparison.Ordinal))
+        {
+            if (input.Length == 7) PickAttachments();
+            else AddAttachmentFromPath(input[8..].Trim().Trim('"'));
+            return;
+        }
+        if (input == "/paste")
+        {
+            _composer!.Text = "";
+            PasteClipboard();
+            return;
+        }
+        if (input == "/attachments")
+        {
+            ShowMessage(_pendingAttachments.Count == 0 ? _localization.Resolve("shell.attachment.none")
+                : string.Join(Environment.NewLine, _pendingAttachments.Select((item, index) =>
+                    $"{index + 1}. {item.FileName} ({item.Size} bytes)"))
+                    + Environment.NewLine + _localization.Resolve("shell.attachment.remove_help"));
+            return;
+        }
+        if (input.StartsWith("/remove-attachment ", StringComparison.Ordinal))
+        {
+            if (int.TryParse(input[19..], out var number) && number >= 1 && number <= _pendingAttachments.Count)
+            { _pendingAttachments.RemoveAt(number - 1); RenderAttachmentChips(); }
+            else ShowMessage(_localization.Resolve("shell.attachment.invalid_index"));
+            return;
+        }
+        if (input == "/send")
+        {
+            if (_pendingAttachments.Count == 0) { ShowMessage(_localization.Resolve("shell.attachment.none_to_send")); return; }
+            if (StartModelTurn("", attachments: _pendingAttachments.ToArray())) _composer.Text = "";
+            return;
+        }
         if (input == "/animation" || input.StartsWith("/animation ", StringComparison.Ordinal))
         {
             HandleAnimationCommand(input.Length > 10 ? input[11..].Trim() : "");
@@ -645,7 +684,10 @@ public sealed partial class TuiApp
         { CompleteCommand(); return; }
         HideCommandHelper();
         if (input.StartsWith("/act ", StringComparison.Ordinal))
-        { if (StartModelTurn(input[5..], act: true)) { _composer.Text = ""; PollEvents(); } return; }
+        {
+            if (_pendingAttachments.Count > 0) { ShowMessage(_localization.Resolve("shell.attachment.act_unsupported")); return; }
+            if (StartModelTurn(input[5..], act: true)) { _composer.Text = ""; PollEvents(); } return;
+        }
         // Bare forms never reach the Host as unknown commands: they explain how to use them.
         if (input == "/act") { ShowMessage(_localization.Resolve("shell.act_usage")); _composer.Text = ""; return; }
         if (input == "/runmode") { ShowMessage(_localization.Resolve("shell.usage_runmode_plan_act_orq")); _composer.Text = ""; return; }
@@ -949,11 +991,99 @@ public sealed partial class TuiApp
         }
         else
         {
-            if (_turnHost is not null) { if (!StartModelTurn(rawInput)) return; }
+            if (_turnHost is not null) { if (!StartModelTurn(rawInput, attachments: _pendingAttachments.ToArray())) return; }
             else if (!SubmitSessionInput(rawInput)) return;
         }
-        _composer.Text = "";
+        if (_pendingAttachments.Count == 0) _composer.Text = "";
         PollEvents();
+    }
+
+    private void PasteClipboard()
+    {
+        if (_application?.Clipboard is null) return;
+        if (!_application.Clipboard.TryGetClipboardData(out var value) || string.IsNullOrEmpty(value))
+        {
+            if (_pendingAttachments.Count >= AttachmentReferences.MaximumCount)
+            { ShowMessage(_localization.Resolve("shell.attachment.limit")); return; }
+            try
+            {
+                var png = WindowsClipboardImage.TryReadPng();
+                if (png is null) { ShowMessage(_localization.Resolve("shell.attachment.clipboard_empty")); return; }
+                var reference = _turnHost?.ImportAttachment(png, "clipboard.png") ?? throw new NotSupportedException();
+                _pendingAttachments.Add(reference);
+                RenderAttachmentChips();
+                ShowMessage(_localization.Resolve("shell.attachment.image_pasted"));
+            }
+            catch (Exception)
+            { ShowMessage(_localization.Resolve("shell.attachment.paste_rejected")); }
+            return;
+        }
+        if (value.Length > 200_000)
+        { ShowMessage(_localization.Resolve("shell.attachment.clipboard_too_large")); return; }
+        if (value.Length <= 32_000)
+        {
+            _composer?.InsertText(value);
+            return;
+        }
+        if (_pendingAttachments.Count >= AttachmentReferences.MaximumCount)
+        { ShowMessage(_localization.Resolve("shell.attachment.limit")); return; }
+        try
+        {
+            var reference = _turnHost?.ImportAttachment(System.Text.Encoding.UTF8.GetBytes(value), "clipboard.txt")
+                ?? throw new NotSupportedException();
+            _pendingAttachments.Add(reference);
+            RenderAttachmentChips();
+            ShowMessage(_localization.Resolve("shell.attachment.long_paste_added"));
+        }
+        catch (Exception)
+        { ShowMessage(_localization.Resolve("shell.attachment.paste_rejected")); }
+    }
+
+    private void PickAttachments()
+    {
+        if (_application is null || _turnHost is null) return;
+        try
+        {
+            var dialog = new OpenDialog
+            {
+                Title = _localization.Resolve("shell.attachment.pick_title"),
+                OpenMode = OpenMode.File,
+                AllowsMultipleSelection = true,
+            };
+            _application.Run(dialog);
+            foreach (var path in dialog.FilePaths)
+            {
+                if (_pendingAttachments.Count >= AttachmentReferences.MaximumCount)
+                { ShowMessage(_localization.Resolve("shell.attachment.limit")); break; }
+                AddAttachmentFromPath(path);
+            }
+        }
+        catch (Exception)
+        { ShowMessage(_localization.Resolve("shell.attachment.pick_failed")); }
+    }
+
+    private void AddAttachmentFromPath(string path)
+    {
+        if (_turnHost is null) { ShowMessage(_localization.Resolve("shell.attachment.unavailable")); return; }
+        if (_pendingAttachments.Count >= AttachmentReferences.MaximumCount)
+        { ShowMessage(_localization.Resolve("shell.attachment.limit")); return; }
+        try
+        {
+            var reference = _turnHost.ImportAttachmentFromPath(path);
+            _pendingAttachments.Add(reference);
+            RenderAttachmentChips();
+            ShowMessage(_localization.Resolve("shell.attachment.added", "name", reference.FileName ?? "attachment"));
+        }
+        catch (Exception)
+        { ShowMessage(_localization.Resolve("shell.attachment.rejected")); }
+    }
+
+    private void RenderAttachmentChips()
+    {
+        if (_attachmentChips is null) return;
+        _attachmentChips.Text = _pendingAttachments.Count == 0 ? ""
+            : "[" + string.Join("] [", _pendingAttachments.Select((item, index) =>
+                $"{index + 1}: {item.FileName ?? "attachment"} ×")) + "]";
     }
 
     private void RunClientAction(ClientActionInvocation action)
@@ -978,13 +1108,17 @@ public sealed partial class TuiApp
 
     private bool StartModelTurn(string input, bool act = false, string? resumeEscalation = null, string? resumeQuota = null,
         string? delegationId = null, WorkflowRequestDto? workflow = null, string? workflowCommandId = null,
-        string? extensionToolName = null)
+        string? extensionToolName = null, IReadOnlyList<TuiAttachmentReference>? attachments = null)
     {
         if (_turnHost is null) return false;
+        if (act && attachments is { Count: > 0 })
+        { ShowMessage(_localization.Resolve("shell.attachment.act_unsupported")); return false; }
         if (delegationId is not null) return StartDelegationTurn(delegationId);
         if (_turnBusy) { ShowMessage(_localization.Resolve("shell.a_turn_is_already_processing_wait_or_use_cancel")); return false; }
         _turnCancellation?.Dispose();
         var cancellation = _turnCancellation = new CancellationTokenSource();
+        var submittedAttachments = attachments?.ToArray() ?? [];
+        var submittedDraft = _composer?.Text?.ToString() ?? "";
         _followConversationEnd = true;
         _localActivitySession = _cursorSession;
         _turnBusy = true; _activityPhase = 0; _turnStatus = null; RenderState();
@@ -1008,13 +1142,21 @@ public sealed partial class TuiApp
                     : resumeQuota is not null ? _turnHost.ResumeQuotaAsync(resumeQuota, diagnostic, cancellation.Token)
                     : resumeEscalation is not null ? _turnHost.ResumeEscalationAsync(resumeEscalation, diagnostic, cancellation.Token)
                     : act ? _turnHost.ExecuteActAsync(input, diagnostic, cancellation.Token)
-                    : _turnHost.ExecuteAsync(input, diagnostic, cancellation.Token)).ConfigureAwait(false);
+                    : submittedAttachments.Length > 0
+                        ? _turnHost.ExecuteAsync(input, submittedAttachments, diagnostic, cancellation.Token)
+                        : _turnHost.ExecuteAsync(input, diagnostic, cancellation.Token)).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { code = 2; }
             catch (Exception) { code = 1; messages.Add(_localization.Resolve("shell.turn_failed_check_omni_doctor")); }
             _uiActions.Enqueue(() =>
             {
                 _turnBusy = false;
+                if (code == 0 && submittedAttachments.Length > 0)
+                {
+                    foreach (var submitted in submittedAttachments) _pendingAttachments.Remove(submitted);
+                    RenderAttachmentChips();
+                    if (_composer?.Text?.ToString() == submittedDraft) _composer.Text = "";
+                }
                 _turnStatus = cancellation.IsCancellationRequested ? _localization.Resolve("shell.cancelled")
                     : code == 0 ? _localization.Resolve("shell.done") : code == 3 ? _localization.Resolve("shell.input_required") : _localization.Resolve("shell.error");
                 RefreshSelectedModel(); PollEvents();
@@ -1270,10 +1412,13 @@ public sealed partial class TuiApp
         return result + "…";
     }
 
-    private string HelpText() => _conversation?.HasFocus == true
-        ? FitText(_localization.Resolve("links.help"), Math.Max(1, (_window?.Frame.Width ?? 80) - _mainColumnInset - 4))
-        : CompactHelp(CurrentModeCode(), _locale,
-            Math.Max(1, (_window?.Frame.Width ?? 80) - _mainColumnInset - 4), PermissionLevelLabel());
+    private string HelpText()
+    {
+        var width = Math.Max(1, (_window?.Frame.Width ?? 80) - _mainColumnInset - 4);
+        var normal = _conversation?.HasFocus == true ? _localization.Resolve("links.help")
+            : CompactHelp(CurrentModeCode(), _locale, width, PermissionLevelLabel());
+        return FitText(normal + " · " + _localization.Resolve("shell.attachment.help"), width);
+    }
 
     internal static string CompactHelp(string mode, string locale, int width, string? permissionLevel = null)
     {

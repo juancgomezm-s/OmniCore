@@ -646,12 +646,12 @@ public sealed class JournalVerifier
         switch (probe.Status)
         {
             case BlobStatus.Ok:
-                var actualSize = (long) System.Text.Encoding.UTF8.GetByteCount(probe.Content!);
+                var actualSize = probe.RawSize ?? 0;
                 if (expectedSize.HasValue && actualSize != expectedSize.Value)
                 {
                     result.Add(scan, row, JournalIssueCode.ArtifactSizeMismatch, field,
                         where + ": el contenido ocupa " + actualSize
-                        + " bytes UTF-8 pero la ref declara tamaño " + expectedSize.Value);
+                        + " bytes pero la ref declara tamaño " + expectedSize.Value);
                 }
 
                 return;
@@ -692,6 +692,19 @@ public sealed class JournalVerifier
         {
             refs.Add((input.ContentRef, "contentRef"));
         }
+        if (payload is UserInputReceived { Attachments: { } attachments })
+        {
+            for (var i = 0; i < attachments.Count; i++)
+            {
+                var attachment = attachments[i];
+                refs.Add((attachment, $"attachments[{i}]"));
+                if (attachment.ExtractedTextSnapshot is { } extracted)
+                    refs.Add((extracted, $"attachments[{i}].extractedTextSnapshot"));
+            }
+        }
+
+        if (payload is ToolCallSucceeded { ResultArtifact: { } resultArtifact })
+            refs.Add((resultArtifact, "resultArtifact"));
 
         if (payload is AssistantMessageRecorded message && message.ContentRef is not null)
         {

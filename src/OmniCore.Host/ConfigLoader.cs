@@ -28,7 +28,7 @@ public sealed class ConfigLoader
                 "billingMode", "inputPricePerMillionUsd", "outputPricePerMillionUsd" });
         var modelNodes = ParseRoot(modelsYaml, "models.yaml", "models", diagnostics,
             new[] { "models", "routing" }, new[] { "provider", "context", "recommendedUsableContext", "maxOutput",
-                "parametersBillions", "inputPricePerMillionUsd", "outputPricePerMillionUsd", "aliases", "reasoning" });
+                "parametersBillions", "inputPricePerMillionUsd", "outputPricePerMillionUsd", "aliases", "reasoning", "inputModalities" });
         ValidateRequiredAndRanges(providerNodes, modelNodes, diagnostics);
         if (diagnostics.Count != 0) throw new ConfigValidationException(diagnostics);
 
@@ -98,7 +98,8 @@ public sealed class ConfigLoader
                         ? new ReasoningCapability(reasoning.Supported, reasoning.EffortLevels,
                             reasoning.ReplayPolicy is null ? null : Enum.Parse<ReasoningReplayPolicy>(reasoning.ReplayPolicy),
                             reasoning.UltraCodeBudgetTokens, reasoning.UltraCodeOutputReserveTokens)
-                        : null, outputLimitConfigured: m.MaxOutput is not null));
+                        : null, outputLimitConfigured: m.MaxOutput is not null,
+                    inputModalities: m.InputModalities ?? ["text"]));
             }
         }
 
@@ -627,6 +628,33 @@ public sealed class ConfigLoader
                     foreach (var item in aliasSequence)
                         if (item is not YamlScalarNode aliasItem || !IsYamlString(aliasItem))
                             AddAtNode(diagnostics, file, path + "." + key, "config.wrongType", item);
+            }
+            else if (key == "inputModalities")
+            {
+                if (pair.Value is not YamlSequenceNode modalitySequence)
+                {
+                    AddAtNode(diagnostics, file, path + "." + key, "config.wrongType", pair.Value);
+                    continue;
+                }
+                if (modalitySequence.Children.Count == 0)
+                    AddAtNode(diagnostics, file, path + "." + key, "config.emptyCollection", pair.Value);
+                else if (modalitySequence.Children.Count > 16)
+                    AddAtNode(diagnostics, file, path + "." + key, "config.outOfRange", pair.Value);
+                var values = new List<string>();
+                foreach (var item in modalitySequence)
+                {
+                    if (item is not YamlScalarNode scalar || !IsYamlString(scalar)
+                        || string.IsNullOrWhiteSpace(scalar.Value) || scalar.Value.Length > 32
+                        || scalar.Value != scalar.Value.Trim()
+                        || scalar.Value.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not '-' and not '_'))
+                    {
+                        AddAtNode(diagnostics, file, path + "." + key, "config.wrongType", item);
+                        continue;
+                    }
+                    values.Add(scalar.Value);
+                }
+                if (values.Distinct(StringComparer.Ordinal).Count() != values.Count)
+                    AddAtNode(diagnostics, file, path + "." + key, "config.outOfRange", pair.Value);
             }
             else if (key == "auth")
             {

@@ -24,7 +24,7 @@ public static class ModelCatalogPreferencesResources
                     "El modelo está referenciado por la configuración actual.", "El catálogo de configuración no está disponible.",
                     "No se pudo revisar el ámbito local. Eliminar está deshabilitado.", "Referencia: modelo predeterminado de User.",
                     "Referencia: modelo predeterminado de Project.", "Referencia: modelo predeterminado de Workspace.",
-                    "Referencia en una ruta de ejecución.", "En otras carpetas también podría haber referencias; no se modifican.", "Filtrar", "{index} de {total}", "inicio", "fin", "Ningún modelo coincide con el filtro.", "Modelo · Proveedor (familia) · Contexto"),
+                    "Referencia en una ruta de ejecución.", "En otras carpetas también podría haber referencias; no se modifican.", "Filtrar", "{index} de {total}", "inicio", "fin", "Ningún modelo coincide con el filtro.", "Modelo · Proveedor (familia) · Contexto", "Modalidades de entrada (text,image; las desconocidas quedan desactivadas)"),
                 ["en"] = Build(
                     "Model catalog", "Model catalog", "Register models already offered by a configured provider. No network or model execution is used.",
                     "Models", "Provider", "Family", "Context", "Usable context", "Max output (optional)", "Params (billions)",
@@ -40,7 +40,7 @@ public static class ModelCatalogPreferencesResources
                     "The model is referenced by current configuration.", "The configuration catalog is unavailable.",
                     "The local scope could not be checked. Deletion is disabled.", "Reference: User default model.",
                     "Reference: Project default model.", "Reference: Workspace default model.",
-                    "Reference in a routing list.", "Other folders may also reference this model; they are not changed.", "Filter", "{index} of {total}", "start", "end", "No model matches the filter.", "Model · Provider (family) · Context"),
+                    "Reference in a routing list.", "Other folders may also reference this model; they are not changed.", "Filter", "{index} of {total}", "start", "end", "No model matches the filter.", "Model · Provider (family) · Context", "Input modalities (text,image; unknown values remain disabled)"),
                 ["fr"] = Build(
                     "Catalogue de modèles", "Catalogue de modèles", "Enregistre les modèles déjà proposés par un fournisseur configuré. Aucun accès réseau ni lancement de modèle.",
                     "Modèles", "Fournisseur", "Famille", "Contexte", "Contexte utilisable", "Sortie max. (option.)", "Param. (milliards)",
@@ -56,7 +56,7 @@ public static class ModelCatalogPreferencesResources
                     "Le modèle est référencé par la configuration actuelle.", "Catalogue de configuration indisponible.",
                     "Impossible de vérifier la portée locale. La suppression est désactivée.", "Référence : modèle par défaut User.",
                     "Référence : modèle par défaut Project.", "Référence : modèle par défaut Workspace.",
-                    "Référence dans une liste de routage.", "D’autres dossiers peuvent référencer ce modèle ; ils ne sont pas modifiés.", "Filtrer", "{index} sur {total}", "début", "fin", "Aucun modèle ne correspond au filtre.", "Modèle · Fournisseur (famille) · Contexte"),
+                    "Référence dans une liste de routage.", "D’autres dossiers peuvent référencer ce modèle ; ils ne sont pas modifiés.", "Filtrer", "{index} sur {total}", "début", "fin", "Aucun modèle ne correspond au filtre.", "Modèle · Fournisseur (famille) · Contexte", "Modalités d’entrée (text,image ; les valeurs inconnues restent désactivées)"),
                 ["it"] = Build(
                     "Catalogo modelli", "Catalogo modelli", "Registra modelli già offerti da un provider configurato. Nessuna rete o esecuzione del modello.",
                     "Modelli", "Provider", "Famiglia", "Contesto", "Contesto utilizzabile", "Output max. (opzionale)", "Param. (mld)",
@@ -72,7 +72,7 @@ public static class ModelCatalogPreferencesResources
                     "Il modello è referenziato dalla configurazione corrente.", "Catalogo di configurazione non disponibile.",
                     "Impossibile verificare l’ambito locale. L’eliminazione è disabilitata.", "Riferimento: modello predefinito User.",
                     "Riferimento: modello predefinito Project.", "Riferimento: modello predefinito Workspace.",
-                    "Riferimento in una lista di instradamento.", "Altre cartelle potrebbero riferire questo modello; non vengono modificate.", "Filtra", "{index} di {total}", "inizio", "fine", "Nessun modello corrisponde al filtro.", "Modello · Provider (famiglia) · Contesto")
+                    "Riferimento in una lista di instradamento.", "Altre cartelle potrebbero riferire questo modello; non vengono modificate.", "Filtra", "{index} di {total}", "inizio", "fine", "Nessun modello corrisponde al filtro.", "Modello · Provider (famiglia) · Contesto", "Modalità di input (text,image; i valori sconosciuti restano disabilitati)")
             });
 
     private static IReadOnlyDictionary<string, string> Build(params string[] values)
@@ -83,7 +83,7 @@ public static class ModelCatalogPreferencesResources
             "saveFailed", "stale", "unknownProvider", "modelAlreadyExists", "modelNotFound", "invalidId", "invalidProvider",
             "invalidLimits", "invalidParameters", "invalidAliases", "ambiguousAlias", "referenced", "catalogUnavailable",
             "workspaceScopeUnavailable", "referenceUserDefault", "referenceProjectDefault", "referenceWorkspaceDefault",
-            "referenceRouting", "otherFoldersWarning", "filter", "position", "atStart", "atEnd", "noMatches", "columns"];
+            "referenceRouting", "otherFoldersWarning", "filter", "position", "atStart", "atEnd", "noMatches", "columns", "inputModalities"];
         if (values.Length != keys.Length) throw new InvalidOperationException("Model catalog resource shape mismatch.");
         return new ReadOnlyDictionary<string, string>(keys.Zip(values).ToDictionary(pair => pair.First, pair => pair.Second,
             StringComparer.Ordinal));

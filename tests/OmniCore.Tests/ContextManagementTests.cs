@@ -43,6 +43,45 @@ public sealed class ContextManagementTests
     }
 
     [Fact]
+    public void Protected_multimodal_current_input_cannot_evade_context_budget()
+    {
+        var entry = new ConversationContextEntry("current", ContextItemKind.UserMessage,
+            "short prompt; image payload usage is provider-specific", PreserveWhenTrimming: true,
+            TokenBudgetOverhead: 300);
+        var materializer = new ContextMaterializer(new FakeTokenCounter(),
+            new IContextContributor[] { new SessionConversationContributor([entry]) });
+
+        var snapshot = materializer.MaterializeWithinBudget(new MaterializeRequest(SessionId.New(), RunId.New(),
+                null, null, null, 1, Fingerprint), TestContext.Current.CancellationToken, maxTokens: 200);
+
+        Assert.True(snapshot.Overflowed);
+        var textEstimate = 1 + entry.Content.Count(character => character is ' ' or '\n' or '\t');
+        Assert.Equal(300 + textEstimate, Assert.Single(snapshot.Items).EstimatedTokens);
+        Assert.Contains(snapshot.Items, item => item.Id == "current");
+    }
+
+    [Fact]
+    public void Trimming_never_keeps_binary_content_below_its_reserved_budget()
+    {
+        var protectedItem = new ContextItem("task", ContextItemKind.Task, "keep this task", 0,
+            ContextPriority.Pinned, RetentionPolicy.KeepForever, Provenance(ContributionCategory.Task));
+        var binaryItem = new ContextItem("image", ContextItemKind.Decision, "image payload", 0,
+            ContextPriority.Normal, RetentionPolicy.KeepForever, Provenance(), tokenBudgetOverhead: 300);
+        var materializer = new ContextMaterializer(new FakeTokenCounter(),
+            new IContextContributor[] { new OneItemContributor(protectedItem), new OneItemContributor(binaryItem) });
+
+        // The task costs 3 tokens, leaving 287 for the image. Its indivisible reservation is 300.
+        var snapshot = materializer.MaterializeWithinBudget(new MaterializeRequest(SessionId.New(), RunId.New(),
+            null, null, null, 1, Fingerprint), TestContext.Current.CancellationToken, maxTokens: 290);
+
+        Assert.Equal(3, snapshot.TokenCount);
+        Assert.Contains(snapshot.Items, item => item.Id == "task");
+        Assert.DoesNotContain(snapshot.Items, item => item.Id == "image");
+        Assert.Contains(snapshot.Diagnostics, diagnostic => diagnostic.ItemId == "image"
+            && diagnostic.Decision == ContextDecision.OmittedByBudget);
+    }
+
+    [Fact]
     public void Large_tool_output_is_externalized_and_re_readable_by_cas_reference()
     {
         var root = Path.Combine(Path.GetTempPath(), "omnicore-context-" + Guid.NewGuid().ToString("N"));

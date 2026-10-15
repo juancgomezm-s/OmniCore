@@ -37,6 +37,8 @@ public sealed class ToolOutcome
     /// <summary>Contenido real de la herramienta (Preview) que vuelve al modelo en el Turn.</summary>
     public string? Preview { get; }
 
+    public ArtifactRef? Artifact { get; }
+
     public EffectOutcome? Effect { get; }
 
     public ToolCallState FinalState { get; }
@@ -47,7 +49,7 @@ public sealed class ToolOutcome
 
     public ToolOutcome(bool succeeded, string? summary, string? preview, EffectOutcome? effect,
         ToolCallState finalState, IReadOnlyList<DomainEventPayload> events,
-        InteractionId? pendingInteractionId = null)
+        InteractionId? pendingInteractionId = null, ArtifactRef? artifact = null)
     {
         Succeeded = succeeded;
         Summary = summary;
@@ -56,6 +58,7 @@ public sealed class ToolOutcome
         FinalState = finalState;
         Events = events;
         PendingInteractionId = pendingInteractionId;
+        Artifact = artifact;
     }
 
     public static ToolOutcome Ok(string summary, string? preview, EffectOutcome effect, ToolCallState state,

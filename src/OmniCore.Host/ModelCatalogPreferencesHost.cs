@@ -21,7 +21,8 @@ public sealed record ModelCatalogProvider(string Id, string Family);
 
 public sealed record ModelCatalogModel(string Id, string ProviderId, long Context,
     long RecommendedUsableContext, long? MaxOutput, double? ParametersBillions,
-    IReadOnlyList<string> Aliases, bool CanDelete, IReadOnlyList<string> DeleteBlockers);
+    IReadOnlyList<string> Aliases, bool CanDelete, IReadOnlyList<string> DeleteBlockers,
+    IReadOnlyList<string>? InputModalities = null);
 
 public sealed record ModelCatalogPreferencesSnapshot(bool Available, string Revision,
     IReadOnlyList<ModelCatalogProvider> Providers, IReadOnlyList<ModelCatalogModel> Models,
@@ -34,7 +35,7 @@ public sealed record ModelCatalogPreferencesSnapshot(bool Available, string Revi
 /// <summary>Only model fields already supported by models.yaml/ConfigLoader are exposed here.</summary>
 public sealed record ModelCatalogDraft(string Id, string ProviderId, long Context,
     long RecommendedUsableContext, long? MaxOutput, double? ParametersBillions,
-    IReadOnlyList<string> Aliases, string? ExistingId = null)
+    IReadOnlyList<string> Aliases, string? ExistingId = null, IReadOnlyList<string>? InputModalities = null)
 {
     public override string ToString() => "ModelCatalogDraft [configuration]";
 }
@@ -97,7 +98,7 @@ public sealed class ModelCatalogPreferencesHost : IModelCatalogPreferencesHost
                     return new ModelCatalogModel(model.Id, model.ProviderId, model.ContextWindow,
                         model.RecommendedUsableContext, model.OutputLimitConfigured ? model.MaxOutputTokens : null, model.ParameterCountBillions,
                         model.Aliases.ToArray(), workspaceScopeAvailable && blockers.Count == 0,
-                        blockers);
+                        blockers, model.InputModalities.ToArray());
                 }).ToArray();
             var providers = loaded.Registry.Providers().OrderBy(provider => provider.Id, StringComparer.Ordinal)
                 .Select(provider => new ModelCatalogProvider(provider.Id, provider.Family.ToString())).ToArray();
@@ -162,6 +163,9 @@ public sealed class ModelCatalogPreferencesHost : IModelCatalogPreferencesHost
             Put(entry, "maxOutput", draft.MaxOutput?.ToString(CultureInfo.InvariantCulture));
             Put(entry, "parametersBillions", draft.ParametersBillions?.ToString("R", CultureInfo.InvariantCulture));
             PutList(entry, "aliases", draft.Aliases);
+            var modalities = draft.InputModalities
+                ?? loaded.Registry.Model(oldId ?? draft.Id)?.InputModalities ?? ["text"];
+            PutList(entry, "inputModalities", modalities);
             var updated = Serialize(root);
             if (Encoding.UTF8.GetByteCount(updated) > MaximumFileBytes) throw Error("configurationInvalid");
             if (oldId is not null)
@@ -371,6 +375,11 @@ public sealed class ModelCatalogPreferencesHost : IModelCatalogPreferencesHost
                 || alias != alias.Trim() || alias.Length > 200 || alias.Any(char.IsControl))
             || draft.Aliases.Distinct(StringComparer.Ordinal).Count() != draft.Aliases.Count)
             throw Error("invalidAliases");
+        if (draft.InputModalities is { } modalities && (modalities.Count is < 1 or > 16
+            || modalities.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > 32
+                || value != value.Trim() || value.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not '-' and not '_'))
+            || modalities.Distinct(StringComparer.Ordinal).Count() != modalities.Count))
+            throw Error("invalidModalities");
         if (draft.ExistingId is not null && !ValidId(draft.ExistingId)) throw Error("modelNotFound");
     }
 

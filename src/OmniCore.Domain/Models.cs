@@ -1,5 +1,7 @@
 namespace OmniCore.Domain;
 
+using System.Collections.Immutable;
+
 /// <summary>
 /// Contrato neutral del Model Runtime (ADR-0005 §2). Estos tipos viven en Domain porque se
 /// persisten en eventos y artifacts. El Agent Runtime no conoce providers concretos (INV-011).
@@ -71,6 +73,23 @@ public sealed record ReasoningBlock(string? VisibleText, ReasoningVisibility Vis
     : ContentBlock;
 
 public sealed record CitationBlock(string Text, string SourceRef) : ContentBlock;
+
+/// <summary>Provider-neutral image bytes materialized from a verified immutable artifact.</summary>
+public sealed record ImageBlock : ContentBlock
+{
+    public string MediaType { get; }
+    public ImmutableArray<byte> Bytes { get; }
+
+    public ImageBlock(string mediaType, IEnumerable<byte> bytes)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(mediaType);
+        ArgumentNullException.ThrowIfNull(bytes);
+        MediaType = mediaType;
+        Bytes = ImmutableArray.CreateRange(bytes);
+    }
+}
+
+public sealed record DocumentBlock(string MediaType, string FileName, string ExtractedText) : ContentBlock;
 
 /// <summary>Estado opaco del provider: se reenvía intacto solo a destinos compatibles (ADR-0005 §4).</summary>
 public sealed record ProviderOpaque(

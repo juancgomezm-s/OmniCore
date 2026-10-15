@@ -341,8 +341,8 @@ public sealed class OmniHost
     /// </summary>
     public static HostTools CreateHostTools() => HostTools.Default();
 
-    public static HostTools CreateExplorerTools(ArtifactReadTool? artifactReadTool = null) =>
-        HostTools.Explorer(artifactReadTool);
+    public static HostTools CreateExplorerTools(ArtifactReadTool? artifactReadTool = null,
+        MediaReadTool? mediaReadTool = null) => HostTools.Explorer(artifactReadTool, mediaReadTool);
 
     /// <summary>
     /// Executor del pipeline real de tools + permisos para la simulación: catálogo completo y
@@ -420,10 +420,12 @@ public sealed class OmniHost
     /// </summary>
     public static HostTools CreateActTools(SandboxStrength processSandboxStrength = SandboxStrength.Strong,
         ArtifactReadTool? artifactReadTool = null,
-        IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null) =>
+        IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null,
+        MediaReadTool? mediaReadTool = null) =>
         new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
             includeMutationTools: true, includeProcessTools: true, processSandboxStrength: processSandboxStrength,
-            artifactReadTool: artifactReadTool, worktreeIntegrationCoordinator: worktreeIntegrationCoordinator);
+            artifactReadTool: artifactReadTool, worktreeIntegrationCoordinator: worktreeIntegrationCoordinator,
+            mediaReadTool: mediaReadTool);
 
     internal static IWorktreeIntegrationCoordinator? CreateWorktreeIntegrationCoordinator(
         string workspaceRoot, IPlatformPaths paths, IArtifactStore artifacts)

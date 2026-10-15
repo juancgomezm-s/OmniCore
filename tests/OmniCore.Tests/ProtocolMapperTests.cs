@@ -222,6 +222,24 @@ public sealed class ProtocolMapperTests
     }
 
     [Fact]
+    public void Deserialized_journal_attachments_map_without_concrete_collection_type_assumptions()
+    {
+        var (store, session, run, stream) = Journal();
+        var attachment = new ArtifactRef(ArtifactId.New(), ContentHash.Sha256(new string('a', 64)), 12,
+            "image/png", ArtifactKind.Other, Sensitivity.Normal) { FileName = "fixture.png" };
+        stream.Append(new UserInputReceived(run.RunId, "[]", null, Attachments: [attachment]));
+
+        var input = Assert.IsType<UserInputReceived>(Assert.Single(
+            store.ReadFrom(session, 1).Select(Codecs.Decode).OfType<UserInputReceived>()));
+        Assert.IsNotType<ArtifactRef[]>(input.Attachments);
+
+        var wire = Assert.Single(new ProtocolMapper(Codecs).Map(store.ReadFrom(session, 1)), item =>
+            JsonObj.Parse(item.PayloadJson)["type"] == "user_input.received");
+        var fields = JsonObj.Parse(wire.PayloadJson);
+        Assert.Contains("fixture.png", fields["attachments"]!, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void The_server_subscription_returns_the_mapped_journal_of_the_current_session()
     {
         var server = OmniHost.CreateInMemoryServer();

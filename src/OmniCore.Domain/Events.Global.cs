@@ -40,11 +40,11 @@ public record WorkspaceRootEstablished(SessionId SessionId, string CanonicalRoot
 
 /// <summary>UserInputReceived: el usuario envía input al Run (ADR-0035 §1).</summary>
 public record UserInputReceived(RunId RunId, string InputPartsJson, ArtifactRef? ContentRef,
-    string? Origin = null) : DomainEventPayload
+    string? Origin = null, IReadOnlyList<ArtifactRef>? Attachments = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("user_input.received");
 
-    public int SchemaVersion() => 2;
+    public int SchemaVersion() => 3;
 }
 
 /// <summary>Input ordinario recibido mientras un Turn sigue abierto; se reserva para el Turn siguiente.</summary>

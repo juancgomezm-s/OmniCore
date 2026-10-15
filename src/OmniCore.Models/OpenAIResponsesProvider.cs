@@ -301,6 +301,15 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
                         w.WriteEndArray();
                         w.WriteEndObject();
                         break;
+                    case DocumentBlock document when message.Role == MessageRole.User:
+                        var documentText = $"[Document: {document.FileName}]\n{document.ExtractedText}";
+                        w.WriteStartObject(); w.WriteString("type", "message"); w.WriteString("role", "user");
+                        w.WriteStartArray("content"); w.WriteStartObject(); w.WriteString("type", "input_text");
+                        w.WriteString("text", documentText); w.WriteEndObject(); w.WriteEndArray(); w.WriteEndObject();
+                        break;
+                    case ImageBlock image when message.Role == MessageRole.User:
+                        WriteUserImage(w, image);
+                        break;
                     case ToolCallBlock call:
                         w.WriteStartObject();
                         w.WriteString("type", "function_call");
@@ -313,13 +322,47 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
                         w.WriteStartObject();
                         w.WriteString("type", "function_call_output");
                         w.WriteString("call_id", ids.GetValueOrDefault(result.Id.ToString(), result.Id.ToString()));
-                        w.WriteString("output", string.Concat(result.Content.OfType<TextBlock>().Select(b => b.Text)));
+                        if (result.Content.All(static b => b is TextBlock))
+                            w.WriteString("output", string.Concat(result.Content.OfType<TextBlock>().Select(b => b.Text)));
+                        else
+                        {
+                            w.WriteStartArray("output");
+                            foreach (var resultBlock in result.Content)
+                            {
+                                if (resultBlock is TextBlock text)
+                                {
+                                    w.WriteStartObject(); w.WriteString("type", "input_text");
+                                    w.WriteString("text", text.Text); w.WriteEndObject();
+                                }
+                                else if (resultBlock is DocumentBlock document)
+                                {
+                                    w.WriteStartObject(); w.WriteString("type", "input_text");
+                                    w.WriteString("text", $"[Document: {document.FileName}]\n{document.ExtractedText}"); w.WriteEndObject();
+                                }
+                                else if (resultBlock is ImageBlock image) WriteImageContent(w, image);
+                                else throw new NotSupportedException("Responses function output cannot serialize this content block.");
+                            }
+                            w.WriteEndArray();
+                        }
                         w.WriteEndObject();
                         break;
                 }
             }
         }
         w.WriteEndArray();
+    }
+
+    private static void WriteUserImage(Utf8JsonWriter w, ImageBlock image)
+    {
+        w.WriteStartObject(); w.WriteString("type", "message"); w.WriteString("role", "user");
+        w.WriteStartArray("content"); WriteImageContent(w, image); w.WriteEndArray(); w.WriteEndObject();
+    }
+
+    private static void WriteImageContent(Utf8JsonWriter w, ImageBlock image)
+    {
+        w.WriteStartObject(); w.WriteString("type", "input_image");
+        w.WriteString("image_url", "data:" + image.MediaType + ";base64," + Convert.ToBase64String(image.Bytes.AsSpan()));
+        w.WriteEndObject();
     }
 
     private static void WriteRawJsonOrEmptyObject(Utf8JsonWriter w, string? json)

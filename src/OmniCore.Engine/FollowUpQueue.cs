@@ -13,6 +13,19 @@ public static class FollowUpQueue
     public static bool TryQueue(IEventStore store, IEventCodecRegistry codecs, SessionId session,
         RunId run, LaneId? lane, string text, string? origin)
     {
+        return TryQueue(store, codecs, session, run, lane, text, origin, Array.Empty<ArtifactRef>(),
+            out _);
+    }
+
+    /// <summary>
+    /// Queues text only when a real open turn or pending interaction can consume it. If that
+    /// queue would discard attachments, reports the conflict without appending any event.
+    /// </summary>
+    public static bool TryQueue(IEventStore store, IEventCodecRegistry codecs, SessionId session,
+        RunId run, LaneId? lane, string text, string? origin, IReadOnlyList<ArtifactRef> attachments,
+        out bool attachmentsCannotBeQueued)
+    {
+        attachmentsCannotBeQueued = false;
         if (lane is null || string.IsNullOrWhiteSpace(text)) return false;
         var events = store.ReadFrom(session, 1);
         if (RunProjection.Replay(session, run, codecs, events).IsTerminal()) return false;
@@ -20,6 +33,11 @@ public static class FollowUpQueue
         var pending = PendingFromEvents(events, codecs, run, lane);
         var sourceTurn = open?.TurnId ?? pending.LastOrDefault()?.SourceTurnId;
         if (open is null && pending.Count == 0 && !HasPendingInteraction(events, codecs, run)) return false;
+        if (attachments.Count > 0)
+        {
+            attachmentsCannotBeQueued = true;
+            return false;
+        }
 
         var safeText = new RedactionPolicy().Redact(text);
         var parts = "[\"" + JsonEncodedText.Encode(safeText) + "\"]";

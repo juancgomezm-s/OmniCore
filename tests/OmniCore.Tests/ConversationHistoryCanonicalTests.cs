@@ -52,6 +52,59 @@ public sealed class ConversationHistoryCanonicalTests
     }
 
     [Fact]
+    public void Journal_image_attachment_is_materialized_in_the_next_model_history()
+    {
+        using var fixture = new Fixture();
+        var imageBytes = new byte[] { 137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
+            0, 0, 0, 1, 0, 0, 0, 1 };
+        var stored = fixture.PutAttachment(imageBytes, "image/png", "fixture.png");
+        var document = fixture.PutAttachment(System.Text.Encoding.UTF8.GetBytes("extractable document text"),
+            "text/plain", "fixture.txt");
+        new EventStream(fixture.Store, fixture.Codecs, fixture.Session).Append(
+            new UserInputReceived(fixture.Run.RunId, "[\"please inspect these attachments\"]", null,
+                Attachments: [stored, document]));
+        ModelRequest? submitted = null;
+        var turn = fixture.CreateTurn((request, _) =>
+        {
+            submitted = request;
+            return Response("seen");
+        }, inputModalities: ["text", "image"]);
+
+        Assert.Equal(StopReason.EndTurn, turn.Ask("", "system", fixture.Session, fixture.Run.RunId,
+            fixture.Run.RootLane, "", TestContext.Current.CancellationToken).StopReason);
+        var user = Assert.Single(submitted!.Messages, message => message.Role == MessageRole.User);
+        Assert.Contains(user.Content, block => block is TextBlock { Text: "please inspect these attachments" });
+        var image = Assert.IsType<ImageBlock>(Assert.Single(user.Content, block => block is ImageBlock));
+        Assert.Equal(imageBytes, image.Bytes.ToArray());
+        Assert.Contains(user.Content, block => block is DocumentBlock { ExtractedText: "extractable document text" });
+    }
+
+    [Theory]
+    [InlineData(ContextDecision.Compressed)]
+    [InlineData(ContextDecision.TruncatedByBudget)]
+    public void Context_compression_preserves_images_and_budgets_extracted_document_text(ContextDecision decision)
+    {
+        var image = new ImageBlock("image/png", new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 });
+        var document = new DocumentBlock("text/plain", "notes.txt", new string('d', 512));
+        var original = new ModelMessage(MessageRole.User, new ContentBlock[] { new TextBlock("prompt"), image, document });
+        var renderedForBudget = ExplorerTurn.RenderMessage(original);
+        Assert.Contains(document.ExtractedText, renderedForBudget);
+        Assert.Contains("provider image token usage is unknown", renderedForBudget);
+
+        var imageOverhead = ExplorerTurn.ImageBudgetOverhead(original);
+        var item = new ContextItem("conversation-000001", ContextItemKind.UserMessage,
+            renderedForBudget, 100 + imageOverhead, ContextPriority.Normal, RetentionPolicy.ConversationWindow,
+            new ContextProvenance("session-conversation", ContributionCategory.Conversation,
+                "engine", ScopeLevel.Session, false), tokenBudgetOverhead: imageOverhead);
+        var projected = ExplorerTurn.ProjectConversationMessage(original, item, decision, compressionCharacters: 40);
+
+        Assert.Contains(projected.Content, block => block is ImageBlock { MediaType: "image/png" });
+        var projectedDocument = Assert.IsType<DocumentBlock>(Assert.Single(projected.Content, block => block is DocumentBlock));
+        Assert.NotEmpty(projectedDocument.ExtractedText);
+        Assert.True(projectedDocument.ExtractedText.Length < document.ExtractedText.Length);
+    }
+
+    [Fact]
     public void Equal_text_in_distinct_turns_is_not_deduplicated_as_one_answer()
     {
         using var fixture = new Fixture();
@@ -132,7 +185,11 @@ public sealed class ConversationHistoryCanonicalTests
             stream.Append(new TurnCompleted(turn));
         }
 
-        public ExplorerTurn CreateTurn(Func<ModelRequest, CancellationToken, ModelResponse> provider, bool enforceCaps = false)
+        public ArtifactRef PutAttachment(byte[] bytes, string mediaType, string fileName) =>
+            _artifacts.PutBytes(bytes, mediaType, ArtifactKind.Other, Sensitivity.Sensitive) with { FileName = fileName };
+
+        public ExplorerTurn CreateTurn(Func<ModelRequest, CancellationToken, ModelResponse> provider, bool enforceCaps = false,
+            IReadOnlyList<string>? inputModalities = null)
         {
             var catalog = new FakeCatalog();
             var executor = ScriptedToolExecutor.WithWorkspace(catalog,
@@ -140,7 +197,8 @@ public sealed class ConversationHistoryCanonicalTests
             return new ExplorerTurn(provider, executor, catalog,
                 new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
                 new ExecutionFingerprint("scripted", "h", "t", "c", "o", "fixture"),
-                new ModelSelection(new ModelIdValue("scripted"), 8192, ToolMode.Direct, null),
+                new ModelSelection(new ModelIdValue("scripted"), 8192, ToolMode.Direct, null,
+                    inputModalities: inputModalities),
                 Store, Codecs, _artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
                 pricing: enforceCaps ? new ModelPricing(1m, 1m) : null, enforceDefaultSpendCaps: enforceCaps);
         }

@@ -86,7 +86,8 @@ public sealed class CliApp
                         Console.Error, trustedBootstrapKey, localizeDiagnostic: key => hostText.Resolve(key),
                         runPersistedConversation: (admitted, token) => Runtime.ExecutePersistedConversationAsync(admitted,
                             diagnostic => Console.Error.WriteLine(OmniCliRuntime.RedactSensitive(diagnostic).Length > 2048
-                                ? OmniCliRuntime.RedactSensitive(diagnostic)[..2048] : OmniCliRuntime.RedactSensitive(diagnostic)), token));
+                                ? OmniCliRuntime.RedactSensitive(diagnostic)[..2048] : OmniCliRuntime.RedactSensitive(diagnostic)), token),
+                        validateConversationAttachments: Runtime.ValidateConversationAttachmentJsonBeforeAdmission);
                 return Task.FromResult(exitCode);
             }
             catch (Exception)

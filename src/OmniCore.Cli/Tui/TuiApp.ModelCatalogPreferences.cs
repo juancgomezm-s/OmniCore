@@ -118,6 +118,7 @@ public sealed partial class TuiApp
             ModelCatalogText("context") + ": " + current.Context.ToString(CultureInfo.InvariantCulture)
                 + " · " + ModelCatalogText("maxOutput") + ": " + (current.MaxOutput?.ToString(CultureInfo.InvariantCulture) ?? _localization.Resolve("shell.state.off")),
             ModelCatalogText("aliases") + ": " + (current.Aliases.Count == 0 ? "—" : string.Join(", ", current.Aliases)),
+            ModelCatalogText("inputModalities") + ": " + string.Join(", ", current.InputModalities ?? []),
             current.DeleteBlockers.Count == 0 ? "" : ModelCatalogText("deleteBlocked") + " "
                 + string.Join("; ", current.DeleteBlockers.Select(ModelCatalogError))
         }.Where(line => line.Length > 0));
@@ -138,6 +139,7 @@ public sealed partial class TuiApp
             ModelCatalogText("context") + ": " + model.Context.ToString("N0", CultureInfo.InvariantCulture)
                 + " · " + ModelCatalogText("maxOutput") + ": " + (model.MaxOutput?.ToString("N0", CultureInfo.InvariantCulture) ?? _localization.Resolve("shell.state.off"))
                 + " · " + ModelCatalogText("aliases") + ": " + (model.Aliases.Count == 0 ? "—" : string.Join(", ", model.Aliases)),
+            ModelCatalogText("inputModalities") + ": " + string.Join(", ", model.InputModalities ?? []),
             model.DeleteBlockers.Count == 0 ? "" : ModelCatalogText("deleteBlocked") + " "
                 + string.Join("; ", model.DeleteBlockers.Select(ModelCatalogError))
         }.Where(line => line.Length > 0));
@@ -258,6 +260,8 @@ public sealed partial class TuiApp
         var usable = Field("model-catalog-usable-context", "usableContext", existing?.RecommendedUsableContext.ToString(CultureInfo.InvariantCulture) ?? "8192");
         var output = Field("model-catalog-max-output", "maxOutput", existing?.MaxOutput?.ToString(CultureInfo.InvariantCulture) ?? "");
         var parameters = Field("model-catalog-parameters", "parameters", existing?.ParametersBillions?.ToString("R", PreferenceInput.Culture(_locale)) ?? "");
+        var inputModalities = Field("model-catalog-input-modalities", "inputModalities",
+            string.Join(",", existing?.InputModalities ?? ["text"]));
         frame.Add(new Label { X = 2, Y = y, Width = 22, Height = 1, Text = ModelCatalogText("aliases") });
         var aliases = new TextView { Id = "model-catalog-aliases", X = 25, Y = y, Width = Dim.Fill(4), Height = 2,
             Text = string.Join("\n", existing?.Aliases ?? []) };
@@ -291,10 +295,11 @@ public sealed partial class TuiApp
                 parametersValue = parsed;
             }
             var aliasesValue = aliases.Text.ToString().Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            var modalitiesValue = inputModalities.Text.ToString().Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
             try
             {
                 var draft = new ModelCatalogDraft(modelId.Text.ToString().Trim(), provider.Text.ToString().Trim(), contextValue,
-                    usableValue, outputValue, parametersValue, aliasesValue, existing?.Id);
+                    usableValue, outputValue, parametersValue, aliasesValue, existing?.Id, modalitiesValue);
                 _modelCatalogSnapshot = ModelCatalogHost().Save(draft, snapshot.Revision, CancellationToken.None);
                 _modelCatalogSelectedId = draft.Id;
                 _modelCatalogNotice = ModelCatalogText("saved");

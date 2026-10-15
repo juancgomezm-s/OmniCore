@@ -38,6 +38,9 @@ public static class StdioProtocol
         "command.run.interrupt.user",
         "command.run.cancel.user",
         "command.run.mode.select.user",
+        "command.attachment.upload.begin.user",
+        "command.attachment.upload.chunk.user",
+        "command.attachment.upload.finish.user",
         "query.humanActionScope",
     ];
 
@@ -45,5 +48,6 @@ public static class StdioProtocol
         or "sessionSidebar" or "changedFiles" or "agents" or "sessionObservability" or "humanActionScope";
 
     public static bool IsSupportedCommand(string name) => name is "sim" or "sim.resume" or "session.input"
-        or "conversation.start" or "run.interrupt" or "run.cancel" or "run.mode.select";
+        or "conversation.start" or "run.interrupt" or "run.cancel" or "run.mode.select"
+        or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish";
 }

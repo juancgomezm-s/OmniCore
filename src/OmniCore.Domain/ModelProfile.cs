@@ -156,9 +156,11 @@ public sealed class ModelSelection
     /// </summary>
     public long? MaxOutputTokens { get; }
 
+    public IReadOnlyList<string> InputModalities { get; }
+
     public ModelSelection(ModelIdValue model, long contextBudget, ToolMode toolMode, ReasoningRequest? reasoning,
         RouteId? routeId = null, ModelRoute? route = null, long? maxOutputTokens = null,
-        ReasoningResolution? reasoningResolution = null)
+        ReasoningResolution? reasoningResolution = null, IReadOnlyList<string>? inputModalities = null)
     {
         ArgumentNullException.ThrowIfNull(model);
         if (maxOutputTokens is <= 0)
@@ -181,6 +183,7 @@ public sealed class ModelSelection
         RouteIdentityHash = route is null ? null
             : AuthorizedModelRoute.From(route, BillingMode.Unknown).IdentityHash;
         MaxOutputTokens = maxOutputTokens;
+        InputModalities = inputModalities ?? ["text"];
     }
 }
 

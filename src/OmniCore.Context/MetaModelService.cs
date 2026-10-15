@@ -198,7 +198,7 @@ public static class ContextCompaction
         var bodyLength = Math.Max(0, maxBodyCharacters - structure.Length - marker.Length);
         var excerpt = body[..Math.Min(bodyLength, body.Length)];
         return new ContextItem(item.Id, item.Kind, structure + excerpt + marker, 0, item.Priority,
-            item.Retention, item.Provenance, item.PreserveWhenTrimming);
+            item.Retention, item.Provenance, item.PreserveWhenTrimming, item.TokenBudgetOverhead);
     }
 
     private static (string Structure, string Body) SplitStructure(string content)
