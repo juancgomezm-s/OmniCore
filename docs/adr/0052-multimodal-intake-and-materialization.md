@@ -1,6 +1,7 @@
 # ADR-0052: Intake multimodal, snapshots documentales y materialización segura
 
-**Estado:** Aceptada para el bloque M9-F; integración y aceptación final pendientes.  
+**Estado:** Aceptada; construcción M9-F/F2 integrada en main. Aceptación final pendiente.
+
 **Fecha:** 2026-10-15
 
 ## Contexto

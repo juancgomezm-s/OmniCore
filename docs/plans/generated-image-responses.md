@@ -1,6 +1,8 @@
 # M9-F2: imágenes generadas en las respuestas
 
-Estado: **implementado en el worktree M9-F2; pendiente de revisión e integración** (2026-10-15).
+Estado: **construido, cableado, revisado e integrado en ambos main** (2026-10-15).
+Código: Core `22128b1`, OmniCoder `db4c2a0`; evidencia y límites en
+[el acta M9-F2](../validation/m9-block-f2-20261015.md).
 Complementa M9-F (entrada de adjuntos). La integración con proveedor HTTP fixture
 se verificó hasta Electron, CAS/journal y reapertura, pero la aceptación de generación
 live sigue pendiente porque no hay una ruta compatible configurada y verificada.
@@ -10,10 +12,11 @@ M8 conserva OR5 pendiente.
 ## Base comprobada y objetivo
 
 El catálogo OpenRouter contiene `OutputModalities`, pero ese dato informativo no
-acredita capacidad efectiva ni recepción de imágenes. El checkpoint local M9-F
-añade bloques de imagen para entrada; no demuestra generación, persistencia ni
-presentación de salida visual. El resultado requerido es proveedor → Core → CAS y
-journal → Protocol/Client → OmniCoder/TUI, también tras reconexión y reapertura.
+acredita capacidad efectiva ni recepción de imágenes. M9-F añade bloques de imagen
+para entrada; M9-F2 construye por separado la salida nativa y su persistencia y
+presentación. El recorrido proveedor → Core → CAS y journal → Protocol/Client →
+OmniCoder se verificó con fixture HTTP, incluida reconexión y reapertura. La
+aceptación con generación real y la aceptación visual manual de TUI siguen pendientes.
 
 ## Construcción necesaria
 
