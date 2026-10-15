@@ -39,13 +39,68 @@ Changing content under an existing ID is rejected. A reservation left by interru
 reconcile completed commands across a new Host process, but ambiguous commands stay ambiguous; this
 is not a universal exactly-once guarantee.
 
-The generic wire command path does not grant `ITrustedUserActionClient` authority or establish a
-human origin. This block does not implement push events, external human authorization, OmniCoder
-chat/action parity in TypeScript/Electron, `media.read`, persistent process controls, or ConPTY. The process
-transport is not itself a TUI connection; existing in-process and TUI routes are preserved.
+## M9-D optional trusted-action extension
 
-OmniCoder M9-C consumes this contract from Electron main without loading CLR. Its supervised Host
-and Sidecar provide connection health, queries and paged replay; the renderer has no process access.
-Commands and receipt lookup are tested through the Node consumer, while the product UI remains
-read-only. See the [M9-C integration record](../../../validation/m9-block-c-20261014.md) for the exact
-scope and evidence. This consumer does not introduce a new wire version or human authority.
+The extension is additive to stdio 1.0. A Host without the private bootstrap continues to advertise
+the M9-A/B capabilities unchanged and does not advertise `trustedActionNonce`, `query.humanActionScope`,
+or any `.user` capability. A persistent SQLite Host started by the trusted Electron main may additionally
+advertise `command.session.input.user`, `command.run.mode.select.user`, `command.run.interrupt.user`,
+`command.run.cancel.user`, and `query.humanActionScope`. These names describe supported operations; they
+do not themselves grant consent or authority.
+
+After `hello`, the trusted Host returns a fresh per-connection `trustedActionNonce`. The main process
+queries `humanActionScope` and obtains the physical workspace hash from its own launch configuration.
+For a trusted command, the outer `command` request may include this optional object:
+
+```json
+{"operation":"command","command":{"version":"1.0","messageType":"command","messageId":"<command-id>","payload":{"cmd":"session.input","text":"...","mode":"plan","expectedRevision":3}},"actionProof":{"nonce":"<hello nonce>","expectedSessionId":"<canonical-guid-or-null>","expectedRunId":"<canonical-guid-or-null>","signature":"<uppercase hex HMAC-SHA-256>"}}
+```
+
+The HMAC key is 32 random bytes supplied to the CLI only through its private process environment;
+the CLI consumes and removes that variable before runtime composition, retains the key in memory only,
+and clears the byte buffer on exit. It is never sent to the renderer, included in argv, journal, receipt,
+or logs. The signed UTF-8 message is the following newline-separated ASCII/hex fields:
+
+```text
+omnicore-user-action-v1
+<trustedActionNonce>
+<commandId>
+<uppercase hex SHA-256 of exact command.payload JSON UTF-8 bytes>
+<uppercase hex SHA-256 of canonical physical workspace UTF-8 bytes>
+<expectedSessionId or ->
+<expectedRunId or ->
+```
+
+The Host nonce is 16 random bytes rendered as uppercase hex. The workspace string used for its hash is
+`ResolvePhysicalWorkspaceRoot(Environment.CurrentDirectory)` followed by `CanonicalWorkspacePath`: full
+path, `/` separators, trailing `/` removed, and lowercase invariant on Windows only. Session/Run proof
+values are canonical GUID `D` format strings or JSON `null`; `null` contributes a single `-` line. A
+non-null Session/Run is independently checked against the active Host scope.
+
+The Host verifies HMAC with constant-time comparison and checks the connection nonce, current physical
+workspace, command shape and scope. It revalidates active Session/Run and revision under Session writer
+ownership before dispatch. `session.input.user` accepts only `mode:"plan"`, non-empty text up to 32,000
+characters and an `expectedRevision` (nullable only when no Run exists); this operation records input and
+opens/updates a Run but does not invoke inference. `run.mode.select.user` requires `runId`, `mode` (`plan`
+or `act`) and exact non-negative `expectedRevision`. `run.interrupt.user` and `run.cancel.user` require
+the exact active `runId`. Proofs for other command names or extra payload fields are rejected. Generic
+`session.input` retains its prior behavior and never acquires trusted authority. `run.interrupt`,
+`run.cancel` and `run.mode.select` through the generic command path return Rejected.
+
+Only the native confirmation in Electron main establishes the grant for a workspace. The proof is
+scoped to the connection nonce, command, payload and Session/Run; reconnecting revokes it. The trust
+boundary is the same local operating-system principal: this mechanism separates renderer/model and
+generic-wire authority but does not claim to defend against a malicious process running as the same user.
+Durable receipt lookup is still no-resend; it is not a universal exactly-once guarantee.
+
+Not implemented by this extension: Core chat/inference responses, generic external human clients,
+push events, `media.read`, persistent process controls, or ConPTY. Existing in-process and TUI routes
+are preserved. Goldens remain the legacy stdio 1.0 envelopes; the optional proof does not alter the
+durable event schema or wire version.
+
+OmniCoder M9-C/D consumes this contract from Electron main without loading CLR. Its supervised Host
+and Sidecar provide connection health, queries, paged replay, explicit Plan input, mode selection,
+interrupt and cancel. Renderer cannot access the process or signing key; Electron main displays the
+native action confirmation. Input does not produce a model response. See [M9-C](../../../validation/m9-block-c-20261014.md)
+and [M9-D](../../../validation/m9-block-d-20261014.md) for exact product scope and evidence. Neither
+block introduces a new wire version.

@@ -61,6 +61,9 @@ public sealed class CliApp
     }
 
     public static Task<int> RunAsync(string[] args)
+        => RunAsync(args, null);
+
+    internal static Task<int> RunAsync(string[] args, byte[]? trustedBootstrapKey)
     {
         if ((args.Length == 2 || args.Length == 4 && args[2] == "--locale")
             && args[0] == "host" && args[1] == "--stdio")
@@ -73,8 +76,12 @@ public sealed class CliApp
             try
             {
                 var client = Runtime.Connect(CancellationToken.None);
-                return Task.FromResult(StdioProtocolHost.Run(client, Console.OpenStandardInput(),
-                    protocolOutput, Console.Error, localizeDiagnostic: key => hostText.Resolve(key)));
+                var exitCode = trustedBootstrapKey is null
+                    ? StdioProtocolHost.Run(client, Console.OpenStandardInput(), protocolOutput, Console.Error,
+                        localizeDiagnostic: key => hostText.Resolve(key))
+                    : StdioProtocolHost.RunWithTrustedActions(client, Console.OpenStandardInput(), protocolOutput,
+                        Console.Error, trustedBootstrapKey, localizeDiagnostic: key => hostText.Resolve(key));
+                return Task.FromResult(exitCode);
             }
             catch (Exception)
             {

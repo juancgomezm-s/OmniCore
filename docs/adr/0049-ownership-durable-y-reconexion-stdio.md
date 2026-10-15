@@ -82,3 +82,11 @@ rechazadas. La capability sólo anuncia handlers construidos para el backend act
 ## Evidencia
 
 Implementación y pruebas focales: [acta M9-B del 2026-10-14](../validation/m9-block-b-20261014.md).
+
+## Nota posterior M9-D (2026-10-14)
+
+El ownership de Session de esta decisión es también la frontera bajo la cual M9-D vuelve a validar
+Session/Run/revisión antes de despachar una acción firmada por Electron main. El lease no equivale a
+consentimiento: sólo el diálogo nativo del main concede una acción para ese workspace/conexión.
+La extensión y su trust boundary se definen en [ADR-0050](0050-autoridad-humana-stdio-omnicoder.md);
+esta nota no altera el contrato ni los resultados históricos de M9-B.

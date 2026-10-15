@@ -1321,6 +1321,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
             var current = projection.ModeAuthority ?? RunModeAuthority.Legacy(
                 own.Select(_codecs.Decode).OfType<RunCreated>().Single(created => created.RunId == run));
+            if (fields.TryGetValue("expectedRevision", out var expectedRevisionText)
+                && (!long.TryParse(expectedRevisionText, NumberStyles.None, CultureInfo.InvariantCulture,
+                    out var expectedRevision) || expectedRevision != current.Revision))
+                return new CommandAck(messageId, "error", "run_mode_revision_changed",
+                    RuntimeCommandOutcome.Rejected());
             var effort = fields.TryGetValue("effort", out var rawEffort) ? rawEffort.ToLowerInvariant() : "standard";
             if (effort is not ("standard" or "ultracode"))
                 return new CommandAck(messageId, "error", "effort must be standard or ultracode",
@@ -1742,6 +1747,48 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         HasOpenToolCall(events.Where(evt => evt.LaneId == lane).ToArray());
 
     public SessionId? LastSessionId() => _lastSessionId;
+
+    /// <summary>Revalidates the Session and active Run while writer ownership is held.</summary>
+    internal bool MatchesTrustedActionScope(string? expectedSessionId, string? expectedRunId,
+        long? expectedRevision, bool checkRevision, bool requirePlanRun)
+    {
+        var sessionId = _lastSessionId?.ToString();
+        if (!string.Equals(sessionId, expectedSessionId, StringComparison.Ordinal)) return false;
+        var session = _lastSessionId;
+        var activeRun = session is { } current
+            ? new OmniCore.Engine.RunControlService(_store, _codecs).ActiveRun(current)
+            : null;
+        if (!string.Equals(activeRun?.ToString(), expectedRunId, StringComparison.Ordinal)) return false;
+        if (activeRun is null) return !checkRevision || expectedRevision is null;
+        var runEvents = EventsForRun(_store.ReadFrom(session!, 1), activeRun);
+        var projection = OmniCore.Engine.RunProjection.Replay(session!, activeRun, _codecs, runEvents);
+        var created = runEvents.Select(_codecs.Decode).OfType<RunCreated>().SingleOrDefault(item => item.RunId == activeRun);
+        var authority = projection.ModeAuthority ?? (created is null ? null : RunModeAuthority.Legacy(created));
+        if (authority is null) return false;
+        if (checkRevision && authority.Revision != expectedRevision) return false;
+        return !requirePlanRun || authority.Mode == RunMode.Plan;
+    }
+
+    internal string TrustedActionScopeJson()
+    {
+        var session = _lastSessionId;
+        var activeRun = session is { } current
+            ? new OmniCore.Engine.RunControlService(_store, _codecs).ActiveRun(current)
+            : null;
+        if (session is null || activeRun is null)
+            return "{\"sessionId\":" + (session is null ? "null" : QuoteScope(session.ToString()))
+                + ",\"runId\":null,\"mode\":null,\"revision\":null}";
+        var runEvents = EventsForRun(_store.ReadFrom(session, 1), activeRun);
+        var projection = OmniCore.Engine.RunProjection.Replay(session, activeRun, _codecs, runEvents);
+        var created = runEvents.Select(_codecs.Decode).OfType<RunCreated>().SingleOrDefault(item => item.RunId == activeRun);
+        var authority = projection.ModeAuthority ?? (created is null ? null : RunModeAuthority.Legacy(created));
+        return "{\"sessionId\":" + QuoteScope(session.Value.ToString())
+            + ",\"runId\":" + QuoteScope(activeRun.Value.ToString())
+            + ",\"mode\":" + (authority is null ? "null" : QuoteScope(authority.Mode.ToString().ToLowerInvariant()))
+            + ",\"revision\":" + (authority?.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null") + "}";
+    }
+
+    private static string QuoteScope(string value) => "\"" + JsonObj.Escape(value) + "\"";
 
     /// <summary>Consume el origen de un PromptCommand para persistirlo en el próximo UserInputReceived.</summary>
     public string? ConsumePromptOrigin()
