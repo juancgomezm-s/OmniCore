@@ -66,7 +66,7 @@ public sealed class ExternalAgentDiscoveryCatalog
 
         if (projectRoot is not null && active is not null && IsWithin(projectRoot, active))
             AddConventionalProjectMemories(projectRoot, active, projectTrusted,
-                allowGlobalMemory && string.Equals(consentedProjectIdentity, ProjectIdentity(projectRoot), StringComparison.Ordinal),
+                string.Equals(consentedProjectIdentity, ProjectIdentity(projectRoot), StringComparison.Ordinal),
                 sources, cancellationToken);
 
         var seenRoots = new HashSet<string>(PathComparer);
@@ -186,15 +186,15 @@ public sealed class ExternalAgentDiscoveryCatalog
         AddOpenCodeRulesDiagnostic(Path.Combine(openCode, "opencode.jsonc"), "User", true, output, token, openCode);
     }
 
-    private void AddConventionalProjectMemories(string root, string active, bool trusted, bool allow,
+    private void AddConventionalProjectMemories(string root, string active, bool trusted, bool allowProjectMemory,
         List<ExternalAgentSource> output, CancellationToken token)
     {
         foreach (var directory in Ancestors(root, active))
         {
-            AddProjectMemory(Path.Combine(directory, "MEMORY.md"), "OmniCore convention", trusted, allow, output, token);
-            AddProjectMemory(Path.Combine(directory, ".claude", "memory", "MEMORY.md"), "Claude convention", trusted, allow, output, token);
-            AddProjectMemory(Path.Combine(directory, ".agents", "memory", "MEMORY.md"), "Agents convention", trusted, allow, output, token);
-            AddProjectMemory(Path.Combine(directory, ".opencode", "MEMORY.md"), "OpenCode convention", trusted, allow, output, token);
+            AddProjectMemory(Path.Combine(directory, "MEMORY.md"), "OmniCore convention", trusted, allowProjectMemory, output, token);
+            AddProjectMemory(Path.Combine(directory, ".claude", "memory", "MEMORY.md"), "Claude convention", trusted, allowProjectMemory, output, token);
+            AddProjectMemory(Path.Combine(directory, ".agents", "memory", "MEMORY.md"), "Agents convention", trusted, allowProjectMemory, output, token);
+            AddProjectMemory(Path.Combine(directory, ".opencode", "MEMORY.md"), "OpenCode convention", trusted, allowProjectMemory, output, token);
         }
     }
 
@@ -266,7 +266,7 @@ public sealed class ExternalAgentDiscoveryCatalog
         var key = ClaudeProjectKey(identity);
         // A user's native Claude project key is lossy for every path. Read only the exact
         // project mapping explicitly authorized from this active workspace.
-        var projectAllowed = allow && string.Equals(consentedProjectIdentity, identity,
+        var projectAllowed = string.Equals(consentedProjectIdentity, identity,
             OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
         var memoryRoot = Path.Combine(claudeHome, "projects", key, "memory");
         if (!workspaceTrusted)

@@ -2041,10 +2041,12 @@ public sealed class OmniCliRuntime : IDisposable
             var externalProjectIdentity = externalProjectRoot is null ? null
                 : ExternalAgentDiscoveryCatalog.ProjectIdentity(externalProjectRoot);
             var externalTrustStore = new WorkspaceTrustStore(paths);
+            var externalProjectTrusted = externalProjectRoot is not null
+                && externalTrustStore.IsTrusted(externalProjectRoot);
             IReadOnlyList<ExternalAgentSource> DiscoverExternalSources() => delegation is null
-                ? externalAgentCatalog.Discover(workspaceRoot, externalActiveDirectory,
-                    workspaceConfig.Trusted, externalMemoryConsent.IsAllowed(), CancellationToken.None,
-                    externalProjectIdentity is not null && externalMemoryConsent.IsProjectAllowed(externalProjectIdentity)
+                ? externalAgentCatalog.Discover(externalProjectRoot, externalActiveDirectory,
+                    externalProjectTrusted, externalMemoryConsent.IsAllowed(), cancellationToken,
+                    externalProjectTrusted && externalProjectIdentity is not null && externalMemoryConsent.IsProjectAllowed(externalProjectIdentity)
                         ? externalProjectIdentity : null,
                     externalTrustStore.IsTrusted)
                 : [];

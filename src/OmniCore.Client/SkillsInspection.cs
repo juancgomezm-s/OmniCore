@@ -79,7 +79,10 @@ public static class ExternalAgentSourcesPresentation
             var output = new List<string> { text.Resolve("client.agent_sources.title") };
             var allowed = root.TryGetProperty("externalMemoryAllowed", out var consent)
                 && consent.ValueKind == JsonValueKind.True;
-            output.Add(text.Resolve(allowed ? "client.agent_sources.memory.allowed" : "client.agent_sources.memory.ask"));
+            var projectAllowed = root.TryGetProperty("externalProjectMemoryAllowed", out var projectConsent)
+                && projectConsent.ValueKind == JsonValueKind.True;
+            output.Add(text.Resolve(allowed ? "client.agent_sources.memory.global_allowed" : "client.agent_sources.memory.global_ask"));
+            output.Add(text.Resolve(projectAllowed ? "client.agent_sources.memory.project_allowed" : "client.agent_sources.memory.project_ask"));
             foreach (var source in sources.EnumerateArray())
             {
                 if (source.ValueKind != JsonValueKind.Object) return text.Resolve("client.agent_sources.invalid");
@@ -105,7 +108,7 @@ public static class ExternalAgentSourcesPresentation
                 if (diagnostic is { Length: > 0 }) output.Add("  " + text.Resolve("client.agent_sources.diagnostic") + ": " + diagnostic);
             }
             if (sources.GetArrayLength() == 0) output.Add(text.Resolve("client.agent_sources.empty"));
-            output.Add(text.Resolve("client.agent_sources.memory.controls"));
+            output.Add(text.Resolve("client.agent_sources.memory.controls.scoped"));
             return string.Join("\n", output);
         }
         catch (JsonException) { return text.Resolve("client.agent_sources.invalid"); }

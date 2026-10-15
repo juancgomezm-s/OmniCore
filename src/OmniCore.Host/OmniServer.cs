@@ -779,7 +779,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         }
 
         if (commandName is "skills.activate" or "skills.release")
-            return ChangeSessionSkillActivation(command, commandName, fields, trustedUserAction);
+            return ChangeSessionSkillActivation(command, commandName, fields, trustedUserAction, cancellationToken);
         if (commandName is "memory.session.add" or "memory.session.forget" or "memory.session.propose"
             or "memory.session.promote" or "memory.session.reject")
             return ChangeSessionMemory(command, commandName, fields, trustedUserAction, cancellationToken);
@@ -792,8 +792,22 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             if (decision is not ("allow" or "revoke"))
                 return new CommandAck(command.MessageId, "error", "External memory decision is unsupported.",
                     RuntimeCommandOutcome.Rejected());
-            var identity = _workspaceRoot is null ? null : ExternalAgentDiscoveryCatalog.ProjectIdentity(_workspaceRoot);
-            new ExternalAgentMemoryConsentStore(_platformPathsFactory().DataDirectory).Set(decision == "allow", identity);
+            var scope = fields.GetValueOrDefault("scope");
+            if (scope is not ("global" or "project"))
+                return new CommandAck(command.MessageId, "error", "External memory scope is unsupported.",
+                    RuntimeCommandOutcome.Rejected());
+            var paths = _platformPathsFactory();
+            var consent = new ExternalAgentMemoryConsentStore(paths.DataDirectory);
+            if (scope == "global") consent.SetGlobal(decision == "allow");
+            else
+            {
+                var workspaceTrusted = _workspaceRoot is not null && new WorkspaceTrustStore(paths).IsTrusted(_workspaceRoot);
+                var project = ResolveExternalAgentProjectScope(paths, workspaceTrusted);
+                if (!project.Trusted || project.Identity is null)
+                    return new CommandAck(command.MessageId, "error", "Project memory requires a trusted project root.",
+                        RuntimeCommandOutcome.Rejected());
+                consent.SetProject(decision == "allow", project.Identity);
+            }
             return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
         }
         if (commandName == "extensions.consent")
@@ -2440,7 +2454,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     }
 
     private CommandAck ChangeSessionSkillActivation(WireEnvelope command, string commandName,
-        IReadOnlyDictionary<string, string> fields, bool trustedUserAction)
+        IReadOnlyDictionary<string, string> fields, bool trustedUserAction, CancellationToken cancellationToken)
     {
         if (_lastSessionId is not { } session)
             return new CommandAck(command.MessageId, "error", "An existing Session is required to activate a skill.",
@@ -2468,7 +2482,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 throw new InvalidOperationException("Trust the workspace before activating Project skills.");
             var workspaceData = workspaceRoot is null ? null : OmniHost.WorkspaceDataDirectory(paths, workspaceRoot);
             var store = new SessionSkillActivationStore(workspaceData ?? paths.DataDirectory);
-            var discovered = DiscoverAllSkillSources(paths, workspaceData, session, trusted);
+            var discovered = DiscoverAllSkillSources(paths, workspaceData, session, trusted, cancellationToken);
             if (commandName == "skills.release")
             {
                 if (fields.TryGetValue("expectedManifestSha256", out var expectedReleaseHash))
@@ -2860,7 +2874,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             var trusted = _workspaceRoot is not null && new WorkspaceTrustStore(paths).IsTrusted(_workspaceRoot);
             var workspaceData = _workspaceRoot is null ? null : OmniHost.WorkspaceDataDirectory(paths, _workspaceRoot);
             var store = new SessionSkillActivationStore(workspaceData ?? paths.DataDirectory);
-            var discovered = DiscoverAllSkillSources(paths, workspaceData, _lastSessionId, trusted);
+            var discovered = DiscoverAllSkillSources(paths, workspaceData, _lastSessionId, trusted, cancellationToken);
             var active = _lastSessionId is { } session ? store.ReadDetailed(session)
                 : new Dictionary<SkillActivationIdentity, SkillActivationRecord>();
             var entries = discovered.Select(skill =>
@@ -2916,11 +2930,14 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             var paths = _platformPathsFactory();
             var trusted = _workspaceRoot is not null && new WorkspaceTrustStore(paths).IsTrusted(_workspaceRoot);
             var memoryConsent = new ExternalAgentMemoryConsentStore(paths.DataDirectory);
-            var consent = memoryConsent.IsAllowed();
-            var projectIdentity = _workspaceRoot is null ? null : ExternalAgentDiscoveryCatalog.ProjectIdentity(_workspaceRoot);
-            var sources = _externalAgentCatalogFactory().Discover(_workspaceRoot, _externalAgentActiveDirectory(),
-                trusted, consent, cancellationToken,
-                projectIdentity is not null && memoryConsent.IsProjectAllowed(projectIdentity) ? projectIdentity : null);
+            var globalMemoryAllowed = memoryConsent.IsAllowed();
+            var project = ResolveExternalAgentProjectScope(paths, trusted);
+            var projectMemoryAllowed = project.Trusted && project.Identity is not null
+                && memoryConsent.IsProjectAllowed(project.Identity);
+            var sources = _externalAgentCatalogFactory().Discover(project.Root, _externalAgentActiveDirectory(),
+                project.Trusted, globalMemoryAllowed, cancellationToken,
+                projectMemoryAllowed ? project.Identity : null,
+                path => new WorkspaceTrustStore(paths).IsTrusted(path));
             var entries = sources.Select(source => "{" + string.Join(",", new[]
             {
                 JsonObj.Field("kind", source.Kind.ToString()),
@@ -2934,7 +2951,10 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 source.RequiresUserConsent ? "\"requiresConsent\":true" : "\"requiresConsent\":false",
             }) + "}");
             return new SessionQueryResult(name, "{\"workspaceTrusted\":" + (trusted ? "true" : "false")
-                + ",\"externalMemoryAllowed\":" + (consent ? "true" : "false")
+                + ",\"projectRootTrusted\":" + (project.Trusted ? "true" : "false")
+                + (project.Root is null ? ",\"projectRoot\":null" : "," + JsonObj.Field("projectRoot", project.Root))
+                + ",\"externalMemoryAllowed\":" + (globalMemoryAllowed ? "true" : "false")
+                + ",\"externalProjectMemoryAllowed\":" + (projectMemoryAllowed ? "true" : "false")
                 + ",\"sources\":[" + string.Join(",", entries) + "]}");
         }
         if (name is "memory" or "memory.session")

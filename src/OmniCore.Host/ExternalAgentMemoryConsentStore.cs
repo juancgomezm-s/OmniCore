@@ -8,17 +8,43 @@ using System.Text.Json;
 public sealed class ExternalAgentMemoryConsentStore(string userDataDirectory)
 {
     private readonly string _path = Path.Combine(Path.GetFullPath(userDataDirectory), "external-agent-memory-consent.json");
-    private static readonly object Gate = new();
+    private readonly object _gate = new();
 
     public bool IsAllowed() => Read().Allowed;
 
     public bool IsProjectAllowed(string? projectIdentity) => projectIdentity is not null
         && Read().ProjectHashes.Contains(ProjectHash(projectIdentity), StringComparer.Ordinal);
 
+    public void SetGlobal(bool allowed)
+    {
+        lock (_gate)
+        {
+            using var lease = AcquireLeaseWithRetry();
+            var previous = ReadUnsafe();
+            WriteUnsafe(allowed, previous.ProjectHashes);
+        }
+    }
+
+    public void SetProject(bool allowed, string projectIdentity)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(projectIdentity);
+        lock (_gate)
+        {
+            using var lease = AcquireLeaseWithRetry();
+            var previous = ReadUnsafe();
+            var hashes = previous.ProjectHashes.ToHashSet(StringComparer.Ordinal);
+            var hash = ProjectHash(projectIdentity);
+            if (allowed) hashes.Add(hash);
+            else hashes.Remove(hash);
+            WriteUnsafe(previous.Allowed, hashes.Order(StringComparer.Ordinal).ToArray());
+        }
+    }
+
     public void Set(bool allowed, string? projectIdentity = null)
     {
-        lock (Gate)
+        lock (_gate)
         {
+            using var lease = AcquireLeaseWithRetry();
             var previous = ReadUnsafe();
             var hashes = allowed ? previous.ProjectHashes.ToHashSet(StringComparer.Ordinal) : new HashSet<string>(StringComparer.Ordinal);
             if (allowed && projectIdentity is not null) hashes.Add(ProjectHash(projectIdentity));
@@ -28,13 +54,27 @@ public sealed class ExternalAgentMemoryConsentStore(string userDataDirectory)
 
     private (bool Allowed, string[] ProjectHashes) Read()
     {
-        lock (Gate) return ReadUnsafe();
+        lock (_gate)
+        {
+            using var lease = AcquireLeaseWithRetry();
+            return ReadUnsafe();
+        }
+    }
+
+    private FileStream AcquireLeaseWithRetry()
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try { return ConfigurationWriteLease.Acquire(_path); }
+            catch (IOException) when (attempt < 49) { Thread.Sleep(10); }
+        }
     }
 
     private (bool Allowed, string[] ProjectHashes) ReadUnsafe()
     {
         try
         {
+            ConfigurationWriteLease.EnsureNoLinks(_path);
             if (!File.Exists(_path) || (File.GetAttributes(_path) & FileAttributes.ReparsePoint) != 0) return (false, []);
             var bytes = ReadBounded(_path, 16_384);
             using var json = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 4 });
@@ -60,6 +100,7 @@ public sealed class ExternalAgentMemoryConsentStore(string userDataDirectory)
 
     private void WriteUnsafe(bool allowed, string[] hashes)
     {
+        ConfigurationWriteLease.EnsureNoLinks(_path);
         Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
         var temporary = _path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try

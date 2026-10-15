@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using OmniCore.Abstractions;
 using OmniCore.Context;
 using OmniCore.Domain;
@@ -227,6 +228,116 @@ public sealed class ExternalAgentDiscoveryTests
     }
 
     [Fact]
+    public void Global_memory_consent_does_not_authorize_a_different_project_and_project_decisions_do_not_revoke_global()
+    {
+        using var fixture = new Fixture();
+        var projectA = fixture.Project;
+        var projectB = Path.Combine(fixture.Root, "project-b");
+        Directory.CreateDirectory(projectB);
+        Write(Path.Combine(projectA, "MEMORY.md"), "Project A memory.");
+        Write(Path.Combine(projectB, "MEMORY.md"), "Project B memory.");
+        var codexMemory = Path.Combine(fixture.Home, ".codex", "memories", "MEMORY.md");
+        Write(codexMemory, "Global memory.");
+        var store = new ExternalAgentMemoryConsentStore(fixture.UserData);
+        var identityA = ExternalAgentDiscoveryCatalog.ProjectIdentity(projectA);
+        var identityB = ExternalAgentDiscoveryCatalog.ProjectIdentity(projectB);
+        store.SetGlobal(true);
+        store.SetProject(true, identityA);
+
+        IReadOnlyList<ExternalAgentSource> Discover(string project, string identity) => fixture.Catalog()
+            .Discover(project, project, true, store.IsAllowed(), TestContext.Current.CancellationToken,
+                store.IsProjectAllowed(identity) ? identity : null);
+        var sourcesA = Discover(projectA, identityA);
+        var sourcesB = Discover(projectB, identityB);
+        Assert.Contains(sourcesA, source => source.Content == "Project A memory.");
+        Assert.Contains(sourcesB, source => source.Kind == ExternalAgentSourceKind.Memory
+            && source.State == "awaiting-consent" && source.DisplayPath.EndsWith("MEMORY.md", StringComparison.Ordinal));
+        Assert.Contains(sourcesB, source => source.Adapter == "Codex" && source.Content == "Global memory.");
+        Assert.False(store.IsProjectAllowed(identityB));
+
+        store.SetGlobal(false);
+        var projectOnlySourcesA = Discover(projectA, identityA);
+        var projectOnlySourcesB = Discover(projectB, identityB);
+        Assert.Contains(projectOnlySourcesA, source => source.Content == "Project A memory.");
+        Assert.DoesNotContain(projectOnlySourcesA, source => source.Content == "Global memory.");
+        Assert.Contains(projectOnlySourcesA, source => source.Adapter == "Codex"
+            && source.State == "awaiting-consent" && source.Content is null);
+        Assert.Contains(projectOnlySourcesB, source => source.State == "awaiting-consent"
+            && source.Content is null && source.DisplayPath.EndsWith("MEMORY.md", StringComparison.Ordinal));
+
+        store.SetGlobal(true);
+        store.SetProject(true, identityB);
+        Assert.True(store.IsAllowed());
+        Assert.True(store.IsProjectAllowed(identityA));
+        Assert.True(store.IsProjectAllowed(identityB));
+        store.SetProject(false, identityB);
+        Assert.True(store.IsAllowed());
+        Assert.True(store.IsProjectAllowed(identityA));
+        Assert.False(store.IsProjectAllowed(identityB));
+    }
+
+    [Fact]
+    public void Independent_consent_store_instances_serialize_cross_scope_updates_without_reviving_global_access()
+    {
+        using var fixture = new Fixture();
+        var globalStore = new ExternalAgentMemoryConsentStore(fixture.UserData);
+        var projectStore = new ExternalAgentMemoryConsentStore(fixture.UserData);
+        var identity = ExternalAgentDiscoveryCatalog.ProjectIdentity(fixture.Project);
+        globalStore.SetGlobal(true);
+
+        Parallel.Invoke(
+            () => { for (var index = 0; index < 20; index++) globalStore.SetGlobal(index % 2 == 0); },
+            () => { for (var index = 0; index < 20; index++) projectStore.SetProject(index % 2 == 0, identity); });
+
+        globalStore.SetGlobal(false);
+        projectStore.SetProject(true, identity);
+        Assert.False(globalStore.IsAllowed());
+        Assert.True(projectStore.IsProjectAllowed(identity));
+    }
+
+    [Fact]
+    public void Host_memory_consent_command_changes_only_the_requested_scope()
+    {
+        using var fixture = new Fixture();
+        Write(Path.Combine(fixture.Project, "MEMORY.md"), "Project-only memory.");
+        Write(Path.Combine(fixture.Home, ".codex", "memories", "MEMORY.md"), "User-global memory.");
+        var paths = new FixturePaths(fixture.UserData);
+        var canonical = WorkspaceTrustStore.Canonical(fixture.Project);
+        var workspaceId = WorkspaceId.Of(canonical).ToString();
+        Write(Path.Combine(fixture.UserData, "trust.yaml"), "workspaces:\n  " + workspaceId + ":\n    canonicalPath: "
+            + canonical + "\n    trusted: true\n");
+        Assert.True(new WorkspaceTrustStore(paths).IsTrusted(fixture.Project));
+        var server = new OmniServer(new InMemoryEventStore(), EventCodecs.Create(), new InMemoryAuditSink());
+        server.ConfigurePlatformPaths(() => paths);
+        server.ConfigureWorkspaceRoot(fixture.Project);
+        server.ConfigureExternalAgentDiscovery(() => fixture.Project, fixture.Catalog);
+
+        CommandAck Apply(string decision, string scope) => server.SendUserAction(
+            WireEnvelope.Command(Guid.NewGuid().ToString("D"), "{\"cmd\":\"external.memory.consent\",\"decision\":\""
+                + decision + "\",\"scope\":\"" + scope + "\"}"), TestContext.Current.CancellationToken);
+        JsonDocument Inventory() => JsonDocument.Parse(Assert.IsType<SessionQueryResult>(
+            server.Query("agent.sources", TestContext.Current.CancellationToken)).Json);
+
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, Apply("allow", "global").Outcome?.Kind);
+        using (var globalOnly = Inventory())
+        {
+            Assert.True(globalOnly.RootElement.GetProperty("externalMemoryAllowed").GetBoolean());
+            Assert.False(globalOnly.RootElement.GetProperty("externalProjectMemoryAllowed").GetBoolean());
+        }
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, Apply("allow", "project").Outcome?.Kind);
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, Apply("revoke", "project").Outcome?.Kind);
+        using (var afterProjectRevoke = Inventory())
+        {
+            Assert.True(afterProjectRevoke.RootElement.GetProperty("externalMemoryAllowed").GetBoolean());
+            Assert.False(afterProjectRevoke.RootElement.GetProperty("externalProjectMemoryAllowed").GetBoolean());
+        }
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, Apply("revoke", "global").Outcome?.Kind);
+        using var revoked = Inventory();
+        Assert.False(revoked.RootElement.GetProperty("externalMemoryAllowed").GetBoolean());
+        Assert.False(revoked.RootElement.GetProperty("externalProjectMemoryAllowed").GetBoolean());
+    }
+
+    [Fact]
     public void Claude_project_memory_is_exactly_scoped_and_requires_ask_consent()
     {
         using var fixture = new Fixture();
@@ -415,6 +526,31 @@ public sealed class ExternalAgentDiscoveryTests
             && value.GetProperty("path").GetString()!.Contains("query-visible", StringComparison.Ordinal));
         Assert.Equal("Discovered", source.GetProperty("state").GetString());
         Assert.DoesNotContain("BODY MUST NOT BE RETURNED", result.Json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Host_query_uses_the_real_trusted_project_root_for_nested_agent_sources()
+    {
+        using var fixture = new Fixture();
+        var skillDirectory = Path.Combine(fixture.Project, ".agents", "skills", "nested-guide");
+        Directory.CreateDirectory(skillDirectory);
+        Write(Path.Combine(skillDirectory, "SKILL.md"), "---\nname: nested-guide\ndescription: Trusted project source\n---\nSource body remains private.");
+        var paths = new FixturePaths(fixture.UserData);
+        new WorkspaceTrustStore(paths).SetTrusted(fixture.Project, true);
+        var server = new OmniServer(new InMemoryEventStore(), EventCodecs.Create(), new InMemoryAuditSink());
+        server.ConfigurePlatformPaths(() => paths);
+        server.ConfigureWorkspaceRoot(fixture.Project);
+        server.ConfigureExternalAgentDiscovery(() => fixture.Project, fixture.Catalog);
+
+        var result = Assert.IsType<SessionQueryResult>(server.Query("agent.sources", TestContext.Current.CancellationToken));
+        using var json = JsonDocument.Parse(result.Json);
+        Assert.True(json.RootElement.GetProperty("projectRootTrusted").GetBoolean());
+        Assert.Equal(Path.GetFullPath(fixture.Project), json.RootElement.GetProperty("projectRoot").GetString());
+        Assert.Contains(json.RootElement.GetProperty("sources").EnumerateArray(), source =>
+            source.GetProperty("kind").GetString() == "Skill"
+            && source.GetProperty("state").GetString() == "Discovered"
+            && source.GetProperty("path").GetString()!.Contains("nested-guide", StringComparison.Ordinal));
+        Assert.DoesNotContain("Source body remains private.", result.Json, StringComparison.Ordinal);
     }
 
     private sealed class Fixture : IDisposable

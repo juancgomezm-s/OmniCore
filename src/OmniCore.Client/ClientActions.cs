@@ -291,13 +291,18 @@ public sealed class ClientActionHandler : IClientActionHandler
 
     private static ClientActionResult Memory(ClientActionInvocation invocation, ClientContext context)
     {
-        if (invocation.Arguments is ["external", "allow"] or ["external", "revoke"])
+        if ((invocation.Arguments.Count is 2 or 3)
+            && invocation.Arguments[0] == "external"
+            && (invocation.Arguments[1] is "allow" or "revoke")
+            && (invocation.Arguments.Count == 2 || invocation.Arguments[2] is "global" or "project"))
         {
             if (context.Client is not ITrustedUserActionClient trusted)
                 return new ClientActionResult(context.Text.Resolve("client.memory.trusted_required"));
             var allow = invocation.Arguments[1] == "allow";
+            var scope = invocation.Arguments.Count == 3 ? invocation.Arguments[2] : "project";
             var payload = "{" + JsonObj.Field("cmd", "external.memory.consent") + ","
-                + JsonObj.Field("decision", allow ? "allow" : "revoke") + "}";
+                + JsonObj.Field("decision", allow ? "allow" : "revoke") + ","
+                + JsonObj.Field("scope", scope) + "}";
             var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
             if (ack.Status != "ok") return new ClientActionResult(ack.Error is { } error
                 ? context.Text.ResolveWire(error) : context.Text.Resolve("client.memory.rejected"));

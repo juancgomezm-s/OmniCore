@@ -138,6 +138,7 @@ public static class StdioProtocolHost
                     throw new InvalidDataException();
                 var commandName = nameElement.GetString()!;
                 var trustedOnly = commandName is "conversation.start" or "run.interrupt" or "run.cancel" or "run.mode.select"
+                    or "external.memory.consent"
                     or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish";
                 TrustedActionScope? trustedScope = null;
                 if (root.TryGetProperty("actionProof", out var proofElement))
@@ -152,7 +153,7 @@ public static class StdioProtocolHost
                     return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_user_action_required",
                         RuntimeCommandOutcome.Rejected()));
                 if (trustedScope is not null && commandName is not ("session.input" or "conversation.start"
-                    or "run.interrupt" or "run.cancel" or "run.mode.select" or "attachment.upload.begin"
+                    or "run.interrupt" or "run.cancel" or "run.mode.select" or "external.memory.consent" or "attachment.upload.begin"
                     or "attachment.upload.chunk" or "attachment.upload.finish"))
                     return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_action_not_supported",
                         RuntimeCommandOutcome.Rejected()));
@@ -386,6 +387,7 @@ public static class StdioProtocolHost
         if (!payload.RootElement.TryGetProperty("cmd", out var cmd) || cmd.ValueKind != JsonValueKind.String) return false;
         var commandName = cmd.GetString();
         if (commandName is not ("session.input" or "conversation.start" or "run.interrupt" or "run.cancel" or "run.mode.select"
+            or "external.memory.consent"
             or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish")) return false;
         if (commandName.StartsWith("attachment.upload.", StringComparison.Ordinal))
         {
@@ -416,6 +418,17 @@ public static class StdioProtocolHost
                 inputRevision.ValueKind == JsonValueKind.Null ? null : inputRevision.GetInt64(),
                 CheckRevision: true, RequirePlanRun: mode.GetString() == "plan", RequestedMode: mode.GetString(),
                 RequireCurrentAct: mode.GetString() == "act");
+            return true;
+        }
+        else if (commandName == "external.memory.consent")
+        {
+            if (properties.Length != 3 || properties.Except(["cmd", "decision", "scope"], StringComparer.Ordinal).Any()
+                || !payload.RootElement.TryGetProperty("decision", out var decision) || decision.ValueKind != JsonValueKind.String
+                || decision.GetString() is not ("allow" or "revoke")
+                || !payload.RootElement.TryGetProperty("scope", out var consentScope) || consentScope.ValueKind != JsonValueKind.String
+                || consentScope.GetString() is not ("global" or "project")) return false;
+            scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
+                CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
             return true;
         }
         else if (commandName is "run.cancel" or "run.interrupt")

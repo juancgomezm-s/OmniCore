@@ -254,6 +254,27 @@ public sealed class ClientActionTests
     }
 
     [Fact]
+    public void External_memory_cli_defaults_to_project_scope_and_requires_global_scope_explicitly()
+    {
+        var client = new FakeClient();
+        client.Queries["agent.sources"] = "{\"workspaceTrusted\":true,\"projectRootTrusted\":true,\"externalMemoryAllowed\":false,\"externalProjectMemoryAllowed\":false,\"sources\":[]}";
+
+        Run("memory", Context(client), "external", "allow");
+        using (var project = JsonDocument.Parse(client.Sent[0]))
+        {
+            Assert.Equal("external.memory.consent", project.RootElement.GetProperty("cmd").GetString());
+            Assert.Equal("allow", project.RootElement.GetProperty("decision").GetString());
+            Assert.Equal("project", project.RootElement.GetProperty("scope").GetString());
+        }
+
+        Run("memory", Context(client), "external", "revoke", "global");
+        using var global = JsonDocument.Parse(client.Sent[1]);
+        Assert.Equal("revoke", global.RootElement.GetProperty("decision").GetString());
+        Assert.Equal("global", global.RootElement.GetProperty("scope").GetString());
+        Assert.Contains("[project|global]", Context(client).Text.Resolve("client.agent_sources.memory.controls.scoped"));
+    }
+
+    [Fact]
     public void Events_shows_only_the_most_recent_journal_events_with_their_count()
     {
         var client = new FakeClient();
