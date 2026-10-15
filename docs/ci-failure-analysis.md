@@ -27,6 +27,13 @@ red de proveedores ni diferencias de mayúsculas/rutas entre sistemas.
 Validación posterior: en curso; se registrarán aquí resultados locales, PR y
 ejecución real sobre el código corregido antes de declarar cerrado el CI.
 
+Pasadas intermedias: la focal ampliada de Windows pasa 198/198 sin omisiones.
+La primera integral Debian sobre `2c05388` obtiene 4626 casos, 4604 PASS,
+21 SKIP existentes y 1 FAIL: `CliEndToEndTests` aún esperaba la lista anterior
+de componentes. Se añade `model.output` a esa lista exacta, conservando todos
+sus elementos y la comprobación del orden. Se repite la integral; esa pasada
+intermedia no se acredita como cierre.
+
 Fecha: 2026-10-14, Ciudad de México. Rama `codex/cierre-linux` y [PR #1](https://github.com/juancgomezm-s/OmniCore/pull/1). El [acta Linux](validation/linux-milestones-closure-20261014.md) conserva el inventario, logs, hashes y pasadas intermedias. La recuperación de la interfaz de preferencias confirmada por el usuario se prepara en otra rama; esta reparación no modifica su diseño.
 
 ## Workflow y criterio de cierre
