@@ -64,3 +64,28 @@ Sólo cambian tres archivos de documentación frente a la interfaz ya probada;
 se conservan la referencia integrada, M9-E y los resultados 345/348 anteriores.
 La publicación de la interfaz continúa pendiente de autorización y el plan nuevo
 no se publica mediante la reparación CI.
+
+## Publicación autorizada y combinación con M9-F/F2 — 2026-10-15
+
+La combinación `d499c9a` compila toda la solución, incluidos Client/Protocol/Sandbox
+net8 y net10, sin warnings ni errores. Arquitectura pasa 62/62 en Windows y 62/62
+en Debian. La regresión ampliada de interfaz encuentra **357 casos: 343 PASS,
+14 FAIL, 0 SKIP en cada plataforma**, antes de corregir los defectos. Logs
+`preferences-publish-windows-full.log` y `preferences-publish-debian-baseline.log`.
+Las pasadas 345/348 anteriores no acreditan esta combinación nueva.
+
+Los catorce fallos comparten tres causas en la UI de M9-F/F2: una fila de adjuntos
+reservada aun con la lista vacía desplazaba el compositor y superponía el
+autocompletado; el catálogo reservaba siete filas aunque sus detalles ya ocupaban
+nueve; el editor añadía controles de dos filas incrementando la posición sólo una
+fila y ya no cabía en 80×25. Se conserva el compositor compacto sin adjuntos y
+la fila adicional mientras hay archivos; el helper se posiciona respecto al panel.
+El catálogo reserva el espacio real de detalles. El editor reutiliza el scroll
+existente de preferencias, con Guardar/Cancelar fuera del área desplazable.
+
+No se retiran assertions ni campos. Las comprobaciones de solapamiento se amplían
+al contenido interno del editor y los cuatro idiomas verifican que enfocar aliases
+desplaza el formulario y mantiene visible el campo. Una nueva regresión importa y
+retira un archivo sobre CAS de prueba y comprueba la altura del compositor y su
+autocompletado, sin inferencias ni datos personales. La validación de esta reparación
+de integración está en curso; los resultados definitivos se registran después.

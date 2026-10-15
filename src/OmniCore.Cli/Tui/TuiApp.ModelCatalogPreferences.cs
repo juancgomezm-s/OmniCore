@@ -101,7 +101,7 @@ public sealed partial class TuiApp
             TextAlignment = Alignment.End };
         var columns = new Label { Id = "model-catalog-columns", X = MenuIndent.Level1, Y = 3, Width = Dim.Fill(4), Height = 1,
             Text = ModelCatalogText("columns") };
-        var list = new ListView { Id = "model-catalog-list", X = MenuIndent.Level1, Y = 4, Width = Dim.Fill(4), Height = Dim.Fill(7),
+        var list = new ListView { Id = "model-catalog-list", X = MenuIndent.Level1, Y = 4, Width = Dim.Fill(4), Height = Dim.Fill(9),
             CanFocus = snapshot.Available && allModels.Count > 0, ShowMarks = false,
             ViewportSettings = ViewportSettingsFlags.HasVerticalScrollBar };
         var idWidth = Math.Clamp(allModels.Count == 0 ? 10 : allModels.Max(model => model.Id.Length), 10, 48);
@@ -247,29 +247,33 @@ public sealed partial class TuiApp
         frame.Width = Dim.Percent(92);
         frame.Height = Dim.Fill(2);
         var providers = currentSnapshot.Providers;
-        var y = 2;
+        var fields = new View { Id = "model-catalog-editor-fields", X = 0, Y = 1, Width = Dim.Fill(), Height = Dim.Fill(6) };
+        frame.Add(fields);
+        var y = 1;
         TextField Field(string id, string labelKey, string value)
         {
-            frame.Add(new Label { X = 2, Y = y, Width = 22, Height = 1, Text = ModelCatalogText(labelKey) });
+            fields.Add(new Label { X = 2, Y = y, Width = 22, Height = 1, Text = ModelCatalogText(labelKey) });
             var field = new TextField { Id = id, X = 25, Y = y++, Width = Dim.Fill(4), Height = 1, Text = value };
-            frame.Add(field);
+            fields.Add(field);
             return field;
         }
 
         var modelId = Field("model-catalog-id", "modelId", existing?.Id ?? "");
         modelId.ReadOnly = existing is not null;
         var provider = Field("model-catalog-provider", "provider", existing?.ProviderId ?? providers.FirstOrDefault()?.Id ?? "");
-        var imageRoute = new Button { Id = "model-catalog-create-openrouter-image-route", X = 25, Y = y++,
+        var imageRoute = new Button { Id = "model-catalog-create-openrouter-image-route", X = 25, Y = y, Height = 2,
             Text = ModelCatalogText("createOpenRouterImageRoute"), Enabled = existing is null };
-        frame.Add(imageRoute);
-        var imageRouteHint = new Label { Id = "model-catalog-image-route-hint", X = 25, Y = y++, Width = Dim.Fill(4), Height = 2,
+        fields.Add(imageRoute);
+        y += 2;
+        var imageRouteHint = new Label { Id = "model-catalog-image-route-hint", X = 25, Y = y, Width = Dim.Fill(4), Height = 2,
             Text = DerivedRouteHint(currentSnapshot) };
-        frame.Add(imageRouteHint);
+        fields.Add(imageRouteHint);
+        y += 2;
         if (existing is not null)
         {
             var providerInfo = providers.FirstOrDefault(item => item.Id == existing.ProviderId);
             var family = providerInfo is null ? "" : providerInfo.Family + (providerInfo.Profile is null ? "" : "/" + providerInfo.Profile);
-            frame.Add(new Label { Id = "model-catalog-family", X = 25, Y = y++, Width = Dim.Fill(4), Height = 1,
+            fields.Add(new Label { Id = "model-catalog-family", X = 25, Y = y++, Width = Dim.Fill(4), Height = 1,
                 Text = ModelCatalogText("family") + ": " + family });
         }
         var context = Field("model-catalog-context", "context", existing?.Context.ToString(CultureInfo.InvariantCulture) ?? "8192");
@@ -282,13 +286,14 @@ public sealed partial class TuiApp
             string.Join(",", existing?.OutputModalities ?? ["text"]));
         var imageGenerationCost = Field("model-catalog-image-cost", "imageGenerationCost",
             existing?.ImageGenerationMaxCostUsd?.ToString("0.################", PreferenceInput.Culture(_locale)) ?? "");
-        frame.Add(new Label { X = 2, Y = y, Width = 22, Height = 1, Text = ModelCatalogText("aliases") });
+        fields.Add(new Label { X = 2, Y = y, Width = 22, Height = 1, Text = ModelCatalogText("aliases") });
         var aliases = new TextView { Id = "model-catalog-aliases", X = 25, Y = y, Width = Dim.Fill(4), Height = 2,
             Text = string.Join("\n", existing?.Aliases ?? []) };
-        frame.Add(aliases);
+        fields.Add(aliases);
         y += 2;
-        frame.Add(new Label { Id = "model-catalog-literal-help", X = 2, Y = y, Width = Dim.Fill(4), Height = 2,
+        fields.Add(new Label { Id = "model-catalog-literal-help", X = 2, Y = y, Width = Dim.Fill(4), Height = 2,
             Text = ModelCatalogText("literalHelp") });
+        ConfigurePreferenceScroll(fields, y + 2);
         var status = new Label { Id = "model-catalog-editor-status", X = 2, Y = Pos.AnchorEnd(6), Width = Dim.Fill(4), Height = 1,
             Text = "" };
         var save = new Button { Id = "model-catalog-save", X = 2, Y = Pos.AnchorEnd(3), Text = ModelCatalogText("save") };

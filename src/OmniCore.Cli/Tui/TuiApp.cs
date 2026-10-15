@@ -391,9 +391,9 @@ public sealed partial class TuiApp
         _sidebarAttention = new Label { Id = "omni-help", X = 2, Y = 9, Width = Dim.Fill(1), Height = 1 };
         _sidebar.Add(new Label { Id = "omni-heading", X = 2, Y = 0, Text = _localization.Resolve("shell.workspace_heading") }, _sidebarDetails, settings,
             _sidebarSession, previous, next, _sidebarNavigation, _sidebarAttention, _sidebarContent);
-        var composerFrame = _composerFrame = new FrameView { Id = "omni-composer", X = 1, Y = Pos.AnchorEnd(7), Width = Dim.Fill(1), Height = 4, BorderStyle = LineStyle.None };
+        var composerFrame = _composerFrame = new FrameView { Id = "omni-composer", X = 1, Y = Pos.AnchorEnd(6), Width = Dim.Fill(1), Height = 3, BorderStyle = LineStyle.None };
         composerFrame.Add(new View { Id = "omni-composer-accent", X = 0, Y = 0, Width = 1, Height = Dim.Fill() });
-        _attachmentChips = new Label { Id = "omni-attachments", X = 4, Y = 0, Width = Dim.Fill(2), Height = 1, Text = "" };
+        _attachmentChips = new Label { Id = "omni-attachments", X = 4, Y = 0, Width = Dim.Fill(2), Height = 1, Text = "", Visible = false };
         composerFrame.Add(_attachmentChips);
         _composer = new ComposerView { X = 4, Y = 1, Width = Dim.Fill(2), Height = 1, Text = "", Multiline = true,
             WordWrap = true, EnterKeyAddsLine = true };
@@ -485,11 +485,12 @@ public sealed partial class TuiApp
         var wanted = (_composer.Text ?? "").Replace("\r\n", "\n").Split('\n')
             .Sum(line => Math.Max(1, (Terminal.Gui.Text.StringExtensions.GetColumns(line, false) + width - 1) / width));
         _composerRows = Math.Clamp(wanted, 1, Math.Max(1, Math.Min(8, _window.Frame.Height / 3)));
+        var attachmentRows = _pendingAttachments.Count == 0 ? 0 : 1;
         _composer.Height = _composerRows;
-        _composerFrame.Height = _composerRows + 3;
-        _composerFrame.Y = Pos.AnchorEnd(_composerRows + 6);
-        if (_conversationFrame is not null) _conversationFrame.Height = Dim.Fill(_composerRows + 7);
-        if (_commandHelper is not null) _commandHelper.Y = Pos.AnchorEnd(_composerRows + 6 + _commandHelper.Frame.Height);
+        _composerFrame.Height = _composerRows + 2 + attachmentRows;
+        _composerFrame.Y = Pos.AnchorEnd(_composerRows + 5 + attachmentRows);
+        if (_conversationFrame is not null) _conversationFrame.Height = Dim.Fill(_composerRows + 6 + attachmentRows);
+        if (_commandHelper is not null) _commandHelper.Y = Pos.Top(_composerFrame) - _commandHelper.Frame.Height;
     }
 
     private void UpdateAutocomplete()
@@ -521,7 +522,7 @@ public sealed partial class TuiApp
         if (_commandSuggestions.Length == 0) return;
         var height = Math.Min(10, _commandSuggestions.Length + 2);
         height = Math.Min(height, Math.Max(3, _window.Frame.Height - 9));
-        _commandHelper = new FrameView { Id = "omni-command-helper", X = 1, Y = Pos.AnchorEnd(5 + _composerRows + height),
+        _commandHelper = new FrameView { Id = "omni-command-helper", X = 1, Y = Pos.Top(_composerFrame!) - height,
             Width = Dim.Fill(_mainColumnInset + 1), Height = height, BorderStyle = LineStyle.None, CanFocus = false };
         _commandList = new ListView { Id = "omni-model-list", X = 1, Y = 0, Width = Dim.Fill(2), Height = Dim.Fill(1), ShowMarks = false, CanFocus = false };
         var nameWidth = Math.Min(22, _commandSuggestions.Max(value => value.Length) + 2);
@@ -1134,9 +1135,11 @@ public sealed partial class TuiApp
     private void RenderAttachmentChips()
     {
         if (_attachmentChips is null) return;
+        _attachmentChips.Visible = _pendingAttachments.Count > 0;
         _attachmentChips.Text = _pendingAttachments.Count == 0 ? ""
             : "[" + string.Join("] [", _pendingAttachments.Select((item, index) =>
                 $"{index + 1}: {item.FileName ?? "attachment"} ×")) + "]";
+        UpdateComposerHeight();
     }
 
     private void RunClientAction(ClientActionInvocation action)

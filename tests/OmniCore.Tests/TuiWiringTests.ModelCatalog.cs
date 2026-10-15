@@ -282,6 +282,15 @@ public sealed partial class TuiWiringTests
             SetField(fx.App.Overlay!, "model-catalog-usable-context", "6144");
         });
         AssertModelCatalogLayoutFits(fx);
+        fx.Invoke(() =>
+        {
+            var fields = Descendants(fx.App.Overlay!).Single(view => view.Id == "model-catalog-editor-fields");
+            var aliases = Descendants(fields).Single(view => view.Id == "model-catalog-aliases");
+            aliases.SetFocus();
+            Assert.True(fields.Viewport.Y > 0, "los últimos campos desplazan el formulario corto");
+            Assert.True(aliases.Frame.Top >= fields.Viewport.Top && aliases.Frame.Bottom <= fields.Viewport.Bottom,
+                "el campo enfocado queda visible sin cubrir Guardar");
+        });
         ClickId(fx, "model-catalog-save");
         Assert.Equal(1, host.Saves);
         Assert.Null(host.Models.Single(model => model.Id == "uncapped-model").MaxOutput);
@@ -298,12 +307,19 @@ public sealed partial class TuiWiringTests
         fx.Invoke(() =>
         {
             var frame = fx.App.Overlay!;
-            foreach (var child in frame.SubViews)
+            CheckControls(frame, frame.Viewport.Width, frame.Viewport.Height);
+            foreach (var panel in Descendants(frame).Where(view => view.Id == "model-catalog-editor-fields"))
+                CheckControls(panel, panel.GetContentSize().Width, panel.GetContentSize().Height);
+        });
+
+        static void CheckControls(View container, int width, int height)
+        {
+            foreach (var child in container.SubViews)
             {
-                Assert.True(child.Frame.Bottom <= frame.Viewport.Height, $"{child.Id} is within the viewport: {child.Frame}");
-                Assert.True(child.Frame.Right <= frame.Viewport.Width, $"{child.Id} is within the viewport: {child.Frame}");
+                Assert.True(child.Frame.Bottom <= height, $"{child.Id} is within its container: {child.Frame}");
+                Assert.True(child.Frame.Right <= width, $"{child.Id} is within its container: {child.Frame}");
             }
-            var controls = frame.SubViews.ToArray();
+            var controls = container.SubViews.ToArray();
             for (var left = 0; left < controls.Length; left++)
             for (var right = left + 1; right < controls.Length; right++)
             {
@@ -316,7 +332,7 @@ public sealed partial class TuiWiringTests
                 if (label.Frame.Height == 1)
                     Assert.True(label.Text.ToString().Length <= label.Frame.Width,
                         $"label should remain readable at this width: {label.Text}");
-        });
+        }
     }
 
     [Fact]
