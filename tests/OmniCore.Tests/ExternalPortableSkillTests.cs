@@ -2,6 +2,8 @@ namespace OmniCore.Tests;
 
 using OmniCore.Domain;
 using OmniCore.Extensions;
+using OmniCore.Context;
+using OmniCore.Host;
 using System.Text;
 
 public sealed class ExternalPortableSkillTests
@@ -98,6 +100,29 @@ public sealed class ExternalPortableSkillTests
             ScopeLevel.User, TrustLevel.Trusted, "claude"));
         Assert.Equal(SkillLifecycleState.Conflict, discovered.State);
         Assert.Contains("never executed", discovered.Diagnostic, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task SkillIndexHonorsEffectiveContextBudgetWithManyLongDescriptions()
+    {
+        var session = SessionId.New();
+        var candidates = Enumerable.Range(0, 32).Select(index => new DiscoveredSkill(
+            "fixture/skill-" + index.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            new SkillManifest { Id = "skill-" + index.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                Version = "1", ModelInvocable = true, BudgetTokens = 64 },
+            ScopeLevel.User, TrustLevel.Trusted, "manifest-" + index, SkillLifecycleState.Eligible, null,
+            InvocationRestrictions: new SkillInvocationRestrictions(true, true, true, "codex"),
+            Description: new string('d', 512))).ToArray();
+        var contributor = new SkillIndexContributor(session, candidates, enabled: true, contextTokenBudget: 256);
+        var request = new MaterializeRequest(session, RunId.New(), null, null, null, 0,
+            new ExecutionFingerprint("model", "harness", "tools", "policy", "overrides", "test"));
+
+        var items = await contributor.GetContextAsync(request, TestContext.Current.CancellationToken);
+        var item = Assert.Single(items);
+        Assert.InRange(item.EstimatedTokens, 1, 256);
+        Assert.Contains("skill.load", item.Content, StringComparison.Ordinal);
+        Assert.Contains("skill-0", item.Content, StringComparison.Ordinal);
+        Assert.DoesNotContain("skill-31", item.Content, StringComparison.Ordinal);
     }
 
     private sealed class TemporaryDirectory : IDisposable

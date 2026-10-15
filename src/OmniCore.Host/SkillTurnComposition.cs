@@ -116,7 +116,7 @@ public sealed class SkillTurnComposition
             skill.Skill.Manifest.Version!, ContentHash.Sha256(
                 (skill.PackageContentSha256 ?? skill.ContentSha256) + "\nmanifest:" + skill.Skill.ManifestSha256))).ToArray();
         var contributors = loaded.Select(skill => (IContextContributor)new SkillContextContributor(_session, skill))
-            .Append(new SkillIndexContributor(_session, candidates, _guidanceEnabled))
+            .Append(new SkillIndexContributor(_session, candidates, _guidanceEnabled, _limits.ContextTokenBudget))
             .Append(new SessionMemoryContextContributor(new SessionMemoryStore(_workspaceData)))
             .Concat(_extensionContributorFactory?.Invoke() ?? _extensionContributors).ToArray();
         if (_includeWorkingState)
