@@ -35,7 +35,7 @@ jobs:
       - run: dotnet build OmniCore.slnx --no-restore
       - name: Diagnose real Windows crash recovery and Git failures
         shell: bash
-        run: dotnet test --project tests/OmniCore.Tests/OmniCore.Tests.csproj --no-build --no-restore --parallel none --output Detailed --no-progress --filter 'FullyQualifiedName~Unread_ack_reconnect_lookup_and_unknown_reservation|FullyQualifiedName~Crash_receipt_recovery_stress|FullyQualifiedName~Failing_test_gate_returns_output_feedback' < /dev/null
+        run: dotnet test --project tests/OmniCore.Tests/OmniCore.Tests.csproj --no-build --no-restore --parallel none --output Detailed --no-progress --filter 'FullyQualifiedName~Unread_ack_reconnect_lookup_and_unknown_reservation|FullyQualifiedName~Crash_receipt_recovery_stress|FullyQualifiedName~Failing_test_gate_returns_output_feedback|FullyQualifiedName~Strong_process_reads_allowed_workspace_but_not_outside_file' < /dev/null
       - name: Restore Windows null-device permissions
         if: always() && env.OMNICORE_CI_NUL_PREPARED == 'true'
         run: ./scripts/prepare-windows-ci.ps1 -Action Restore

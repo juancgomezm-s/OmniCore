@@ -294,3 +294,17 @@ eliminó el fallo. No se acredita ninguna de esas pasadas como verde. La siguien
 instrumentación local obtiene el errno nativo antes de cerrar la conexión fallida;
 se retirará del Core antes de confirmar una corrección. No se introduce retry de I/O
 ni se modifica la durabilidad mientras la causa nativa siga sin identificarse.
+
+La expansión de TEMP/TMP eliminó el alias RUNNER~1 pero no resolvió getcwd; la
+focal ae7d4e2 mantiene ambos fallos. Se retira esa tentativa y se crea un TEMP
+sintético nuevo en la VM: la raíz del volumen recibe sólo lectura/enumeración del
+directorio, sin herencia, y la carpeta temporal propaga esos derechos sólo a
+directorios (ContainerInherit, sin ObjectInherit). Ningún archivo recibe lectura
+por esa regla. El descriptor original de la raíz se conserva y restaura en always;
+no se modifican perfiles reales ni el equipo local. La focal añade el caso Strong
+que exige leer el archivo permitido y denegar el externo, además de los gates Git.
+La configuración del host y sus límites se acreditarán sólo si esos casos pasan.
+
+El usuario confirmó como referencia la captura de preferencias integradas de
+`bef4607`. Esa rama sigue conservada, respaldada y pendiente de integrar sobre M8;
+la recuperación de esa experiencia se prepara aparte de esta reparación Linux.
