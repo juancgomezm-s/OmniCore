@@ -1,9 +1,11 @@
 namespace OmniCore.Host;
 
 using OmniCore.Protocol;
+using OmniCore.Domain;
 using System.Text.Json;
 using System.Security.Cryptography;
 using System.Text;
+using Task = System.Threading.Tasks.Task;
 
 internal sealed record PersistedConversationCommand(string CommandId, string RequestHash, string SessionId,
     string RunId, long? FirstSequence, long? LastSequence);
@@ -17,26 +19,28 @@ public static class StdioProtocolHost
 
     internal static int RunWithTrustedActions(IOmniClient client, Stream input, Stream output, TextWriter diagnostics,
         byte[] bootstrapKey, CancellationToken cancellationToken = default, Func<string, string>? localizeDiagnostic = null,
-        Func<PersistedConversationCommand, CancellationToken, Task<int>>? runPersistedConversation = null)
+        Func<PersistedConversationCommand, CancellationToken, Task<int>>? runPersistedConversation = null,
+        Func<string, string?>? validateConversationAttachments = null)
     {
         ArgumentNullException.ThrowIfNull(bootstrapKey);
         if (bootstrapKey.Length != 32) throw new ArgumentException("Trusted action bootstrap key must be 256 bits.", nameof(bootstrapKey));
         return RunCore(client, input, output, diagnostics, bootstrapKey,
             Convert.ToHexString(RandomNumberGenerator.GetBytes(16)), cancellationToken, localizeDiagnostic,
-            runPersistedConversation);
+            runPersistedConversation, validateConversationAttachments);
     }
 
     private static int RunCore(IOmniClient client, Stream input, Stream output, TextWriter diagnostics,
         byte[]? bootstrapKey, string? actionNonce, CancellationToken cancellationToken,
         Func<string, string>? localizeDiagnostic,
-        Func<PersistedConversationCommand, CancellationToken, Task<int>>? runPersistedConversation = null)
+        Func<PersistedConversationCommand, CancellationToken, Task<int>>? runPersistedConversation = null,
+        Func<string, string?>? validateConversationAttachments = null)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(diagnostics);
         var negotiated = false;
-        var conversation = new ConversationExecution(runPersistedConversation);
+        var conversation = new ConversationExecution(runPersistedConversation, validateConversationAttachments);
         try
         {
             while (!cancellationToken.IsCancellationRequested)
@@ -133,7 +137,8 @@ public static class StdioProtocolHost
                     || !StdioProtocol.IsSupportedCommand(nameElement.GetString()!))
                     throw new InvalidDataException();
                 var commandName = nameElement.GetString()!;
-                var trustedOnly = commandName is "conversation.start" or "run.interrupt" or "run.cancel" or "run.mode.select";
+                var trustedOnly = commandName is "conversation.start" or "run.interrupt" or "run.cancel" or "run.mode.select"
+                    or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish";
                 TrustedActionScope? trustedScope = null;
                 if (root.TryGetProperty("actionProof", out var proofElement))
                 {
@@ -147,9 +152,21 @@ public static class StdioProtocolHost
                     return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_user_action_required",
                         RuntimeCommandOutcome.Rejected()));
                 if (trustedScope is not null && commandName is not ("session.input" or "conversation.start"
-                    or "run.interrupt" or "run.cancel" or "run.mode.select"))
+                    or "run.interrupt" or "run.cancel" or "run.mode.select" or "attachment.upload.begin"
+                    or "attachment.upload.chunk" or "attachment.upload.finish"))
                     return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_action_not_supported",
                         RuntimeCommandOutcome.Rejected()));
+                if (commandName.StartsWith("attachment.upload.", StringComparison.Ordinal))
+                {
+                    if (trustedScope is null || client is not OmniServer uploadServer
+                        || !uploadServer.MatchesTrustedActionScope(trustedScope.ExpectedSessionId,
+                            trustedScope.ExpectedRunId, trustedScope.ExpectedRevision,
+                            trustedScope.CheckRevision, trustedScope.RequirePlanRun))
+                        return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_action_scope_changed",
+                            RuntimeCommandOutcome.Rejected()));
+                    var uploaded = conversation.Upload(command, uploadServer, commandName);
+                    return EncodeUploadAck(uploaded.Ack, uploaded.Reference);
+                }
                 if (commandName is "run.cancel" or "run.interrupt")
                 {
                     if (trustedScope is null || client is not OmniServer cancelServer
@@ -303,6 +320,20 @@ public static class StdioProtocolHost
                     page = store.ReadPage(session, from, pageSize, page.HighWater);
                 }
             }
+            case StdioProtocol.ArtifactReadOperation:
+            {
+                if (client is not OmniServer imageServer
+                    || !root.TryGetProperty("sessionId", out var sessionElement) || sessionElement.ValueKind != JsonValueKind.String
+                    || !root.TryGetProperty("hash", out var hashElement) || hashElement.ValueKind != JsonValueKind.String
+                    || !root.TryGetProperty("offset", out var offsetElement) || !offsetElement.TryGetInt64(out var offset)
+                    || !root.TryGetProperty("length", out var lengthElement) || !lengthElement.TryGetInt32(out var length))
+                    throw new InvalidDataException();
+                var chunk = imageServer.ReadAuthorizedBinaryArtifactChunk(sessionElement.GetString()!, hashElement.GetString()!, offset, length);
+                if (chunk is null) throw new NotSupportedException();
+                return "{\"offset\":" + offset.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + ",\"size\":" + chunk.Value.Size.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + ",\"data\":" + Quote(Convert.ToBase64String(chunk.Value.Bytes)) + "}";
+            }
             default: throw new InvalidDataException();
         }
     }
@@ -318,6 +349,14 @@ public static class StdioProtocolHost
             + (ack.Error is null ? "null" : Quote(ack.Error)) + ",\"outcome\":" + outcome
             + ",\"firstSeq\":" + (ack.FirstSeq?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null")
             + ",\"lastSeq\":" + (ack.LastSeq?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null") + "}}";
+    }
+
+    private static string EncodeUploadAck(CommandAck ack, ArtifactRef? reference)
+    {
+        var encoded = EncodeAck(ack);
+        return reference is null ? encoded[..^1] + ",\"attachment\":null}"
+            : encoded[..^1] + ",\"attachment\":"
+                + JsonSerializer.Serialize(reference, AttachmentReferenceJsonContext.Default.ArtifactRef) + "}";
     }
 
     private static bool TryVerifyTrustedActionProof(IOmniClient client, WireEnvelope command, JsonElement proof,
@@ -346,17 +385,27 @@ public static class StdioProtocolHost
         using var payload = JsonDocument.Parse(command.PayloadJson);
         if (!payload.RootElement.TryGetProperty("cmd", out var cmd) || cmd.ValueKind != JsonValueKind.String) return false;
         var commandName = cmd.GetString();
-        if (commandName is not ("session.input" or "conversation.start" or "run.interrupt" or "run.cancel" or "run.mode.select")) return false;
+        if (commandName is not ("session.input" or "conversation.start" or "run.interrupt" or "run.cancel" or "run.mode.select"
+            or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish")) return false;
+        if (commandName.StartsWith("attachment.upload.", StringComparison.Ordinal))
+        {
+            // Upload proofs pin the currently active Session/Run too: attachments after the
+            // first turn are valid, but a grant from an earlier Run cannot be reused.
+            if (!ValidUploadPayload(commandName, payload.RootElement)) return false;
+            scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null, false, false, null);
+            return true;
+        }
         if ((commandName is "run.interrupt" or "run.cancel" or "run.mode.select") && expectedRun.Value is null) return false;
         var properties = payload.RootElement.EnumerateObject().Select(property => property.Name).ToArray();
         if (commandName is "session.input" or "conversation.start")
         {
-            var expectedProperties = commandName == "conversation.start"
-                ? new[] { "cmd", "text", "mode", "expectedRevision" }
+            var hasAttachments = commandName == "conversation.start" && HasAttachments(payload.RootElement);
+            var expectedProperties = hasAttachments
+                ? new[] { "cmd", "text", "mode", "expectedRevision", "attachments" }
                 : ["cmd", "text", "mode", "expectedRevision"];
             if (properties.Length != expectedProperties.Length || properties.Except(expectedProperties, StringComparer.Ordinal).Any()
                 || !payload.RootElement.TryGetProperty("text", out var text) || text.ValueKind != JsonValueKind.String
-                || string.IsNullOrWhiteSpace(text.GetString()) || text.GetString()!.Length > 32_000
+                || (string.IsNullOrWhiteSpace(text.GetString()) && !hasAttachments) || text.GetString()!.Length > 32_000
                 || !payload.RootElement.TryGetProperty("mode", out var mode) || mode.ValueKind != JsonValueKind.String
                 || (mode.GetString() != "plan" && (commandName != "conversation.start" || mode.GetString() != "act"))
                 || !payload.RootElement.TryGetProperty("expectedRevision", out var inputRevision)
@@ -402,6 +451,30 @@ public static class StdioProtocolHost
         var canonical = value.ToString("D");
         return (string.Equals(element.GetString(), canonical, StringComparison.Ordinal) ? canonical : null,
             !string.Equals(element.GetString(), canonical, StringComparison.Ordinal));
+    }
+
+    private static bool HasAttachments(JsonElement root) => root.TryGetProperty("attachments", out var attachments)
+        && attachments.ValueKind == JsonValueKind.Array && attachments.GetArrayLength() is > 0 and <= AttachmentReferences.MaximumCount;
+
+    private static bool ValidUploadPayload(string commandName, JsonElement root)
+    {
+        var names = root.EnumerateObject().Select(property => property.Name).ToArray();
+        if (!root.TryGetProperty("uploadId", out var id) || id.ValueKind != JsonValueKind.String
+            || !Guid.TryParseExact(id.GetString(), "D", out _)) return false;
+        if (commandName == "attachment.upload.begin")
+            return names.Length == 5 && !names.Except(["cmd", "uploadId", "fileName", "size", "sha256"], StringComparer.Ordinal).Any()
+                && root.TryGetProperty("fileName", out var fileName) && fileName.ValueKind == JsonValueKind.String
+                && fileName.GetString()!.Length is > 0 and <= 180 && !fileName.GetString()!.Any(char.IsControl)
+                && root.TryGetProperty("size", out var size) && size.TryGetInt64(out var bytes)
+                && bytes is > 0 and <= AttachmentContentMaterializer.MaximumBytes
+                && root.TryGetProperty("sha256", out var hash) && hash.ValueKind == JsonValueKind.String
+                && hash.GetString()!.Length == 64 && hash.GetString()!.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+        if (commandName == "attachment.upload.chunk")
+            return names.Length == 4 && !names.Except(["cmd", "uploadId", "index", "data"], StringComparer.Ordinal).Any()
+                && root.TryGetProperty("index", out var index) && index.TryGetInt32(out var chunkIndex) && chunkIndex >= 0
+                && root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.String
+                && data.GetString()!.Length <= AttachmentUploadManager.MaximumChunkBytes * 4 / 3 + 8;
+        return names.Length == 2 && !names.Except(["cmd", "uploadId"], StringComparer.Ordinal).Any();
     }
 
     private sealed record TrustedActionScope(string? ExpectedSessionId, string? ExpectedRunId, string WorkspaceHash,
@@ -484,15 +557,19 @@ public static class StdioProtocolHost
     }
 
     private sealed class ConversationExecution(
-        Func<PersistedConversationCommand, CancellationToken, Task<int>>? runner) : IDisposable
+        Func<PersistedConversationCommand, CancellationToken, Task<int>>? runner,
+        Func<string, string?>? validateAttachments) : IDisposable
     {
         private readonly object _gate = new();
         private CancellationTokenSource? _cancellation;
         private Task<int>? _task;
         private string? _commandId;
+        private readonly AttachmentUploadManager _uploads = new();
 
         public bool IsRunning { get { lock (_gate) return _task is { IsCompleted: false }; } }
         public bool IsRunningFor(string commandId) { lock (_gate) return _commandId == commandId && _task is { IsCompleted: false }; }
+        public (CommandAck Ack, ArtifactRef? Reference) Upload(WireEnvelope command, OmniServer server, string commandName) =>
+            _uploads.Dispatch(server, command, commandName);
 
         public CommandAck Start(IOmniClient client, WireEnvelope command, TrustedActionScope? trustedScope)
         {
@@ -511,12 +588,19 @@ public static class StdioProtocolHost
                 using var payload = JsonDocument.Parse(command.PayloadJson);
                 var root = payload.RootElement;
                 var text = root.GetProperty("text").GetString()!;
+                var attachments = HasAttachments(root) ? root.GetProperty("attachments").GetRawText() : null;
+                var attachmentRefs = attachments is null ? Array.Empty<ArtifactRef>() : AttachmentReferences.Decode(attachments);
+                if (attachmentRefs.Length > 0 && validateAttachments is not null
+                    && validateAttachments(attachments!) is { } attachmentRejection)
+                    return new CommandAck(command.MessageId, "error", attachmentRejection,
+                        RuntimeCommandOutcome.Rejected());
                 var mode = root.GetProperty("mode").GetString()!;
                 var revision = root.GetProperty("expectedRevision");
                 var revisionJson = revision.ValueKind == JsonValueKind.Null ? "null"
                     : revision.GetInt64().ToString(System.Globalization.CultureInfo.InvariantCulture);
                 var input = "{" + JsonObj.Field("cmd", "session.input") + "," + JsonObj.Field("text", text)
-                    + "," + JsonObj.Field("mode", mode) + ",\"expectedRevision\":" + revisionJson + "}";
+                    + "," + JsonObj.Field("mode", mode) + ",\"expectedRevision\":" + revisionJson
+                    + (attachments is null ? "" : "," + JsonObj.FieldRaw("attachments", attachments)) + "}";
                 var ack = DispatchCommand(client, command, trustedScope, out var executed, input);
                 if (executed && ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted)
                 {
@@ -590,6 +674,7 @@ public static class StdioProtocolHost
                 _cancellation?.Dispose();
                 _cancellation = null;
             }
+            _uploads.Dispose();
         }
     }
 

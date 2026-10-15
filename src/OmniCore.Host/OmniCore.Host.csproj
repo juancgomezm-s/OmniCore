@@ -16,6 +16,8 @@
     <ProjectReference Include="..\OmniCore.Extensions\OmniCore.Extensions.csproj" />
     <ProjectReference Include="..\OmniCore.Memory\OmniCore.Memory.csproj" />
     <PackageReference Include="YamlDotNet" />
+    <PackageReference Include="PdfPig" />
+    <PackageReference Include="StbImageSharp" />
   </ItemGroup>
 
   <ItemGroup>

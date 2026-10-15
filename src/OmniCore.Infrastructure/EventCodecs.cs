@@ -34,6 +34,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.TurnSteeringApplied())
             .Plus(Typed.TurnSteeringDropped())
             .Plus(Typed.AssistantMessageRecorded())
+            .Plus(Typed.AssistantImagesRecorded())
             .Plus(Typed.RunValidationStarted())
             .Plus(Typed.RunValidationRejected())
             .Plus(Typed.PostEditValidationPending())
@@ -174,12 +175,14 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.MemoryUsed())
             // v1 → v2 añadieron un campo opcional: upcaster trivial (ADR-0013, tabla de cambios).
             .WithUpcaster(new IdentityUpcaster(EventType.Of("user_input.received"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("user_input.received"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("workspace.root_established"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("interaction.requested"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("interaction.resolved"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.succeeded"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.succeeded"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("lane.created"), 1))
@@ -188,6 +191,8 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.started"), 3))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.completed"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.completed"), 2))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.completed"), 3))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.completed"), 4))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("meta_model.invocation_completed"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("meta_model.invocation_completed"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("meta_model.invocation_failed"), 1))
@@ -204,7 +209,8 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model.escalation_approved"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model.escalation_completed"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("hook.applied"), 1))
-            .WithUpcaster(new IdentityUpcaster(EventType.Of("hook.applied"), 2));
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("hook.applied"), 2))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("assistant_images.recorded"), 1));
 
     public IDomainEventCodec CodecFor(EventType type)
     {
@@ -402,6 +408,9 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(TurnSteeringApplied))]
 [JsonSerializable(typeof(TurnSteeringDropped))]
 [JsonSerializable(typeof(AssistantMessageRecorded))]
+[JsonSerializable(typeof(AssistantImagesRecorded))]
+[JsonSerializable(typeof(AssistantImageOutput))]
+[JsonSerializable(typeof(AssistantResponsePart))]
 [JsonSerializable(typeof(RunValidationStarted))]
 [JsonSerializable(typeof(RunValidationRejected))]
 [JsonSerializable(typeof(PostEditValidationPending))]
@@ -591,7 +600,7 @@ public sealed class Typed
         Of(EventType.Of("run.awaiting_input"), EventJsonContext.Default.RunAwaitingInput);
 
     public static CodecPair UserInputReceived() =>
-        Of(EventType.Of("user_input.received"), EventJsonContext.Default.UserInputReceived, currentVersion: 2);
+        Of(EventType.Of("user_input.received"), EventJsonContext.Default.UserInputReceived, currentVersion: 3);
 
     public static CodecPair FollowUpQueued() =>
         Of(EventType.Of("followup.queued"), EventJsonContext.Default.FollowUpQueued);
@@ -610,6 +619,9 @@ public sealed class Typed
 
     public static CodecPair AssistantMessageRecorded() =>
         Of(EventType.Of("assistant_message.recorded"), EventJsonContext.Default.AssistantMessageRecorded);
+
+    public static CodecPair AssistantImagesRecorded() =>
+        Of(EventType.Of("assistant_images.recorded"), EventJsonContext.Default.AssistantImagesRecorded, currentVersion: 2);
 
     public static CodecPair RunValidationStarted() =>
         Of(EventType.Of("run.validation_started"), EventJsonContext.Default.RunValidationStarted);
@@ -877,7 +889,7 @@ public sealed class Typed
         Of(EventType.Of("model_step.started"), EventJsonContext.Default.ModelStepStarted, currentVersion: 4);
 
     public static CodecPair ModelStepCompleted() =>
-        Of(EventType.Of("model_step.completed"), EventJsonContext.Default.ModelStepCompleted, currentVersion: 3);
+        Of(EventType.Of("model_step.completed"), EventJsonContext.Default.ModelStepCompleted, currentVersion: 5);
 
     public static CodecPair ModelStepNotDispatched() =>
         Of(EventType.Of("model_step.not_dispatched"), EventJsonContext.Default.ModelStepNotDispatched);
@@ -923,7 +935,7 @@ public sealed class Typed
         Of(EventType.Of("toolcall.started"), EventJsonContext.Default.ToolCallStarted, currentVersion: 3);
 
     public static CodecPair ToolCallSucceeded() =>
-        Of(EventType.Of("toolcall.succeeded"), EventJsonContext.Default.ToolCallSucceeded, currentVersion: 2);
+        Of(EventType.Of("toolcall.succeeded"), EventJsonContext.Default.ToolCallSucceeded, currentVersion: 3);
 
     public static CodecPair ToolCallFailed() =>
         Of(EventType.Of("toolcall.failed"), EventJsonContext.Default.ToolCallFailed, currentVersion: 2);

@@ -84,6 +84,12 @@ internal static class RuntimeFingerprintFactory
                 writer.WriteStartArray("inputModalities");
                 foreach (var modality in profile.InputModalities) writer.WriteStringValue(modality);
                 writer.WriteEndArray();
+                writer.WriteStartArray("outputModalities");
+                foreach (var modality in profile.OutputModalities) writer.WriteStringValue(modality);
+                writer.WriteEndArray();
+                if (profile.ImageGenerationMaxCostUsd is { } imageCost)
+                    writer.WriteNumber("imageGenerationMaxCostUpperBoundUsd", imageCost);
+                else writer.WriteNull("imageGenerationMaxCostUpperBoundUsd");
                 writer.WriteStartArray("toolCallFormats");
                 foreach (var format in profile.ToolCallFormats) writer.WriteStringValue(format.ToString());
                 writer.WriteEndArray();

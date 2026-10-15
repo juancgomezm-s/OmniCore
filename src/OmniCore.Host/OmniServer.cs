@@ -78,6 +78,28 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     private readonly string? _stateFile;
 
     private readonly IArtifactStore? _artifacts;
+
+    internal ArtifactRef ImportUserAttachment(byte[] bytes, string fileName)
+    {
+        if (_artifacts is not IBinaryArtifactStore binary)
+            throw new InvalidOperationException("Binary attachment storage is unavailable.");
+        if (string.IsNullOrWhiteSpace(fileName) || fileName.Length > 260)
+            throw new InvalidDataException("Attachment filename is invalid.");
+        var safeName = Path.GetFileName(fileName.Replace('\\', '/'));
+        if (safeName.Length is < 1 or > 180 || safeName.Any(char.IsControl))
+            throw new InvalidDataException("Attachment filename is invalid.");
+        var mediaType = AttachmentContentMaterializer.DetectMediaType(bytes);
+        AttachmentContentMaterializer.ValidateAttachmentBytes(mediaType, bytes);
+        AttachmentContentMaterializer.ValidateBeforePublication(bytes, safeName);
+        var original = binary.PutBytes(bytes, mediaType, ArtifactKind.Other, Sensitivity.Sensitive) with { FileName = safeName };
+        if (_artifacts is null) return original;
+        var extracted = AttachmentContentMaterializer.CreateExtractedTextSnapshot(original, bytes, _artifacts);
+        return extracted is null ? original : original with
+        {
+            ExtractedTextSnapshot = extracted.Value.Snapshot,
+            ExtractorId = extracted.Value.ExtractorId,
+        };
+    }
     private IPlatformPaths? _sidebarPaths;
     public void ConfigureSidebarPaths(IPlatformPaths paths) => _sidebarPaths = paths;
     private SidebarConfiguration SidebarSettings() => new(_sidebarPaths ?? OmniHost.CreatePlatformPaths(), _workspaceRoot ?? Environment.CurrentDirectory);
@@ -3087,6 +3109,37 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         return null;
     }
 
+    internal (byte[] Bytes, long Size)? ReadAuthorizedBinaryArtifactChunk(string sessionId, string hash,
+        long offset, int length)
+    {
+        var activeSession = _lastSessionId;
+        if (activeSession?.ToString() != sessionId || _artifacts is not IBinaryArtifactStore binary
+            || length is < 1 or > 512 * 1024 || offset < 0 || !IsCanonicalSha256(hash)) return null;
+        var authorization = new SessionArtifactReadAuthorization(_store, () => _lastSessionId, _artifacts);
+        if (!authorization.IsReferenced(hash)) return null;
+        // FileArtifactStore deliberately requires an expected raw byte size for binary reads.
+        // Obtain it from the canonical session event reference; never trust a size supplied by
+        // the wire caller or reinterpret image bytes as UTF-8.
+        var expectedSize = _store.ReadFrom(activeSession!, 1)
+            .SelectMany(evt => evt.ArtifactRefs)
+            .FirstOrDefault(reference => reference.Hash.Algorithm == "sha256"
+                && string.Equals(reference.Hash.Value, hash, StringComparison.Ordinal))?.Size;
+        if (expectedSize is not { } size || size is < 1 or > 32 * 1024 * 1024) return null;
+        var bytes = binary.GetBytes(ContentHash.Sha256(hash), size);
+        if (bytes is null || offset > bytes.LongLength || offset + length > bytes.LongLength) return null;
+        return (bytes.AsSpan(checked((int)offset), length).ToArray(), bytes.LongLength);
+    }
+
+    internal IReadOnlyList<AssistantImageOutput> CurrentGeneratedImages()
+    {
+        if (_lastSessionId is not { } session) return [];
+        return _store.ReadFrom(session, 1).Select(_codecs.Decode).OfType<AssistantImagesRecorded>()
+            .SelectMany(record => record.Images).ToArray();
+    }
+
+    private static bool IsCanonicalSha256(string hash) => hash.Length == 64
+        && hash.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
     internal static ProviderQuotaSnapshot OpenRouterQuota(string providerId, OpenRouterCreditSnapshot snapshot)
     {
         var availability = snapshot.Measurements.Any(item => item.Amount.Availability == MetricAvailability.Stale)
@@ -3383,7 +3436,23 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                         return ReceiveSteeringCommand(command, fields, commandId);
                     }
                     var text = fields.TryGetValue("text", out var t) ? t : "";
-                    if (text.Length == 0)
+                    ArtifactRef[] attachments = [];
+                    if (fields.TryGetValue("attachments", out var attachmentsJson))
+                    {
+                        if (!trustedUserAction || _artifacts is not IBinaryArtifactStore binaryStore)
+                            return CommandOutcomeAck(command.MessageId, "error", "attachments_require_trusted_binary_store",
+                                RuntimeCommandOutcome.Rejected(), null, 0, commandId);
+                        attachments = AttachmentReferences.Decode(attachmentsJson);
+                        foreach (var reference in attachments)
+                        {
+                            var bytes = binaryStore.GetBytes(reference.Hash, reference.Size);
+                            if (bytes is null || AttachmentContentMaterializer.DetectMediaType(bytes) != reference.MediaType)
+                                return CommandOutcomeAck(command.MessageId, "error", "attachment_missing_or_corrupt",
+                                    RuntimeCommandOutcome.Rejected(), null, 0, commandId);
+                            AttachmentContentMaterializer.ValidateAttachmentBytes(reference.MediaType, bytes);
+                        }
+                    }
+                    if (text.Length == 0 && attachments.Length == 0)
                     {
                         if (explicitOutcome)
                         {
@@ -3409,7 +3478,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                             throw new FormatException("mode de session.input inválido");
                     }
                     var startsRun = control.ActiveRun(session) is null;
-                    _lastRunId = control.SendInput(session, text, mode, ConsumePromptOrigin());
+                    _lastRunId = control.SendInput(session, text, mode, ConsumePromptOrigin(), attachments);
                     if (startsRun && _lastRunId is { } startedRun)
                         DispatchRunStartLifecycle(session, startedRun);
                     _lastSessionId = session;

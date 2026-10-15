@@ -40,11 +40,11 @@ public record WorkspaceRootEstablished(SessionId SessionId, string CanonicalRoot
 
 /// <summary>UserInputReceived: el usuario envía input al Run (ADR-0035 §1).</summary>
 public record UserInputReceived(RunId RunId, string InputPartsJson, ArtifactRef? ContentRef,
-    string? Origin = null) : DomainEventPayload
+    string? Origin = null, IReadOnlyList<ArtifactRef>? Attachments = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("user_input.received");
 
-    public int SchemaVersion() => 2;
+    public int SchemaVersion() => 3;
 }
 
 /// <summary>Input ordinario recibido mientras un Turn sigue abierto; se reserva para el Turn siguiente.</summary>
@@ -71,6 +71,21 @@ public record AssistantMessageRecorded(RunId RunId, LaneId LaneId, TurnId TurnId
 
     public int SchemaVersion() => 1;
 }
+
+/// <summary>Ordered, durable image-only or mixed visual outputs of a completed assistant response.</summary>
+public sealed record AssistantImagesRecorded(RunId RunId, LaneId LaneId, TurnId TurnId,
+    IReadOnlyList<AssistantImageOutput> Images,
+    IReadOnlyList<AssistantResponsePart>? OrderedParts = null) : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("assistant_images.recorded");
+    public int SchemaVersion() => 2;
+}
+
+public sealed record AssistantImageOutput(ArtifactRef Artifact, int Width, int Height, int OutputIndex,
+    string ProviderId, string ModelId, int ModelStepIndex = 0);
+
+/// <summary>Exact ordering for mixed final text/image responses; referenced artifacts remain immutable.</summary>
+public sealed record AssistantResponsePart(string Kind, ArtifactRef Artifact, int OutputIndex);
 
 /// <summary>
 /// InteractionRequested: petición humana (ADR-0034 §3). Para <c>Kind == Question</c> (ADR-0045)

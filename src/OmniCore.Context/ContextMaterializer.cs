@@ -93,8 +93,8 @@ public sealed class ContextMaterializer
                     Refs = (candidate.Provenance.Refs ?? Array.Empty<string>()).Append("artifact=" + artifact.Hash)
                         .ToArray(),
                 };
-                candidate = new ContextItem(candidate.Id, candidate.Kind, stub, 0, candidate.Priority,
-                    candidate.Retention, provenance, candidate.PreserveWhenTrimming);
+                    candidate = new ContextItem(candidate.Id, candidate.Kind, stub, 0, candidate.Priority,
+                    candidate.Retention, provenance, candidate.PreserveWhenTrimming, candidate.TokenBudgetOverhead);
                 pipelineDiagnostics[candidate.Id] = new ContextDiagnostic(candidate.Id, candidate.Provenance,
                     ContextDecision.Externalized, 0);
             }
@@ -248,7 +248,9 @@ public sealed class ContextMaterializer
                 }
 
                 var available = items[i].EstimatedTokens - (total - maxTokens);
-                if (available <= 0)
+                // A non-text modality reserves an indivisible cost. Do not keep its binary
+                // payload while reporting fewer tokens than that reservation.
+                if (available < items[i].TokenBudgetOverhead)
                 {
                     kept[i] = false;
                     decisions[i] = ContextDecision.OmittedByBudget;
@@ -257,7 +259,14 @@ public sealed class ContextMaterializer
                 }
 
                 total -= items[i].EstimatedTokens;
-                effective[i] = TruncateTo(items[i], available)!;
+                var truncated = TruncateTo(items[i], available);
+                if (truncated is null)
+                {
+                    kept[i] = false;
+                    decisions[i] = ContextDecision.OmittedByBudget;
+                    continue;
+                }
+                effective[i] = truncated;
                 decisions[i] = ContextDecision.TruncatedByBudget;
                 total += effective[i].EstimatedTokens;
             }
@@ -306,12 +315,12 @@ public sealed class ContextMaterializer
 
     private static ContextItem? TruncateTo(ContextItem item, int tokens)
     {
-        if (tokens <= 0)
+        if (tokens < item.TokenBudgetOverhead)
         {
             return null;
         }
 
-        var chars = Math.Max(1, tokens * 4);
+        var chars = Math.Max(0, tokens - item.TokenBudgetOverhead) * 4;
         var content = item.Content;
         if (content.Length > chars)
         {
@@ -319,12 +328,12 @@ public sealed class ContextMaterializer
         }
 
         return new ContextItem(item.Id, item.Kind, content, tokens, item.Priority, item.Retention,
-            item.Provenance, item.PreserveWhenTrimming);
+            item.Provenance, item.PreserveWhenTrimming, item.TokenBudgetOverhead);
     }
 
     private static ContextItem WithTokens(ContextItem item, int tokens) =>
-        new ContextItem(item.Id, item.Kind, item.Content, tokens, item.Priority, item.Retention,
-            item.Provenance, item.PreserveWhenTrimming);
+        new ContextItem(item.Id, item.Kind, item.Content, checked(tokens + item.TokenBudgetOverhead), item.Priority, item.Retention,
+            item.Provenance, item.PreserveWhenTrimming, item.TokenBudgetOverhead);
 
     private static IReadOnlyList<ContextItem> OrderItems(IReadOnlyList<ContextItem> items)
     {
@@ -430,7 +439,8 @@ public sealed class SessionConversationContributor : IContextContributor
         {
             cancellationToken.ThrowIfCancellationRequested();
             result.Add(new ContextItem(entry.Id, entry.Kind, entry.Content, 0, ContextPriority.Normal,
-                RetentionPolicy.ConversationWindow, provenance, entry.PreserveWhenTrimming));
+                RetentionPolicy.ConversationWindow, provenance, entry.PreserveWhenTrimming,
+                entry.TokenBudgetOverhead));
         }
 
         return System.Threading.Tasks.Task.FromResult<IReadOnlyList<ContextItem>>(result.ToArray());
@@ -439,7 +449,7 @@ public sealed class SessionConversationContributor : IContextContributor
 
 /// <summary>Entrada estable para contribuir y seleccionar un mensaje conversacional.</summary>
 public sealed record ConversationContextEntry(string Id, ContextItemKind Kind, string Content,
-    bool PreserveWhenTrimming = false);
+    bool PreserveWhenTrimming = false, int TokenBudgetOverhead = 0);
 
 /// <summary>Historical conversation data, scoped to its Session and never the active Run.</summary>
 public sealed class RunSummaryContributor(RunSummary summary, ArtifactRef artifact, string text) : IContextContributor

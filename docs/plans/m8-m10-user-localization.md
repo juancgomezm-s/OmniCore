@@ -2,7 +2,15 @@
 
 Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petición del usuario. Complementa la fuente de verdad [arquitectura §24](../architecture/arquitectura.md#24-roadmap-m1m10-fuente-de-verdad) y el [plan de preferencias e idiomas](preferences-and-localization.md). Define trabajo restante y aceptación; no declara construido lo que sólo tiene contrato o pantalla. La petición comprende traducciones y convenciones regionales de presentación.
 
-## Estado vigente (2026-10-14)
+## Estado vigente (2026-10-15)
+
+**Ampliación autorizada (2026-10-15):** M9-F2 incorpora imágenes generadas como
+salida del modelo, separando capacidades de entrada/salida, respuesta sólo visual
+o mixta, CAS/journal/replay, transporte acotado y presentación en OmniCoder/TUI.
+**Pendiente de construcción**; catálogo de modalidades no acredita recepción.
+Ver [contrato y aceptación](generated-image-responses.md). No reanuda el bloque
+de adjuntos detenido por la aceptación visual ni cambia el alcance independiente
+de skills/memorias. M8 OR5 continúa pendiente.
 
 **Ampliación independiente autorizada (2026-10-14):** descubrimiento local acotado
 de skills portables Claude/Codex/OpenCode, instrucciones `AGENTS.md`/`CLAUDE.md`
@@ -244,7 +252,7 @@ exactly-once general y OR5 autenticado M8 sigue pendiente.
 | Clientes y preferencias | **Core:** CLI in-process/stdio multi-target net8/net10, capabilities y goldens. **M9-C integrado:** consumer TypeScript, Host hijo y Sidecar. **M9-E integrado:** composer OmniCoder conectado a inferencia Core real y recuperación de historial vía journal/replay. `ui.locale` conserva su esquema actual. | Host real Windows y UI; E2E fixture HTTP determina el wiring. Smoke Ollama local qwen08 + reapertura pasó en perfil aislado; otros providers/configuraciones permanecen por validar. Multi-OS/cuatro idiomas y paridad completa siguen abiertos. |
 | Origen humano, conversación y resultado (U-C12) | **M9-D integrado + M9-E integrado:** Electron main confirma acciones y firma proof efímero; Core valida conexión/workspace/Session/Run/revisión y ejecuta una única entrada persistida con el pipeline real. Generic `session.input` sigue igual. ACK Accepted es admisión; `conversation.result` reconcilia sin reenvío. | E2E GUI→Host→fixture HTTP prueba respuesta real, replay, modo e interrupción/cancelación; focal Core prueba admisión separada del resultado y cancelación serializada con queries. El fixture no acredita proveedor local ni aceptación humana. Trust boundary: mismo principal OS. Ver ADR-0050/0051 y actas M9-D/E. |
 
-**Salida M9:** transporte/lease/reconexión/net8 y chat/inferencia desde OmniCoder construidos e integrados; aún faltan `media.read` consumido por proveedor visual, controles de procesos persistentes/interactivos, aceptación en cuatro idiomas y validación multiplataforma. Reusar Client/idioma y mantener DTOs canónicos/wire invariantes. M9-E no cierra el hito.
+**Salida M9:** transporte/lease/reconexión/net8 y chat/inferencia desde OmniCoder construidos e integrados; aún faltan `media.read` consumido por proveedor visual, recepción/persistencia/presentación de imágenes generadas ([M9-F2](generated-image-responses.md)), controles de procesos persistentes/interactivos, aceptación en cuatro idiomas y validación multiplataforma. Reusar Client/idioma y mantener DTOs canónicos/wire invariantes. M9-E no cierra el hito.
 
 ## M10: v1, memoria completa y evaluación
 

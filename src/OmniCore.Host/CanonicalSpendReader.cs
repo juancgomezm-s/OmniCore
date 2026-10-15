@@ -121,7 +121,7 @@ internal sealed class CanonicalSpendReader(IEventCodecRegistry codecs, IArtifact
 
 
     internal sealed record UsageEnvelope(string Response, string RunId, string Day, decimal? CostUsd,
-        TokenUsage? Usage);
+        TokenUsage? Usage, decimal? ReportedProviderCostUsd = null);
 
     internal Snapshot ReadPrimary(IEnumerable<DomainEvent> events, SessionId? sessionId, RunId? runId, string today,
         Func<DomainEvent, ModelStepStarted, bool>? ownedPendingPrimary = null)
@@ -221,7 +221,9 @@ internal sealed class CanonicalSpendReader(IEventCodecRegistry codecs, IArtifact
             }
             if (!startedKeys.Contains(key) || completed.CostUsd is null || !artifactValid
                 || stepEnvelope.Usage is null || stepEnvelope.Usage != completed.Usage
-                || stepEnvelope.CostUsd != completed.CostUsd || stepEnvelope.Day != completed.Day
+                || stepEnvelope.CostUsd != completed.CostUsd
+                || stepEnvelope.ReportedProviderCostUsd != completed.ReportedProviderCostUsd
+                || stepEnvelope.Day != completed.Day
                 || evt.RunId is null || stepEnvelope.RunId != evt.RunId.ToString()
                 || !startedRuns.TryGetValue(key, out var startedRun)
                 || evt.RunId.ToString() != startedRun
@@ -233,6 +235,7 @@ internal sealed class CanonicalSpendReader(IEventCodecRegistry codecs, IArtifact
             }
             var cost = completed.CostUsd.Value;
             if (cost < 0) { incomplete = true; continue; }
+            if (completed.CostIncomplete) incomplete = true;
             if (externalStarts.Contains(key)) externalCompletions[key] = (evt, completed);
             else
             {
@@ -411,6 +414,16 @@ internal sealed class CanonicalSpendReader(IEventCodecRegistry codecs, IArtifact
             decimal? parsedCost = cost.ValueKind == System.Text.Json.JsonValueKind.String
                 && decimal.TryParse(cost.GetString(), System.Globalization.NumberStyles.Number,
                     System.Globalization.CultureInfo.InvariantCulture, out var value) ? value : null;
+            decimal? reportedProviderCost = null;
+            if (root.TryGetProperty("reportedProviderCostUsd", out var reportedCost)
+                && reportedCost.ValueKind == System.Text.Json.JsonValueKind.String
+                && decimal.TryParse(reportedCost.GetString(), System.Globalization.NumberStyles.Number,
+                    System.Globalization.CultureInfo.InvariantCulture, out var parsedReportedCost)
+                && parsedReportedCost is >= 0m and <= 1_000_000m)
+                reportedProviderCost = parsedReportedCost;
+            else if (root.TryGetProperty("reportedProviderCostUsd", out reportedCost)
+                && reportedCost.ValueKind is not (System.Text.Json.JsonValueKind.Null or System.Text.Json.JsonValueKind.Undefined))
+                return false;
             TokenUsage? parsedUsage = null;
             var usageNames = new[] { "input", "output", "cacheRead", "cacheWrite", "reasoning" };
             var present = 0;
@@ -425,7 +438,7 @@ internal sealed class CanonicalSpendReader(IEventCodecRegistry codecs, IArtifact
                 parsedUsage = new TokenUsage(numbers[0], numbers[1], numbers[2], numbers[3], numbers[4]);
             }
             record = new UsageEnvelope(response.GetString() ?? "", runId.GetString() ?? "",
-                day.GetString() ?? "", parsedCost, parsedUsage);
+                day.GetString() ?? "", parsedCost, parsedUsage, reportedProviderCost);
             return true;
         }
         catch (System.Text.Json.JsonException) { return false; }

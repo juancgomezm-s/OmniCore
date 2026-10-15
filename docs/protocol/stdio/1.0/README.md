@@ -137,3 +137,41 @@ The earlier goldens continue to pin legacy wire envelopes; this extension adds c
 conversation behavior without changing those envelopes, durable event schemas or protocol version.
 See [ADR-0051](../../../adr/0051-conversation-inference-from-persisted-input.md) and the
 [M9-E validation record](../../../validation/m9-block-e-20261014.md).
+
+## M9-F attachment intake extension
+
+Wire `1.0` keeps its frame limit at 1 MiB. The optional `attachmentUpload` capability is advertised
+only by a Host that has the bounded upload path. Electron main stages an immutable file snapshot as
+`attachment.upload.begin.user`, one or more ordered `attachment.upload.chunk.user` requests (each
+chunk is at most 512 KiB of decoded bytes), and `attachment.upload.finish.user`. Begin binds an
+upload ID to a safe file name, exact byte count, and SHA-256. Finish verifies the complete byte
+count/hash and content-derived media type before placing the snapshot in CAS. The resulting
+`ArtifactRef` is returned by Host and included in the exact `conversation.start.user` payload signed
+by the existing M9-D proof; the proof therefore covers the attachment references and manifest.
+Incomplete uploads are connection-local, bounded, expire after three minutes, and are removed when
+the Host connection closes. The request frame remains UTF-8 JSON; Base64 is used only for each
+bounded binary chunk, never for a whole file or as model-visible text.
+
+The Host accepts up to eight attachment references per input and 16 MiB per file. Supported
+document intake is strict UTF-8 text/plain, Markdown, CSV, JSON, PDF and DOCX. PDF text extraction
+uses PdfPig with a 100-page/200,000-character bound; DOCX extraction reads bounded OOXML entries,
+rejects DTDs and caps expanded data. Extracted text is stored as a separate sensitive CAS snapshot
+with an extractor identity linked from the immutable original, so replay does not reopen or
+re-extract the source. Scanned PDFs remain documents with no extracted text; OCR is not performed.
+Image MIME is identified from bytes for PNG/JPEG/WebP and constrained by byte/pixel/dimension
+limits. Intake validates signatures and image headers/dimensions, not a complete decode of every
+compressed image stream; malformed streams may be rejected by the provider. WebP VP8L is currently
+unsupported (VP8/VP8X layouts only).
+
+The Host verifies that each reference belongs to the input and its CAS bytes/hash are intact. The
+effective model profile and provider dialect must support the requested input modality before the
+Host admits a conversation command. `media.read` reads only a path admitted by normal filesystem
+authorization/resource claims, snapshots verified bytes to CAS, and returns typed image content;
+a CAS reference by itself grants no path access. Image input does not imply native tool calling.
+Provider serialization is capability/dialect gated and reports unsupported combinations explicitly.
+Audio and video are outside this block and are not advertised.
+
+This extension adds no durable journal schema or wire-version change. The generic `session.input`
+contract and in-process CLI route are preserved. See [ADR-0052](../../../adr/0052-multimodal-intake-and-materialization.md)
+and the [M9-F validation record](../../../validation/m9-block-f-20261015.md) for implementation scope,
+provider/UI wiring, platform coverage, and remaining limits.

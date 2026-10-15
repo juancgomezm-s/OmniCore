@@ -341,8 +341,8 @@ public sealed class OmniHost
     /// </summary>
     public static HostTools CreateHostTools() => HostTools.Default();
 
-    public static HostTools CreateExplorerTools(ArtifactReadTool? artifactReadTool = null) =>
-        HostTools.Explorer(artifactReadTool);
+    public static HostTools CreateExplorerTools(ArtifactReadTool? artifactReadTool = null,
+        MediaReadTool? mediaReadTool = null) => HostTools.Explorer(artifactReadTool, mediaReadTool);
 
     /// <summary>
     /// Executor del pipeline real de tools + permisos para la simulación: catálogo completo y
@@ -420,10 +420,12 @@ public sealed class OmniHost
     /// </summary>
     public static HostTools CreateActTools(SandboxStrength processSandboxStrength = SandboxStrength.Strong,
         ArtifactReadTool? artifactReadTool = null,
-        IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null) =>
+        IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null,
+        MediaReadTool? mediaReadTool = null) =>
         new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
             includeMutationTools: true, includeProcessTools: true, processSandboxStrength: processSandboxStrength,
-            artifactReadTool: artifactReadTool, worktreeIntegrationCoordinator: worktreeIntegrationCoordinator);
+            artifactReadTool: artifactReadTool, worktreeIntegrationCoordinator: worktreeIntegrationCoordinator,
+            mediaReadTool: mediaReadTool);
 
     internal static IWorktreeIntegrationCoordinator? CreateWorktreeIntegrationCoordinator(
         string workspaceRoot, IPlatformPaths paths, IArtifactStore artifacts)
@@ -571,6 +573,8 @@ public sealed class OmniHost
         ArgumentNullException.ThrowIfNull(descriptor);
         return descriptor.Family switch
         {
+            ProviderFamily.OpenAiChatCompatible when descriptor.Profile == OpenRouterImageGenerationProvider.ProfileName
+                => ConnectOpenRouterImageGeneration(descriptor, baseUrl, secretRef, apiKey),
             ProviderFamily.OpenAiChatCompatible => ConnectOpenAiChatCompatible(descriptor, baseUrl, secretRef, apiKey, circuits, chatCompletionsRequestTimeout),
             ProviderFamily.AnthropicMessages => ConnectAnthropicMessages(descriptor, baseUrl, secretRef, apiKey, circuits, claudeOAuth, oauthIdentity, anthropicHttpFactory),
             ProviderFamily.OpenAIResponses => ConnectOpenAIResponses(descriptor, baseUrl, secretRef, apiKey, subscription, circuits),
@@ -656,6 +660,21 @@ public sealed class OmniHost
         // works for the first completion only, then every follow-up Turn fails as disposed.
         return new OpenAiChatCompatibleProvider(configured, secrets, CreateClient,
             new OpenAiProviderOptions { CircuitCatalog = circuits });
+    }
+
+    private static OpenRouterImageGenerationProvider ConnectOpenRouterImageGeneration(ProviderDescriptor descriptor,
+        string baseUrl, string secretRef, string apiKey)
+    {
+        if (descriptor.Auth.Kind != AuthKind.ApiKey || string.IsNullOrWhiteSpace(secretRef))
+            throw new ModelProviderException("AuthenticationRequired", "The OpenRouter images profile requires an API key reference.");
+        var configured = new ProviderDescriptor(descriptor.Id, descriptor.Family, baseUrl, descriptor.Auth,
+            descriptor.SupportsJsonSchemaPerRequest, descriptor.SupportsGrammarPerRequest,
+            descriptor.SupportsNativeToolCalls)
+        { TrustedCertificatePath = descriptor.TrustedCertificatePath, Profile = descriptor.Profile, BillingMode = descriptor.BillingMode };
+        var secrets = new SimpleSecretProvider("OMNI_").With(secretRef, apiKey);
+        HttpClient CreateClient() => new(CreateTlsHandler(baseUrl, descriptor.TrustedCertificatePath))
+        { Timeout = TimeSpan.FromMinutes(10) };
+        return new OpenRouterImageGenerationProvider(configured, secrets, CreateClient);
     }
 
     // An explicit per-connection override lets slow local-prefill acceptance keep the

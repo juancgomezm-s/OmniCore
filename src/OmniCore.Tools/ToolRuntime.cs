@@ -87,6 +87,8 @@ public sealed class ToolRuntime
         /// <summary>Contenido de la herramienta (Preview), p. ej. el archivo leído — vuelve al modelo.</summary>
         public string? Preview { get; }
 
+        public ArtifactRef? Artifact { get; }
+
         public ToolCallState FinalState { get; }
 
         public EffectOutcome Effect { get; }
@@ -94,7 +96,7 @@ public sealed class ToolRuntime
         public InteractionId? PendingInteractionId { get; }
 
         public Outcome(bool succeeded, string? summary, string? preview, ToolCallState finalState,
-            EffectOutcome effect, InteractionId? pendingInteractionId = null)
+            EffectOutcome effect, InteractionId? pendingInteractionId = null, ArtifactRef? artifact = null)
         {
             Succeeded = succeeded;
             Summary = summary;
@@ -102,6 +104,7 @@ public sealed class ToolRuntime
             FinalState = finalState;
             Effect = effect;
             PendingInteractionId = pendingInteractionId;
+            Artifact = artifact;
         }
 
         public Outcome(bool succeeded, string? summary, ToolCallState finalState, EffectOutcome effect) :
@@ -578,9 +581,11 @@ public sealed class ToolRuntime
         _emit(new ToolCallSucceeded(call.ToolCallId, "{\"summary\":\"" + Esc(result.Summary) + "\"}")
         { AfterStateRef = tool is FilesystemWriteTool or FilesystemPatchTool && result.AfterStateBytes is { } bytes
             && reconciliation?.ExpectedPostHash == FileVersion.VersionToken(bytes)
-                ? FilesystemPreimage.CaptureAfter(execContext.Artifacts, bytes) : null });
+                ? FilesystemPreimage.CaptureAfter(execContext.Artifacts, bytes) : null,
+            ResultArtifact = result.Artifact });
         // Preview: contenido real de la herramienta (p. ej. el archivo leído) → vuelve al modelo.
-        return new Outcome(true, result.Summary, result.Preview, ToolCallState.Succeeded, effect);
+        return new Outcome(true, result.Summary, result.Preview, ToolCallState.Succeeded, effect,
+            artifact: result.Artifact);
     }
 
     private IEnumerable<IToolIntentBoundary> ActiveBoundaries()

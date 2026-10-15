@@ -45,6 +45,18 @@ public interface IArtifactStore
     bool Verify(ContentHash hash, long expectedSize);
 }
 
+/// <summary>
+/// Binary artifact capability kept separate from the UTF-8 text API. Binary media is never
+/// decoded, redacted, or serialized as user-visible text by the store (ADR-0001).
+/// </summary>
+public interface IBinaryArtifactStore
+{
+    ArtifactRef PutBytes(byte[] content, string mediaType, ArtifactKind kind, Sensitivity sensitivity);
+
+    /// <summary>Returns a fresh, hash-verified byte snapshot, or null when absent/invalid.</summary>
+    byte[]? GetBytes(ContentHash hash, long? expectedSize = null);
+}
+
 /// <summary>Optional exact, authenticated encryption for sensitive opaque checkpoints.
 /// Ordinary artifact readers only see ciphertext. The purpose binds decryption to the
 /// owning turn, model step and physical destination; implementations must fail closed.</summary>

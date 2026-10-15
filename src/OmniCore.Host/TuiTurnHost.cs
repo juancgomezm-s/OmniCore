@@ -3,11 +3,41 @@ namespace OmniCore.Host;
 using OmniCore.Domain;
 using OmniCore.Protocol;
 
+/// <summary>Opaque attachment handle exposed to the TUI without leaking journal/domain types across the Host boundary.</summary>
+public sealed class TuiAttachmentReference
+{
+    internal ArtifactRef Artifact { get; }
+    public string? FileName => Artifact.FileName;
+    public long Size => Artifact.Size;
+
+    internal TuiAttachmentReference(ArtifactRef artifact) => Artifact = artifact;
+}
+
+/// <summary>Safe display metadata for a generated image; bytes remain behind authorized Host reads.</summary>
+public sealed class TuiGeneratedImage
+{
+    internal ArtifactRef Artifact { get; }
+    public string Hash => Artifact.Hash.Value;
+    public string MediaType => Artifact.MediaType;
+    public long Size => Artifact.Size;
+    public int Width { get; }
+    public int Height { get; }
+
+    internal TuiGeneratedImage(AssistantImageOutput output)
+    { Artifact = output.Artifact; Width = output.Width; Height = output.Height; }
+}
+
 /// <summary>Production turns behind the Host boundary; the TUI never composes providers or credentials.</summary>
 public interface ITuiTurnHost
 {
     UsageSnapshot? CurrentUsage() => null;
     Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken);
+    TuiAttachmentReference ImportAttachment(byte[] bytes, string fileName) => throw new NotSupportedException("Attachments are not supported by this turn host.");
+    TuiAttachmentReference ImportAttachmentFromPath(string path) => throw new NotSupportedException("Path attachments are not supported by this turn host.");
+    Task<int> ExecuteAsync(string input, IReadOnlyList<TuiAttachmentReference> attachments, Action<string> diagnostics,
+        CancellationToken cancellationToken) => attachments.Count == 0
+        ? ExecuteAsync(input, diagnostics, cancellationToken)
+        : System.Threading.Tasks.Task.FromResult(1);
     Task<int> ExecuteDelegationAsync(string delegationId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         System.Threading.Tasks.Task.FromResult(1);
     Task<int> ExecuteWorkflowAsync(WorkflowRequestDto request, string commandId, Action<string> diagnostics,
@@ -21,12 +51,20 @@ public interface ITuiTurnHost
     Task<int> ResumeQuotaAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         System.Threading.Tasks.Task.FromResult(1);
     bool SetNextTurnReasoningBoost(string kind, int? budgetTokens) => false;
+    IReadOnlyList<TuiGeneratedImage> ListGeneratedImages() => [];
+    string SaveGeneratedImage(int index, string destination) => throw new NotSupportedException("Generated image saving is not supported by this turn host.");
+    string OpenGeneratedImage(int index) => throw new NotSupportedException("Opening generated images is not supported by this turn host.");
 }
 
 public sealed class TuiTurnHost : ITuiTurnHost
 {
     private readonly OmniCliRuntime _runtime;
     public UsageSnapshot? CurrentUsage() => _runtime.CurrentUsage();
+    public TuiAttachmentReference ImportAttachment(byte[] bytes, string fileName) => new(_runtime.ImportTuiAttachment(bytes, fileName));
+    public TuiAttachmentReference ImportAttachmentFromPath(string path) => new(_runtime.ImportTuiAttachmentFromPath(path));
+    public IReadOnlyList<TuiGeneratedImage> ListGeneratedImages() => _runtime.ListTuiGeneratedImages();
+    public string SaveGeneratedImage(int index, string destination) => _runtime.SaveTuiGeneratedImage(index, destination);
+    public string OpenGeneratedImage(int index) => _runtime.OpenTuiGeneratedImage(index);
     private readonly object _boostGate = new();
     private sealed record PendingTurnBoost(Guid Id, ReasoningRequest Request);
     private PendingTurnBoost? _nextTurnReasoningBoost;
@@ -46,12 +84,16 @@ public sealed class TuiTurnHost : ITuiTurnHost
     public Task<int> ExecuteExtensionCommandAsync(string prompt, string toolName, Action<string> diagnostics,
         CancellationToken token) => _runtime.ExecuteExtensionCommandAsync(prompt, toolName, diagnostics, token);
     public async Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken)
+        => await ExecuteAsync(input, Array.Empty<TuiAttachmentReference>(), diagnostics, cancellationToken).ConfigureAwait(false);
+
+    public async Task<int> ExecuteAsync(string input, IReadOnlyList<TuiAttachmentReference> attachments,
+        Action<string> diagnostics, CancellationToken cancellationToken)
     {
         var boost = await ReserveBoostAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             return await _runtime.ConversationAsync(input, diagnostics, cancellationToken, boost?.Request, boost?.Id,
-                boost is null ? null : CompleteBoost).ConfigureAwait(false);
+                boost is null ? null : CompleteBoost, attachments.Select(item => item.Artifact).ToArray()).ConfigureAwait(false);
         }
         finally { ReleaseBoostReservation(boost); }
     }

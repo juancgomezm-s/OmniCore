@@ -364,6 +364,13 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
                         w.WriteString("text", text.Text);
                         w.WriteEndObject();
                         break;
+                    case DocumentBlock document when role == "user":
+                        w.WriteStartObject(); w.WriteString("type", "text");
+                        w.WriteString("text", $"[Document: {document.FileName}]\n{document.ExtractedText}"); w.WriteEndObject();
+                        break;
+                    case ImageBlock image when role == "user":
+                        WriteImageBlock(w, image);
+                        break;
                     case ToolCallBlock call:
                         w.WriteStartObject();
                         w.WriteString("type", "tool_use");
@@ -377,7 +384,22 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
                         w.WriteStartObject();
                         w.WriteString("type", "tool_result");
                         w.WriteString("tool_use_id", ids.GetValueOrDefault(result.Id.ToString(), result.Id.ToString()));
-                        w.WriteString("content", string.Concat(result.Content.OfType<TextBlock>().Select(b => b.Text)));
+                        if (result.Content.All(static b => b is TextBlock))
+                            w.WriteString("content", string.Concat(result.Content.OfType<TextBlock>().Select(b => b.Text)));
+                        else
+                        {
+                            w.WriteStartArray("content");
+                            foreach (var child in result.Content)
+                            {
+                                if (child is TextBlock text)
+                                { w.WriteStartObject(); w.WriteString("type", "text"); w.WriteString("text", text.Text); w.WriteEndObject(); }
+                                else if (child is DocumentBlock document)
+                                { w.WriteStartObject(); w.WriteString("type", "text"); w.WriteString("text", $"[Document: {document.FileName}]\n{document.ExtractedText}"); w.WriteEndObject(); }
+                                else if (child is ImageBlock image) WriteImageBlock(w, image);
+                                else throw new NotSupportedException("Anthropic tool result cannot serialize this content block.");
+                            }
+                            w.WriteEndArray();
+                        }
                         if (result.IsError) w.WriteBoolean("is_error", true);
                         w.WriteEndObject();
                         break;
@@ -387,6 +409,14 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
             w.WriteEndObject();
         }
         w.WriteEndArray();
+    }
+
+    private static void WriteImageBlock(Utf8JsonWriter w, ImageBlock image)
+    {
+        w.WriteStartObject(); w.WriteString("type", "image"); w.WriteStartObject("source");
+        w.WriteString("type", "base64"); w.WriteString("media_type", image.MediaType);
+        w.WriteString("data", Convert.ToBase64String(image.Bytes.AsSpan()));
+        w.WriteEndObject(); w.WriteEndObject();
     }
 
     private static void WriteRawJsonOrEmptyObject(Utf8JsonWriter w, string? json)

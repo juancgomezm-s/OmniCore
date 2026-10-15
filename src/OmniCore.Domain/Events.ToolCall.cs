@@ -119,9 +119,12 @@ public record ToolCallSucceeded(ToolCallId ToolCallId, string ResultJson) : Doma
     /// <summary>Exact post-image captured after successful publication. Missing in legacy journals.</summary>
     public ArtifactRef? AfterStateRef { get; init; }
 
+    /// <summary>Optional immutable binary/text result artifact returned by the tool. Null in legacy journals.</summary>
+    public ArtifactRef? ResultArtifact { get; init; }
+
     public EventType Type() => EventType.Of("toolcall.succeeded");
 
-    public int SchemaVersion() => 2;
+    public int SchemaVersion() => 3;
 }
 
 /// <summary>ToolCallFailed: falló con efecto (posiblemente parcial; ADR-0004 §2).

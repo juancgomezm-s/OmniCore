@@ -868,7 +868,8 @@ public sealed class Parts
         foreach (var r in refs)
         {
             parts[i++] = r.Id.ToString() + "|" + r.Hash.Algorithm + "|" + r.Hash.Value + "|" +
-                r.Size + "|" + Escape(r.MediaType) + "|" + r.Kind + "|" + r.Sensitivity + "|" + (r.Redacted ? "1" : "0");
+                r.Size + "|" + Escape(r.MediaType) + "|" + r.Kind + "|" + r.Sensitivity + "|" + (r.Redacted ? "1" : "0")
+                + (r.FileName is null ? "" : "|" + Escape(r.FileName));
         }
 
         return string.Join(";", parts);
@@ -901,7 +902,7 @@ public sealed class Parts
                 continue;
             }
 
-            if (fields.Count != 8)
+            if (fields.Count is not (8 or 9))
             {
                 throw new InvalidOperationException("Formato de artifact ref inválido: " + refStrings[i]);
             }
@@ -932,7 +933,8 @@ public sealed class Parts
                 Unescape(fields[4]),
                 kind,
                 sensitivity,
-                fields[7] == "1");
+                fields[7] == "1")
+            { FileName = fields.Count == 9 && fields[8].Length > 0 ? Unescape(fields[8]) : null };
         }
 
         return result;

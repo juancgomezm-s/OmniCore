@@ -100,9 +100,14 @@ internal sealed class SessionArtifactReadAuthorization
                     TurnStarted e => e.ContextSnapshotRef, ModelStepStarted e => e.ContextSnapshotRef,
                     ModelStepCompleted e => e.ResponseArtifact, ModelCompleted e => e.ResponseArtifact,
                     AssistantMessageRecorded e => e.ContentRef, UserInputReceived e => e.ContentRef,
+                    ToolCallSucceeded e => e.ResultArtifact,
                     ContextCheckpointRecorded e => e.CheckpointArtifact, _ => null,
                 };
                 if (legacy is not null) pending.Enqueue(legacy);
+                if (codecs.Decode(evt) is UserInputReceived { Attachments: { } attachments })
+                    foreach (var attachment in attachments) pending.Enqueue(attachment);
+                if (codecs.Decode(evt) is AssistantImagesRecorded { Images: { } images })
+                    foreach (var image in images) pending.Enqueue(image.Artifact);
             }
             var seen = new HashSet<string>(StringComparer.Ordinal);
             var traversed = 0;

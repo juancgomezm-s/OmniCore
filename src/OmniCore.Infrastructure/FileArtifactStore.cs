@@ -36,17 +36,21 @@ public sealed class BlobProbe
     /// <summary>Por qué el blob pasó o no.</summary>
     public BlobStatus Status { get; }
 
-    /// <summary>Contenido leído; solo distinto de null cuando Status es Ok.</summary>
+    /// <summary>UTF-8 válido leído cuando Status es Ok; null también es válido para un blob binario.</summary>
     public string? Content { get; }
 
-    private BlobProbe(BlobStatus status, string? content)
+    /// <summary>Length of the verified raw blob, even when its bytes are not UTF-8 text.</summary>
+    public long? RawSize { get; }
+
+    private BlobProbe(BlobStatus status, string? content, long? rawSize = null)
     {
         Status = status;
         Content = content;
+        RawSize = rawSize;
     }
 
     /// <summary>Construye un probe (factory explícita, sin reflexión).</summary>
-    public static BlobProbe Of(BlobStatus status, string? content) => new(status, content);
+    public static BlobProbe Of(BlobStatus status, string? content, long? rawSize = null) => new(status, content, rawSize);
 }
 
 /// <summary>
@@ -78,7 +82,7 @@ public sealed class BlobProbe
 /// no tampering del store.
 /// </para>
 /// </summary>
-public sealed class FileArtifactStore : IArtifactStore, IArtifactPublicationLease, IArtifactPreparationStore, IProtectedArtifactStore
+public sealed class FileArtifactStore : IArtifactStore, IBinaryArtifactStore, IArtifactPublicationLease, IArtifactPreparationStore, IProtectedArtifactStore
 {
     private const string HashAlgorithm = "sha256";
     private const int HashHexLength = 64;
@@ -120,6 +124,41 @@ public sealed class FileArtifactStore : IArtifactStore, IArtifactPublicationLeas
 
     public ArtifactRef PutText(string content, string mediaType, ArtifactKind kind, Sensitivity sensitivity)
         => PrepareText(content, mediaType, kind, sensitivity).Publish();
+
+    /// <summary>Publishes an immutable binary snapshot without UTF-8 conversion or text redaction.</summary>
+    public ArtifactRef PutBytes(byte[] content, string mediaType, ArtifactKind kind, Sensitivity sensitivity)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        ArgumentException.ThrowIfNullOrWhiteSpace(mediaType);
+        if (content.Length is 0 or > 32 * 1024 * 1024)
+            throw new ArgumentOutOfRangeException(nameof(content), "Binary artifacts are limited to 32 MiB.");
+        var snapshot = content.ToArray();
+        var hash = Sha256.Hex(snapshot);
+        var reference = new ArtifactRef(ArtifactId.New(), ContentHash.Sha256(hash), snapshot.LongLength,
+            mediaType, kind, sensitivity, Redacted: false);
+        return PublishPrepared(reference, snapshot);
+    }
+
+    /// <summary>Reads and verifies the exact binary blob in one bounded filesystem read.</summary>
+    public byte[]? GetBytes(ContentHash hash, long? expectedSize = null)
+    {
+        if (!TryBlobPath(hash, out var blobPath) || !File.Exists(blobPath)
+            || !BlobPathStaysInsideBlobs(blobPath)) return null;
+        try
+        {
+            var info = new FileInfo(blobPath);
+            if (!expectedSize.HasValue || expectedSize.Value < 0 || expectedSize.Value > 32 * 1024 * 1024
+                || info.Length != expectedSize.Value
+                || info.Length > int.MaxValue) return null;
+            var bytes = File.ReadAllBytes(blobPath);
+            return (expectedSize is null || bytes.LongLength == expectedSize.Value)
+                && Sha256.Hex(bytes) == hash.Value ? bytes : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
 
     public ArtifactRef PutProtectedText(string content, string purpose, string mediaType, ArtifactKind kind)
     {
@@ -187,8 +226,7 @@ public sealed class FileArtifactStore : IArtifactStore, IArtifactPublicationLeas
     public bool Verify(ContentHash hash, long expectedSize)
     {
         var probe = ProbeBlob(hash);
-        return probe.Status == BlobStatus.Ok && probe.Content is not null
-            && (long) Encoding.UTF8.GetByteCount(probe.Content) == expectedSize;
+        return probe.Status == BlobStatus.Ok && probe.RawSize == expectedSize;
     }
 
     /// <summary>
@@ -231,7 +269,7 @@ public sealed class FileArtifactStore : IArtifactStore, IArtifactPublicationLeas
             // haga pasar un contenido distinto del que se acaba de verificar (carrera).
             var bytes = File.ReadAllBytes(blobPath);
             return Sha256.Hex(bytes) == hash.Value
-                ? BlobProbe.Of(BlobStatus.Ok, Encoding.UTF8.GetString(bytes))
+                ? BlobProbe.Of(BlobStatus.Ok, DecodeUtf8OrNull(bytes), bytes.LongLength)
                 : BlobProbe.Of(BlobStatus.Corrupted, null);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -240,6 +278,12 @@ public sealed class FileArtifactStore : IArtifactStore, IArtifactPublicationLeas
             // contenido no es recuperable, y eso es exactamente Unreadable en este contrato.
             return BlobProbe.Of(BlobStatus.Unreadable, null);
         }
+    }
+
+    private static string? DecodeUtf8OrNull(byte[] bytes)
+    {
+        try { return new UTF8Encoding(false, true).GetString(bytes); }
+        catch (DecoderFallbackException) { return null; }
     }
 
     /// <summary>

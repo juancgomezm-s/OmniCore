@@ -810,7 +810,11 @@ public sealed class ExplorerTurn
         using var executionScope = ExecutionScope.Begin(new ExecutionScopeState(runId,
             turnTask, laneId, turnId, ExecutionId: executionId));
         var nextModelStepIndex = ReadNextModelStepIndex(stream, turnId);
-        IReadOnlyList<ToolDefinition> RequestTools() => ReadTurnToolCallCount(stream, turnId) >= _maxToolCallsPerTurn
+        var dedicatedImageRoute = string.Equals(_selection.Route?.Profile,
+            OmniCore.Models.OpenRouterImageGenerationProvider.ProfileName, StringComparison.Ordinal);
+        IReadOnlyList<ToolDefinition> RequestTools() => dedicatedImageRoute
+            ? Array.Empty<ToolDefinition>()
+            : ReadTurnToolCallCount(stream, turnId) >= _maxToolCallsPerTurn
             ? Array.Empty<ToolDefinition>() : VisibleTools(discoveredToolIds)
                 .Where(tool => !lifecycleDeniedToolIds.Contains(tool.Name)).ToArray();
         void RefreshStepFingerprint(IReadOnlyList<ToolDefinition> requestTools)
@@ -826,7 +830,7 @@ public sealed class ExplorerTurn
                 discoveredPlanChanged = true;
             }
         }
-        var forcedToolName = isResume ? null : _forcedInitialToolName;
+        var forcedToolName = isResume || dedicatedImageRoute ? null : _forcedInitialToolName;
         var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         var budget = ReadRunBudget(stream, runId);
         // Primary usage for this Ask remains in SpendGuard. Meta usage is reread in full
@@ -835,11 +839,25 @@ public sealed class ExplorerTurn
         // unpriced session with no historical monetary evidence can omit monetary replay.
         var replayMonetarySpend = _enforceDefaultSpendCaps || budget.MaxCostUsd is not null
             || _pricing is not null || HasHistoricalMonetaryEvidence(runEvents);
+        // A completed image response is already a durable provider result. On resume, validate
+        // its exact CAS/journal publication before spend admission so a missing reported image
+        // price cannot strand a result that requires no further provider call. The normal cap
+        // still applies to every new invocation below.
+        string? recoveredImageText = null;
+        var recoveredImageImages = new List<ValidatedGeneratedImage>();
+        var recoveredImageParts = new List<(string Kind, string? Text, int ImageIndex)>();
+        var recoveredImageSteps = 0;
+        var recoveredImagePublished = false;
+        string? recoveredImageArtifactId = null;
+        var recoveredImageCompletion = isResume && TryRecoverCompletedImageResponse(stream, turnId,
+            out recoveredImageText, recoveredImageImages, recoveredImageParts, out recoveredImageSteps,
+            out recoveredImagePublished, out recoveredImageArtifactId);
         if (replayMonetarySpend)
         {
             var openingSpend = CombineSpend(ReadJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps),
                 ReadMetaJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps));
-            if ((_enforceDefaultSpendCaps || budget.MaxCostUsd is not null) && openingSpend.Incomplete)
+            if (!recoveredImageCompletion
+                && (_enforceDefaultSpendCaps || budget.MaxCostUsd is not null) && openingSpend.Incomplete)
             {
                 const string detail = "uso histórico incompleto: no se puede hacer cumplir el tope";
                 var interactionId = EmitBudgetExceeded(stream, turnId, detail);
@@ -860,6 +878,7 @@ public sealed class ExplorerTurn
             return new TurnResult("Persisted visible reasoning is invalid.", StopReason.Error, 0,
                 new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
         }
+        messages = ProjectAssistantImagesForModelContext(messages);
         var safeQuestion = isResume || queuedQuestion ? "" : _redaction.Redact(question ?? "");
         var pendingFollowUps = isResume || origin == "InteractionResponse(ModelRouteConsent)"
             ? Array.Empty<FollowUpQueue.Item>()
@@ -1137,9 +1156,15 @@ public sealed class ExplorerTurn
             return id;
         }
 
-        void FinishReservation(string? id, decimal? cost, string receipt, long observedSends)
+        void FinishReservation(string? id, decimal? cost, string receipt, long observedSends,
+            bool unpricedOutput = false)
         {
             if (id is null || cost is null) return; // Unavailable usage cannot release an in-flight bound.
+            if (unpricedOutput)
+            {
+                _spendReservations!.RecordUncertainCompletion(id, cost.Value, receipt);
+                return; // Keep the remaining declared image exposure held; never call it measured spend.
+            }
             if (observedSends == 1 || observedSends == 0 && _maximumGenerationRequestAttempts == 1)
                 _spendReservations!.Settle(id, cost.Value, receipt);
             else _spendReservations!.RecordUncertainCompletion(id, cost.Value, receipt);
@@ -1273,14 +1298,31 @@ public sealed class ExplorerTurn
             if (invalidPersistedUsage)
                 throw new InvalidDataException("Persisted token usage cannot be represented safely.");
 
-            string? finalText = null;
+            var finalText = recoveredImageText;
+            var finalImages = recoveredImageImages;
+            var finalResponseParts = recoveredImageParts;
+            var finalImageModelStepIndex = -1;
             var stop = StopReason.EndTurn;
+            var recoveredStepCount = 0;
+            string? recoveredResponseArtifactId = null;
+            var finalResponseAlreadyPublished = false;
+            recoveredStepCount = recoveredImageSteps;
+            finalResponseAlreadyPublished = recoveredImagePublished;
+            recoveredResponseArtifactId = recoveredImageArtifactId;
+            if (recoveredImageCompletion)
+            {
+                // ModelStepCompleted already owns the provider result and its CAS snapshot. Finish
+                // publication from those exact bytes; never dispatch the same generation again.
+                steps = recoveredStepCount;
+                finalImageModelStepIndex = recoveredStepCount - 1;
+                usage = turnUsage;
+            }
             // Replay is scoped to the same durable invocation destination, never to a session's last model.
-            ProviderState? continuation = isResume
+            ProviderState? continuation = isResume && !recoveredImageCompletion
                 ? ReadProviderContinuation(stream, runId, laneId, turnId) : null;
             // These ceilings are per durable Turn, not per user.ask/resume invocation. Replay
             // admissions already written for this Turn before allowing another model/tool step.
-            for (var step = nextModelStepIndex; step < _maxModelStepsPerTurn; step++)
+            for (var step = nextModelStepIndex; !recoveredImageCompletion && step < _maxModelStepsPerTurn; step++)
             {
                 var modelHooks = step == nextModelStepIndex ? initialModelHooks : DispatchLifecycle(LifecyclePoint.BeforeModel);
                 if (modelHooks.Denied || lifecycleDeniedTurn || !ResolvePendingLifecycleValidations())
@@ -1330,7 +1372,8 @@ public sealed class ExplorerTurn
                         : preparedContext.Messages,
                     RenderContext(materialized),
                     requestTools,
-                    forcedToolName is { } exactTool ? ToolChoice.Exact(exactTool) : ToolChoice.Auto(),
+                    dedicatedImageRoute ? ToolChoice.None()
+                        : forcedToolName is { } exactTool ? ToolChoice.Exact(exactTool) : ToolChoice.Auto(),
                     null, _selection.Reasoning, new CacheHints(4, "automatic"),
                     // None is an explicit outbound replay prohibition. Keep the checkpoint
                     // and its integrity/usage evidence, but never resend it (including resume).
@@ -1404,8 +1447,18 @@ public sealed class ExplorerTurn
                     }
                     forcedToolName = null;
                     continuation = resolved.State;
+                    if (resolved.ReportedProviderCostUsd is < 0m or > 1_000_000m)
+                        throw new InvalidDataException("Provider-reported USD cost is outside the supported range.");
+                    var checkpointImageBlocks = resolved.Content.OfType<ImageBlock>().ToArray();
+                    if (checkpointImageBlocks.Length > GeneratedImageValidator.MaximumImagesPerResponse
+                        || checkpointImageBlocks.Sum(image => (long)image.Bytes.Length) > GeneratedImageValidator.MaximumResponseBytes)
+                        throw new InvalidDataException("Generated image response exceeds the aggregate limit.");
                     var stepResponse = VisibleAnswerText(resolved.Content) ?? string.Empty;
+                    // The provider's image upper bound is admission exposure, not measured spend.
                     var stepCost = _pricing?.CostUsd(resolved.Usage, resolved.ReportedUsageFields);
+                    var recordedCost = resolved.ReportedProviderCostUsd ?? stepCost;
+                    var imageCostIncomplete = resolved.Content.OfType<ImageBlock>().Any()
+                        && resolved.ReportedProviderCostUsd is null;
                     var completedDay = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd",
                         System.Globalization.CultureInfo.InvariantCulture);
                     // Publish both the sensitive continuation and its response root under
@@ -1427,16 +1480,16 @@ public sealed class ExplorerTurn
                         checkpointFailure = new InvalidDataException("Provider state checkpoint is invalid.");
                     }
                     var stepArtifact = _artifacts.PutText(
-                        EncodeUsageResponse(stepResponse, resolved.Usage, stepCost, runId, completedDay,
-                            stateDescriptor, EncodeVisibleContent(resolved.Content)),
+                        EncodeUsageResponse(stepResponse, resolved.Usage, recordedCost, runId, completedDay,
+                            stateDescriptor, EncodeVisibleContent(resolved.Content), resolved.ReportedProviderCostUsd),
                         "application/vnd.omnicore.model-usage+json", ArtifactKind.ModelResponse,
                         Sensitivity.Sensitive);
                     var completionAfter = stepReservation is not null || tokenReservation is not null
                         ? _store.CurrentSequence(sessionId) : 0;
                     stream.Append(new ModelStepCompleted(turnId, stepIndex, resolved.Usage,
-                        resolved.StopReason, stepArtifact, completedDay, stepCost, resolved.ReportedUsageFields,
+                        resolved.StopReason, stepArtifact, completedDay, recordedCost, resolved.ReportedUsageFields,
                         new GenerationRequestAttemptEvidence(generationAttempts.ObservedSends,
-                            _maximumGenerationRequestAttempts)), DurabilityClass.Barrier);
+                            _maximumGenerationRequestAttempts), imageCostIncomplete, resolved.ReportedProviderCostUsd), DurabilityClass.Barrier);
                     RecordUsedSessionMemory(sessionId, turnId, stepIndex, materialized.Items, request.Instructions ?? string.Empty, stream);
                     if (TokenUsageValidation.IsInvalid(resolved.Usage, resolved.ReportedUsageFields))
                     {
@@ -1450,7 +1503,8 @@ public sealed class ExplorerTurn
                         var completionEvent = stream.EventsSince(completionAfter + 1).Single(evt =>
                             _codecs.Decode(evt) is ModelStepCompleted completed && completed.TurnId == turnId
                                 && completed.StepIndex == stepIndex);
-                        FinishReservation(stepReservation, stepCost, completionEvent.EventId.ToString(), generationAttempts.ObservedSends);
+                        FinishReservation(stepReservation, recordedCost, completionEvent.EventId.ToString(),
+                            generationAttempts.ObservedSends, imageCostIncomplete);
                     }
                     var tokenUsage = resolved.Usage;
                     var tokenFields = resolved.ReportedUsageFields;
@@ -1479,11 +1533,19 @@ public sealed class ExplorerTurn
                     // An unrepresentable total cannot become a wrapped summary or authorize tools.
                     usage = CombineUsage(usage, resolved.Usage);
                     turnUsage = CombineUsage(turnUsage, resolved.Usage);
-                    ValidateTokenBudget(includeNextInvocation: false);
+                    // A provider can durably return generated bytes without reporting token or
+                    // image invoice amounts. Admission already held the configured request cap;
+                    // do not suppress that completed response after the external effect. The
+                    // incomplete receipt remains conservative and blocks later spend checks.
+                    var boundedImageResponse = dedicatedImageRoute
+                        && _selection.ImageGenerationMaxCostUsd is > 0m
+                        && resolved.StopReason == StopReason.EndTurn
+                        && resolved.Content.OfType<ImageBlock>().Any();
+                    if (!boundedImageResponse) ValidateTokenBudget(includeNextInvocation: false);
                     guard.AdvanceTurn(checked(resolved.Usage.Input + resolved.Usage.Output));
-                    if (stepCost is not null)
+                    if (recordedCost is not null)
                     {
-                        try { guard.AddCostUsd(stepCost.Value); }
+                        try { guard.AddCostUsd(recordedCost.Value); }
                         catch (OverflowException) { throw UnrepresentableSpend(budgeted); }
                     }
                     if (checkpointFailure is not null) throw checkpointFailure;
@@ -1494,19 +1556,22 @@ public sealed class ExplorerTurn
                     // This invocation is already durable, but unreported usage cannot
                     // authorize tools or another invocation within the same Ask. Checking
                     // only the history loaded at entry would defer this guard until resume.
-                    if (budgeted && stepCost is null)
+                    if (budgeted && recordedCost is null && !boundedImageResponse)
                         throw new BudgetExceededException("uso del paso incompleto: no se puede hacer cumplir el tope");
-                    var spend = CurrentSpend();
-                    var runCost = AccumulatedSpend(spend.RunUsd, 0m, budgeted);
-                    var sessionCost = AccumulatedSpend(spend.SessionUsd, 0m, budgeted);
-                    var dailyCost = AccumulatedSpend(spend.DailyUsd, 0m, budgeted);
-                    if (budget.MaxCostUsd is not null
-                        && runCost > budget.MaxCostUsd.Value)
-                        throw new BudgetExceededException("límite de costo de Run ($" + budget.MaxCostUsd.Value + ")",
-                            new("run", configuredRunCap!.Value, budget.MaxCostUsd.Value, runId.ToString(), null));
-                    if (_enforceDefaultSpendCaps)
+                    if (!boundedImageResponse)
                     {
-                        ValidateSessionDaily(sessionCost, dailyCost, sessionCap, dailyCap, today);
+                        var spend = CurrentSpend();
+                        var runCost = AccumulatedSpend(spend.RunUsd, 0m, budgeted);
+                        var sessionCost = AccumulatedSpend(spend.SessionUsd, 0m, budgeted);
+                        var dailyCost = AccumulatedSpend(spend.DailyUsd, 0m, budgeted);
+                        if (budget.MaxCostUsd is not null
+                            && runCost > budget.MaxCostUsd.Value)
+                            throw new BudgetExceededException("límite de costo de Run ($" + budget.MaxCostUsd.Value + ")",
+                                new("run", configuredRunCap!.Value, budget.MaxCostUsd.Value, runId.ToString(), null));
+                        if (_enforceDefaultSpendCaps)
+                        {
+                            ValidateSessionDaily(sessionCost, dailyCost, sessionCap, dailyCap, today);
+                        }
                     }
                 }
                 catch (BudgetExceededException budgetEx)
@@ -1531,6 +1596,7 @@ public sealed class ExplorerTurn
                 // usage/state, but cannot publish tool effects or a new approval request.
                 cancellationToken.ThrowIfCancellationRequested();
                 finalText = VisibleAnswerText(resolved.Content);
+                var generatedImageBlocks = resolved.Content.OfType<ImageBlock>().ToArray();
                 var toolBlocks = new List<ToolCallBlock>();
                 foreach (ContentBlock block in resolved.Content)
                 {
@@ -1549,6 +1615,19 @@ public sealed class ExplorerTurn
                         stop = StopReason.Error;
                         finalText = "lifecycle.hook.completion_withheld";
                         break;
+                    }
+                    finalImages.Clear();
+                    finalResponseParts.Clear();
+                    foreach (var image in generatedImageBlocks)
+                        finalImages.Add(GeneratedImageValidator.Decode(image.MediaType, image.Bytes.ToArray()));
+                    if (finalImages.Count > 0) finalImageModelStepIndex = step;
+                    var imageIndex = 0;
+                    foreach (var block in resolved.Content)
+                    {
+                        if (block is TextBlock text && text.Text.Length > 0)
+                            finalResponseParts.Add(("text", text.Text, -1));
+                        else if (block is ImageBlock)
+                            finalResponseParts.Add(("image", null, imageIndex++));
                     }
                     stop = resolved.StopReason;
                     break;
@@ -1884,8 +1963,16 @@ public sealed class ExplorerTurn
                         _redaction.Redact(planError ?? outcome.Summary ?? ""),
                         SafeToolArguments(call.ToolName, call.ArgumentsJson)));
 
+                    var resultBlocks = new List<ContentBlock> { new TextBlock(resultText) };
+                    if (succeeded && outcome.Artifact is { } resultArtifact
+                        && resultArtifact.MediaType.StartsWith("image/", StringComparison.Ordinal))
+                    {
+                        if (!_selection.InputModalities.Contains("image", StringComparer.Ordinal))
+                            throw new NotSupportedException("The effective model/provider route does not support image tool results.");
+                        resultBlocks.Add(AttachmentContentMaterializer.Read(resultArtifact, _artifacts));
+                    }
                     var toolResult = new ModelMessage(MessageRole.Tool, new ContentBlock[] {
-                        new ToolResultBlock(call.Id, new ContentBlock[] { new TextBlock(resultText) }, !succeeded),
+                        new ToolResultBlock(call.Id, resultBlocks, !succeeded),
                     });
                     messages.Add(toolResult);
                 }
@@ -1913,7 +2000,7 @@ public sealed class ExplorerTurn
                 }
             }
 
-            if (finalText is null && stop == StopReason.EndTurn)
+            if (finalText is null && finalImages.Count == 0 && stop == StopReason.EndTurn)
             {
                 AppendTerminalTurn(stream, sessionId, runId, laneId, turnId,
                     new TurnAbandoned(turnId, "Se agotó el límite de pasos del Explorer"));
@@ -1921,28 +2008,60 @@ public sealed class ExplorerTurn
             }
 
             // Respuesta como artifact + ModelCompleted (persistencia del Turn).
-            string? artifactId = null;
-            if (finalText is not null && finalText!.Length > 0)
+            string? artifactId = recoveredResponseArtifactId;
+            if (finalText is not null && finalText.Length > 0 || finalImages.Count > 0)
             {
                 // Keep both final CAS objects protected until their canonical references
                 // commit together. No provider work runs while this publication lease is held.
-                using var finalPublication = (_artifacts as IArtifactPublicationLease)
-                    ?.AcquirePublicationLease(CancellationToken.None);
-                var safeResponse = _redaction.Redact(finalText!);
-                var responseEvents = new List<DomainEventPayload>();
-                if (!invalidUsageObserved)
+                if (!finalResponseAlreadyPublished)
                 {
-                    var cost = ReadTurnModelStepCost(stream, turnId);
-                    var journalRecord = EncodeUsageResponse(safeResponse, turnUsage, cost, runId, today);
-                    var artifact = _artifacts.PutText(journalRecord, "application/vnd.omnicore.model-usage+json",
-                        ArtifactKind.ModelResponse, Sensitivity.Sensitive);
-                    artifactId = artifact.Hash.ToString();
-                    responseEvents.Add(new ModelCompleted(turnId, artifact));
+                    using var finalPublication = (_artifacts as IArtifactPublicationLease)
+                        ?.AcquirePublicationLease(CancellationToken.None);
+                    var safeResponse = finalText is null ? "" : _redaction.Redact(finalText);
+                    var responseEvents = new List<DomainEventPayload>();
+                    if (!invalidUsageObserved)
+                    {
+                        var cost = ReadTurnModelStepCost(stream, turnId);
+                        var journalRecord = EncodeUsageResponse(safeResponse, turnUsage, cost, runId, today);
+                        var artifact = _artifacts.PutText(journalRecord, "application/vnd.omnicore.model-usage+json",
+                            ArtifactKind.ModelResponse, Sensitivity.Sensitive);
+                        artifactId = artifact.Hash.ToString();
+                        responseEvents.Add(new ModelCompleted(turnId, artifact));
+                    }
+                    if (safeResponse.Length > 0)
+                    {
+                        var conversation = _artifacts.PutText(safeResponse, "text/markdown",
+                            ArtifactKind.ModelResponse, Sensitivity.Sensitive);
+                        responseEvents.Add(new AssistantMessageRecorded(runId, laneId, turnId, conversation));
+                    }
+                    if (finalImages.Count > 0)
+                    {
+                        if (_artifacts is not IBinaryArtifactStore binaryArtifacts)
+                            throw new InvalidOperationException("Binary artifact storage is unavailable for generated images.");
+                        var imageOutputs = new List<AssistantImageOutput>(finalImages.Count);
+                        for (var index = 0; index < finalImages.Count; index++)
+                        {
+                            var image = finalImages[index];
+                            var reference = binaryArtifacts.PutBytes(image.Bytes, image.MediaType,
+                                ArtifactKind.ModelResponse, Sensitivity.Sensitive);
+                            imageOutputs.Add(new AssistantImageOutput(reference, image.Width, image.Height,
+                                index, _selection.Route?.ProviderId ?? "unknown", _selection.Model.ToString(),
+                                finalImageModelStepIndex));
+                        }
+                        var orderedParts = new List<AssistantResponsePart>(finalResponseParts.Count);
+                        for (var index = 0; index < finalResponseParts.Count; index++)
+                        {
+                            var part = finalResponseParts[index];
+                            var artifact = part.Kind == "image"
+                                ? imageOutputs[part.ImageIndex].Artifact
+                                : _artifacts.PutText(_redaction.Redact(part.Text ?? ""), "text/markdown",
+                                    ArtifactKind.ModelResponse, Sensitivity.Sensitive);
+                            orderedParts.Add(new AssistantResponsePart(part.Kind, artifact, index));
+                        }
+                        responseEvents.Add(new AssistantImagesRecorded(runId, laneId, turnId, imageOutputs, orderedParts));
+                    }
+                    stream.AppendBatch(responseEvents, DurabilityClass.Standard);
                 }
-                var conversation = _artifacts.PutText(safeResponse, "text/markdown",
-                    ArtifactKind.ModelResponse, Sensitivity.Sensitive);
-                responseEvents.Add(new AssistantMessageRecorded(runId, laneId, turnId, conversation));
-                stream.AppendBatch(responseEvents, DurabilityClass.Standard);
             }
 
             AppendTerminalTurn(stream, sessionId, runId, laneId, turnId, new TurnCompleted(turnId));
@@ -2338,7 +2457,8 @@ public sealed class ExplorerTurn
     }
 
     internal static string EncodeUsageResponse(string response, TokenUsage usage, decimal? cost,
-        RunId runId, string day, string? providerStateDescriptor = null, string? visibleContent = null)
+        RunId runId, string day, string? providerStateDescriptor = null, string? visibleContent = null,
+        decimal? reportedProviderCostUsd = null)
     {
         var costJson = cost is null ? "null" : "\""
             + cost.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) + "\"";
@@ -2350,6 +2470,8 @@ public sealed class ExplorerTurn
             + ",\"cacheWrite\":" + usage.CacheWrite.ToString(System.Globalization.CultureInfo.InvariantCulture)
             + ",\"reasoning\":" + usage.Reasoning.ToString(System.Globalization.CultureInfo.InvariantCulture)
             + ",\"costUsd\":" + costJson
+            + ",\"reportedProviderCostUsd\":" + (reportedProviderCostUsd is null ? "null" : "\""
+                + reportedProviderCostUsd.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) + "\"")
             + ",\"providerState\":" + (providerStateDescriptor ?? "null")
             + (visibleContent is null ? "" : ",\"visibleContent\":" + visibleContent) + "}";
     }
@@ -2375,7 +2497,7 @@ public sealed class ExplorerTurn
                 continue;
             }
             FlushText();
-            if (block is ReasoningBlock or ToolCallBlock) blocks.Add(block);
+            if (block is ReasoningBlock or ToolCallBlock or ImageBlock) blocks.Add(block);
         }
         FlushText();
         if (blocks.Count == 0) return null;
@@ -2405,6 +2527,20 @@ public sealed class ExplorerTurn
                     // Only an ordering marker. Tool identity/arguments come from its canonical event.
                     writer.WriteString("kind", "tool-call");
                     writer.WriteString("callId", call.Id.ToString());
+                }
+                else if (block is ImageBlock image)
+                {
+                    if (_artifacts is not IBinaryArtifactStore binaryArtifacts)
+                        throw new InvalidDataException("Binary artifact storage is unavailable for image checkpointing.");
+                    var decoded = GeneratedImageValidator.Decode(image.MediaType, image.Bytes.ToArray());
+                    var reference = binaryArtifacts.PutBytes(decoded.Bytes, decoded.MediaType,
+                        ArtifactKind.ModelResponse, Sensitivity.Sensitive);
+                    writer.WriteString("kind", "image");
+                    writer.WriteString("hash", reference.Hash.ToString());
+                    writer.WriteNumber("size", reference.Size);
+                    writer.WriteString("mediaType", decoded.MediaType);
+                    writer.WriteNumber("width", decoded.Width);
+                    writer.WriteNumber("height", decoded.Height);
                 }
                 writer.WriteEndObject();
             }
@@ -2449,6 +2585,32 @@ public sealed class ExplorerTurn
                     // An unexecuted call has no canonical requested event; don't manufacture one.
                     continue;
                 }
+                if (kind == "image")
+                {
+                    if (_artifacts is not IBinaryArtifactStore binaryArtifacts)
+                        throw new InvalidDataException(failure);
+                    var hashText = block.GetProperty("hash").GetString();
+                    var hashParts = hashText?.Split(':', 2);
+                    if (hashParts is not { Length: 2 } || hashParts[0] != "sha256"
+                        || hashParts[1].Length != 64 || !hashParts[1].All(Uri.IsHexDigit))
+                        throw new InvalidDataException(failure);
+                    var hash = ContentHash.Sha256(hashParts[1].ToLowerInvariant());
+                    var size = block.GetProperty("size").GetInt64();
+                    var mediaType = block.GetProperty("mediaType").GetString();
+                    if (mediaType is null) throw new InvalidDataException(failure);
+                    var bytes = binaryArtifacts.GetBytes(hash, size);
+                    if (bytes is null) throw new InvalidDataException(failure);
+                    var decoded = GeneratedImageValidator.Decode(mediaType, bytes);
+                    if (decoded.Width != block.GetProperty("width").GetInt32()
+                        || decoded.Height != block.GetProperty("height").GetInt32())
+                        throw new InvalidDataException(failure);
+                    // A prior assistant image is UI history, not automatically valid context
+                    // for an assistant-role input on the next provider request. Keep the
+                    // immutable identity visible to the resumed prompt without claiming it was
+                    // re-sent as image input.
+                    blocks.Add(new ImageBlock(decoded.MediaType, decoded.Bytes));
+                    continue;
+                }
                 var text = block.GetProperty("text").GetString();
                 if (kind == "text" && text is not null)
                 {
@@ -2468,8 +2630,153 @@ public sealed class ExplorerTurn
         catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException
             or IOException or ArgumentException or KeyNotFoundException)
         {
-            throw new InvalidDataException(failure);
+            throw new InvalidDataException(failure, ex);
         }
+    }
+
+    private bool TryRecoverCompletedImageResponse(EventStream stream, TurnId turnId,
+        out string? finalText, List<ValidatedGeneratedImage> images,
+        List<(string Kind, string? Text, int ImageIndex)> orderedParts, out int stepCount,
+        out bool publicationAlreadyExists, out string? responseArtifactId)
+    {
+        finalText = null;
+        stepCount = 0;
+        publicationAlreadyExists = false;
+        responseArtifactId = null;
+        var journal = stream.EventsSince(1);
+        var decoded = journal.Select(evt => (Event: evt, Payload: _codecs.Decode(evt))).ToArray();
+        if (decoded.Any(item => item.Payload switch
+            {
+                TurnCompleted terminal => terminal.TurnId == turnId,
+                TurnInterrupted terminal => terminal.TurnId == turnId,
+                TurnAbandoned terminal => terminal.TurnId == turnId,
+                _ => false,
+            })) return false;
+        var publishedImages = decoded.Select(item => item.Payload).OfType<AssistantImagesRecorded>()
+            .LastOrDefault(image => image.TurnId == turnId);
+        if (publishedImages is not null)
+        {
+            // Final response events are committed together. If the process stopped before
+            // TurnCompleted, finish that terminal transition from the exact published refs.
+            // Never regenerate or publish a second copy of an already durable response.
+            if (_artifacts is not IBinaryArtifactStore binaryArtifacts || publishedImages.Images.Count == 0)
+                throw new InvalidDataException("Persisted generated image publication is incomplete.");
+            var completed = decoded.Select(item => item.Payload).OfType<ModelStepCompleted>()
+                .LastOrDefault(step => step.TurnId == turnId);
+            if (completed is null || completed.StopReason != StopReason.EndTurn)
+                throw new InvalidDataException("Persisted generated image has no completed model step.");
+            stepCount = checked(completed.StepIndex + 1);
+            responseArtifactId = decoded.Select(item => item.Payload).OfType<ModelCompleted>()
+                .LastOrDefault(item => item.TurnId == turnId)?.ResponseArtifact?.Hash.ToString();
+
+            var imageIndexes = new Dictionary<int, int>();
+            var imageOutputsByHash = publishedImages.Images.OrderBy(image => image.OutputIndex)
+                .GroupBy(image => image.Artifact.Hash.Value, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key,
+                    group => new Queue<AssistantImageOutput>(group), StringComparer.Ordinal);
+            foreach (var output in publishedImages.Images.OrderBy(image => image.OutputIndex))
+            {
+                var bytes = binaryArtifacts.GetBytes(output.Artifact.Hash, output.Artifact.Size)
+                    ?? throw new InvalidDataException("Persisted generated image bytes are missing.");
+                var image = GeneratedImageValidator.Decode(output.Artifact.MediaType, bytes);
+                if (image.Width != output.Width || image.Height != output.Height)
+                    throw new InvalidDataException("Persisted generated image dimensions do not match its journal record.");
+                imageIndexes.Add(output.OutputIndex, images.Count);
+                images.Add(image);
+            }
+
+            var publishedText = new List<string>();
+            if (publishedImages.OrderedParts is { Count: > 0 } parts)
+            {
+                foreach (var part in parts.OrderBy(part => part.OutputIndex))
+                {
+                    if (part.Kind == "image")
+                    {
+                        if (!imageOutputsByHash.TryGetValue(part.Artifact.Hash.Value, out var outputs)
+                            || outputs.Count == 0)
+                            throw new InvalidDataException("Persisted response ordering references an unknown image.");
+                        var output = outputs.Dequeue();
+                        orderedParts.Add(("image", null, imageIndexes[output.OutputIndex]));
+                    }
+                    else if (part.Kind == "text")
+                    {
+                        var text = _artifacts.GetText(part.Artifact.Hash)
+                            ?? throw new InvalidDataException("Persisted response text is missing.");
+                        text = _redaction.Redact(text);
+                        orderedParts.Add(("text", text, -1));
+                        publishedText.Add(text);
+                    }
+                    else
+                    {
+                        throw new InvalidDataException("Persisted response ordering has an unsupported part.");
+                    }
+                }
+            }
+            else
+            {
+                foreach (var output in publishedImages.Images.OrderBy(image => image.OutputIndex))
+                    orderedParts.Add(("image", null, imageIndexes[output.OutputIndex]));
+                var assistant = decoded.Select(item => item.Payload).OfType<AssistantMessageRecorded>()
+                    .LastOrDefault(item => item.TurnId == turnId);
+                if (assistant?.ContentRef is { } textRef && _artifacts.GetText(textRef.Hash) is { } text)
+                {
+                    text = _redaction.Redact(text);
+                    orderedParts.Insert(0, ("text", text, -1));
+                    publishedText.Add(text);
+                }
+            }
+            finalText = publishedText.Count == 0 ? null : string.Concat(publishedText);
+            publicationAlreadyExists = true;
+            return true;
+        }
+        if (decoded.Any(item => item.Payload switch
+            {
+                ModelCompleted completed => completed.TurnId == turnId,
+                AssistantMessageRecorded message => message.TurnId == turnId,
+                _ => false,
+            })) return false;
+        var completedStep = decoded.Select(item => item.Payload).OfType<ModelStepCompleted>()
+            .LastOrDefault(step => step.TurnId == turnId);
+        if (completedStep is not { StopReason: StopReason.EndTurn, ResponseArtifact: not null }) return false;
+
+        var visible = ReadVisibleContent(completedStep.ResponseArtifact,
+            new Dictionary<string, ToolCallRequested>(StringComparer.Ordinal),
+            new Dictionary<string, ToolCallRequested>(StringComparer.Ordinal),
+            new Dictionary<string, string>(StringComparer.Ordinal));
+        if (!visible.OfType<ImageBlock>().Any()) return false;
+
+        var imageIndex = 0;
+        foreach (var block in visible)
+        {
+            if (block is ImageBlock image)
+            {
+                images.Add(GeneratedImageValidator.Decode(image.MediaType, image.Bytes.ToArray()));
+                orderedParts.Add(("image", null, imageIndex++));
+            }
+            else if (block is TextBlock text)
+            {
+                orderedParts.Add(("text", text.Text, -1));
+            }
+        }
+        finalText = VisibleAnswerText(visible);
+        stepCount = checked(completedStep.StepIndex + 1);
+        return images.Count > 0;
+    }
+
+    private static List<ModelMessage> ProjectAssistantImagesForModelContext(List<ModelMessage> messages)
+    {
+        for (var index = 0; index < messages.Count; index++)
+        {
+            var message = messages[index];
+            if (message.Role != MessageRole.Assistant || !message.Content.Any(block => block is ImageBlock)) continue;
+            var projected = message.Content.Select(block => block is ImageBlock image
+                ? (ContentBlock)new TextBlock("[Generated image omitted from model context; "
+                    + image.MediaType + ", " + image.Bytes.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + " bytes persisted in conversation history.]")
+                : block).ToArray();
+            messages[index] = message with { Content = projected };
+        }
+        return messages;
     }
 
     private static string DecodeUsageResponse(string? text) =>
@@ -2639,6 +2946,8 @@ public sealed class ExplorerTurn
             var payload = _codecs.Decode(evt);
             if (payload is AssistantMessageRecorded assistant && evt.RunId == assistant.RunId)
                 canonicalAssistantTurns.Add((assistant.RunId, assistant.TurnId));
+            if (payload is AssistantImagesRecorded assistantImages && evt.RunId == assistantImages.RunId)
+                canonicalAssistantTurns.Add((assistantImages.RunId, assistantImages.TurnId));
             if (activeTurnId is not null && evt.RunId == runId && evt.LaneId == activeLaneId)
             {
                 if (payload is ModelStepStarted stepStart && stepStart.TurnId == activeTurnId)
@@ -2736,9 +3045,18 @@ public sealed class ExplorerTurn
                             ? new[] { root.GetString() ?? "" }
                             : Array.Empty<string>();
                     var text = string.Join("\n", parts.Where(static part => part.Length > 0));
-                    if (text.Length > 0)
-                        AppendHistory(new ModelMessage(MessageRole.User,
-                            new ContentBlock[] { new TextBlock(_redaction.Redact(text)) }));
+                    var content = new List<ContentBlock>();
+                    if (text.Length > 0) content.Add(new TextBlock(_redaction.Redact(text)));
+                    foreach (var reference in input.Attachments ?? Array.Empty<ArtifactRef>())
+                    {
+                        var attachment = AttachmentContentMaterializer.Read(reference, _artifacts);
+                        if (attachment is ImageBlock && !_selection.InputModalities.Contains("image", StringComparer.Ordinal))
+                            throw new NotSupportedException("The effective model/provider route does not declare image input support.");
+                        if (attachment is DocumentBlock document)
+                            attachment = document with { ExtractedText = _redaction.Redact(document.ExtractedText) };
+                        content.Add(attachment);
+                    }
+                    if (content.Count > 0) AppendHistory(new ModelMessage(MessageRole.User, content));
                 }
                 catch (System.Text.Json.JsonException) { }
             }
@@ -2800,8 +3118,16 @@ public sealed class ExplorerTurn
                         ToolCallRejected e => "error: " + _redaction.Redact(e.Reason),
                         _ => "error",
                     };
+                var resultBlocks = new List<ContentBlock> { new TextBlock(content) };
+                if (payload is ToolCallSucceeded { ResultArtifact: { } resultArtifact }
+                    && resultArtifact.MediaType.StartsWith("image/", StringComparison.Ordinal))
+                {
+                    if (!_selection.InputModalities.Contains("image", StringComparer.Ordinal))
+                        throw new NotSupportedException("The effective model/provider route does not support image tool results.");
+                    resultBlocks.Add(AttachmentContentMaterializer.Read(resultArtifact, _artifacts));
+                }
                 AppendHistory(new ModelMessage(MessageRole.Tool, new ContentBlock[] {
-                    new ToolResultBlock(callId!, new ContentBlock[] { new TextBlock(content) },
+                    new ToolResultBlock(callId!, resultBlocks,
                         isQuestionnaireCall ? content.Contains("\"status\":\"invalid\"", StringComparison.Ordinal)
                             : payload is not ToolCallSucceeded)
                 }));
@@ -2814,6 +3140,14 @@ public sealed class ExplorerTurn
                 if (!string.IsNullOrEmpty(text))
                     AppendHistory(new ModelMessage(MessageRole.Assistant,
                         new ContentBlock[] { new TextBlock(_redaction.Redact(text)) }));
+            }
+            else if (type == "assistant_images.recorded")
+            {
+                var images = _codecs.Decode(evt) as AssistantImagesRecorded;
+                if (images is null || evt.RunId != images.RunId || images.Images.Count == 0
+                    || images.TurnId == activeTurnId) continue;
+                // The image is replayed to UI through the authorized artifact endpoint. Do not
+                // silently inject a previous assistant image into the next model context.
             }
             else if (type == "model.completed")
             {
@@ -3132,7 +3466,8 @@ public sealed class ExplorerTurn
                 firstUser = false;
             }
 
-            entries.Add(new ConversationContextEntry(id, kind, RenderMessage(safe), preserve));
+            entries.Add(new ConversationContextEntry(id, kind, RenderMessage(safe), preserve,
+                ImageBudgetOverhead(safe)));
             messageById.Add(id, safe);
             runById.Add(id, messageOwners.TryGetValue(messages[i], out var owner) ? owner : runId);
         }
@@ -3284,7 +3619,7 @@ public sealed class ExplorerTurn
             contributor.RecordUsed(sessionId, includedMemories, usedAt, CancellationToken.None);
     }
 
-    private static ModelMessage ProjectConversationMessage(ModelMessage original, ContextItem item,
+    internal static ModelMessage ProjectConversationMessage(ModelMessage original, ContextItem item,
         ContextDecision decision, int compressionCharacters)
     {
         var externalized = item.Provenance.Refs?.Any(reference => reference.StartsWith("artifact=sha256:",
@@ -3299,9 +3634,9 @@ public sealed class ExplorerTurn
         if (decision is not (ContextDecision.Compressed or ContextDecision.TruncatedByBudget)) return original;
 
         var charLimit = decision == ContextDecision.TruncatedByBudget
-            ? Math.Max(32, item.EstimatedTokens * 4)
+            ? Math.Max(0, item.EstimatedTokens - item.TokenBudgetOverhead) * 4
             : compressionCharacters;
-        var blockLimit = Math.Max(32, charLimit / Math.Max(1, original.Content.Count));
+        var blockLimit = Math.Max(0, charLimit / Math.Max(1, original.Content.Count));
         var compacted = new List<ContentBlock>();
         foreach (var block in original.Content)
         {
@@ -3316,12 +3651,20 @@ public sealed class ExplorerTurn
                         "{\"_omnicore_compressed\":true,\"preview\":\"" + preview + "\"}"));
                     break;
                 case ToolResultBlock result:
-                    compacted.Add(result with { Content = result.Content.Select(content => content is TextBlock text
-                        ? (ContentBlock)new TextBlock(TrimBody(text.Text, blockLimit)) : content).ToArray() });
+                    compacted.Add(result with { Content = result.Content.Select(content => CompactBlock(content, blockLimit)).ToArray() });
                     break;
                 case CitationBlock citation:
                     compacted.Add(citation with { Text = TrimBody(citation.Text, blockLimit),
                         SourceRef = TrimBody(citation.SourceRef, blockLimit) });
+                    break;
+                case DocumentBlock document:
+                    compacted.Add(document with { ExtractedText = TrimBody(document.ExtractedText, blockLimit) });
+                    break;
+                case ImageBlock image:
+                    // Binary content is never compressed as text. The context planner reserves
+                    // an estimated image cost; if the protected current input cannot fit, it
+                    // raises the existing overflow barrier before provider dispatch.
+                    compacted.Add(image);
                     break;
                 case ReasoningBlock:
                     compacted.Add(new TextBlock("[older reasoning omitted]"));
@@ -3333,6 +3676,14 @@ public sealed class ExplorerTurn
         }
         return new ModelMessage(original.Role, compacted.ToArray());
     }
+
+    private static ContentBlock CompactBlock(ContentBlock block, int limit) => block switch
+    {
+        TextBlock text => new TextBlock(TrimBody(text.Text, limit)),
+        DocumentBlock document => document with { ExtractedText = TrimBody(document.ExtractedText, limit) },
+        ToolResultBlock nested => nested with { Content = nested.Content.Select(child => CompactBlock(child, limit)).ToArray() },
+        _ => block,
+    };
 
     private static string TrimBody(string content, int maxCharacters)
     {
@@ -3514,6 +3865,12 @@ public sealed class ExplorerTurn
                 case TextBlock text:
                     blocks.Add(new TextBlock(_redaction.Redact(text.Text)));
                     break;
+                case DocumentBlock document:
+                    blocks.Add(document with { ExtractedText = _redaction.Redact(document.ExtractedText) });
+                    break;
+                case ImageBlock image:
+                    blocks.Add(image);
+                    break;
                 case ToolCallBlock call:
                     blocks.Add(new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
                         SafeToolArguments(call.ToolName, call.ArgumentsJson)));
@@ -3575,7 +3932,7 @@ public sealed class ExplorerTurn
         return result.ToArray();
     }
 
-    private static string RenderMessage(ModelMessage message)
+    internal static string RenderMessage(ModelMessage message)
     {
         var parts = new List<string>();
         foreach (var block in message.Content)
@@ -3589,14 +3946,20 @@ public sealed class ExplorerTurn
                     parts.Add("tool call " + call.ToolName + " " + call.ArgumentsJson);
                     break;
                 case ToolResultBlock result:
-                    parts.Add("tool result " + string.Join(" ", result.Content.OfType<TextBlock>()
-                        .Select(text => text.Text)));
+                    parts.Add("tool result " + string.Join(" ", result.Content.Select(RenderContentBlock)));
                     break;
                 case ReasoningBlock reasoning when reasoning.VisibleText is not null:
                     parts.Add(reasoning.VisibleText);
                     break;
                 case CitationBlock citation:
                     parts.Add(citation.Text + " " + citation.SourceRef);
+                    break;
+                case DocumentBlock document:
+                    parts.Add("document " + document.FileName + " " + document.ExtractedText);
+                    break;
+                case ImageBlock image:
+                    parts.Add("image " + image.MediaType + " encoded-bytes=" + image.Bytes.Length
+                        + " (provider image token usage is unknown; conservative estimated reservation is applied)");
                     break;
                 case ProviderOpaqueBlock:
                     parts.Add("[estado opaco del provider]");
@@ -3605,6 +3968,30 @@ public sealed class ExplorerTurn
         }
 
         return message.Role.ToString() + ": " + string.Join(" ", parts);
+    }
+
+    private static string RenderContentBlock(ContentBlock block) => block switch
+    {
+        TextBlock text => text.Text,
+        DocumentBlock document => "document " + document.FileName + " " + document.ExtractedText,
+        ImageBlock image => "image " + image.MediaType + " encoded-bytes=" + image.Bytes.Length,
+        ToolCallBlock call => "tool call " + call.ToolName + " " + call.ArgumentsJson,
+        ToolResultBlock result => "tool result " + string.Join(" ", result.Content.Select(RenderContentBlock)),
+        CitationBlock citation => citation.Text + " " + citation.SourceRef,
+        ReasoningBlock reasoning when reasoning.VisibleText is not null => reasoning.VisibleText,
+        _ => string.Empty,
+    };
+
+    internal static int ImageBudgetOverhead(ModelMessage message)
+    {
+        static int Estimate(ContentBlock block) => block switch
+        {
+            ImageBlock image => Math.Min(32_768, Math.Max(256, (image.Bytes.Length + 511) / 512)),
+            ToolResultBlock result => result.Content.Sum(Estimate),
+            _ => 0,
+        };
+
+        return checked(message.Content.Sum(Estimate));
     }
 
     private ArtifactRef PersistContextSnapshot(ContextSnapshot snapshot, long tokenBudget)

@@ -31,12 +31,14 @@ public sealed partial class TuiWiringTests
             cancellationToken.ThrowIfCancellationRequested(); Saves++;
             Assert.Equal(_revision.ToString(), expectedRevision);
             if (draft.ExistingId is null) Models.Add(new(draft.Id, draft.ProviderId, draft.Context,
-                draft.RecommendedUsableContext, draft.MaxOutput, draft.ParametersBillions, draft.Aliases, true, []));
+                draft.RecommendedUsableContext, draft.MaxOutput, draft.ParametersBillions, draft.Aliases, true, [],
+                draft.InputModalities, draft.OutputModalities, draft.ImageGenerationMaxCostUsd));
             else
             {
                 var index = Models.FindIndex(row => row.Id == draft.ExistingId);
                 Models[index] = new(draft.Id, draft.ProviderId, draft.Context, draft.RecommendedUsableContext,
-                    draft.MaxOutput, draft.ParametersBillions, draft.Aliases, true, []);
+                    draft.MaxOutput, draft.ParametersBillions, draft.Aliases, true, [],
+                    draft.InputModalities, draft.OutputModalities, draft.ImageGenerationMaxCostUsd);
             }
             _revision++;
             return Snapshot();
@@ -85,6 +87,29 @@ public sealed partial class TuiWiringTests
         ClickId(fx, "model-catalog-save");
         Assert.Equal(1, host.Saves);
         Assert.Equal(1.5, Assert.Single(host.Models, row => row.Id == "decimal-model").ParametersBillions);
+    });
+
+    [Theory]
+    [InlineData("es", "0.25")]
+    [InlineData("en", "0.25")]
+    [InlineData("fr", "0,25")]
+    [InlineData("it", "0,25")]
+    public void Model_catalog_editor_saves_image_cost_as_invariant_decimal_in_every_locale(string locale, string value) => RunTuiTest(fx =>
+    {
+        var host = new ModelCatalogFixture();
+        fx.StartTui(modelCatalogPreferences: host, localeSelection: new LocaleSelection(locale, LocaleSelectionSource.CommandLine));
+        fx.Invoke(fx.App.ShowModelCatalogPreferences);
+        ClickId(fx, "model-catalog-add");
+        fx.Invoke(() =>
+        {
+            SetField(fx.App.Overlay!, "model-catalog-id", "cost-model");
+            SetField(fx.App.Overlay!, "model-catalog-output-modalities", "text,image");
+            SetField(fx.App.Overlay!, "model-catalog-image-cost", value);
+        });
+        ClickId(fx, "model-catalog-save");
+        var saved = Assert.Single(host.Models, model => model.Id == "cost-model");
+        Assert.Equal(0.25m, saved.ImageGenerationMaxCostUsd);
+        Assert.Equal(["text", "image"], saved.OutputModalities);
     });
 
     [Theory]
@@ -187,6 +212,52 @@ public sealed partial class TuiWiringTests
             Assert.Equal(1, host.Deletes);
             Assert.DoesNotContain(host.Models, row => row.Id == "draft-model");
         });
+    }
+
+    [Fact]
+    public void Model_catalog_creates_and_selects_a_separate_openrouter_image_route_from_the_editor()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-tui-image-route-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var config = Path.Combine(root, "config"); var workspace = Path.Combine(root, "workspace");
+            var data = Path.Combine(root, "workspace-data");
+            Directory.CreateDirectory(config); Directory.CreateDirectory(workspace);
+            File.WriteAllText(Path.Combine(config, "providers.yaml"),
+                "providers:\n  text-route: { family: OpenAiChatCompatible, baseUrl: https://openrouter.ai/api/v1, authRef: shared-key, billingMode: MeteredCurrency }\n");
+            File.WriteAllText(Path.Combine(config, "models.yaml"), "models: {}\n");
+            var host = ModelCatalogPreferencesHost.Create(config, workspace, data);
+            RunTuiTest(fx =>
+            {
+                fx.StartTui(modelCatalogPreferences: host, initialColumns: 120, initialRows: 35);
+                fx.Invoke(fx.App.ShowModelCatalogPreferences);
+                ClickId(fx, "model-catalog-add");
+                fx.Invoke(() =>
+                {
+                    SetField(fx.App.Overlay!, "model-catalog-id", "image-model");
+                    SetField(fx.App.Overlay!, "model-catalog-provider", "text-route");
+                });
+                ClickId(fx, "model-catalog-create-openrouter-image-route");
+                Assert.Equal("text-route-images", Assert.IsType<TextField>(
+                    Descendants(fx.App.Overlay!).Single(view => view.Id == "model-catalog-provider")).Text.ToString());
+                Assert.Equal("text,image", Assert.IsType<TextField>(
+                    Descendants(fx.App.Overlay!).Single(view => view.Id == "model-catalog-output-modalities")).Text.ToString());
+                fx.Invoke(() =>
+                {
+                    SetField(fx.App.Overlay!, "model-catalog-context", "8192");
+                    SetField(fx.App.Overlay!, "model-catalog-usable-context", "6144");
+                    SetField(fx.App.Overlay!, "model-catalog-image-cost", "0.25");
+                });
+                ClickId(fx, "model-catalog-save");
+                var loaded = new ConfigLoader().Load(File.ReadAllText(Path.Combine(config, "providers.yaml")),
+                    File.ReadAllText(Path.Combine(config, "models.yaml")));
+                Assert.Equal("text-route-images", loaded.Registry.Model("image-model")!.ProviderId);
+                Assert.Equal("openrouter-images", loaded.Registry.Provider("text-route-images")!.Profile);
+                Assert.Contains("authRef: shared-key", File.ReadAllText(Path.Combine(config, "providers.yaml")));
+                Assert.DoesNotContain("apiKey", File.ReadAllText(Path.Combine(config, "providers.yaml")), StringComparison.OrdinalIgnoreCase);
+            });
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
     }
 
     [Theory]

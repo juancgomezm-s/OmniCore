@@ -15,6 +15,38 @@ using OmniCore.Security;
 public sealed class OpenRouterConnectionServiceTests
 {
     [Fact]
+    public async System.Threading.Tasks.Task Derived_image_route_cannot_take_over_or_delete_shared_text_route_credential()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-openrouter-derived-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var paths = new DefaultPlatformPaths(root, Path.Combine(root, "config"));
+            Directory.CreateDirectory(paths.ConfigDirectory);
+            File.WriteAllText(Path.Combine(paths.ConfigDirectory, "providers.yaml"),
+                "providers:\n  text-route: { family: OpenAiChatCompatible, baseUrl: https://openrouter.ai/api/v1, authRef: shared-key, billingMode: MeteredCurrency }\n  text-route-images: { family: OpenAiChatCompatible, profile: openrouter-images, baseUrl: https://openrouter.ai/api/v1, authRef: shared-key, billingMode: MeteredCurrency }\n");
+            var store = new FileCredentialStore(Path.Combine(root, "credentials.ini"));
+            store.Save("shared-key", "fixture-openrouter-key-12345", TestContext.Current.CancellationToken);
+            var service = new OpenRouterConnectionService(store, paths, () => new HttpClient(new FixtureHandler(), false));
+
+            var rows = service.List(TestContext.Current.CancellationToken);
+            var source = Assert.Single(rows, row => row.ProviderId == "text-route");
+            var derived = Assert.Single(rows, row => row.ProviderId == "text-route-images");
+            Assert.True(source.CanDisconnect);
+            Assert.False(derived.CanConnect);
+            Assert.False(derived.CanTest);
+            Assert.False(derived.CanDiscoverModels);
+            Assert.Equal("providers.notice.imageRouteSharesCredential", derived.Notice!.Key);
+            await Assert.ThrowsAsync<ProviderConnectionException>(() => service.ConnectAsync("text-route-images",
+                "replacement-openrouter-key-12345", false, TestContext.Current.CancellationToken));
+            Assert.Throws<ProviderConnectionException>(() => service.Disconnect("text-route-images", TestContext.Current.CancellationToken));
+            Assert.Equal("fixture-openrouter-key-12345", store.Load("shared-key", TestContext.Current.CancellationToken));
+            Assert.DoesNotContain("replacement-openrouter-key-12345",
+                File.ReadAllText(Path.Combine(paths.ConfigDirectory, "providers.yaml")), StringComparison.Ordinal);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task UserConnection_Discovery_RegistersCatalog_AndModelAdapterUsesExactIdAndStoredKey()
     {
         var root = Path.Combine(Path.GetTempPath(), "omnicore-openrouter-" + Guid.NewGuid().ToString("N"));

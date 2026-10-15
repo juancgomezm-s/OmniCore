@@ -50,8 +50,21 @@ public sealed class ModelProfileResolver
         if (provider?.SupportsNativeToolCalls == true) formats.Add(ToolCallFormat.Native);
         if (provider?.SupportsGrammarPerRequest == true) formats.Add(ToolCallFormat.Grammar);
         if (formats.Count == 0) formats.Add(ToolCallFormat.PromptedJson);
+        var modalities = model.InputModalities.Contains("image", StringComparer.Ordinal)
+            && provider?.Profile != OpenRouterImageGenerationProvider.ProfileName
+            && provider is { Family: ProviderFamily.OpenAIResponses or ProviderFamily.AnthropicMessages or ProviderFamily.OpenAiChatCompatible }
+            ? new[] { "text", "image" }
+            : new[] { "text" };
+        var outputDialectAvailable = provider is { Family: ProviderFamily.OpenAIResponses, Profile: not "codex" }
+            || provider is { Family: ProviderFamily.OpenAiChatCompatible, Profile: OpenRouterImageGenerationProvider.ProfileName };
+        var outputModalities = outputDialectAvailable
+            && model.OutputModalities.Contains("image", StringComparer.Ordinal)
+            && model.ImageGenerationMaxCostUsd is > 0m
+            ? new[] { "text", "image" }
+            : new[] { "text" };
         return new EffectiveModelProfile(model.Id, model.ContextWindow, model.RecommendedUsableContext,
-            model.MaxOutputTokens, new[] { "text" }, formats, false, traits, route?.Id,
-            route is null ? model.ReasoningCapability : route.ReasoningCapability);
+            model.MaxOutputTokens, modalities, formats, false, traits, route?.Id,
+            route is null ? model.ReasoningCapability : route.ReasoningCapability, outputModalities,
+            outputModalities.Contains("image", StringComparer.Ordinal) ? model.ImageGenerationMaxCostUsd : null);
     }
 }

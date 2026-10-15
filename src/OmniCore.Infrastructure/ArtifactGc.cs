@@ -146,9 +146,10 @@ public sealed class ArtifactGc
             if (!visited.Add(hash)) continue;
             live.Add(hash);
             var probe = _artifactStore.Probe(ContentHash.Sha256(hash));
-            if (probe.Status != BlobStatus.Ok || probe.Content is null)
+            if (probe.Status != BlobStatus.Ok)
                 throw new InvalidDataException("GC no puede completar el mark: artifact referenciado "
                     + hash + " no se puede leer (" + probe.Status + "). No se barre ningún blob.");
+            if (probe.Content is null) continue; // verified binary attachment: live, but contains no JSON graph.
             foreach (Match match in HexHash.Matches(probe.Content))
                 live.Add(match.Value); // conservative mark; only typed refs below extend traversal
             try

@@ -58,6 +58,8 @@ public sealed partial class TuiApp
         ?? ModelCatalogPreferencesHost.Create(workspaceRoot: Environment.CurrentDirectory);
 
     private string ModelCatalogText(string key) => _localization.Resolve("modelCatalogPreferences." + key);
+    private string ModelCatalogText(string key, string providerId) =>
+        _localization.Resolve("modelCatalogPreferences." + key, "provider", providerId);
 
     private void RefreshModelCatalog()
     {
@@ -118,10 +120,13 @@ public sealed partial class TuiApp
             ModelCatalogText("context") + ": " + current.Context.ToString(CultureInfo.InvariantCulture)
                 + " · " + ModelCatalogText("maxOutput") + ": " + (current.MaxOutput?.ToString(CultureInfo.InvariantCulture) ?? _localization.Resolve("shell.state.off")),
             ModelCatalogText("aliases") + ": " + (current.Aliases.Count == 0 ? "—" : string.Join(", ", current.Aliases)),
+            ModelCatalogText("inputModalities") + ": " + string.Join(", ", current.InputModalities ?? []),
+            ModelCatalogText("outputModalities") + ": " + string.Join(", ", current.OutputModalities ?? ["text"]),
+            ModelCatalogText("imageGenerationCost") + ": " + (current.ImageGenerationMaxCostUsd?.ToString(CultureInfo.InvariantCulture) ?? _localization.Resolve("shell.state.off")),
             current.DeleteBlockers.Count == 0 ? "" : ModelCatalogText("deleteBlocked") + " "
                 + string.Join("; ", current.DeleteBlockers.Select(ModelCatalogError))
         }.Where(line => line.Length > 0));
-        var details = new Label { Id = "model-catalog-details", X = MenuIndent.Level1, Y = Pos.AnchorEnd(7), Width = Dim.Fill(4), Height = 2,
+        var details = new Label { Id = "model-catalog-details", X = MenuIndent.Level1, Y = Pos.AnchorEnd(9), Width = Dim.Fill(4), Height = 4,
             Text = detailsText };
         var warning = new Label { Id = "model-catalog-warning", X = MenuIndent.Level0, Y = Pos.AnchorEnd(5), Width = Dim.Fill(4), Height = 1,
             Text = ModelCatalogText("otherFoldersWarning") };
@@ -138,6 +143,10 @@ public sealed partial class TuiApp
             ModelCatalogText("context") + ": " + model.Context.ToString("N0", CultureInfo.InvariantCulture)
                 + " · " + ModelCatalogText("maxOutput") + ": " + (model.MaxOutput?.ToString("N0", CultureInfo.InvariantCulture) ?? _localization.Resolve("shell.state.off"))
                 + " · " + ModelCatalogText("aliases") + ": " + (model.Aliases.Count == 0 ? "—" : string.Join(", ", model.Aliases)),
+            ModelCatalogText("inputModalities") + ": " + string.Join(", ", model.InputModalities ?? []),
+            ModelCatalogText("outputModalities") + ": " + string.Join(", ", model.OutputModalities ?? ["text"])
+                + " · " + ModelCatalogText("imageGenerationCost") + ": "
+                + (model.ImageGenerationMaxCostUsd?.ToString(CultureInfo.InvariantCulture) ?? _localization.Resolve("shell.state.off")),
             model.DeleteBlockers.Count == 0 ? "" : ModelCatalogText("deleteBlocked") + " "
                 + string.Join("; ", model.DeleteBlockers.Select(ModelCatalogError))
         }.Where(line => line.Length > 0));
@@ -215,7 +224,8 @@ public sealed partial class TuiApp
 
     private string ModelCatalogRowText(ModelCatalogModel model, int idWidth)
     {
-        var family = _modelCatalogSnapshot?.Providers.FirstOrDefault(provider => provider.Id == model.ProviderId)?.Family ?? "";
+        var provider = _modelCatalogSnapshot?.Providers.FirstOrDefault(item => item.Id == model.ProviderId);
+        var family = provider is null ? "" : provider.Family + (provider.Profile is null ? "" : "/" + provider.Profile);
         var context = model.Context >= 1_000_000 ? (model.Context / 1_000_000d).ToString("0.#", CultureInfo.InvariantCulture) + "M"
             : model.Context >= 1_000 ? (model.Context / 1_000).ToString(CultureInfo.InvariantCulture) + "k"
             : model.Context.ToString(CultureInfo.InvariantCulture);
@@ -230,12 +240,13 @@ public sealed partial class TuiApp
     {
         if (_window is null) return;
         CloseOverlay();
+        var currentSnapshot = snapshot;
         var frame = OverlayFrame(ModelCatalogText(existing is null ? "newModel" : "edit")
             + (existing is null ? "" : " · " + existing.Id), _window.Frame.Height - 3);
         frame.Id = "model-catalog-editor";
         frame.Width = Dim.Percent(92);
         frame.Height = Dim.Fill(2);
-        var providers = snapshot.Providers;
+        var providers = currentSnapshot.Providers;
         var y = 2;
         TextField Field(string id, string labelKey, string value)
         {
@@ -248,9 +259,16 @@ public sealed partial class TuiApp
         var modelId = Field("model-catalog-id", "modelId", existing?.Id ?? "");
         modelId.ReadOnly = existing is not null;
         var provider = Field("model-catalog-provider", "provider", existing?.ProviderId ?? providers.FirstOrDefault()?.Id ?? "");
+        var imageRoute = new Button { Id = "model-catalog-create-openrouter-image-route", X = 25, Y = y++,
+            Text = ModelCatalogText("createOpenRouterImageRoute"), Enabled = existing is null };
+        frame.Add(imageRoute);
+        var imageRouteHint = new Label { Id = "model-catalog-image-route-hint", X = 25, Y = y++, Width = Dim.Fill(4), Height = 2,
+            Text = DerivedRouteHint(currentSnapshot) };
+        frame.Add(imageRouteHint);
         if (existing is not null)
         {
-            var family = providers.FirstOrDefault(item => item.Id == existing.ProviderId)?.Family ?? "";
+            var providerInfo = providers.FirstOrDefault(item => item.Id == existing.ProviderId);
+            var family = providerInfo is null ? "" : providerInfo.Family + (providerInfo.Profile is null ? "" : "/" + providerInfo.Profile);
             frame.Add(new Label { Id = "model-catalog-family", X = 25, Y = y++, Width = Dim.Fill(4), Height = 1,
                 Text = ModelCatalogText("family") + ": " + family });
         }
@@ -258,6 +276,12 @@ public sealed partial class TuiApp
         var usable = Field("model-catalog-usable-context", "usableContext", existing?.RecommendedUsableContext.ToString(CultureInfo.InvariantCulture) ?? "8192");
         var output = Field("model-catalog-max-output", "maxOutput", existing?.MaxOutput?.ToString(CultureInfo.InvariantCulture) ?? "");
         var parameters = Field("model-catalog-parameters", "parameters", existing?.ParametersBillions?.ToString("R", PreferenceInput.Culture(_locale)) ?? "");
+        var inputModalities = Field("model-catalog-input-modalities", "inputModalities",
+            string.Join(",", existing?.InputModalities ?? ["text"]));
+        var outputModalities = Field("model-catalog-output-modalities", "outputModalities",
+            string.Join(",", existing?.OutputModalities ?? ["text"]));
+        var imageGenerationCost = Field("model-catalog-image-cost", "imageGenerationCost",
+            existing?.ImageGenerationMaxCostUsd?.ToString("0.################", PreferenceInput.Culture(_locale)) ?? "");
         frame.Add(new Label { X = 2, Y = y, Width = 22, Height = 1, Text = ModelCatalogText("aliases") });
         var aliases = new TextView { Id = "model-catalog-aliases", X = 25, Y = y, Width = Dim.Fill(4), Height = 2,
             Text = string.Join("\n", existing?.Aliases ?? []) };
@@ -270,6 +294,26 @@ public sealed partial class TuiApp
         var save = new Button { Id = "model-catalog-save", X = 2, Y = Pos.AnchorEnd(3), Text = ModelCatalogText("save") };
         var cancel = new Button { Id = "model-catalog-cancel", X = Pos.AnchorEnd(14), Y = Pos.AnchorEnd(3), Text = ModelCatalogText("cancel") };
         cancel.Accepted += (_, _) => { CloseOverlay(); RenderModelCatalog(); };
+        imageRoute.Accepted += (_, _) =>
+        {
+            var sourceId = provider.Text.ToString().Trim();
+            var source = currentSnapshot.Providers.FirstOrDefault(item => item.Id == sourceId);
+            if (existing is not null || source is null || !source.CanCreateOpenRouterImageRoute
+                || ModelCatalogHost() is not IOpenRouterImageRouteRegistrar registrar)
+            { status.Text = ModelCatalogText("imageRouteSourceUnsupported"); return; }
+            try
+            {
+                var registered = registrar.CreateOpenRouterImageRoute(sourceId, currentSnapshot.Revision, CancellationToken.None);
+                currentSnapshot = registered.Snapshot;
+                provider.Text = registered.ProviderId;
+                outputModalities.Text = "text,image";
+                imageRouteHint.Text = ModelCatalogText("derivedImageRoute", sourceId);
+                imageRoute.Text = ModelCatalogText("createOpenRouterImageRoute");
+                status.Text = ModelCatalogText("imageRouteCreated", sourceId);
+            }
+            catch (ModelCatalogConfigurationException exception) { status.Text = ModelCatalogError(exception.MessageKey); }
+            catch (Exception) { status.Text = ModelCatalogText("saveFailed"); }
+        };
         save.Enabled = snapshot.Available;
         save.Accepted += (_, _) =>
         {
@@ -291,11 +335,22 @@ public sealed partial class TuiApp
                 parametersValue = parsed;
             }
             var aliasesValue = aliases.Text.ToString().Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            var modalitiesValue = inputModalities.Text.ToString().Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            var outputModalitiesValue = outputModalities.Text.ToString().Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            decimal? imageCostValue = null;
+            if (!string.IsNullOrWhiteSpace(imageGenerationCost.Text.ToString()))
+            {
+                if (!decimal.TryParse(imageGenerationCost.Text.ToString(), NumberStyles.Number,
+                    PreferenceInput.Culture(_locale), out var parsedCost))
+                { status.Text = ModelCatalogText("invalidImageCost"); return; }
+                imageCostValue = parsedCost;
+            }
             try
             {
                 var draft = new ModelCatalogDraft(modelId.Text.ToString().Trim(), provider.Text.ToString().Trim(), contextValue,
-                    usableValue, outputValue, parametersValue, aliasesValue, existing?.Id);
-                _modelCatalogSnapshot = ModelCatalogHost().Save(draft, snapshot.Revision, CancellationToken.None);
+                    usableValue, outputValue, parametersValue, aliasesValue, existing?.Id, modalitiesValue,
+                    outputModalitiesValue, imageCostValue);
+                _modelCatalogSnapshot = ModelCatalogHost().Save(draft, currentSnapshot.Revision, CancellationToken.None);
                 _modelCatalogSelectedId = draft.Id;
                 _modelCatalogNotice = ModelCatalogText("saved");
                 CloseOverlay(); RenderModelCatalog();
@@ -309,6 +364,20 @@ public sealed partial class TuiApp
         _overlay = frame;
         _window.Add(frame);
         if (existing is null) modelId.SetFocus(); else provider.SetFocus();
+
+        string DerivedRouteHint(ModelCatalogPreferencesSnapshot catalog)
+        {
+            var sourceId = provider.Text.ToString().Trim();
+            var derived = catalog.Providers.FirstOrDefault(item => item.Id == sourceId
+                && string.Equals(item.Profile, OmniCore.Models.OpenRouterImageGenerationProvider.ProfileName,
+                    StringComparison.Ordinal));
+            var owner = sourceId.EndsWith("-images", StringComparison.Ordinal) ? sourceId[..^7] : sourceId;
+            if (derived is not null) return ModelCatalogText("derivedImageRoute", owner);
+            var sources = catalog.Providers.Where(item => item.CanCreateOpenRouterImageRoute)
+                .Select(item => item.Id).Take(5).ToArray();
+            return sources.Length == 0 ? ModelCatalogText("imageRouteSourceUnsupported")
+                : ModelCatalogText("imageRouteSources") + ": " + string.Join(", ", sources);
+        }
     }
 
     private void ShowModelCatalogDeleteConfirm(ModelCatalogModel model)
@@ -374,6 +443,8 @@ public sealed partial class TuiApp
             "unavailable" => "unavailable", "configurationInvalid" => "catalogUnavailable",
             "workspaceScopeUnavailable" => "workspaceScopeUnavailable", "revisionConflict" => "stale",
             "unknownProvider" => "unknownProvider", "modelAlreadyExists" => "modelAlreadyExists",
+            "imageRouteSourceUnsupported" => "imageRouteSourceUnsupported",
+            "invalidImageCost" => "invalidImageCost", "imageCostRequired" => "imageCostRequired",
             "modelNotFound" => "modelNotFound", "invalidId" => "invalidId", "invalidProvider" => "invalidProvider",
             "invalidLimits" => "invalidLimits", "invalidParameters" => "invalidParameters", "invalidAliases" => "invalidAliases",
             "ambiguousAlias" => "ambiguousAlias", "referenced" => "referenced", _ => "saveFailed"

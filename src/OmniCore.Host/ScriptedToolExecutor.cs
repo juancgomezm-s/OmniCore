@@ -377,7 +377,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         var events = buffered.ToArray();
 
         return outcome.Succeeded
-            ? ToolOutcome.Ok(outcome.Summary ?? "ok", outcome.Preview, outcome.Effect, outcome.FinalState, events)
+            ? new ToolOutcome(true, outcome.Summary ?? "ok", outcome.Preview, outcome.Effect, outcome.FinalState,
+                events, artifact: outcome.Artifact)
             : new ToolOutcome(false, outcome.Summary ?? "fallo", outcome.Preview, null, outcome.FinalState,
                 events, outcome.PendingInteractionId);
     }

@@ -198,6 +198,7 @@ public sealed class ContextSnapshot
             canonical.Append('|').Append(item.Id).Append(':').Append(item.Kind).Append(':')
                 .Append(item.EstimatedTokens.ToString(CultureInfo.InvariantCulture)).Append(':').Append(item.Priority)
                 .Append(':').Append(item.Retention).Append(':').Append(item.PreserveWhenTrimming).Append(':')
+                .Append(item.TokenBudgetOverhead.ToString(CultureInfo.InvariantCulture)).Append(':')
                 .Append(item.Provenance.ContributorId).Append(':').Append(item.Provenance.Category).Append(':')
                 .Append(item.Provenance.ComponentSource).Append(':')
                 .Append(item.Provenance.Sensitive).Append(':')
@@ -233,10 +234,14 @@ public sealed class ContextItem
     /// <summary>El primer mensaje del Run se conserva durante el recorte de conversación (ADR-0042).</summary>
     public bool PreserveWhenTrimming { get; }
 
+    /// <summary>Non-text modality budget reserved independently of tokenizing Content.</summary>
+    public int TokenBudgetOverhead { get; }
+
     public ContextItem(string id, ContextItemKind kind, string content, int estimatedTokens,
         ContextPriority priority, RetentionPolicy retention, ContextProvenance provenance,
-        bool preserveWhenTrimming = false)
+        bool preserveWhenTrimming = false, int tokenBudgetOverhead = 0)
     {
+        if (tokenBudgetOverhead < 0) throw new ArgumentOutOfRangeException(nameof(tokenBudgetOverhead));
         Id = id;
         Kind = kind;
         Content = content;
@@ -245,6 +250,7 @@ public sealed class ContextItem
         Retention = retention;
         Provenance = provenance;
         PreserveWhenTrimming = preserveWhenTrimming;
+        TokenBudgetOverhead = tokenBudgetOverhead;
     }
 }
 

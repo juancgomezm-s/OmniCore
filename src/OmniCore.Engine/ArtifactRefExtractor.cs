@@ -92,16 +92,23 @@ internal static class ArtifactRefExtractor
                 refs.Add(t.BeforeStateRef);
                 break;
 
-            case ToolCallSucceeded t when t.AfterStateRef is not null:
-                refs.Add(t.AfterStateRef);
+            case ToolCallSucceeded t:
+                if (t.AfterStateRef is not null) refs.Add(t.AfterStateRef);
+                if (t.ResultArtifact is not null) refs.Add(t.ResultArtifact);
                 break;
 
-            case UserInputReceived u when u.ContentRef is not null:
-                refs.Add(u.ContentRef!);
+            case UserInputReceived u:
+                if (u.ContentRef is not null) refs.Add(u.ContentRef);
+                if (u.Attachments is not null) AddRange(refs, u.Attachments);
                 break;
 
             case AssistantMessageRecorded a when a.ContentRef is not null:
                 refs.Add(a.ContentRef!);
+                break;
+            case AssistantImagesRecorded images:
+                foreach (var image in images.Images) refs.Add(image.Artifact);
+                if (images.OrderedParts is not null)
+                    foreach (var part in images.OrderedParts) refs.Add(part.Artifact);
                 break;
 
             case InteractionRequested i when i.QuestionnaireSchemaRef is not null:

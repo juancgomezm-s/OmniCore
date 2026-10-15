@@ -131,18 +131,27 @@ public sealed class RunControlService
     /// <c>SendInput</c> (ADR-0035 §1): sin Run activo, el texto es el objetivo de un Run nuevo; con
     /// Run activo, se añade como mensaje del usuario (y reactiva la Lane raíz si esperaba input).
     /// </summary>
-    public RunId SendInput(SessionId session, string text, RunMode defaultMode, string? origin = null)
+    public RunId SendInput(SessionId session, string text, RunMode defaultMode, string? origin = null,
+        IReadOnlyList<ArtifactRef>? attachments = null)
     {
-        ArgumentException.ThrowIfNullOrEmpty(text);
-        var run = ActiveRun(session) ?? StartRun(session, text, defaultMode);
+        attachments ??= Array.Empty<ArtifactRef>();
+        if (string.IsNullOrEmpty(text) && attachments.Count == 0)
+            throw new ArgumentException("Input must contain text or an attachment.", nameof(text));
+        var activeRun = ActiveRun(session);
+        var run = activeRun ?? StartRun(session,
+            text.Length == 0 ? "Review the attached files." : text, defaultMode);
         var currentEvents = _store.ReadFrom(session, 1);
         var projection = RunProjection.Replay(session, run, _codecs, currentEvents);
-        if (FollowUpQueue.TryQueue(_store, _codecs, session, run, RootLane(currentEvents, projection), text, origin))
+        if (FollowUpQueue.TryQueue(_store, _codecs, session, run, RootLane(currentEvents, projection), text,
+            origin, attachments, out var attachmentsCannotBeQueued))
         {
             return run;
         }
-        var parts = "[" + System.Text.Json.JsonSerializer.Serialize(text, JsonStrings.Default.String) + "]";
-        new EventStream(_store, _codecs, session).Append(new UserInputReceived(run, parts, null, origin));
+        if (attachmentsCannotBeQueued)
+            throw new ArgumentException("Attachments cannot be queued while a turn or interaction is active.");
+        var parts = "[" + System.Text.Json.JsonSerializer.Serialize(text.Length == 0
+            ? "Review the attached files." : text, JsonStrings.Default.String) + "]";
+        new EventStream(_store, _codecs, session).Append(new UserInputReceived(run, parts, null, origin, attachments));
         return run;
     }
 

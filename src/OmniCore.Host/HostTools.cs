@@ -25,10 +25,11 @@ public sealed class HostTools
         bool includeMutationTools = false, bool includeProcessTools = false,
         SandboxStrength processSandboxStrength = SandboxStrength.Strong, ArtifactReadTool? artifactReadTool = null,
         bool includeControlTools = true, bool includeMailboxReceive = false, bool includeShellTool = true,
-        IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null)
+        IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null,
+        MediaReadTool? mediaReadTool = null)
         : this(boundary, planService, includeSimulationTools, includeMutationTools, includeProcessTools,
             processSandboxStrength, artifactReadTool, includeControlTools, includeMailboxReceive, includeShellTool,
-            processRuntime: null, worktreeIntegrationCoordinator)
+            processRuntime: null, worktreeIntegrationCoordinator, mediaReadTool)
     {
     }
 
@@ -36,7 +37,8 @@ public sealed class HostTools
         bool includeMutationTools, bool includeProcessTools, SandboxStrength processSandboxStrength,
         ArtifactReadTool? artifactReadTool, bool includeControlTools, bool includeMailboxReceive,
         bool includeShellTool, OmniCore.Abstractions.IProcessRuntime? processRuntime,
-        IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null)
+        IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null,
+        MediaReadTool? mediaReadTool = null)
     {
         _planPropose = new PlanProposeTool(planService);
         var catalog = includeSimulationTools ? FakeCatalog.Default() : new FakeCatalog();
@@ -62,6 +64,7 @@ public sealed class HostTools
 
         catalog = catalog.Add(new ReferenceResolveTool(boundary));
         if (artifactReadTool is not null) catalog = catalog.Add(artifactReadTool);
+        if (mediaReadTool is not null) catalog = catalog.Add(mediaReadTool);
         if (includeMailboxReceive) catalog = catalog.Add(new AgentMailboxReceiveTool());
         if (includeControlTools) catalog = catalog.Add(new ToolSearchTool(catalog));
         _catalog = includeControlTools ? catalog.Add(_planPropose).Add(new ModeProposeTool()) : catalog;
@@ -114,9 +117,10 @@ public sealed class HostTools
             includeControlTools: false, includeMailboxReceive: true, includeShellTool: false,
             processRuntime: processRuntime);
 
-    public static HostTools Explorer(ArtifactReadTool? artifactReadTool = null) =>
+    public static HostTools Explorer(ArtifactReadTool? artifactReadTool = null, MediaReadTool? mediaReadTool = null) =>
         new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
-            includeMutationTools: false, includeProcessTools: false, artifactReadTool: artifactReadTool);
+            includeMutationTools: false, includeProcessTools: false, artifactReadTool: artifactReadTool,
+            mediaReadTool: mediaReadTool);
 
     public FakeCatalog Catalog() => _catalog;
 

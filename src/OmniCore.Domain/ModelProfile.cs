@@ -19,6 +19,9 @@ public sealed class EffectiveModelProfile
 
     public IReadOnlyList<string> InputModalities { get; }
 
+    public IReadOnlyList<string> OutputModalities { get; }
+    public decimal? ImageGenerationMaxCostUsd { get; }
+
     public IReadOnlyList<ToolCallFormat> ToolCallFormats { get; }
 
     public bool SupportsParallelTools { get; }
@@ -30,7 +33,8 @@ public sealed class EffectiveModelProfile
     public EffectiveModelProfile(string modelId, long contextWindow, long recommendedUsableContext,
         long maxOutputTokens, IReadOnlyList<string> inputModalities, IReadOnlyList<ToolCallFormat> toolCallFormats,
         bool supportsParallelTools, IReadOnlyDictionary<string, double> traits, RouteId? routeId = null,
-        ReasoningCapability? reasoningCapability = null)
+        ReasoningCapability? reasoningCapability = null, IReadOnlyList<string>? outputModalities = null,
+        decimal? imageGenerationMaxCostUsd = null)
     {
         ModelId = modelId;
         RouteId = routeId ?? OmniCore.Domain.RouteId.ForDefaultModel(modelId);
@@ -38,6 +42,8 @@ public sealed class EffectiveModelProfile
         RecommendedUsableContext = recommendedUsableContext;
         MaxOutputTokens = maxOutputTokens;
         InputModalities = inputModalities;
+        OutputModalities = outputModalities ?? ["text"];
+        ImageGenerationMaxCostUsd = imageGenerationMaxCostUsd;
         ToolCallFormats = toolCallFormats;
         SupportsParallelTools = supportsParallelTools;
         ReasoningCapability = reasoningCapability ?? OmniCore.Domain.ReasoningCapability.Unknown;
@@ -156,9 +162,14 @@ public sealed class ModelSelection
     /// </summary>
     public long? MaxOutputTokens { get; }
 
+    public IReadOnlyList<string> InputModalities { get; }
+    public IReadOnlyList<string> OutputModalities { get; }
+    public decimal? ImageGenerationMaxCostUsd { get; }
+
     public ModelSelection(ModelIdValue model, long contextBudget, ToolMode toolMode, ReasoningRequest? reasoning,
         RouteId? routeId = null, ModelRoute? route = null, long? maxOutputTokens = null,
-        ReasoningResolution? reasoningResolution = null)
+        ReasoningResolution? reasoningResolution = null, IReadOnlyList<string>? inputModalities = null,
+        IReadOnlyList<string>? outputModalities = null, decimal? imageGenerationMaxCostUsd = null)
     {
         ArgumentNullException.ThrowIfNull(model);
         if (maxOutputTokens is <= 0)
@@ -181,6 +192,9 @@ public sealed class ModelSelection
         RouteIdentityHash = route is null ? null
             : AuthorizedModelRoute.From(route, BillingMode.Unknown).IdentityHash;
         MaxOutputTokens = maxOutputTokens;
+        InputModalities = inputModalities ?? ["text"];
+        OutputModalities = outputModalities ?? ["text"];
+        ImageGenerationMaxCostUsd = imageGenerationMaxCostUsd;
     }
 }
 

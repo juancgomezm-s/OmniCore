@@ -274,7 +274,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
             throw new NotSupportedException("Selected reasoning has no representation in this adapter.");
         var messages = new List<ChatRequestMessage>();
         if (!string.IsNullOrEmpty(request.Instructions))
-            messages.Add(new ChatRequestMessage { Role = "system", Content = request.Instructions });
+            messages.Add(new ChatRequestMessage { Role = "system", Content = JsonSerializer.SerializeToElement(request.Instructions, OpenAiJsonContext.Default.String) });
         var serverIds = CollectServerCallIds(request.Messages);
         foreach (var message in request.Messages)
             messages.AddRange(MapMessage(message, serverIds));
@@ -334,14 +334,14 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
     {
         // A ContentBlock is not a conversation turn. Chat Completions expects all
         // calls from one assistant turn together, followed by one result per call.
-        var text = message.Content.OfType<TextBlock>().ToArray();
+        var visible = message.Content.Where(block => block is TextBlock or ImageBlock or DocumentBlock).ToArray();
         var calls = message.Content.OfType<ToolCallBlock>().ToArray();
-        if (text.Length > 0 || calls.Length > 0)
+        if (visible.Length > 0 || calls.Length > 0)
         {
             yield return new ChatRequestMessage
             {
                 Role = calls.Length > 0 ? "assistant" : Role(message.Role),
-                Content = text.Length > 0 ? string.Concat(text.Select(block => block.Text)) : null,
+                Content = visible.Length > 0 ? EncodeContent(visible) : null,
                 ToolCalls = calls.Length == 0 ? null : calls.Select(call => new ChatRequestToolCall
                 {
                     Id = ids.GetValueOrDefault(call.Id.ToString(), call.ProviderCallId ?? call.Id.ToString()),
@@ -355,14 +355,63 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
         }
         foreach (var result in message.Content.OfType<ToolResultBlock>())
         {
+            var textContent = result.Content.Where(static block => block is TextBlock or DocumentBlock).ToArray();
             yield return new ChatRequestMessage
             {
                 Role = "tool", ToolCallId = ids.GetValueOrDefault(result.Id.ToString(), result.Id.ToString()),
-                Content = string.Concat(result.Content.OfType<TextBlock>().Select(block => block.Text)),
+                Content = EncodeContent(textContent.Length == 0
+                    ? new ContentBlock[] { new TextBlock("Tool returned image content; image follows in a separate user content block.") }
+                    : textContent),
             };
+            var images = result.Content.OfType<ImageBlock>().Cast<ContentBlock>().ToArray();
+            if (images.Length > 0)
+            {
+                var labelled = new ContentBlock[] { new TextBlock($"Image content returned by tool call {result.Id} follows.") }
+                    .Concat(images).ToArray();
+                yield return new ChatRequestMessage { Role = "user", Content = EncodeContent(labelled) };
+            }
         }
         // Opaque artifact loading still belongs to ArtifactStore. Do not turn
         // ReasoningBlock or ProviderOpaqueBlock into visible conversation text.
+    }
+
+    private static JsonElement EncodeContent(IReadOnlyList<ContentBlock> blocks)
+    {
+        if (blocks.All(static block => block is TextBlock or DocumentBlock))
+            return JsonSerializer.SerializeToElement(string.Concat(blocks.Select(block => block switch
+            {
+                TextBlock text => text.Text,
+                DocumentBlock document => $"[Document: {document.FileName}]\n{document.ExtractedText}",
+                _ => "",
+            })), OpenAiJsonContext.Default.String);
+
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartArray();
+            foreach (var block in blocks)
+            {
+                switch (block)
+                {
+                    case TextBlock text:
+                        writer.WriteStartObject(); writer.WriteString("type", "text"); writer.WriteString("text", text.Text); writer.WriteEndObject();
+                        break;
+                    case DocumentBlock document:
+                        writer.WriteStartObject(); writer.WriteString("type", "text");
+                        writer.WriteString("text", $"[Document: {document.FileName}]\n{document.ExtractedText}"); writer.WriteEndObject();
+                        break;
+                    case ImageBlock image:
+                        writer.WriteStartObject(); writer.WriteString("type", "image_url"); writer.WriteStartObject("image_url");
+                        writer.WriteString("url", "data:" + image.MediaType + ";base64," + Convert.ToBase64String(image.Bytes.AsSpan()));
+                        writer.WriteEndObject(); writer.WriteEndObject();
+                        break;
+                    default: throw new NotSupportedException("Chat-compatible provider cannot serialize this content block.");
+                }
+            }
+            writer.WriteEndArray();
+        }
+        using var json = JsonDocument.Parse(buffer.WrittenMemory);
+        return json.RootElement.Clone();
     }
 
     private static Dictionary<string, string> CollectServerCallIds(IReadOnlyList<ModelMessage> messages)
@@ -480,7 +529,7 @@ internal sealed class ChatRequestDto
 internal sealed class ChatRequestMessage
 {
     public string Role { get; set; } = "";
-    public string? Content { get; set; }
+    public JsonElement? Content { get; set; }
     [JsonPropertyName("tool_calls")] public List<ChatRequestToolCall>? ToolCalls { get; set; }
     [JsonPropertyName("tool_call_id")] public string? ToolCallId { get; set; }
     [JsonExtensionData] public Dictionary<string, JsonElement> Extra { get; } = new(StringComparer.Ordinal);

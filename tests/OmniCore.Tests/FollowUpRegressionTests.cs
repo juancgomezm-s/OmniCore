@@ -421,6 +421,50 @@ public sealed class FollowUpRegressionTests
         finally { Cleanup(store, journal, root); }
     }
 
+    [Fact]
+    public void Attachments_are_preserved_after_a_completed_turn_but_never_dropped_into_a_followup_queue()
+    {
+        var root = NewRoot();
+        var journal = Path.Combine(root, "journal.db");
+        SqliteEventStore? store = null;
+        try
+        {
+            store = new SqliteEventStore(journal);
+            var codecs = EventCodecs.Create();
+            var artifacts = new FileArtifactStore(Path.Combine(root, "blobs"));
+            var bytes = "verified image bytes"u8.ToArray();
+            var attachment = artifacts.PutBytes(bytes, "image/png", ArtifactKind.Other, Sensitivity.Sensitive);
+
+            var completedSession = SessionId.New();
+            var completedRun = TestRun.Open(store, completedSession, mode: RunMode.Plan);
+            var completedTurn = TurnId.New();
+            var completedStream = new EventStream(store, codecs, completedSession);
+            completedStream.Append(new TurnStarted(completedTurn, completedRun.RootLane));
+            completedStream.Append(new TurnCompleted(completedTurn));
+            Assert.Equal(RunState.Running, RunProjection.Replay(completedSession, completedRun.RunId,
+                codecs, store.ReadFrom(completedSession, 1)).State);
+
+            new RunControlService(store, codecs).SendInput(completedSession, "second turn with image",
+                RunMode.Plan, "Composer", [attachment]);
+            var admitted = Assert.Single(store.ReadFrom(completedSession, 1).Select(codecs.Decode)
+                .OfType<UserInputReceived>());
+            Assert.Equal(attachment.Hash, Assert.Single(admitted.Attachments!).Hash);
+            Assert.Empty(store.ReadFrom(completedSession, 1).Select(codecs.Decode).OfType<FollowUpQueued>());
+
+            var activeSession = SessionId.New();
+            var activeRun = TestRun.Open(store, activeSession, mode: RunMode.Plan);
+            new EventStream(store, codecs, activeSession).Append(new TurnStarted(TurnId.New(), activeRun.RootLane));
+            var before = store.CurrentSequence(activeSession);
+            var rejection = Assert.Throws<ArgumentException>(() => new RunControlService(store, codecs)
+                .SendInput(activeSession, "do not lose the image", RunMode.Plan, "Composer", [attachment]));
+            Assert.Contains("cannot be queued", rejection.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(before, store.CurrentSequence(activeSession));
+            Assert.Empty(store.ReadFrom(activeSession, 1).Select(codecs.Decode).OfType<FollowUpQueued>());
+            Assert.Empty(store.ReadFrom(activeSession, 1).Select(codecs.Decode).OfType<UserInputReceived>());
+        }
+        finally { Cleanup(store, journal, root); }
+    }
+
     private static ExplorerTurn MakeTurn(IEventStore store, IEventCodecRegistry codecs, IArtifactStore artifacts,
         SessionId session, RunId run, LaneId lane, FakeCatalog catalog, IToolExecutor executor,
         QuestionnaireInteractionService questionnaires,

@@ -102,6 +102,87 @@ public sealed class ModelCatalogPreferencesHostTests
     }
 
     [Fact]
+    public void Save_exposes_output_modality_and_positive_image_cost_cap_as_effective_catalog_fields()
+    {
+        using var fixture = new Fixture();
+        var before = fixture.Host.Read(CancellationToken.None);
+        var saved = fixture.Host.Save(new("fixture-model", "fixture", 8192, 6144, 2048, null,
+            ["fixture-alias"], "fixture-model", ["text"], ["text", "image"], 0.35m),
+            before.Revision, CancellationToken.None);
+        var model = Assert.Single(saved.Models);
+        Assert.Equal(["text", "image"], model.OutputModalities);
+        Assert.Equal(0.35m, model.ImageGenerationMaxCostUsd);
+        Assert.Contains("outputModalities", File.ReadAllText(fixture.Models));
+        Assert.Contains("imageGenerationMaxCostUsd", File.ReadAllText(fixture.Models));
+        File.WriteAllText(fixture.Providers, "providers:\n  fixture: { family: OpenAiChatCompatible, profile: openrouter-images, baseUrl: https://openrouter.ai/api/v1, authRef: fixture-key, billingMode: MeteredCurrency }\n");
+        var loaded = new ConfigLoader().Load(File.ReadAllText(fixture.Providers), File.ReadAllText(fixture.Models));
+        var profile = new ModelProfileResolver().Resolve(loaded.Registry.Model("fixture-model")!,
+            loaded.Registry.Provider("fixture"));
+        Assert.Contains("image", profile.OutputModalities);
+        Assert.DoesNotContain("image", profile.InputModalities);
+        Assert.Equal(0.35m, profile.ImageGenerationMaxCostUsd);
+        Assert.Equal("openrouter-images", Assert.Single(fixture.Host.Read(CancellationToken.None).Providers).Profile);
+    }
+
+    [Fact]
+    public void Image_generation_catalog_entry_requires_an_explicit_positive_cost_cap()
+    {
+        using var fixture = new Fixture();
+        var before = fixture.Host.Read(CancellationToken.None);
+        var error = Assert.Throws<ModelCatalogConfigurationException>(() => fixture.Host.Save(new("fixture-model", "fixture", 8192,
+            6144, 2048, null, ["fixture-alias"], "fixture-model", ["text"], ["text", "image"], null),
+            before.Revision, CancellationToken.None));
+        Assert.Equal("modelCatalog.error.imageCostRequired", error.MessageKey);
+        Assert.DoesNotContain("outputModalities", File.ReadAllText(fixture.Models));
+    }
+
+    [Fact]
+    public void OpenRouter_image_route_is_created_atomically_with_shared_auth_reference_only()
+    {
+        using var fixture = new Fixture();
+        File.WriteAllText(fixture.Providers, "providers:\n  fixture: { family: OpenAiChatCompatible, baseUrl: https://example.invalid/v1, auth: none, billingMode: Local }\n  text-route: { family: OpenAiChatCompatible, baseUrl: https://openrouter.ai/api/v1, caCertificate: fixture-root.pem, authRef: shared-openrouter, billingMode: MeteredCurrency }\n");
+        var host = Assert.IsType<ModelCatalogPreferencesHost>(fixture.Host);
+        var before = host.Read(CancellationToken.None);
+        Assert.Equal(before.Revision, host.Read(CancellationToken.None).Revision);
+        var created = host.CreateOpenRouterImageRoute("text-route", before.Revision, CancellationToken.None);
+        Assert.Equal("text-route-images", created.ProviderId);
+        var config = File.ReadAllText(fixture.Providers);
+        Assert.Contains("profile: openrouter-images", config);
+        Assert.Contains("authRef: shared-openrouter", config);
+        Assert.Contains("caCertificate: fixture-root.pem", config);
+        Assert.DoesNotContain("apiKey", config, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("OpenAiChatCompatible", created.Snapshot.Providers.Single(item => item.Id == "text-route").Family);
+        Assert.Null(created.Snapshot.Providers.Single(item => item.Id == "text-route").Profile);
+        Assert.False(created.Snapshot.Providers.Single(item => item.Id == "text-route-images").CanCreateOpenRouterImageRoute);
+
+        var modelSaved = fixture.Host.Save(new("image-model", created.ProviderId, 8192, 6144, null, null,
+            [], InputModalities: ["text"], OutputModalities: ["text", "image"], ImageGenerationMaxCostUsd: 0.25m),
+            created.Snapshot.Revision, CancellationToken.None);
+        var effective = new ConfigLoader().Load(File.ReadAllText(fixture.Providers), File.ReadAllText(fixture.Models));
+        Assert.Equal("fixture-root.pem", effective.Registry.Provider(created.ProviderId)!.TrustedCertificatePath);
+        Assert.Equal(created.ProviderId, effective.Registry.Model("image-model")!.ProviderId);
+        Assert.Equal(0.25m, modelSaved.Models.Single(item => item.Id == "image-model").ImageGenerationMaxCostUsd);
+    }
+
+    [Fact]
+    public void OpenRouter_image_route_stale_revision_and_collision_leave_provider_yaml_unchanged()
+    {
+        using var fixture = new Fixture();
+        File.WriteAllText(fixture.Providers, "providers:\n  fixture: { family: OpenAiChatCompatible, baseUrl: https://example.invalid/v1, auth: none, billingMode: Local }\n  text-route: { family: OpenAiChatCompatible, baseUrl: https://openrouter.ai/api/v1, authRef: shared-openrouter }\n");
+        var host = Assert.IsType<ModelCatalogPreferencesHost>(fixture.Host);
+        var before = host.Read(CancellationToken.None);
+        var original = File.ReadAllText(fixture.Providers);
+        Assert.Throws<ModelCatalogConfigurationException>(() => host.CreateOpenRouterImageRoute("text-route", "stale", CancellationToken.None));
+        Assert.Equal(original, File.ReadAllText(fixture.Providers));
+
+        var first = host.CreateOpenRouterImageRoute("text-route", before.Revision, CancellationToken.None);
+        var second = host.CreateOpenRouterImageRoute("text-route", first.Snapshot.Revision, CancellationToken.None);
+        Assert.Equal(first.ProviderId, second.ProviderId);
+        var snapshot = File.ReadAllText(fixture.Providers);
+        Assert.Equal(3, new ConfigLoader().Load(snapshot, File.ReadAllText(fixture.Models)).Registry.Providers().Count);
+    }
+
+    [Fact]
     public void Delete_is_blocked_by_user_routing_and_by_project_or_workspace_defaults_resolved_through_aliases()
     {
         using var fixture = new Fixture();

@@ -17,11 +17,21 @@ public interface IModelCatalogPreferencesHost
         CancellationToken cancellationToken);
 }
 
-public sealed record ModelCatalogProvider(string Id, string Family);
+/// <summary>Optional, explicit registration of a separate OpenRouter image-output route.</summary>
+public interface IOpenRouterImageRouteRegistrar
+{
+    (ModelCatalogPreferencesSnapshot Snapshot, string ProviderId) CreateOpenRouterImageRoute(
+        string sourceProviderId, string expectedRevision, CancellationToken cancellationToken);
+}
+
+public sealed record ModelCatalogProvider(string Id, string Family, string? Profile = null,
+    bool CanCreateOpenRouterImageRoute = false);
 
 public sealed record ModelCatalogModel(string Id, string ProviderId, long Context,
     long RecommendedUsableContext, long? MaxOutput, double? ParametersBillions,
-    IReadOnlyList<string> Aliases, bool CanDelete, IReadOnlyList<string> DeleteBlockers);
+    IReadOnlyList<string> Aliases, bool CanDelete, IReadOnlyList<string> DeleteBlockers,
+    IReadOnlyList<string>? InputModalities = null, IReadOnlyList<string>? OutputModalities = null,
+    decimal? ImageGenerationMaxCostUsd = null);
 
 public sealed record ModelCatalogPreferencesSnapshot(bool Available, string Revision,
     IReadOnlyList<ModelCatalogProvider> Providers, IReadOnlyList<ModelCatalogModel> Models,
@@ -34,7 +44,8 @@ public sealed record ModelCatalogPreferencesSnapshot(bool Available, string Revi
 /// <summary>Only model fields already supported by models.yaml/ConfigLoader are exposed here.</summary>
 public sealed record ModelCatalogDraft(string Id, string ProviderId, long Context,
     long RecommendedUsableContext, long? MaxOutput, double? ParametersBillions,
-    IReadOnlyList<string> Aliases, string? ExistingId = null)
+    IReadOnlyList<string> Aliases, string? ExistingId = null, IReadOnlyList<string>? InputModalities = null,
+    IReadOnlyList<string>? OutputModalities = null, decimal? ImageGenerationMaxCostUsd = null)
 {
     public override string ToString() => "ModelCatalogDraft [configuration]";
 }
@@ -49,7 +60,7 @@ public sealed class ModelCatalogConfigurationException(string code) : InvalidOpe
 /// Reads and atomically updates User models.yaml while preserving untouched YAML nodes. Deletion checks
 /// User routing/default and the current Project/Workspace defaults; no provider credentials or network operations are read.
 /// </summary>
-public sealed class ModelCatalogPreferencesHost : IModelCatalogPreferencesHost
+public sealed class ModelCatalogPreferencesHost : IModelCatalogPreferencesHost, IOpenRouterImageRouteRegistrar
 {
     private const int MaximumFileBytes = 256 * 1024;
     private readonly string _directory;
@@ -97,10 +108,14 @@ public sealed class ModelCatalogPreferencesHost : IModelCatalogPreferencesHost
                     return new ModelCatalogModel(model.Id, model.ProviderId, model.ContextWindow,
                         model.RecommendedUsableContext, model.OutputLimitConfigured ? model.MaxOutputTokens : null, model.ParameterCountBillions,
                         model.Aliases.ToArray(), workspaceScopeAvailable && blockers.Count == 0,
-                        blockers);
+                        blockers, model.InputModalities.ToArray(), model.OutputModalities.ToArray(),
+                        model.ImageGenerationMaxCostUsd);
                 }).ToArray();
             var providers = loaded.Registry.Providers().OrderBy(provider => provider.Id, StringComparer.Ordinal)
-                .Select(provider => new ModelCatalogProvider(provider.Id, provider.Family.ToString())).ToArray();
+                .Select(provider => new ModelCatalogProvider(provider.Id, provider.Family.ToString(), provider.Profile,
+                    OpenRouterConnectionService.IsOpenRouterProvider(provider)
+                    && !string.Equals(provider.Profile, OmniCore.Models.OpenRouterImageGenerationProvider.ProfileName,
+                        StringComparison.Ordinal))).ToArray();
             var diagnostics = workspaceScopeAvailable ? Array.Empty<string>()
                 : new[] { "modelCatalog.error.workspaceScopeUnavailable" };
             return new(true, Revision(files), providers, rows, diagnostics);
@@ -162,6 +177,16 @@ public sealed class ModelCatalogPreferencesHost : IModelCatalogPreferencesHost
             Put(entry, "maxOutput", draft.MaxOutput?.ToString(CultureInfo.InvariantCulture));
             Put(entry, "parametersBillions", draft.ParametersBillions?.ToString("R", CultureInfo.InvariantCulture));
             PutList(entry, "aliases", draft.Aliases);
+            var modalities = draft.InputModalities
+                ?? loaded.Registry.Model(oldId ?? draft.Id)?.InputModalities ?? ["text"];
+            PutList(entry, "inputModalities", modalities);
+            var outputModalities = draft.OutputModalities
+                ?? loaded.Registry.Model(oldId ?? draft.Id)?.OutputModalities ?? ["text"];
+            PutList(entry, "outputModalities", outputModalities);
+            var imageCost = draft.OutputModalities is null
+                ? loaded.Registry.Model(oldId ?? draft.Id)?.ImageGenerationMaxCostUsd
+                : draft.ImageGenerationMaxCostUsd;
+            Put(entry, "imageGenerationMaxCostUsd", imageCost?.ToString(CultureInfo.InvariantCulture));
             var updated = Serialize(root);
             if (Encoding.UTF8.GetByteCount(updated) > MaximumFileBytes) throw Error("configurationInvalid");
             if (oldId is not null)
@@ -211,6 +236,75 @@ public sealed class ModelCatalogPreferencesHost : IModelCatalogPreferencesHost
             cancellationToken.ThrowIfCancellationRequested();
             Publish(updated, files, expectedRevision, cancellationToken);
             return Read(cancellationToken);
+        }
+        catch (ModelCatalogConfigurationException) { throw; }
+        catch (ConfigValidationException) { throw Error("configurationInvalid"); }
+        catch (AmbiguousModelAliasException) { throw Error("ambiguousAlias"); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException
+            or YamlException or InvalidOperationException or ArgumentException)
+        { throw Error("unavailable"); }
+    }
+
+    public (ModelCatalogPreferencesSnapshot Snapshot, string ProviderId) CreateOpenRouterImageRoute(
+        string sourceProviderId, string expectedRevision, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceProviderId);
+        cancellationToken.ThrowIfCancellationRequested();
+        try
+        {
+            if (!WorkspaceScopeAvailable()) throw Error("workspaceScopeUnavailable");
+            var before = ReadFiles();
+            RequireRevision(before, expectedRevision);
+            using var lease = ProviderConfigurationLease.Acquire(_directory);
+            cancellationToken.ThrowIfCancellationRequested();
+            var files = ReadFiles();
+            RequireRevision(files, expectedRevision);
+            var loaded = Load(files.Providers, files.Models, files.Settings);
+            var source = loaded.Registry.Provider(sourceProviderId) ?? throw Error("unknownProvider");
+            if (!OpenRouterConnectionService.IsOpenRouterProvider(source)
+                || string.Equals(source.Profile, OmniCore.Models.OpenRouterImageGenerationProvider.ProfileName,
+                    StringComparison.Ordinal)
+                || string.IsNullOrWhiteSpace(source.Auth.SecretRef)) throw Error("imageRouteSourceUnsupported");
+            var providerId = sourceProviderId + "-images";
+            if (providerId.Length > 200 || providerId.Any(character => !char.IsAsciiLetterOrDigit(character)
+                    && character is not ('-' or '_' or '.' or '/' or ':'))) throw Error("invalidProvider");
+
+            var root = ParseRoot(files.Providers);
+            if (!root.Children.TryGetValue(new YamlScalarNode("providers"), out var sectionNode)
+                || sectionNode is not YamlMappingNode providers
+                || !providers.Children.TryGetValue(new YamlScalarNode(sourceProviderId), out var sourceNode)
+                || sourceNode is not YamlMappingNode sourceMap) throw Error("configurationInvalid");
+            if (providers.Children.TryGetValue(new YamlScalarNode(providerId), out var existingNode))
+            {
+                if (existingNode is YamlMappingNode existingMap
+                    && Scalar(existingMap, "profile") == OmniCore.Models.OpenRouterImageGenerationProvider.ProfileName
+                    && Scalar(existingMap, "family") == "OpenAiChatCompatible"
+                    && Scalar(existingMap, "baseUrl") == source.BaseUrl
+                    && Scalar(existingMap, "caCertificate") == source.TrustedCertificatePath
+                    && Scalar(existingMap, "authRef") == source.Auth.SecretRef)
+                    return (Read(cancellationToken), providerId);
+                throw Error("providerAlreadyExists");
+            }
+
+            // Copy only non-secret routing fields plus the existing credential reference.
+            // The referenced key is neither read nor copied, and the source descriptor is untouched.
+            var route = new YamlMappingNode();
+            route.Children.Add(new YamlScalarNode("family"), new YamlScalarNode("OpenAiChatCompatible"));
+            route.Children.Add(new YamlScalarNode("baseUrl"), new YamlScalarNode(source.BaseUrl));
+            if (!string.IsNullOrWhiteSpace(source.TrustedCertificatePath))
+                route.Children.Add(new YamlScalarNode("caCertificate"), new YamlScalarNode(source.TrustedCertificatePath));
+            route.Children.Add(new YamlScalarNode("profile"),
+                new YamlScalarNode(OmniCore.Models.OpenRouterImageGenerationProvider.ProfileName));
+            route.Children.Add(new YamlScalarNode("authRef"), new YamlScalarNode(source.Auth.SecretRef!));
+            if (source.BillingMode != OmniCore.Domain.BillingMode.Unknown)
+                route.Children[new YamlScalarNode("billingMode")] = new YamlScalarNode(source.BillingMode.ToString());
+            providers.Children.Add(new YamlScalarNode(providerId), route);
+            var updated = Serialize(root);
+            if (Encoding.UTF8.GetByteCount(updated) > MaximumFileBytes) throw Error("configurationInvalid");
+            _ = Load(updated, files.Models, files.Settings); // Validate before changing either configuration or ownership.
+            cancellationToken.ThrowIfCancellationRequested();
+            PublishProviders(updated, files, expectedRevision, cancellationToken);
+            return (Read(cancellationToken), providerId);
         }
         catch (ModelCatalogConfigurationException) { throw; }
         catch (ConfigValidationException) { throw Error("configurationInvalid"); }
@@ -371,6 +465,20 @@ public sealed class ModelCatalogPreferencesHost : IModelCatalogPreferencesHost
                 || alias != alias.Trim() || alias.Length > 200 || alias.Any(char.IsControl))
             || draft.Aliases.Distinct(StringComparer.Ordinal).Count() != draft.Aliases.Count)
             throw Error("invalidAliases");
+        if (draft.InputModalities is { } modalities && (modalities.Count is < 1 or > 16
+            || modalities.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > 32
+                || value != value.Trim() || value.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not '-' and not '_'))
+            || modalities.Distinct(StringComparer.Ordinal).Count() != modalities.Count))
+            throw Error("invalidModalities");
+        if (draft.OutputModalities is { } outputModalities && (outputModalities.Count is < 1 or > 16
+            || outputModalities.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > 32
+                || value != value.Trim() || value.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not '-' and not '_'))
+            || outputModalities.Distinct(StringComparer.Ordinal).Count() != outputModalities.Count))
+            throw Error("invalidModalities");
+        if (draft.ImageGenerationMaxCostUsd is { } imageCost
+            && (imageCost <= 0m || imageCost > 1_000_000m)) throw Error("invalidImageCost");
+        if (draft.OutputModalities?.Contains("image", StringComparer.Ordinal) == true
+            && draft.ImageGenerationMaxCostUsd is null) throw Error("imageCostRequired");
         if (draft.ExistingId is not null && !ValidId(draft.ExistingId)) throw Error("modelNotFound");
     }
 
@@ -391,6 +499,24 @@ public sealed class ModelCatalogPreferencesHost : IModelCatalogPreferencesHost
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
+    private void PublishProviders(string updated,
+        (string? Providers, string? Models, string? Settings, string? ProjectSettings, string? WorkspaceSettings) files,
+        string expectedRevision, CancellationToken cancellationToken)
+    {
+        ConfigurationWriteLease.EnsureNoLinks(ProvidersFile);
+        Directory.CreateDirectory(_directory);
+        var temporary = ProvidersFile + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.WriteAllText(temporary, updated, new UTF8Encoding(false));
+            cancellationToken.ThrowIfCancellationRequested();
+            RequireRevision(ReadFiles(), expectedRevision);
+            ConfigurationWriteLease.EnsureNoLinks(ProvidersFile);
+            File.Move(temporary, ProvidersFile, overwrite: true);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
     private static YamlMappingNode ParseRoot(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return new YamlMappingNode();
@@ -407,6 +533,10 @@ public sealed class ModelCatalogPreferencesHost : IModelCatalogPreferencesHost
         if (value is null) map.Children.Remove(yamlKey);
         else map.Children[yamlKey] = new YamlScalarNode(value) { Style = ScalarStyle.Plain };
     }
+
+    private static string? Scalar(YamlMappingNode map, string key) =>
+        map.Children.TryGetValue(new YamlScalarNode(key), out var value) && value is YamlScalarNode scalar
+            ? scalar.Value : null;
 
     private static void PutList(YamlMappingNode map, string key, IReadOnlyList<string> values)
     {

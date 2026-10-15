@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using OmniCore.Cli;
 using OmniCore.Client;
 using OmniCore.Engine;
@@ -400,6 +401,106 @@ public sealed class StdioTransportTests
     }
 
     [Fact]
+    public async Task Stdio_rejects_image_before_admission_when_effective_model_is_text_only()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-modality-preflight-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var data = Path.Combine(root, "data");
+        var config = Path.Combine(root, "config");
+        Directory.CreateDirectory(workspace);
+        Directory.CreateDirectory(config);
+        var oldData = Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
+        var oldConfig = Environment.GetEnvironmentVariable("OMNICORE_CONFIG_DIR");
+        var oldDirectory = Environment.CurrentDirectory;
+        Process? host = null;
+        var key = RandomNumberGenerator.GetBytes(32);
+        try
+        {
+            File.WriteAllText(Path.Combine(config, "providers.yaml"), """
+                providers:
+                  fixture:
+                    family: OpenAIResponses
+                    profile: api
+                    baseUrl: http://127.0.0.1:9/v1
+                    auth: none
+                    billingMode: Local
+                """);
+            File.WriteAllText(Path.Combine(config, "models.yaml"), """
+                models:
+                  text-only:
+                    provider: fixture
+                    context: 4096
+                    maxOutput: 128
+                    inputModalities: [text]
+                """);
+            File.WriteAllText(Path.Combine(config, "settings.yaml"), "defaultModel: text-only\n");
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", data);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", config);
+            Environment.CurrentDirectory = workspace;
+
+            var cliDll = Path.Combine(FindRepositoryRoot(), "src", "OmniCore.Cli", "bin", "Debug", "net10.0", "omni.dll");
+            host = StartRawHost(cliDll, workspace, Convert.ToHexString(key));
+            var hello = RawExchange(host, WireEnvelope.FromJson(
+                "{\"version\":\"1.0\",\"messageType\":\"hello\",\"messageId\":\"preflight-hello\",\"payload\":{\"supportedVersions\":[\"1.0\"]}}"));
+            using var helloPayload = JsonDocument.Parse(hello.PayloadJson);
+            var nonce = helloPayload.RootElement.GetProperty("trustedActionNonce").GetString()!;
+            var image = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/z/kAAAAASUVORK5CYII=");
+            var uploadId = Guid.NewGuid().ToString("D");
+            var imageHash = Convert.ToHexString(SHA256.HashData(image)).ToLowerInvariant();
+            var begin = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"attachment.upload.begin\",\"uploadId\":" + JsonSerializer.Serialize(uploadId)
+                + ",\"fileName\":\"fixture.png\",\"size\":" + image.Length
+                + ",\"sha256\":" + JsonSerializer.Serialize(imageHash) + "}");
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted,
+                Ack(RawExchange(host, TrustedActionEnvelope(begin, key, nonce, workspace, null, null))).Outcome?.Kind);
+            var chunk = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"attachment.upload.chunk\",\"uploadId\":" + JsonSerializer.Serialize(uploadId)
+                + ",\"index\":0,\"data\":" + JsonSerializer.Serialize(Convert.ToBase64String(image)) + "}");
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted,
+                Ack(RawExchange(host, TrustedActionEnvelope(chunk, key, nonce, workspace, null, null))).Outcome?.Kind);
+            var finish = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"attachment.upload.finish\",\"uploadId\":" + JsonSerializer.Serialize(uploadId) + "}");
+            var uploaded = RawExchange(host, TrustedActionEnvelope(finish, key, nonce, workspace, null, null));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, Ack(uploaded).Outcome?.Kind);
+            using var uploadedPayload = JsonDocument.Parse(uploaded.PayloadJson);
+            var start = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"conversation.start\",\"text\":\"inspect this image\",\"mode\":\"plan\","
+                + "\"expectedRevision\":null,\"attachments\":[" + uploadedPayload.RootElement.GetProperty("attachment").GetRawText() + "]}");
+            var rejected = Ack(RawExchange(host,
+                TrustedActionEnvelope(start, key, nonce, workspace, null, null)));
+
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Rejected, rejected.Outcome?.Kind);
+            Assert.Equal("image_input_not_supported", rejected.Error);
+            var journal = Path.Combine(OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace), "journal.db");
+            Assert.True(File.Exists(journal));
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            {
+                DataSource = journal,
+                Mode = SqliteOpenMode.ReadOnly,
+                Pooling = false,
+            }.ToString());
+            connection.Open();
+            using var count = connection.CreateCommand();
+            count.CommandText = "SELECT COUNT(*) FROM events";
+            Assert.Equal(0L, (long)count.ExecuteScalar()!);
+        }
+        finally
+        {
+            if (host is not null)
+            {
+                try { if (!host.HasExited) host.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+                try { if (!host.HasExited) await host.WaitForExitAsync(TestContext.Current.CancellationToken); } catch (InvalidOperationException) { }
+                host.Dispose();
+            }
+            CryptographicOperations.ZeroMemory(key);
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", oldData);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", oldConfig);
+            Environment.CurrentDirectory = oldDirectory;
+            try { Directory.Delete(root, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
     public async Task Conversation_admission_is_separate_from_result_and_cancel_is_serialized_with_runtime()
     {
         var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-conversation-" + Guid.NewGuid().ToString("N"));
@@ -425,7 +526,7 @@ public sealed class StdioTransportTests
                     auth: none
                     billingMode: Local
                 """);
-            File.WriteAllText(Path.Combine(config, "models.yaml"), "models:\n  scripted-model:\n    provider: scripted\n    context: 4096\n    maxOutput: 256\n");
+            File.WriteAllText(Path.Combine(config, "models.yaml"), "models:\n  scripted-model:\n    provider: scripted\n    context: 4096\n    maxOutput: 256\n    inputModalities: [text, image]\n");
             File.WriteAllText(Path.Combine(config, "settings.yaml"), "defaultModel: scripted-model\n");
             Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", data);
             Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", config);
@@ -438,21 +539,79 @@ public sealed class StdioTransportTests
             Assert.Contains("command.conversation.start.user", helloPayload.RootElement.GetProperty("capabilities")
                 .EnumerateArray().Select(item => item.GetString()));
 
+            // Exercise the same signed, chunked CAS upload that the Electron main process uses.
+            // The body is a tiny PNG header fixture; this test validates transport/admission,
+            // not image semantics or provider quality.
+            var nonce = helloPayload.RootElement.GetProperty("trustedActionNonce").GetString()!;
+            var image = new byte[] { 137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
+                0, 0, 0, 1, 0, 0, 0, 1 };
+            var uploadId = Guid.NewGuid().ToString("D");
+            var imageHash = Convert.ToHexString(SHA256.HashData(image)).ToLowerInvariant();
+            var beginUpload = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"attachment.upload.begin\",\"uploadId\":\"" + uploadId
+                + "\",\"fileName\":\"fixture.png\",\"size\":" + image.Length
+                + ",\"sha256\":\"" + imageHash + "\"}");
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted,
+                Ack(RawExchange(host, TrustedActionEnvelope(beginUpload, key, nonce, workspace, null, null))).Outcome?.Kind);
+            var chunkUpload = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"attachment.upload.chunk\",\"uploadId\":\"" + uploadId
+                + "\",\"index\":0,\"data\":\"" + Convert.ToBase64String(image) + "\"}");
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted,
+                Ack(RawExchange(host, TrustedActionEnvelope(chunkUpload, key, nonce, workspace, null, null))).Outcome?.Kind);
+            var finishUpload = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"attachment.upload.finish\",\"uploadId\":\"" + uploadId + "\"}");
+            var finished = RawExchange(host, TrustedActionEnvelope(finishUpload, key, nonce, workspace, null, null));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, Ack(finished).Outcome?.Kind);
+            using var uploadedPayload = JsonDocument.Parse(finished.PayloadJson);
+            Assert.Equal((int)OmniCore.Domain.ArtifactKind.Other,
+                uploadedPayload.RootElement.GetProperty("attachment").GetProperty("kind").GetInt32());
+            Assert.Equal("fixture.png", uploadedPayload.RootElement.GetProperty("attachment").GetProperty("fileName").GetString());
+            var attachmentJson = uploadedPayload.RootElement.GetProperty("attachment").GetRawText();
+
             var command = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(), "{\"cmd\":\"conversation.start\","
-                + "\"text\":\"único envío al proveedor de prueba\",\"mode\":\"plan\",\"expectedRevision\":null}");
-            var signed = TrustedActionEnvelope(command, key,
-                helloPayload.RootElement.GetProperty("trustedActionNonce").GetString()!, workspace, null, null);
+                + "\"text\":\"único envío al proveedor de prueba\",\"attachments\":[" + attachmentJson
+                + "],\"mode\":\"plan\",\"expectedRevision\":null}");
+            var signed = TrustedActionEnvelope(command, key, nonce, workspace, null, null);
             var admission = Ack(RawExchange(host, signed));
             Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, admission.Outcome?.Kind);
             Assert.NotNull(admission.FirstSeq);
             Assert.NotNull(admission.LastSeq);
 
             await provider.RequestReceived.Task.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+            var codecs = EventCodecs.Create();
+            var scope = ReadCurrentScope(host);
+            var journal = Path.Combine(OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace), "journal.db");
+            using (var liveStore = new SqliteEventStore(journal, readOnly: true))
+            {
+                var liveInput = liveStore.ReadFrom(OmniCore.Domain.SessionId.Parse(scope.SessionId), 1)
+                    .Select(codecs.Decode).OfType<OmniCore.Domain.UserInputReceived>().Single();
+                Assert.Equal("fixture.png", Assert.Single(liveInput.Attachments!).FileName);
+            }
+
+            // Read the admitted binary back through the real stdio artifact.read route.
+            // The size comes from its canonical journal reference, never from the reader.
+            var validRead = RawExchange(host, WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"operation\":\"artifact.read\",\"sessionId\":" + JsonSerializer.Serialize(scope.SessionId)
+                + ",\"hash\":" + JsonSerializer.Serialize(imageHash) + ",\"offset\":0,\"length\":" + image.Length + "}"));
+            Assert.Equal(OmniCore.Protocol.MessageTypes.Response, validRead.MessageType);
+            using (var readPayload = JsonDocument.Parse(validRead.PayloadJson))
+            {
+                Assert.Equal(image.Length, readPayload.RootElement.GetProperty("size").GetInt32());
+                Assert.Equal(image, Convert.FromBase64String(readPayload.RootElement.GetProperty("data").GetString()!));
+            }
+            var foreignHashRead = RawExchange(host, WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"operation\":\"artifact.read\",\"sessionId\":" + JsonSerializer.Serialize(scope.SessionId)
+                + ",\"hash\":\"" + new string('0', 64) + "\",\"offset\":0,\"length\":1}"));
+            Assert.Equal(OmniCore.Protocol.MessageTypes.Error, foreignHashRead.MessageType);
+            var foreignSessionRead = RawExchange(host, WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"operation\":\"artifact.read\",\"sessionId\":\"00000000-0000-7000-8000-000000000099\",\"hash\":"
+                + JsonSerializer.Serialize(imageHash) + ",\"offset\":0,\"length\":1}"));
+            Assert.Equal(OmniCore.Protocol.MessageTypes.Error, foreignSessionRead.MessageType);
+            Assert.True(provider.RequestBody.Contains("input_image", StringComparison.Ordinal), provider.RequestBody);
             var requestHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
             var running = ConversationResult(host, command.MessageId, requestHash);
             Assert.Equal("running", running.GetProperty("state").GetString());
 
-            var scope = ReadCurrentScope(host);
             var duplicate = Ack(RawExchange(host, signed));
             Assert.Equal(admission.FirstSeq, duplicate.FirstSeq);
             Assert.Equal(admission.LastSeq, duplicate.LastSeq);
@@ -473,12 +632,11 @@ public sealed class StdioTransportTests
             Assert.Equal("cancelled", ConversationResult(host, command.MessageId, requestHash).GetProperty("state").GetString());
             Assert.Equal(1, provider.RequestCount);
 
-            var journal = Path.Combine(OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace), "journal.db");
             using var store = new SqliteEventStore(journal, readOnly: true);
-            var codecs = EventCodecs.Create();
             var events = store.ReadFrom(OmniCore.Domain.SessionId.Parse(scope.SessionId), 1)
                 .Select(codecs.Decode).ToArray();
-            Assert.Single(events.OfType<OmniCore.Domain.UserInputReceived>());
+            var admittedInput = Assert.Single(events.OfType<OmniCore.Domain.UserInputReceived>());
+            Assert.Equal("fixture.png", Assert.Single(admittedInput.Attachments!).FileName);
             Assert.Single(events.OfType<OmniCore.Domain.RunCancelled>());
         }
         finally
@@ -1257,6 +1415,7 @@ public sealed class StdioTransportTests
         }
 
         public string BaseUrl { get; }
+        public string RequestBody { get; private set; } = "";
         public int RequestCount => Volatile.Read(ref _requestCount);
         public TaskCompletionSource<bool> RequestReceived { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -1277,8 +1436,32 @@ public sealed class StdioTransportTests
             using (client)
             {
                 var stream = client.GetStream();
-                using var reader = new StreamReader(stream, Encoding.UTF8, false, 4096, leaveOpen: true);
-                while (await reader.ReadLineAsync(cancellationToken) is { Length: > 0 }) { }
+                var headerBytes = new List<byte>();
+                var single = new byte[1];
+                while (await stream.ReadAsync(single, cancellationToken) == 1)
+                {
+                    headerBytes.Add(single[0]);
+                    var count = headerBytes.Count;
+                    if (count >= 4 && headerBytes[count - 4] == 13 && headerBytes[count - 3] == 10
+                        && headerBytes[count - 2] == 13 && headerBytes[count - 1] == 10) break;
+                }
+                var headers = Encoding.ASCII.GetString(headerBytes.ToArray());
+                var contentLength = headers.Split("\r\n", StringSplitOptions.RemoveEmptyEntries)
+                    .FirstOrDefault(line => line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                    ?.Split(':', 2)[1].Trim();
+                if (int.TryParse(contentLength, System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out var bodyLength) && bodyLength is >= 0 and <= 4 * 1024 * 1024)
+                {
+                    var body = new byte[bodyLength];
+                    var offset = 0;
+                    while (offset < body.Length)
+                    {
+                        var read = await stream.ReadAsync(body.AsMemory(offset), cancellationToken);
+                        if (read == 0) break;
+                        offset += read;
+                    }
+                    if (offset == body.Length) RequestBody = Encoding.UTF8.GetString(body);
+                }
                 Interlocked.Increment(ref _requestCount);
                 RequestReceived.TrySetResult(true);
                 var buffer = new byte[1024];

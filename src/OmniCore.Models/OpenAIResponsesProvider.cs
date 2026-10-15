@@ -52,6 +52,8 @@ public sealed class OpenAIResponsesOptions
 /// </summary>
 public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits, IModelRequestAttemptBound
 {
+    private const int MaximumSseEventCharacters = 90 * 1024 * 1024;
+    private const int MaximumSseResponseCharacters = 90 * 1024 * 1024;
     private const string OpaqueKindPrefix = "openai.responses.ProviderOpaque/";
     private readonly ProviderDescriptor _descriptor;
     private readonly ISecretProvider _secrets;
@@ -223,21 +225,35 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
 
             WriteInput(w, request);
 
-            if (request.Tools.Count > 0 && request.ToolChoice.Mode != "none")
+            var imageGenerationEnabled = request.Model.OutputModalities.Contains("image", StringComparer.Ordinal)
+                && request.Model.ImageGenerationMaxCostUsd is > 0m;
+            if (request.Model.OutputModalities.Contains("image", StringComparer.Ordinal)
+                && (options.Profile != ResponsesProfile.Api || !imageGenerationEnabled))
+                throw new NotSupportedException("Native image generation requires an explicitly cost-bounded Responses API route.");
+            var functionToolsEnabled = request.Tools.Count > 0 && request.ToolChoice.Mode != "none";
+            if (functionToolsEnabled || imageGenerationEnabled)
             {
                 w.WriteStartArray("tools");
-                foreach (var tool in request.Tools)
+                if (functionToolsEnabled)
                 {
-                    w.WriteStartObject();
-                    w.WriteString("type", "function");
-                    w.WriteString("name", WireToolName(tool.Name));
-                    w.WriteString("description", tool.Description);
-                    w.WritePropertyName("parameters");
-                    WriteRawJsonOrEmptyObject(w, tool.InputSchemaJson);
-                    w.WriteEndObject();
+                    foreach (var tool in request.Tools)
+                    {
+                        w.WriteStartObject();
+                        w.WriteString("type", "function");
+                        w.WriteString("name", WireToolName(tool.Name));
+                        w.WriteString("description", tool.Description);
+                        w.WritePropertyName("parameters");
+                        WriteRawJsonOrEmptyObject(w, tool.InputSchemaJson);
+                        w.WriteEndObject();
+                    }
+                }
+                if (imageGenerationEnabled)
+                {
+                    // The server tool is opt-in via the effective route, never inferred from vision input.
+                    w.WriteStartObject(); w.WriteString("type", "image_generation"); w.WriteEndObject();
                 }
                 w.WriteEndArray();
-                if (request.ToolChoice.Mode == "exact" && request.ToolChoice.ToolName is not null)
+                if (functionToolsEnabled && request.ToolChoice.Mode == "exact" && request.ToolChoice.ToolName is not null)
                 {
                     w.WriteStartObject("tool_choice");
                     w.WriteString("type", "function");
@@ -301,6 +317,15 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
                         w.WriteEndArray();
                         w.WriteEndObject();
                         break;
+                    case DocumentBlock document when message.Role == MessageRole.User:
+                        var documentText = $"[Document: {document.FileName}]\n{document.ExtractedText}";
+                        w.WriteStartObject(); w.WriteString("type", "message"); w.WriteString("role", "user");
+                        w.WriteStartArray("content"); w.WriteStartObject(); w.WriteString("type", "input_text");
+                        w.WriteString("text", documentText); w.WriteEndObject(); w.WriteEndArray(); w.WriteEndObject();
+                        break;
+                    case ImageBlock image when message.Role == MessageRole.User:
+                        WriteUserImage(w, image);
+                        break;
                     case ToolCallBlock call:
                         w.WriteStartObject();
                         w.WriteString("type", "function_call");
@@ -313,13 +338,47 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
                         w.WriteStartObject();
                         w.WriteString("type", "function_call_output");
                         w.WriteString("call_id", ids.GetValueOrDefault(result.Id.ToString(), result.Id.ToString()));
-                        w.WriteString("output", string.Concat(result.Content.OfType<TextBlock>().Select(b => b.Text)));
+                        if (result.Content.All(static b => b is TextBlock))
+                            w.WriteString("output", string.Concat(result.Content.OfType<TextBlock>().Select(b => b.Text)));
+                        else
+                        {
+                            w.WriteStartArray("output");
+                            foreach (var resultBlock in result.Content)
+                            {
+                                if (resultBlock is TextBlock text)
+                                {
+                                    w.WriteStartObject(); w.WriteString("type", "input_text");
+                                    w.WriteString("text", text.Text); w.WriteEndObject();
+                                }
+                                else if (resultBlock is DocumentBlock document)
+                                {
+                                    w.WriteStartObject(); w.WriteString("type", "input_text");
+                                    w.WriteString("text", $"[Document: {document.FileName}]\n{document.ExtractedText}"); w.WriteEndObject();
+                                }
+                                else if (resultBlock is ImageBlock image) WriteImageContent(w, image);
+                                else throw new NotSupportedException("Responses function output cannot serialize this content block.");
+                            }
+                            w.WriteEndArray();
+                        }
                         w.WriteEndObject();
                         break;
                 }
             }
         }
         w.WriteEndArray();
+    }
+
+    private static void WriteUserImage(Utf8JsonWriter w, ImageBlock image)
+    {
+        w.WriteStartObject(); w.WriteString("type", "message"); w.WriteString("role", "user");
+        w.WriteStartArray("content"); WriteImageContent(w, image); w.WriteEndArray(); w.WriteEndObject();
+    }
+
+    private static void WriteImageContent(Utf8JsonWriter w, ImageBlock image)
+    {
+        w.WriteStartObject(); w.WriteString("type", "input_image");
+        w.WriteString("image_url", "data:" + image.MediaType + ";base64," + Convert.ToBase64String(image.Bytes.AsSpan()));
+        w.WriteEndObject();
     }
 
     private static void WriteRawJsonOrEmptyObject(Utf8JsonWriter w, string? json)
@@ -345,6 +404,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         using var reader = new StreamReader(stream, Encoding.UTF8, true, 1024, leaveOpen: true);
         var data = new StringBuilder();
+        long totalSseCharacters = 0;
         var endOfStream = false;
         while (!endOfStream && final is null)
         {
@@ -361,6 +421,9 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
             cancellationToken.ThrowIfCancellationRequested();
             if (line.StartsWith("data:", StringComparison.Ordinal))
             {
+                totalSseCharacters = checked(totalSseCharacters + line.Length + 1L);
+                if (totalSseCharacters > MaximumSseResponseCharacters || data.Length + line.Length > MaximumSseEventCharacters)
+                    throw new ModelProviderException("ImageOutputLimit", "Responses stream exceeded its bounded response size.");
                 if (data.Length > 0) data.Append('\n');
                 data.Append(line.AsSpan(5).TrimStart());
                 continue;
@@ -498,8 +561,13 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
             state = new ProviderState(OpaqueKindPrefix + request.Model.Model.ToString(), Encoding.UTF8.GetString(buffer.WrittenSpan));
         }
         var requestId = http.Headers.TryGetValues("x-request-id", out var ids) ? ids.FirstOrDefault() ?? "" : "";
+        var hasGeneratedImage = content.Any(block => block is ImageBlock);
+        if (hasGeneratedImage && (request.Model.ImageGenerationMaxCostUsd is not > 0m
+            || !request.Model.OutputModalities.Contains("image", StringComparer.Ordinal)))
+            throw new ModelProviderException("ImageOutputNotAuthorized", "Responses returned image bytes outside an explicitly enabled route.");
         return new ModelResponse(content, stop, usage, state,
-            new ProviderMetadata(requestId, Str(body, "model") ?? request.Model.Model.ToString(), Str(body, "service_tier")), UsageFields(body));
+            new ProviderMetadata(requestId, Str(body, "model") ?? request.Model.Model.ToString(), Str(body, "service_tier")), UsageFields(body),
+            hasGeneratedImage ? request.Model.ImageGenerationMaxCostUsd : null);
     }
 
     private static TokenUsageFields UsageFields(JsonElement body)
@@ -567,9 +635,35 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
                     var summary = Text.ToString();
                     return new ReasoningBlock(summary.Length == 0 ? null : summary,
                         summary.Length == 0 ? ReasoningVisibility.Omitted : ReasoningVisibility.Summarized, null);
+                case "image_generation_call":
+                    return ReadGeneratedImage();
                 default:
                     return null;
             }
+        }
+
+        private ContentBlock ReadGeneratedImage()
+        {
+            if (Done is not { } image || !image.TryGetProperty("result", out var result)
+                || result.ValueKind != JsonValueKind.String || result.GetString() is not { } encoded)
+                throw new ModelProviderException("ImageOutputIncomplete", "Responses image generation ended without complete image bytes.");
+            const int maximumBytes = 16 * 1024 * 1024;
+            const int maximumEncodedCharacters = ((maximumBytes + 2) / 3) * 4;
+            if (encoded.Length is 0 or > maximumEncodedCharacters)
+                throw new ModelProviderException("ImageOutputLimit", "Responses image output exceeds the byte limit.");
+            byte[] bytes;
+            try { bytes = Convert.FromBase64String(encoded); }
+            catch (FormatException ex)
+            { throw new ModelProviderException("ImageOutputInvalid", "Responses image output is not valid base64.", null, ex); }
+            if (bytes.Length is 0 or > maximumBytes)
+                throw new ModelProviderException("ImageOutputLimit", "Responses image output exceeds the byte limit.");
+            var mediaType = bytes.Length >= 8 && bytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 })
+                ? "image/png"
+                : bytes.Length >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff
+                    ? "image/jpeg" : null;
+            if (mediaType is null)
+                throw new ModelProviderException("ImageOutputInvalid", "Responses image output format is not supported or its signature is invalid.");
+            return new ImageBlock(mediaType, bytes);
         }
     }
 }

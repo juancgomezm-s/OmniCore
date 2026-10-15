@@ -49,6 +49,88 @@ public sealed class JournalVerifierTests
     }
 
     [Fact]
+    public void Binary_image_attachment_and_derived_text_verify_and_survive_gc_dry_run()
+    {
+        using var fx = NewFixture();
+        var session = SessionId.New();
+        var run = RunId.New();
+        // Minimal PNG signature/body bytes intentionally are not UTF-8 text.
+        byte[] png = [137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130];
+        var originalBlob = fx.Artifacts.PutBytes(png, "image/png", ArtifactKind.Other, Sensitivity.Sensitive);
+        var documentBlob = fx.Artifacts.PutBytes("%PDF-1.7 fixture"u8.ToArray(), "application/pdf",
+            ArtifactKind.Other, Sensitivity.Sensitive);
+        var derived = fx.Artifacts.PutText("Extracted document text", "text/plain", ArtifactKind.Other,
+            Sensitivity.Sensitive);
+        var document = documentBlob with
+        {
+            FileName = "evidence.pdf",
+            ExtractedTextSnapshot = derived,
+            ExtractorId = "omnicore.pdfpig-content-order/0.1.16-v1",
+        };
+
+        fx.AppendEvent(session, EventType.Of("session.created"), 1,
+            fx.Encode(new SessionCreated(session, "ws", fx.Root, ProfileId.New(), DateTimeOffset.UtcNow)));
+        fx.AppendEvent(session, EventType.Of("run.created"), 1,
+            fx.Encode(new RunCreated(run, session, "attachment test", RunMode.Plan, ExecutionStrategy.Direct,
+                FailurePolicy.FailRun, new TaskBudget(null, null, null, null), TaskId.New(), DateTimeOffset.UtcNow)),
+            runId: run, correlationId: run);
+        fx.AppendEvent(session, EventType.Of("user_input.received"), 3,
+            fx.Encode(new UserInputReceived(run, "[]", null, "tui", [originalBlob, document])),
+            runId: run, correlationId: run, refs: [originalBlob, document]);
+
+        var report = fx.VerifySession(session);
+        Assert.DoesNotContain(report.Issues, issue => issue.Code is JournalIssueCode.ArtifactSizeMismatch
+            or JournalIssueCode.ArtifactCorrupted or JournalIssueCode.ArtifactMissing);
+        Assert.Equal(png.Length, originalBlob.Size);
+        Assert.True(fx.Artifacts.Verify(originalBlob.Hash, originalBlob.Size));
+        Assert.NotNull(fx.Artifacts.GetBytes(originalBlob.Hash, originalBlob.Size));
+
+        // Age both blobs so only journal reachability protects them; dry-run must identify neither
+        // as a deletion candidate, including the derived text ref.
+        File.SetLastWriteTimeUtc(fx.BlobPath(originalBlob.Hash), DateTime.UtcNow.AddDays(-3));
+        File.SetLastWriteTimeUtc(fx.BlobPath(document.Hash), DateTime.UtcNow.AddDays(-3));
+        File.SetLastWriteTimeUtc(fx.BlobPath(derived.Hash), DateTime.UtcNow.AddDays(-3));
+        var gc = new ArtifactGc(fx.DataDir).Sweep(fx.JournalPath, TimeSpan.Zero, dryRun: true,
+            DateTimeOffset.UtcNow, CancellationToken.None);
+
+        Assert.Equal(0, gc.Deleted);
+        Assert.True(File.Exists(fx.BlobPath(originalBlob.Hash)));
+        Assert.True(File.Exists(fx.BlobPath(document.Hash)));
+        Assert.True(File.Exists(fx.BlobPath(derived.Hash)));
+    }
+
+    [Fact]
+    public void Malformed_nested_image_envelope_is_reported_as_issue_without_aborting_journal_verification()
+    {
+        using var fx = NewFixture();
+        var session = SessionId.New();
+        var run = RunId.New();
+        var turn = TurnId.New();
+        var lane = LaneId.New();
+        var response = fx.Artifacts.PutText("{\"visibleContent\":{\"blocks\":[{\"kind\":\"image\",\"hash\":{},\"size\":\"overflow\"}]}}",
+            "application/vnd.omnicore.model-usage+json", ArtifactKind.ModelResponse, Sensitivity.Sensitive);
+        fx.AppendEvent(session, EventType.Of("session.created"), 1,
+            fx.Encode(new SessionCreated(session, "ws", fx.Root, ProfileId.New(), DateTimeOffset.UtcNow)));
+        fx.AppendEvent(session, EventType.Of("run.created"), 1,
+            fx.Encode(new RunCreated(run, session, "malformed response envelope", RunMode.Plan, ExecutionStrategy.Direct,
+                FailurePolicy.FailRun, new TaskBudget(null, null, null, null), TaskId.New(), DateTimeOffset.UtcNow)),
+            runId: run, correlationId: run);
+        fx.AppendEvent(session, EventType.Of("turn.started"), fx.Codecs.CurrentVersion(EventType.Of("turn.started")),
+            fx.Encode(new TurnStarted(turn, lane)), runId: run, correlationId: run, turnId: turn);
+        fx.AppendEvent(session, EventType.Of("model_step.completed"), fx.Codecs.CurrentVersion(EventType.Of("model_step.completed")),
+            fx.Encode(new ModelStepCompleted(turn, 0, new TokenUsage(0, 0, 0, 0, 0), StopReason.EndTurn,
+                response, DateTimeOffset.UtcNow.ToString("yyyy-MM-dd"), null)), runId: run, correlationId: run,
+            turnId: turn, refs: [response]);
+
+        var report = fx.VerifySession(session);
+
+        Assert.False(report.Ok);
+        Assert.Contains(report.Issues, issue => issue.Field == "model_step.completed.visibleContent.blocks"
+            && issue.Code == JournalIssueCode.ArtifactHashInvalid);
+        Assert.Equal(4, report.EventCount);
+    }
+
+    [Fact]
     public void Multiple_sessions_verify_independently_even_interleaved()
     {
         using var fx = NewFixture();
@@ -747,7 +829,7 @@ public sealed class JournalVerifierTests
 
         public void RewriteBlob(ContentHash hash, string content) => File.WriteAllText(BlobPath(hash), content);
 
-        private string BlobPath(ContentHash hash)
+        public string BlobPath(ContentHash hash)
         {
             var hex = hash.Value;
             return Path.Combine(DataDir, "blobs", hash.Algorithm, hex.Substring(0, 2), hex.Substring(2, 2), hex);

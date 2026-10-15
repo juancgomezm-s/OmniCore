@@ -14,6 +14,7 @@ using OmniCore.Tools;
 using OmniCore.Extensions;
 using OmniCore.Memory;
 using System.Globalization;
+using System.Diagnostics;
 using System.Text.Json;
 
 /// <summary>Fachada tipada del runtime usada por el CLI; oculta composición y tipos internos.</summary>
@@ -605,9 +606,176 @@ public sealed class OmniCliRuntime : IDisposable
         FollowUpQueue.TryQueue(store, codecs, session, run, lane, prompt, origin);
 
     internal Task<int> ConversationAsync(string prompt, Action<string> writeLine, CancellationToken cancellationToken,
-        ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null) =>
-        RunTurnAsync(prompt, false, writeLine, cancellationToken, conversationOnly: true, turnBoost: turnBoost,
-            turnBoostId: turnBoostId, turnBoostConsumed: turnBoostConsumed);
+        ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null,
+        IReadOnlyList<ArtifactRef>? attachments = null)
+    {
+        if (attachments is { Count: > 0 } && ValidateConversationAttachmentsBeforeAdmission(attachments) is { } rejection)
+        {
+            var key = rejection switch
+            {
+                "image_input_not_supported" => "shell.attachment.image_not_supported",
+                "document_text_input_not_supported" => "shell.attachment.document_not_supported",
+                _ => "shell.attachment.capability_unavailable",
+            };
+            writeLine(Text(LocalizedText.Of(key)));
+            return System.Threading.Tasks.Task.FromResult(1);
+        }
+        return RunTurnAsync(prompt, false, writeLine, cancellationToken, conversationOnly: true, turnBoost: turnBoost,
+            turnBoostId: turnBoostId, turnBoostConsumed: turnBoostConsumed, attachments: attachments);
+    }
+
+    public ArtifactRef ImportTuiAttachment(byte[] bytes, string fileName) => Server().ImportUserAttachment(bytes, fileName);
+
+    internal IReadOnlyList<TuiGeneratedImage> ListTuiGeneratedImages() =>
+        Server().CurrentGeneratedImages().Select(image => new TuiGeneratedImage(image)).ToArray();
+
+    internal string SaveTuiGeneratedImage(int index, string destination)
+    {
+        if (index < 1) throw new ArgumentOutOfRangeException(nameof(index));
+        ArgumentException.ThrowIfNullOrWhiteSpace(destination);
+        var server = Server();
+        var session = server.LastSessionId() ?? throw new InvalidOperationException("No active session has generated images.");
+        var image = server.CurrentGeneratedImages().Skip(index - 1).FirstOrDefault()
+            ?? throw new InvalidOperationException("Generated image number does not exist in the current session.");
+        if (image.Artifact.Size is <= 0 or > GeneratedImageValidator.MaximumResponseBytes)
+            throw new InvalidDataException("Generated image size is outside the supported limit.");
+        var bytes = new byte[checked((int)image.Artifact.Size)];
+        for (var offset = 0; offset < bytes.Length; offset += 512 * 1024)
+        {
+            var length = Math.Min(512 * 1024, bytes.Length - offset);
+            var chunk = server.ReadAuthorizedBinaryArtifactChunk(session.ToString(), image.Artifact.Hash.Value, offset, length)
+                ?? throw new UnauthorizedAccessException("The image is no longer authorized in the active session.");
+            if (chunk.Size != bytes.Length || chunk.Bytes.Length != length)
+                throw new InvalidDataException("Generated image changed during authorized read.");
+            chunk.Bytes.CopyTo(bytes, offset);
+        }
+        var actual = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
+        if (!StringComparer.Ordinal.Equals(actual, image.Artifact.Hash.Value))
+            throw new InvalidDataException("Generated image hash does not match its journal reference.");
+        var path = Path.GetFullPath(destination);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using (var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            output.Write(bytes);
+        return path;
+    }
+
+    internal string OpenTuiGeneratedImage(int index)
+    {
+        var image = ListTuiGeneratedImages().Skip(index - 1).FirstOrDefault()
+            ?? throw new InvalidOperationException("Generated image number does not exist in the current session.");
+        var extension = image.MediaType switch
+        {
+            "image/png" => ".png",
+            "image/jpeg" => ".jpg",
+            _ => throw new InvalidDataException("Generated image format is not supported by the image opener."),
+        };
+        var path = Path.Combine(Path.GetTempPath(), "omnicore-generated-" + Guid.NewGuid().ToString("N") + extension);
+        _ = SaveTuiGeneratedImage(index, path);
+        _ = Process.Start(new ProcessStartInfo(path) { UseShellExecute = true })
+            ?? throw new InvalidOperationException("No image viewer is available; use /images save instead.");
+        return path;
+    }
+
+    /// <summary>Fail-closed profile preflight before a trusted attachment command admits input/run events.</summary>
+    internal string? ValidateConversationAttachmentsBeforeAdmission(IReadOnlyList<ArtifactRef> attachments)
+    {
+        if (attachments.Count == 0) return null;
+        try
+        {
+            var paths = OmniHost.CreatePlatformPaths();
+            var workspace = _workspaceRoot ?? Directory.GetCurrentDirectory();
+            var loaded = OmniHost.LoadUserConfiguration(paths);
+            var registry = loaded.Registry;
+            var trust = new WorkspaceTrustStore(paths).IsTrusted(workspace);
+            var workspaceConfig = ScopedSettingsLoader.Load(paths, workspace, trust,
+                alias => { try { _ = registry.Resolve(alias); return true; } catch { return false; } });
+            ModelDefinition? definition = null;
+            var server = Server();
+            if (server.LastSessionId() is { } session && server.LastRunId() is { } run)
+            {
+                var priorModel = server.AcquireStore().ReadFrom(session, 1)
+                    .Where(evt => evt.RunId == run).OrderBy(evt => evt.Sequence)
+                    .Select(evt => server.AcquireCodecs().Decode(evt)).OfType<ModelStepStarted>()
+                    .LastOrDefault()?.ModelId;
+                if (priorModel is not null) definition = ResolveExplicitModel(loaded, priorModel);
+            }
+
+            var policyService = OmniHost.CreateModelPolicyService(null);
+            try
+            {
+                var selection = policyService.CurrentSelection(ModelPolicyHost.WorkspaceSelectionId(workspace),
+                    CancellationToken.None);
+                var configuredModel = Environment.GetEnvironmentVariable("OMNI_MODEL")
+                    ?? workspaceConfig.Settings?.DefaultModel ?? selection?.ModelId;
+                definition ??= configuredModel is null ? registry.ResolveDefault() : registry.Resolve(configuredModel);
+            }
+            finally { policyService.Dispose(); }
+
+            var provider = registry.Provider(definition.ProviderId);
+            var route = ModelRoutingHost.RouteFor(definition, provider);
+            var profile = new ModelProfileResolver().Resolve(definition, provider, route: route);
+            var modalities = profile.InputModalities;
+            foreach (var attachment in attachments)
+            {
+                var required = attachment.MediaType.StartsWith("image/", StringComparison.Ordinal) ? "image" : "text";
+                if (!modalities.Contains(required, StringComparer.Ordinal))
+                    return required == "image" ? "image_input_not_supported" : "document_text_input_not_supported";
+            }
+            return null;
+        }
+        catch (Exception ex) when (ex is ConfigValidationException or IOException or InvalidOperationException
+            or ArgumentException or KeyNotFoundException)
+        {
+            return "attachment_capability_unavailable";
+        }
+    }
+
+    /// <summary>Protocol-facing attachment preflight that keeps Domain artifact types behind the Host boundary.</summary>
+    public string? ValidateConversationAttachmentJsonBeforeAdmission(string attachmentsJson)
+    {
+        try { return ValidateConversationAttachmentsBeforeAdmission(AttachmentReferences.Decode(attachmentsJson)); }
+        catch (Exception ex) when (ex is JsonException or InvalidDataException or ArgumentException)
+        { return "attachment_manifest_invalid"; }
+    }
+
+    public ArtifactRef ImportTuiAttachmentFromPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || _workspaceRoot is null)
+            throw new InvalidDataException("A workspace and file path are required.");
+        var boundary = new PathBoundaryValidator();
+        var fullPath = Path.GetFullPath(path, _workspaceRoot);
+        var physicalRoot = boundary.ResolvePhysical(_workspaceRoot);
+        var physicalPath = boundary.ResolvePhysical(fullPath);
+        if (physicalRoot is null || physicalPath is null)
+            throw new InvalidDataException("The attachment path could not be resolved safely.");
+        var relative = Path.GetRelativePath(physicalRoot, physicalPath);
+        var redaction = new RedactionPolicy();
+        if (Path.IsPathRooted(relative) || relative == ".."
+            || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+            || redaction.IsSecretPath(relative) || redaction.IsSecretPath(Path.GetFileName(physicalPath)))
+            throw new InvalidDataException("The attachment path is outside the workspace or protected.");
+        var current = physicalRoot;
+        foreach (var part in relative.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, part);
+            if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("Reparse-point attachment paths are not accepted.");
+        }
+        using var stream = new FileStream(physicalPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+            64 * 1024, FileOptions.SequentialScan);
+        if (stream.Length is <= 0 or > AttachmentContentMaterializer.MaximumBytes)
+            throw new InvalidDataException("Attachment size is outside the supported range.");
+        var bytes = new byte[(int)stream.Length];
+        var read = 0;
+        while (read < bytes.Length)
+        {
+            var count = stream.Read(bytes, read, bytes.Length - read);
+            if (count == 0) throw new InvalidDataException("Attachment changed while it was being read.");
+            read += count;
+        }
+        if (stream.ReadByte() != -1) throw new InvalidDataException("Attachment changed while it was being read.");
+        return Server().ImportUserAttachment(bytes, Path.GetFileName(physicalPath));
+    }
 
     /// <summary>
     /// Continues a conversation whose human input was already committed by the authenticated Host
@@ -662,8 +830,9 @@ public sealed class OmniCliRuntime : IDisposable
                 .Select(item => ((TurnStarted)item.Payload).TurnId).ToHashSet();
             var completed = journal.Where(item => item.Payload is TurnCompleted)
                 .Select(item => ((TurnCompleted)item.Payload).TurnId).ToHashSet();
-            return started.Intersect(completed).Any(turnId => journal.Any(item => item.Payload is AssistantMessageRecorded assistant
-                && assistant.TurnId == turnId)) ? 0 : 1;
+            return started.Intersect(completed).Any(turnId => journal.Any(item =>
+                item.Payload is AssistantMessageRecorded assistant && assistant.TurnId == turnId
+                || item.Payload is AssistantImagesRecorded images && images.TurnId == turnId)) ? 0 : 1;
         }
         if (journal.Any(item => item.Payload is TurnInterrupted)) return 130;
         return exitCode == 130 ? 1 : exitCode;
@@ -1150,7 +1319,8 @@ public sealed class OmniCliRuntime : IDisposable
         CancellationToken cancellationToken, bool conversationOnly = false, RoutingResume? routingResume = null,
         ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null,
         DelegationId? delegationId = null, string? forcedInitialToolName = null,
-        bool inputAlreadyPersisted = false, SessionId? expectedSession = null, RunId? expectedRun = null)
+        bool inputAlreadyPersisted = false, SessionId? expectedSession = null, RunId? expectedRun = null,
+        IReadOnlyList<ArtifactRef>? attachments = null)
     {
         if (delegationId is { } child)
         {
@@ -1163,7 +1333,7 @@ public sealed class OmniCliRuntime : IDisposable
             {
                 return await RunTurnCoreAsync(prompt, act, writeLine, cancellationToken, conversationOnly,
                     routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName,
-                    inputAlreadyPersisted, expectedSession, expectedRun).ConfigureAwait(false);
+                    inputAlreadyPersisted, expectedSession, expectedRun, attachments).ConfigureAwait(false);
             }
             finally { _activeDelegations.TryRemove(child, out _); }
         }
@@ -1177,7 +1347,7 @@ public sealed class OmniCliRuntime : IDisposable
         {
             return await RunTurnCoreAsync(prompt, act, writeLine, cancellationToken, conversationOnly,
                 routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName,
-                inputAlreadyPersisted, expectedSession, expectedRun).ConfigureAwait(false);
+                inputAlreadyPersisted, expectedSession, expectedRun, attachments).ConfigureAwait(false);
         }
         finally
         {
@@ -1189,7 +1359,8 @@ public sealed class OmniCliRuntime : IDisposable
         CancellationToken cancellationToken, bool conversationOnly = false, RoutingResume? routingResume = null,
         ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null,
         DelegationId? delegationId = null, string? forcedInitialToolName = null,
-        bool inputAlreadyPersisted = false, SessionId? expectedSession = null, RunId? expectedRun = null)
+        bool inputAlreadyPersisted = false, SessionId? expectedSession = null, RunId? expectedRun = null,
+        IReadOnlyList<ArtifactRef>? attachments = null)
     {
         if (turnBoost is null && turnBoostId is not null)
             throw new ArgumentException("A reasoning boost id requires a boost request.", nameof(turnBoostId));
@@ -1510,8 +1681,11 @@ public sealed class OmniCliRuntime : IDisposable
             {
                 if (!inputAlreadyPersisted)
                 {
+                    var attachmentField = attachments is { Count: > 0 }
+                        ? ",\"attachments\":" + AttachmentReferences.Encode(attachments) : "";
                     var input = server.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{"
-                        + JsonObj.Field("cmd", "session.input") + "," + JsonObj.Field("text", prompt) + "}"), cancellationToken);
+                        + JsonObj.Field("cmd", "session.input") + "," + JsonObj.Field("text", prompt)
+                        + attachmentField + "}"), cancellationToken);
                     if (input.Status != "ok") throw new InvalidOperationException(input.Error ?? "Conversation input rejected");
                 }
                 // The authenticated stdio conversation command may already have committed input.
@@ -1734,6 +1908,8 @@ public sealed class OmniCliRuntime : IDisposable
             if (delegation is null)
                 _usageContext = (sessionId, route.ProviderId, provider, loaded.Pricing(model), connectUrl, artifacts);
             var artifactReadTool = CreateArtifactReadTool(server, artifacts);
+            var mediaReadTool = effectiveProfile.InputModalities.Contains("image", StringComparer.Ordinal)
+                ? CreateMediaReadTool(server, artifacts) : null;
             var receiveMailbox = delegation is null ? null
                 : (Func<ToolCallId, CancellationToken, Task<string?>>)((toolCallId, token) =>
                     server.ReceiveMailboxMessageAsync(sessionId, runId, route,
@@ -1748,8 +1924,9 @@ public sealed class OmniCliRuntime : IDisposable
                 : executingAct
                 ? OmniHost.CreateActTools(artifactReadTool: artifactReadTool,
                     worktreeIntegrationCoordinator: delegation is null
-                        ? OmniHost.CreateWorktreeIntegrationCoordinator(workspaceRoot, paths, artifacts) : null)
-                : OmniHost.CreateExplorerTools(artifactReadTool);
+                        ? OmniHost.CreateWorktreeIntegrationCoordinator(workspaceRoot, paths, artifacts) : null,
+                    mediaReadTool: mediaReadTool)
+                : OmniHost.CreateExplorerTools(artifactReadTool, mediaReadTool);
             var extensionBoundaries = new List<IToolIntentBoundary>();
             IReadOnlyList<LoadedSkill> loadedProjectSkills = [];
             IReadOnlyList<IHook> lifecycleHooks = Array.Empty<IHook>();
@@ -1982,7 +2159,8 @@ public sealed class OmniCliRuntime : IDisposable
                 var requestedToolName = pendingForcedToolName;
                 pendingForcedToolName = null;
                 var selection = new ModelSelection(new ModelIdValue(model), usableContext, effectivePolicy.ToolPolicy.Mode,
-                    appliedReasoning, route.Id, route, selectedMaxOutputTokens, resolution);
+                    appliedReasoning, route.Id, route, selectedMaxOutputTokens, resolution, effectiveProfile.InputModalities,
+                    effectiveProfile.OutputModalities, effectiveProfile.ImageGenerationMaxCostUsd);
                 var preparedFingerprint = RuntimeFingerprintFactory.Prepare(runtimeModel, effectiveProfile, harness,
                     selection, harnessHash, contextPolicyHash, effectivePolicyFingerprint, tokenCounter.Id.Value,
                     provider, qualification, artifacts);
@@ -3854,6 +4032,29 @@ public sealed class OmniCliRuntime : IDisposable
     {
         var authorization = new SessionArtifactReadAuthorization(server.AcquireStore(), server.LastSessionId, artifacts);
         return new ArtifactReadTool(artifacts, authorization.IsReferenced);
+    }
+
+    private static MediaReadTool CreateMediaReadTool(OmniServer server, IArtifactStore artifacts)
+    {
+        var store = server.AcquireStore();
+        var codecs = EventCodecs.Create();
+        var authorization = new SessionArtifactReadAuthorization(store, server.LastSessionId, artifacts);
+        ArtifactRef? Resolve(string hash)
+        {
+            if (server.LastSessionId() is not { } session) return null;
+            foreach (var evt in store.ReadFrom(session, 1))
+            {
+                var reference = codecs.Decode(evt) switch
+                {
+                    UserInputReceived input => input.Attachments?.FirstOrDefault(item => item.Hash.Value == hash),
+                    ToolCallSucceeded success => success.ResultArtifact?.Hash.Value == hash ? success.ResultArtifact : null,
+                    _ => null,
+                };
+                if (reference is not null) return reference;
+            }
+            return null;
+        }
+        return new MediaReadTool(authorization.IsReferenced, Resolve, new PathBoundaryValidator());
     }
 
     private OmniServer Server() => Server(OmniHost.WorkspaceDataDirectory(
