@@ -41,5 +41,11 @@ is not a universal exactly-once guarantee.
 
 The generic wire command path does not grant `ITrustedUserActionClient` authority or establish a
 human origin. This block does not implement push events, external human authorization, OmniCoder
-TypeScript/Electron consumption, `media.read`, persistent process controls, or ConPTY. The process
+chat/action parity in TypeScript/Electron, `media.read`, persistent process controls, or ConPTY. The process
 transport is not itself a TUI connection; existing in-process and TUI routes are preserved.
+
+OmniCoder M9-C consumes this contract from Electron main without loading CLR. Its supervised Host
+and Sidecar provide connection health, queries and paged replay; the renderer has no process access.
+Commands and receipt lookup are tested through the Node consumer, while the product UI remains
+read-only. See the [M9-C integration record](../../../validation/m9-block-c-20261014.md) for the exact
+scope and evidence. This consumer does not introduce a new wire version or human authority.
