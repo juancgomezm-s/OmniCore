@@ -107,6 +107,13 @@ public sealed class MaintenanceCommandHost
                 "Los artifacts quedan huérfanos: ejecuta 'omni gc' para recogerlos.");
             return Task.FromResult(0);
         }
+        catch (SessionWriterLeaseUnavailableException)
+        {
+            LocalizedCommandOutput.WriteLine(console, resolve, "cli.maintenance.session_busy",
+                new Dictionary<string, string> { ["session"] = session.ToString() },
+                "omni session purge: la sesión está en uso por otro cliente: " + session);
+            return Task.FromResult(1);
+        }
         finally
         {
             store.Close();

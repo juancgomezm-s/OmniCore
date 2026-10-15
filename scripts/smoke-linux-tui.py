@@ -20,7 +20,10 @@ for columns, rows in ((120, 35), (80, 25)):
     if pid == 0:
         os.chdir(root)
         env = dict(os.environ, TERM="xterm-256color", OMNI_LOCALE="en",
+                   COLORTERM="truecolor",
                    OMNICORE_DATA_DIR=str(root / "data"), OMNICORE_CONFIG_DIR=str(root / "config"))
+        for name in ("DOTNET_ROOT", "DOTNET_ROOT_X64", "DOTNET_ROOT_ARM64", "NO_COLOR"):
+            env.pop(name, None)
         os.execve(str(executable), [str(executable), "tui"], env)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
     raw = bytearray()

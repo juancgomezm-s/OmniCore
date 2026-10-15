@@ -71,7 +71,7 @@ rechazadas. La capability sólo anuncia handlers construidos para el backend act
 
 - Conserva rutas in-process/TUI, el wire 1.0 legacy y compatibilidad multi-target net8/net10.
 - El lock depende de sharing-lock semantics del sistema operativo y almacenamiento local; el bloque
-  se ha probado en Windows. Linux, macOS y network filesystems no están verificados.
+  se ha probado en Windows y Linux x64 (Debian/WSL2, 2026-10-14; complemento en el acta Linux). macOS y network filesystems no están verificados.
 - `SubscribeSince` por páginas es replay request/reply, no push; no agrega stream de eventos, heartbeat
   de lease, supervisor Electron ni binding TypeScript.
 - Unknown es recuperable como incertidumbre explícita, no como resultado final. No se presume atomicidad

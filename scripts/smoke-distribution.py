@@ -24,6 +24,8 @@ def main():
         workspace.mkdir(parents=True)
         env = dict(os.environ, OMNICORE_DATA_DIR=str(root / "data"),
                    OMNICORE_CONFIG_DIR=str(root / "config"))
+        for name in ("DOTNET_ROOT", "DOTNET_ROOT_X64", "DOTNET_ROOT_ARM64"):
+            env.pop(name, None)
 
         def run(name, command, expected=0):
             process = subprocess.run([str(executable), *command], cwd=workspace, env=env,

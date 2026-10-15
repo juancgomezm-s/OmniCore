@@ -25,7 +25,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    # The first Windows run reached the 25-minute job limit while tests were active.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 50 || 25 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -37,7 +38,7 @@ jobs:
       - run: dotnet build OmniCore.slnx --no-restore
       - name: All tests, including architecture and process recovery
         shell: bash
-        run: dotnet test --solution OmniCore.slnx --no-build --no-restore --max-parallel-test-modules 1 --parallel none < /dev/null
+        run: dotnet test --solution OmniCore.slnx --no-build --no-restore --max-parallel-test-modules 1 --parallel none --output Detailed --no-progress < /dev/null
 
   linux-package:
     runs-on: ubuntu-latest

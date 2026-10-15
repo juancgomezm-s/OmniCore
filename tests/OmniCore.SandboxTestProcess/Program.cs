@@ -24,12 +24,7 @@ if (args.Length == 1 && args[0] == "legacy-stdio")
 
 if (args.Length == 3 && args[0] == "session-lock")
 {
-    using var store = new OmniCore.Infrastructure.SqliteEventStore(args[1]);
-    store.AcquireSessionWriterLease(OmniCore.Domain.SessionId.Parse(args[2]));
-    Console.WriteLine("READY");
-    await Console.Out.FlushAsync();
-    await Console.In.ReadLineAsync();
-    return 0;
+    return OmniCore.SandboxTestProcess.SessionLockProbe.Run(args[1], args[2]);
 }
 
 if (args.Length == 1 && args[0] == "stream")

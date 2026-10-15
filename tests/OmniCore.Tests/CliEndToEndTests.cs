@@ -2492,11 +2492,14 @@ public sealed class CliEndToEndTests
         await InIsolatedCli(async (workspace, _, _, provider) =>
         {
             provider.RespondWith((_, _) => TextResponse("Usaremos PostgreSQL y el puerto 5432."));
-            var host = new TuiTurnHost(OmniCliRuntime.Create(workspace));
+            using var firstRuntime = OmniCliRuntime.Create(workspace);
+            var host = new TuiTurnHost(firstRuntime);
             Assert.Equal(0, await host.ExecuteAsync("Mi proyecto se llama Brújula; usa PostgreSQL.",
                 _ => { }, TestContext.Current.CancellationToken));
             var original = ReadCurrentSessionEvents(workspace).OfType<RunCreated>().Single().SessionId;
-            if (reopen) host = new TuiTurnHost(OmniCliRuntime.Create(workspace));
+            if (reopen) firstRuntime.Dispose();
+            using var reopenedRuntime = reopen ? OmniCliRuntime.Create(workspace) : null;
+            if (reopenedRuntime is not null) host = new TuiTurnHost(reopenedRuntime);
             string? received = null;
             provider.RespondWith((_, body) => { received = body; return TextResponse("Continuación."); });
             Assert.Equal(0, await host.ExecuteAsync("¿Qué base y puerto acordamos?", _ => { },
@@ -2788,6 +2791,8 @@ public sealed class CliEndToEndTests
                 sessionId = Convert.ToString(command.ExecuteScalar()) ?? "";
             }
             Assert.False(string.IsNullOrWhiteSpace(sessionId));
+            // Separate CLI invocations release the previous process's Session writer.
+            CliApp.UseRuntimeForTests(OmniCliRuntime.Create(workspace)).Dispose();
             var purge = await Run("session", "purge", sessionId);
             Assert.Equal(0, purge.Code);
             Assert.Contains("sesión", purge.Output, StringComparison.OrdinalIgnoreCase);

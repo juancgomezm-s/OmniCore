@@ -171,7 +171,11 @@ public sealed class Epic001ProjectIdentityTests
     [Fact]
     public void Literal_backslash_in_a_unix_directory_name_preserves_workspace_identity()
     {
-        if (OperatingSystem.IsWindows()) return;
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Skip("A literal backslash in a directory name is a Unix path case.");
+            return;
+        }
         var root = Path.Combine(Path.GetTempPath(), "omni-canon-" + Guid.NewGuid().ToString("N"));
         var literal = Path.Combine(root, "Repo\\Child");
         var nested = Path.Combine(root, "Repo", "Child");

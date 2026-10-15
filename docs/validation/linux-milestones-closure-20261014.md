@@ -1,0 +1,168 @@
+# Cierre de verificaciones Linux — 2026-10-14
+
+Cierre Linux de M1, M4/TUI v0, M5.5, M6 y M7 acreditado por la evidencia de esta acta. La integración final con M9-B se acepta únicamente con los gates del PR aprobados; el resultado vigente se consulta en [los checks del PR](https://github.com/juancgomezm-s/OmniCore/pull/1/checks). Los intentos fallidos no se presentan como aprobados.
+
+## Alcance y entorno
+
+Se sustituye el diferido causado por no disponer de una distro WSL. Base `445339e`;
+correcciones `4777fbd` y `cbeb4d5`; integración del nuevo main `db8e844` en `4f590c9`. Las correcciones posteriores conservan el contrato de ownership de ADR-0049. Debian 13.5/trixie en WSL2, filesystem Linux nativo,
+usuario sin privilegios `omnicode-ci` (UID 2000), Git 2.47.3, SDK .NET 10.0.401 y
+runtime 10.0.12. Windows se conserva como plataforma de regresión. No se modifica la
+configuración, los journals ni las credenciales reales del usuario.
+
+El checkout Linux es `/home/omnicode-ci/OmniCore-linux-20261014` y la evidencia
+persistente `/home/omnicode-ci/omnicore-linux-evidence`. No se usa `/tmp` para conservar
+pruebas después de apagar WSL. El árbol Linux se contrastó completo con `cbeb4d5`
+mediante `git diff FETCH_HEAD --quiet`, no solo con el nombre de la rama.
+
+## Fallos encontrados y correcciones
+
+| Causa | Evidencia | Corrección |
+| --- | --- | --- |
+| Opción Windows aplicada a todos los procesos | `SystemProcessRuntime.Launch` lanzaba `PlatformNotSupportedException` en `CreateNewProcessGroup`. La primera suite Debian: 4534 casos, 4430 PASS, 88 FAIL, 16 SKIP; Git/worktrees y varios gates fallaban en cascada. | Aplicar la opción solo en Windows. Conservar cancelación, espera, captura de salida y terminación del árbol en Linux. |
+| Apphost Linux sin extensión no copiado/localizado | Fixtures buscaban `OmniCore.SandboxTestProcess.exe` y el target solo copiaba `OmniCore.SandboxTestProcess.*`. | Copiar también el apphost sin extensión; resolver el nombre por plataforma. Reemplazar los comandos `cmd.exe` de las pruebas de timeout/salida por sus equivalentes Linux, conservando las assertions. |
+| Cancelación stdio dependía de PowerShell | La prueba de negociación/cancelación omitía Linux. | Modo `stdio-stall` del ejecutable nativo controlado. Ejecutar el timeout y comprobar que el PID real termina también en Linux; retirar esa omisión. |
+| Identidad de workspace alteraba nombres POSIX | La sustitución incondicional de `\\` por `/` confundía un nombre literal con directorios anidados. | Normalizar el separador alternativo solo en Windows. Probar las equivalencias válidas por plataforma y la distinción de identidades Linux. |
+| Fixture de retención dependía del segundo de creación | Dos snapshots de igual árbol/padre/mensaje pueden producir el mismo commit. El backend conserva correctamente una referencia todavía usada por un worktree activo; el test esperaba que se podara. | Dar árboles distintos al caso de poda y afirmar commits distintos. Añadir un caso determinista con base HEAD que exige preservar el commit compartido. No relajar la protección productiva ni añadir esperas/retries. |
+| Escenarios YAML no compatibles con AOT | Publicación local y [primer CI](https://github.com/juancgomezm-s/OmniCore/actions/runs/38659409570): `ScenarioLoader.cs:49`, IL3050 por `DeserializerBuilder`, después IL3053/IL2104. Host suprimía IL3050 en el build ordinario. | Leer el árbol YAML sin reflexión, reutilizando la API de representación que ya usa ConfigLoader. Conservar mapas/listas/escalares/aliases con identidad, acotar profundidad y probar null/strings/aliases/documentos múltiples. Retirar la supresión de Host. |
+
+El intento inicial con contexto estático de contenedores no tipados hizo fallar el
+generador con CS8785/IndexOutOfRangeException. No se mantuvo, ni se cambiaron versiones:
+la solución final usa `YamlStream`, sin generación dinámica ni warnings suprimidos.
+La primera invocación del runner con una extensión TRX no instalada ejecutó cero tests
+(exit 5); no se contabiliza como una validación. Los fallos intermedios se conservan.
+
+## Evidencia ya obtenida
+
+- Restore/build Linux y Windows: cero advertencias y errores en las pasadas correctas;
+  Protocol, Client y Sandbox incluyen net8/net10. Arquitectura: 62 casos, incluida en
+  la integral; no sumar otra vez.
+- Windows focal de procesos, Git, AppContainer, identidad, M2 y stdio: 146/146 PASS,
+  cero omisiones. Focal final de YAML/retención: 27/27 PASS en Windows y en Debian.
+- Pasada Debian anterior a la corrección de la fixture de retención: 4535 casos,
+  4519 PASS, 1 FAIL, 15 SKIP. El fallo remanente es el descrito arriba, no se registra
+  esa pasada como verde.
+- [CI Ubuntu sobre 4777fbd](https://github.com/juancgomezm-s/OmniCore/actions/runs/38659409570/job/116176844287):
+  4536 casos, 4521 PASS, 0 FAIL, 15 SKIP; 6m37s. No acredita aún el arreglo YAML posterior.
+- CLI Debug y primera distribución autónoma Linux: los cinco YAML y el crash explícito
+  pasan. Conteos de eventos: multi-item 57, TaskGraph 59, permisos 57, aprobación 51,
+  crash YAML 30 y crash explícito 30. SQLite confirma que resume conserva el prefijo,
+  solo existe una ToolCall iniciada/reconciliada y el segundo resume no escribe eventos.
+  `verify-journal` pasa en los seis workspaces aislados.
+- El YAML de crash devuelve 0 por aceptación del escenario, aunque deja el efecto
+  interrumpido. `--crash` devuelve 1/Interrupted. La guía M1 se corrige para no confundir
+  estos contratos ya fijados por las pruebas existentes.
+
+## Cierre de la pasada completa y distribución
+
+La suite completa de los binarios de `cbeb4d5`, antes del bloque M9-B, pasó en Debian:
+**4541 casos, 4526 PASS, 0 FAIL, 15 SKIP, 11m26s**, incluida arquitectura (62).
+Las omisiones son siete casos de inferencia/diagnóstico con opt-in y ocho de Windows
+(AppContainer/MCP Strong/contrato de batch). La cancelación stdio ya no se omite en Linux.
+La nueva prueba de barra invertida literal se marca explícitamente como no aplicable en
+Windows; no se omite en Linux. No se deshabilitaron pruebas existentes.
+
+Ambas distribuciones Linux x64 pasaron sus seis escenarios, verificación SQLite/recovery
+y dos PTY reales. Native AOT publicó sin IL2xxx/IL3xxx; `omni` ocupa 35.074.672 bytes,
+SHA-256 `b0e4a3592770550392173171893182214e005f3ee49c4ceadf66fa87bf4f2b70`.
+Incluye `libonigwrap.so` y `libe_sqlite3.so`. El job `linux-package` también pasó para
+`cbeb4d5` y después de integrar M9-B en `4f590c9`; ver [ejecución de integración](https://github.com/juancgomezm-s/OmniCore/actions/runs/38661297379).
+El smoke definitivo elimina DOTNET_ROOT del entorno del ejecutable para no apoyarse en
+la instalación del SDK. Las rutas de evidencia distinguen cada binario y pasada.
+
+## Integración del main que avanzó durante la validación
+
+Main incorporó `e703584`/`db8e844` (M9-B) durante este trabajo. Se integró sin conflictos,
+conservando las correcciones Linux y el nuevo protocolo. No se sobrescribió su trabajo.
+Build integrado Debian: cero errores/advertencias. Stdio + JournalEnvelope: **38/38 PASS**,
+sin omisiones; incluyen procesos distintos, liberación tras muerte del dueño, ACK perdido,
+lookup sin resend, resultado ambiguo, fallback legacy y replay acotado/paginado.
+
+La primera integral Ubuntu de esa combinación ejecutó 4549 casos: 4531 PASS, 3 FAIL y
+15 SKIP. [Logs](https://github.com/juancgomezm-s/OmniCore/actions/runs/38661297379/job/116183034165).
+Los tres fallos compartían ciclo de vida incompatible con el nuevo lease: el test de
+reapertura mantenía vivo el runtime anterior, y los dos de purga mantenían el writer que
+había sembrado la sesión. Se cierra el runtime previo al reabrir y se libera el writer
+antes de invocar la purga independiente. Las assertions de historial/auditoría/borrado
+se mantienen. Se añade además un caso de sesión ocupada: error 1 explícito, sin eventos
+borrados ni auditoría falsa, y el contendiente fallido no revoca el lock del dueño.
+El comando real informa el conflicto mediante texto localizado en es/en/fr/it.
+
+La referencia Infrastructure añadida al ejecutable de fixtures por M9-B hacía fallar el
+paquete mínimo de extensiones: FileNotFoundException de OmniCore.Infrastructure al entrar
+en la máquina async del programa. Se reprodujo fuera del sandbox (exit -532462766).
+El modo session-lock pasa a una función no inline separada; los demás modos conservan su
+paquete mínimo, y el probe sigue usando el store de producción. No se amplían grants ni
+se copian dependencias adicionales al sandbox. Regresión Windows tras corregirlo:
+**12/12 PASS**, sin omisiones, incluidos AppContainer, MCP Strong y lock entre procesos.
+La focal de mantenimiento/reapertura/identidad dio **36 PASS / 0 FAIL / 1 SKIP Unix**.
+Tras las correcciones, el bloque conjunto de M9/journal, mantenimiento, reapertura e
+identidad pasó en Debian: **75/75 PASS**, cero omisiones; build limpio. Un intento
+anterior no llegó a iniciar las pruebas por timeout de creación de VM de WSL
+(0x800705b4); el arranque posterior funcionó y esa ejecución sin tests no cuenta como
+validación. La integral final y los tres jobs siguen siendo gates antes de integrar.
+
+El primer job Windows agotó el límite global de 25 minutos, sin completar la suite; la
+anotación exacta fue “The job has exceeded the maximum execution time of 25m0s”. Ese
+intento no acredita Windows. Se asignan 50 minutos a Windows y se activa salida Detailed
+para conservar progreso por prueba; Ubuntu mantiene 25. No se cambian los timeouts de
+las pruebas, incluido M4, ni se añaden retries ni resultados simulados.
+
+## Recuperación y TUI M4
+
+El probe de producción completa 200 turnos con compactación en SQLite/CAS. `seed`
+(PID 18306) valida 1664 eventos y el segundo proceso restaura objetivo, WorkingState,
+checkpoint y pregunta pendiente sin alterar los payloads de baseline. Verificador:
+1 sesión, 1664 eventos, 1849 referencias a artifacts, OK. Seed: 131.240 s, dentro del
+límite existente de 3 minutos; esta pasada compartía máquina con compilaciones y no
+es una medición comparativa de rendimiento.
+
+Dos copias independientes del journal se abren con `TuiApp.Run` de producción en PTY
+Linux reales 120×35 y 80×25. La pregunta `M4 restart questionnaire / Proceed?` reaparece.
+Escape cancela por acción de teclado; después hay exactamente `interaction.resolved`
+y `user_input.received` nuevos. F2 abre el panel estrecho. Salida explícita: exit 0 en
+ambos procesos. Las rasterizaciones siguientes representan el ANSI capturado con sus atributos RGB; no son screenshots del escritorio. No se afirma prueba de
+resize dentro de un mismo proceso ni cualificación de un LLM por este probe scripted.
+
+![Cuestionario restaurado en PTY 120×35](linux-20261014/m4-wide.png)
+![Cuestionario restaurado en PTY 80×25](linux-20261014/m4-narrow.png)
+![Panel estrecho abierto con F2](linux-20261014/m4-sidebar.png)
+
+## Reproducción y CI
+
+```sh
+dotnet restore OmniCore.slnx
+dotnet build OmniCore.slnx --no-restore
+dotnet test --solution OmniCore.slnx --no-build --no-restore --max-parallel-test-modules 1 --parallel none < /dev/null
+bash scripts/validate-linux-package.sh /ruta/externa/nueva/linux-package
+```
+
+El último script necesita clang/build-essential/zlib1g-dev y Python 3; publica Linux x64
+self-contained y Native AOT. Cada ejecutable real procesa YAML, carga SQLite, recupera
+el journal y arranca/sale de TUI en las dos dimensiones de PTY. Comprueba la presencia
+de `libonigwrap.so`; no acredita funcionalidad por la sola existencia del binario.
+Cualquier fallo mantiene su código y muestra el log técnico; no hay `continue-on-error`.
+
+`.github/workflows/ci.yml` mantiene la matriz Windows/Ubuntu y el job `linux-package`,
+en PR a main y push a main, además de dispatch manual. Usa `global.json`, todas las
+pruebas existentes y warnings de publicación como errores. No necesita claves de
+proveedores. Conserva logs, hashes, resúmenes y ANSI de los paquetes como artefactos.
+
+## Pendientes que no eran solo falta de WSL
+
+- M2/M3: aceptación manual con el modelo local todavía necesaria.
+- M3 y partes Strong de M8: no existe backend Linux bubblewrap/Landlock/seccomp en el
+  código. Los probes reales de user namespaces, bubblewrap y Landlock sí funcionan
+  como UID 2000; el bloqueo restante es implementación, no instalar WSL. Nunca se
+  declara Strong por detectar herramientas ni se degrada sin WeakSandboxConsent.
+- M5: la cualificación autenticada ya documentada conserva su alcance Windows;
+  los tests deterministas Linux no se presentan como nuevas inferencias reales.
+- M8: OR5 autenticado y el diagnóstico de consumidores diferidos de metadatos de skills
+  permanecen en M8. El CI no configura ni consume la cuenta del usuario.
+- OAuth: las pruebas offline no acreditan login/inferencia real; el almacén AES-GCM
+  Linux sigue siendo provisional según ADR-0018/0038, sin atribuir Secret Service.
+- M9/M10: M9-B ya integra lease, receipts, dedup/Unknown y replay/reconexión; 38 focales reales pasaron en Debian. Siguen pendientes autoridad humana externa, consumidor OmniCoder/TypeScript, push, media y procesos persistentes/ConPTY. M9 no se declara cerrado globalmente.
+- Linux arm64 y macOS no se validaron por ejecutar Linux x64 en este equipo.
+## Conservación del estilo aprobado
+
+La comparación de la rama con main no presenta cambios en src/OmniCore.Cli/Tui ni en los estilos del Client. El primer arnés usaba -noColor y una rasterización monocroma; servía para comprobar recuperación, pero no para presentar el diseño. Tras la observación del usuario se retiró ese flag del probe visual, se conservan foreground/background RGB del ANSI y se sustituyen las tres imágenes. Las pruebas de accesibilidad NO_COLOR siguen activas y se distinguen de la evidencia visual normal.
