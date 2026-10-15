@@ -45,3 +45,15 @@ como aceptación humana ni ejecución de una cuenta real. La rama original y el
 respaldo `preferences-preserved-fd599.bundle` conservan el historial completo.
 
 Preparación local. No se ha fusionado esta interfaz a main ni publicado la rama: el plan original excluía push. El estado de esta evidencia no equivale a la aprobación del CI de la reparación Linux.
+
+La reparación Linux se fusionó después mediante [PR #1](https://github.com/juancgomezm-s/OmniCore/pull/1),
+main remoto `500a269`, tras aprobar los tres jobs de
+[38687827110](https://github.com/juancgomezm-s/OmniCore/actions/runs/38687827110):
+Windows 4556 PASS/8 SKIP/0 FAIL, Ubuntu 4543 PASS/21 SKIP/0 FAIL y paquetes PASS.
+El árbol remoto coincide exactamente con la revisión validada `fd59905`. El
+checkout principal conserva además el plan documental local `c268825` mediante
+la combinación `d09d44d`; ese plan también se incorpora a esta rama sin conflictos.
+Sólo cambian tres archivos de documentación frente a la interfaz ya probada;
+se conservan la referencia integrada, M9-E y los resultados 345/348 anteriores.
+La publicación de la interfaz continúa pendiente de autorización y el plan nuevo
+no se publica mediante la reparación CI.
