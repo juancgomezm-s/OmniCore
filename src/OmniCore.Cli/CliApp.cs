@@ -187,7 +187,7 @@ public sealed class CliApp
 
     private static Task<int> RunStdioClientAsync(string[] args)
     {
-        if (args.Length < 2 || args[1] is not ("sim" or "query" or "input"))
+        if (args.Length < 2 || args[1] is not ("sim" or "query" or "input" or "watch"))
         {
             Console.WriteLine(Loc().Resolve("cli.stdio.usage"));
             return Task.FromResult(2);
@@ -304,6 +304,49 @@ public sealed class CliApp
                         new JsonRenderer().Emit(envelope);
                     var stateAfterInput = client.Query("state", CancellationToken.None);
                     if (stateAfterInput is not null) Console.WriteLine(stateAfterInput.Json);
+                    return Task.FromResult(0);
+                case "watch":
+                    if (args.Length > 4 || (args.Length >= 3 && string.IsNullOrWhiteSpace(args[2])))
+                    {
+                        Console.WriteLine(Loc().Resolve("cli.stdio.usage"));
+                        return Task.FromResult(2);
+                    }
+                    var watchIdentity = client.Query("sessionIdentity", CancellationToken.None);
+                    if (watchIdentity is null) return Task.FromResult(1);
+                    using (var watchDocument = System.Text.Json.JsonDocument.Parse(watchIdentity.Json))
+                    {
+                        var sessionId = args.Length >= 3 ? args[2] : watchDocument.RootElement.GetProperty("sessionId").GetString();
+                        var cursor = args.Length == 4 && long.TryParse(args[3], System.Globalization.NumberStyles.None,
+                            System.Globalization.CultureInfo.InvariantCulture, out var parsedCursor) ? parsedCursor : 1;
+                        if (string.IsNullOrWhiteSpace(sessionId) || cursor < 1
+                            || !client.Capabilities.Contains("events.stream.v1"))
+                        {
+                            Console.Error.WriteLine(Loc().Resolve("cli.stdio.connect_failed"));
+                            return Task.FromResult(1);
+                        }
+                        using var watchCancellation = new CancellationTokenSource();
+                        ConsoleCancelEventHandler cancel = (_, eventArgs) => { eventArgs.Cancel = true; watchCancellation.Cancel(); };
+                        Console.CancelKeyPress += cancel;
+                        try
+                        {
+                            client.ConsumeEventStreamAsync(sessionId!, cursor, 32, (item, _) =>
+                            {
+                                if (item.IsGap)
+                                {
+                                    Console.WriteLine("{\"kind\":\"gap\",\"requestedSequence\":"
+                                        + item.RequestedSequence?.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                                        + ",\"nextSequence\":" + item.NextSequence?.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                                        + ",\"highWater\":" + item.HighWater?.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}");
+                                    return ValueTask.CompletedTask;
+                                }
+                                if (item.Event is not { } envelope) throw new InvalidDataException("The stream event is empty.");
+                                new JsonRenderer().Emit(envelope);
+                                return ValueTask.CompletedTask;
+                            }, watchCancellation.Token).GetAwaiter().GetResult();
+                        }
+                        catch (OperationCanceledException) { return Task.FromResult(130); }
+                        finally { Console.CancelKeyPress -= cancel; }
+                    }
                     return Task.FromResult(0);
                 default:
                     var resume = args.Skip(2).Contains("--resume", StringComparer.Ordinal);

@@ -11,6 +11,10 @@ public static class StdioProtocol
     public const string ReplayPageOperation = "events.replay.page";
     public const string ConversationResultOperation = "conversation.result";
     public const string ArtifactReadOperation = "artifact.read";
+    public const string EventStreamOperation = "events.stream";
+    public const string EventAckOperation = "events.ack";
+    public const string EventReadyOperation = "events.ready";
+    public const string EventStopOperation = "events.stop";
 
     public static readonly string[] SupportedCapabilities =
     [
@@ -29,6 +33,7 @@ public static class StdioProtocol
         "query.sessionObservability",
         "events.replay",
         "events.replay.page",
+        "events.stream.v1",
         "conversation.result.lookup",
         "artifact.read.chunk",
     ];

@@ -884,6 +884,21 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     internal IReadOnlyList<WireEnvelope> MapReplayPage(IReadOnlyList<DomainEvent> events) =>
         new ProtocolMapper(_codecs, _artifacts).Map(events);
 
+    internal (IReadOnlyList<WireEnvelope> Events, long NextSequence, long HighWater, bool HasGap) ReadStreamPage(
+        SessionId session, long fromSequence, int pageSize)
+    {
+        if (_store is SqliteEventStore sqlite)
+        {
+            var page = sqlite.ReadPage(session, fromSequence, Math.Clamp(pageSize, 1, 64));
+            return (MapReplayPage(page.Events), page.NextSequence, page.HighWater, page.HasGap);
+        }
+        var all = _store.ReadFrom(session, fromSequence);
+        var selected = all.Take(Math.Clamp(pageSize, 1, 64)).ToArray();
+        var mapped = MapReplayPage(selected);
+        var next = selected.Length == 0 ? _store.CurrentSequence(session) + 1 : selected[^1].Sequence + 1;
+        return (mapped, next, _store.CurrentSequence(session), selected.Length > 0 && selected[0].Sequence != fromSequence);
+    }
+
     /// <summary>Publica PlanApproval tras una propuesta aceptada de plan.propose; no contesta por el usuario.</summary>
     public InteractionId? RequestPlanApprovalIfNeeded() => RequirePlanApprovalInteraction(RequestPlanApprovalCommand());
 

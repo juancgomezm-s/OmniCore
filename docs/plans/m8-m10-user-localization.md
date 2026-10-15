@@ -242,19 +242,39 @@ Decisión: [ADR-0051](../adr/0051-conversation-inference-from-persisted-input.md
 [acta M9-E](../validation/m9-block-e-20261014.md). Este bloque no cierra M9.
 
 Pendientes explícitos para cerrar M9: `media.read` consumido por proveedor con visión, controles de
-procesos persistentes/ConPTY, push/backpressure, validación Linux/macOS/filesystems, paridad restante
-del cliente Core (gestión de sesiones e interacciones), aceptación nativa es/en/fr/it y procedencia `Native/Imported`. No hay garantía
+procesos persistentes/ConPTY, validación Linux/macOS/filesystems, paridad restante del cliente Core
+(gestión de sesiones e interacciones), aceptación nativa es/en/fr/it y procedencia `Native/Imported`. No hay garantía
 exactly-once general y OR5 autenticado M8 sigue pendiente.
 
 | Resto de M9 tras M9-B | Construcción | Presentación y aceptación |
 |---|---|---|
-| Transporte y negociación | **Construido en M9-A/B:** Host real por stdio, framing UTF-8 y cap del frame final, `hello`/versiones/capabilities, queries/read models y replay legacy/paginado. Sin backpressure adicional. | Focales cross-process cubren caracteres es/en/fr/it, incompatible, malformed y oversized. La verificación de OS en este bloque es Windows. |
+| Transporte y negociación | **Construido en M9-A/B/H:** Host real stdio 1.0, framing UTF-8 capado a 1 MiB, `hello`/capabilities, queries/read models, replay paginado y stream durable opcional con ventana ACK acotada, pausa de lectura, reanudación y señal de gap (ADR-0054). | Focales multiproceso cubren negociación/legacy, replay→live, ventanas, query con ACK retenido, Unicode, frame grande/oversized, stop/rebind y gaps. Windows local; Linux/macOS y otros filesystems siguen pendientes. |
 | Lease y supervisión | **Construido en M9-B:** lock OS no expirable por Session, adquisición antes de mutación y reclaim tras muerte; sin heartbeat por reloj. M9-C agrega supervisor de proceso y reserva de workspace antes de spawn; esa reserva de producto no es el lease Core. | Pruebas de dos procesos/reclaim y lifecycle de child verificadas en Windows local. La UI muestra reserva y desconexión/fallo; falta aceptación de otros OS/filesystems y ownership coordinado con otros productos externos. |
-| Reconexión e historial | **Construido en M9-B:** receipt hash-bound, `command.result` sin resend, `Unknown` no ejecutable, cursor/high-water SQL acotados, detección de gaps y tombstone de purge. No es exactly-once general ni reconexión push. Procedencia Native/Imported pendiente. | Prueba mata Host tras persistir receipt con ACK sin consumir, reconecta y confirma misma Session/ACK sin nuevos eventos. Unknown y cursor purgado muestran resultado/gap sin fingir finalización. |
+| Reconexión e historial | **Construido en M9-B/H:** receipt hash-bound, `command.result` sin resend, `Unknown` no ejecutable, cursor/high-water SQL acotados, gaps/tombstones y nueva suscripción desde cursor durable después de restablecer conexión. No es exactly-once general ni reconexión automática. Procedencia Native/Imported pendiente. | Los tests de transporte existentes cubren cursores, reanudación y muerte de Host; el caso focal M9-H valida stop/rebind al mismo Host. No se atribuye a ese focal la reconexión automática. Gap/purga se muestran como historial incompleto. |
 | Clientes y preferencias | **Core:** CLI in-process/stdio multi-target net8/net10, capabilities y goldens. **M9-C integrado:** consumer TypeScript, Host hijo y Sidecar. **M9-E integrado:** composer OmniCoder conectado a inferencia Core real y recuperación de historial vía journal/replay. `ui.locale` conserva su esquema actual. | Host real Windows y UI; E2E fixture HTTP determina el wiring. Smoke Ollama local qwen08 + reapertura pasó en perfil aislado; otros providers/configuraciones permanecen por validar. Multi-OS/cuatro idiomas y paridad completa siguen abiertos. |
 | Origen humano, conversación y resultado (U-C12) | **M9-D integrado + M9-E integrado:** Electron main confirma acciones y firma proof efímero; Core valida conexión/workspace/Session/Run/revisión y ejecuta una única entrada persistida con el pipeline real. Generic `session.input` sigue igual. ACK Accepted es admisión; `conversation.result` reconcilia sin reenvío. | E2E GUI→Host→fixture HTTP prueba respuesta real, replay, modo e interrupción/cancelación; focal Core prueba admisión separada del resultado y cancelación serializada con queries. El fixture no acredita proveedor local ni aceptación humana. Trust boundary: mismo principal OS. Ver ADR-0050/0051 y actas M9-D/E. |
 
-**Salida M9:** transporte/lease/reconexión/net8 y chat/inferencia desde OmniCoder construidos e integrados; aún faltan `media.read` consumido por proveedor visual, recepción/persistencia/presentación de imágenes generadas ([M9-F2](generated-image-responses.md)), controles de procesos persistentes/interactivos, aceptación en cuatro idiomas y validación multiplataforma. Reusar Client/idioma y mantener DTOs canónicos/wire invariantes. M9-E no cierra el hito.
+#### M9-H: entrega durable continua con backpressure (2026-10-15)
+
+El Host anuncia `events.stream.v1` solo cuando puede sostener la suscripción opcional. El comando
+`omni stdio watch` y el supervisor TypeScript multiplexan respuestas correlacionadas y eventos por
+un lector único; el comando CLI requiere la capability, mientras que TypeScript conserva replay
+paginado si falta. La TUI in-process no consume el stream nuevo. Tras restablecer una conexión, los
+consumidores pueden reanudar por Session/cursor sin polling por cada cambio. Ventana y frames son acotados. Sin
+crédito, el Host deja de leer journal y mantiene queries/commands/cancel disponibles. ACK representa
+consumo, no encolado. Main mantiene el estado canónico y limita a una notificación IPC pendiente; la
+proyección de chat se serializa y drena/reconcilia antes de settled. Si falta capacidad, se conserva
+el replay paginado existente sin afirmar push.
+
+El contrato, límites y pruebas están en [ADR-0054](../adr/0054-event-stream-backpressure-stdio.md),
+el protocolo stdio 1.0 y [acta M9-H](../validation/m9-block-h-20261015.md). El bloque cubre eventos
+canónicos durables mientras el Run sigue activo; no hace streaming de tokens del proveedor ni inventa
+TTFT, usage o coste. Sus pruebas de producto usan Electron real, Host .NET y provider fixture local.
+
+**Salida M9:** transporte/lease/reconexión/net8, stream durable/backpressure y chat/inferencia desde
+OmniCoder construidos en sus ramas de bloque; aún faltan `media.read` consumido por proveedor visual,
+controles de procesos persistentes/interactivos, aceptación en cuatro idiomas y validación
+multiplataforma. Reusar Client/idioma y mantener DTOs canónicos/wire invariantes. M9-H no cierra M9.
 
 ## M10: v1, memoria completa y evaluación
 

@@ -175,3 +175,37 @@ This extension adds no durable journal schema or wire-version change. The generi
 contract and in-process CLI route are preserved. See [ADR-0052](../../../adr/0052-multimodal-intake-and-materialization.md)
 and the [M9-F validation record](../../../validation/m9-block-f-20261015.md) for implementation scope,
 provider/UI wiring, platform coverage, and remaining limits.
+
+## M9-H durable event stream extension
+
+The optional `events.stream.v1` capability keeps wire version `1.0` and legacy clients unchanged.
+`events.stream` binds a new `streamId` to the requested `sessionId`, durable `fromSequence`, and a
+bounded credit window (1–32 frames). The Host responds with the accepted stream/cursor/window;
+`events.ready` starts delivery. `events.ack` returns credit through an event sequence only after the
+client consumer finishes applying it; `events.stop` cancels the subscription and waits for its
+bounded journal pump to stop. Event frames carry `streamId`, `sessionId`, sequence, and the canonical
+mapped `WireEvent`. Responses still carry their request `messageId`; stream events carry no request
+correlation ID and are demultiplexed independently by the single stdout reader.
+
+The Host reads durable journal pages only while credit is available. If a page contains only
+internal events excluded by `ProtocolMapper`, the cursor advances to `page.nextSequence` even when
+the page emitted no event frame. Exhausted credit pauses journal reads without blocking commands or
+mutations; returned credit resumes from the acknowledged durable cursor. The journal remains the
+source of truth and transport memory remains bounded. Frame UTF-8 size is bounded by the existing
+1 MiB stdio limit. Invalid, future, duplicate, wrong-stream, wrong-Session, or wrong-connection ACKs
+cannot enlarge the window or skip durable history.
+
+If retained history no longer covers the cursor, the Host sends a gap control frame with requested
+cursor, next available sequence, and high-water. The client reconciles the suffix through bounded
+replay and retains the gap diagnostic; it must not report complete history. Stop/rebind uses a new
+stream identity, and a previous pump must finish before stop succeeds. EOF/cancel discards volatile
+state; after a connection is restored, a client may create a new subscription from the durable
+Session/cursor. Automatic transport reconnection is not provided. The .NET `omni stdio watch`
+command requires the capability and reports its absence; it does not fall back automatically. The
+TypeScript supervisor uses the existing paged replay path only when the capability is absent.
+Neither path resends an ambiguous command or reissues human proof. Clients without the capability do
+not claim push delivery.
+
+This carries canonical durable events only. Provider token streaming, TTFT, usage/cost synthesis,
+and changes to proof authority are outside scope. See [ADR-0054](../../../adr/0054-event-stream-backpressure-stdio.md)
+and [M9-H validation](../../../validation/m9-block-h-20261015.md).

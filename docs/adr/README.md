@@ -69,3 +69,4 @@ Cada ADR registra una decisión que precisa o modifica `docs/spec/OmniCore-v1.md
 | [0050](0050-autoridad-humana-stdio-omnicoder.md) | Autoridad humana acotada desde OmniCoder a Host stdio | Aceptada para M9-D; entrega en revisión |
 | [0052](0052-multimodal-intake-and-materialization.md) | Intake multimodal, snapshots documentales y salida de imagen M9-F/F2 | Aceptada para F/F2; worktree pendiente de revisión/integración; live generation pendiente |
 | [0053](0053-fuentes-externas-de-agente.md) | Fuentes locales de agentes, activación portable y consentimiento Ask | Aceptada para construcción M9-G local; revisión/integración pendientes |
+| [0054](0054-event-stream-backpressure-stdio.md) | Flujo durable continuo, reanudación y backpressure de eventos stdio | Aceptada para M9-H; verificación Windows registrada en el acta |

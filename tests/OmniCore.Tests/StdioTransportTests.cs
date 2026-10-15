@@ -1178,11 +1178,13 @@ public sealed class StdioTransportTests
         var oldWorkingDirectory = Environment.CurrentDirectory;
         var oldData = Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
         var oldConfig = Environment.GetEnvironmentVariable("OMNICORE_CONFIG_DIR");
+        var oldAgentHome = Environment.GetEnvironmentVariable("OMNICORE_AGENT_HOME");
         try
         {
             Environment.CurrentDirectory = workspace;
             Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", data);
             Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", config);
+            Environment.SetEnvironmentVariable("OMNICORE_AGENT_HOME", Path.Combine(root, "agent-home"));
 
             var text = "Transport test: English, español, français, italiano, 東京";
             var input = await RunCliAsync("stdio", "input", text);
@@ -1210,6 +1212,99 @@ public sealed class StdioTransportTests
         {
             Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", oldData);
             Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", oldConfig);
+            Environment.SetEnvironmentVariable("OMNICORE_AGENT_HOME", oldAgentHome);
+            Environment.CurrentDirectory = oldWorkingDirectory;
+            try { Directory.Delete(root, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public async Task Real_stdio_stream_replays_then_delivers_live_while_queries_remain_responsive_before_ack()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9h-stream-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var data = Path.Combine(root, "data");
+        var config = Path.Combine(root, "config");
+        Directory.CreateDirectory(workspace);
+        var oldWorkingDirectory = Environment.CurrentDirectory;
+        var oldData = Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
+        var oldConfig = Environment.GetEnvironmentVariable("OMNICORE_CONFIG_DIR");
+        var oldAgentHome = Environment.GetEnvironmentVariable("OMNICORE_AGENT_HOME");
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        try
+        {
+            Environment.CurrentDirectory = workspace;
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", data);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", config);
+            Environment.SetEnvironmentVariable("OMNICORE_AGENT_HOME", Path.Combine(root, "agent-home"));
+            var initial = await RunCliAsync("stdio", "input", "Initial durable stream event.");
+            Assert.True(initial.ExitCode == 0, $"Initial stdio input failed: {initial.Stdout}\n{initial.Stderr}");
+
+            var identityResult = await RunCliAsync("stdio", "query", "sessionIdentity");
+            Assert.Equal(0, identityResult.ExitCode);
+            using var identity = JsonDocument.Parse(identityResult.Stdout);
+            var sessionId = identity.RootElement.GetProperty("sessionId").GetString()!;
+            var cliDll = Path.Combine(FindRepositoryRoot(), "src", "OmniCore.Cli", "bin", "Debug", "net10.0", "omni.dll");
+            using var client = StdioOmniClient.Start("dotnet", [cliDll, "host", "--stdio"], workspace,
+                cancellationToken: cancellation.Token);
+            Assert.Contains("events.stream.v1", client.Capabilities);
+            var replay = client.ReadReplayPage(1, sessionId, pageSize: 32, cancellationToken: cancellation.Token);
+            Assert.False(replay.HasGap);
+            Assert.NotEmpty(replay.Events);
+            var replayHighWater = replay.HighWater;
+
+            var consumerEntered = new TaskCompletionSource<StdioStreamEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseConsumer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var liveEvent = new TaskCompletionSource<StdioStreamEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var consumeTask = client.ConsumeEventStreamAsync(sessionId, 1, 1, async (item, token) =>
+            {
+                if (item.Sequence <= replayHighWater)
+                {
+                    if (consumerEntered.TrySetResult(item)) await releaseConsumer.Task.WaitAsync(token);
+                }
+                else liveEvent.TrySetResult(item);
+            }, cancellation.Token);
+            var first = await consumerEntered.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellation.Token);
+            Assert.InRange(first.Sequence, 1, replayHighWater);
+
+            // No ACK has been sent for the first frame while the consumer is held.
+            // The one stdout reader must still demultiplex a correlated query response.
+            var responsiveQuery = Task.Run(() => client.Query("state", cancellation.Token), cancellation.Token);
+            var state = await responsiveQuery.WaitAsync(TimeSpan.FromSeconds(3), cancellation.Token);
+            Assert.NotNull(state);
+            releaseConsumer.TrySetResult();
+
+            var liveCommand = WireEnvelope.Command(Ids.NewV7(),
+                "{\"cmd\":\"session.input\",\"text\":\"Event appended while the stream is live.\"}");
+            var liveAck = client.Send(liveCommand, cancellation.Token);
+            Assert.Equal("ok", liveAck.Status);
+            var receivedLive = await liveEvent.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellation.Token);
+            Assert.Equal(sessionId, receivedLive.SessionId);
+            Assert.True(receivedLive.Sequence > replayHighWater);
+            Assert.Contains("events.stream.v1", client.Capabilities);
+
+            cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await consumeTask);
+
+            // Stop and bind a new stream ID on the same Host process/session.
+            using var rebindCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            var reboundEvent = new TaskCompletionSource<StdioStreamEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var reboundTask = client.ConsumeEventStreamAsync(sessionId, receivedLive.Sequence + 1, 4,
+                (item, _) => { reboundEvent.TrySetResult(item); return ValueTask.CompletedTask; }, rebindCancellation.Token);
+            var reboundCommand = WireEnvelope.Command(Ids.NewV7(),
+                "{\"cmd\":\"session.input\",\"text\":\"Event received after same-Host stream rebind.\"}");
+            Assert.Equal("ok", client.Send(reboundCommand, rebindCancellation.Token).Status);
+            var rebound = await reboundEvent.Task.WaitAsync(TimeSpan.FromSeconds(5), rebindCancellation.Token);
+            Assert.Equal(sessionId, rebound.SessionId);
+            Assert.True(rebound.Sequence > receivedLive.Sequence);
+            rebindCancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await reboundTask);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", oldData);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", oldConfig);
+            Environment.SetEnvironmentVariable("OMNICORE_AGENT_HOME", oldAgentHome);
             Environment.CurrentDirectory = oldWorkingDirectory;
             try { Directory.Delete(root, recursive: true); } catch (IOException) { }
         }

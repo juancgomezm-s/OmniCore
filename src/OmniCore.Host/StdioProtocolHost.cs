@@ -41,6 +41,7 @@ public static class StdioProtocolHost
         ArgumentNullException.ThrowIfNull(diagnostics);
         var negotiated = false;
         var conversation = new ConversationExecution(runPersistedConversation, validateConversationAttachments);
+        var eventStream = new EventStreamPump(output);
         try
         {
             while (!cancellationToken.IsCancellationRequested)
@@ -48,6 +49,7 @@ public static class StdioProtocolHost
                 var frame = WireFrame.Read(input);
                 if (frame is null)
                 {
+                    eventStream.Dispose();
                     conversation.StopAndJoin();
                     return 0;
                 }
@@ -65,38 +67,40 @@ public static class StdioProtocolHost
                     if (!TryNegotiate(client, request, bootstrapKey, actionNonce, runPersistedConversation is not null,
                         out var response, out var accepted))
                     {
-                        WireFrame.Write(output, response!.ToJson());
+                        WriteFrame(output, response!.ToJson());
                         return 3;
                     }
                     negotiated = accepted;
-                    WireFrame.Write(output, response!.ToJson());
+                    WriteFrame(output, response!.ToJson());
                     continue;
                 }
 
                 if (request.Version != ProtocolVersions.V1 || request.MessageType != MessageTypes.Command)
                 {
-                    WireFrame.Write(output, Error(request.MessageId, "invalid_request",
+                    WriteFrame(output, Error(request.MessageId, "invalid_request",
                         "Expected a protocol 1.0 command request.").ToJson());
                     continue;
                 }
 
                 try
                 {
-                    var result = Dispatch(client, request, bootstrapKey, actionNonce, conversation);
-                    WireFrame.Write(output, WireEnvelope.Response(request.MessageId, result).ToJson());
+                    var result = Dispatch(client, request, bootstrapKey, actionNonce, conversation, eventStream);
+                    WriteFrame(output, WireEnvelope.Response(request.MessageId, result).ToJson());
+                    eventStream.StartIfConfigured();
                 }
                 catch (ReplayFrameTooLargeException)
                 {
-                    WireFrame.Write(output, Error(request.MessageId, "frame_too_large",
+                    WriteFrame(output, Error(request.MessageId, "frame_too_large",
                         "A single replay event exceeds the negotiated frame limit.").ToJson());
                 }
                 catch (Exception ex) when (ex is InvalidDataException or ArgumentException or JsonException
                     or InvalidOperationException or NotSupportedException or FormatException
                     or KeyNotFoundException or OverflowException)
                 {
-                    WireFrame.Write(output, Error(request.MessageId, "unsupported_request", "Request is not supported.").ToJson());
+                    WriteFrame(output, Error(request.MessageId, "unsupported_request", "Request is not supported.").ToJson());
                 }
             }
+            eventStream.Dispose();
             conversation.StopAndJoin();
             return 130;
         }
@@ -105,14 +109,15 @@ public static class StdioProtocolHost
         {
             diagnostics.WriteLine(localizeDiagnostic?.Invoke("stdio.host.invalid_frame")
                 ?? "Stdio protocol connection ended with an invalid or incomplete frame.");
+            eventStream.Dispose();
             conversation.StopAndJoin();
             return 2;
         }
-        finally { conversation.Dispose(); }
+        finally { eventStream.Dispose(); conversation.Dispose(); }
     }
 
     private static string Dispatch(IOmniClient client, WireEnvelope request, byte[]? bootstrapKey, string? actionNonce,
-        ConversationExecution conversation)
+        ConversationExecution conversation, EventStreamPump eventStream)
     {
         using var document = JsonDocument.Parse(request.PayloadJson);
         var root = document.RootElement;
@@ -120,6 +125,47 @@ public static class StdioProtocolHost
             || operationElement.ValueKind != JsonValueKind.String)
             throw new InvalidDataException();
         var operation = operationElement.GetString();
+        if (operation == StdioProtocol.EventStreamOperation)
+        {
+            if (!root.TryGetProperty("sessionId", out var streamSessionElement)
+                || streamSessionElement.ValueKind != JsonValueKind.String
+                || !root.TryGetProperty("fromSequence", out var streamFromElement)
+                || !streamFromElement.TryGetInt64(out var streamFrom) || streamFrom < 0
+                || !root.TryGetProperty("window", out var windowElement)
+                || !windowElement.TryGetInt32(out var window) || window is < 1 or > 32
+                || client is not OmniServer streamServer || streamServer.ReceiptStore is null)
+                throw new InvalidDataException();
+            var sessionText = streamSessionElement.GetString()!;
+            if (streamServer.LastSessionId()?.ToString() != sessionText) throw new InvalidDataException();
+            var session = SessionId.Parse(sessionText);
+            var cursor = Math.Max(1, streamFrom);
+            var gap = streamServer.ReceiptStore.ReadPage(session, cursor, 1).HasGap;
+            if (!eventStream.Configure(streamServer, session, cursor, window))
+                throw new InvalidOperationException("event stream already active");
+            return "{\"streamId\":" + Quote(eventStream.StreamId) + ",\"sessionId\":"
+                + Quote(sessionText) + ",\"cursor\":" + cursor.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ",\"window\":" + window.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ",\"hasGap\":" + (gap ? "true" : "false") + "}";
+        }
+        if (operation == StdioProtocol.EventAckOperation)
+        {
+            if (!root.TryGetProperty("streamId", out var ackId) || ackId.ValueKind != JsonValueKind.String
+                || !root.TryGetProperty("throughSequence", out var ackSequence) || !ackSequence.TryGetInt64(out var through))
+                throw new InvalidDataException();
+            return "{\"accepted\":" + (eventStream.Acknowledge(ackId.GetString()!, through) ? "true" : "false") + "}";
+        }
+        if (operation == StdioProtocol.EventReadyOperation)
+        {
+            if (!root.TryGetProperty("streamId", out var readyId) || readyId.ValueKind != JsonValueKind.String
+                || !eventStream.MarkReady(readyId.GetString()!)) throw new InvalidDataException();
+            return "{\"accepted\":true}";
+        }
+        if (operation == StdioProtocol.EventStopOperation)
+        {
+            if (!root.TryGetProperty("streamId", out var stopId) || stopId.ValueKind != JsonValueKind.String
+                || !eventStream.StopSubscription(stopId.GetString()!)) throw new InvalidDataException();
+            return "{\"accepted\":true}";
+        }
         switch (operation)
         {
             case StdioProtocol.CommandOperation:
@@ -737,7 +783,7 @@ public static class StdioProtocolHost
         }
         var supported = StdioProtocol.SupportedCapabilities.AsEnumerable();
         if (client is not OmniServer { ReceiptStore: not null })
-            supported = supported.Where(capability => capability is not ("command.result.lookup" or "events.replay.page"
+            supported = supported.Where(capability => capability is not ("command.result.lookup" or "events.replay.page" or "events.stream.v1"
                 or "conversation.result.lookup"));
         var trustedAvailable = bootstrapKey is { Length: 32 } && actionNonce is not null
             && client is OmniServer { ReceiptStore: not null } && TryGetWorkspaceHash(out _);
@@ -789,6 +835,212 @@ public static class StdioProtocolHost
     }
 
     private static string Quote(string value) => "\"" + JsonObj.Escape(value) + "\"";
+
+    private static void WriteFrame(Stream output, string json)
+    {
+        lock (output) WireFrame.Write(output, json);
+    }
+
+    /// <summary>Bounded journal tailer. It reads only when the consumer has credit; the journal remains authoritative.</summary>
+    private sealed class EventStreamPump(Stream output) : IDisposable
+    {
+        private readonly object _gate = new();
+        private CancellationTokenSource _stop = new();
+        private readonly Queue<long> _outstanding = new();
+        private Task? _worker;
+        private OmniServer? _server;
+        private SessionId? _session;
+        private long _cursor;
+        private long _lastAcknowledged;
+        private int _window;
+        private bool _configured;
+        private bool _started;
+        private bool _ready;
+        private bool _disposed;
+        private bool _gap;
+        private string _streamId = Guid.NewGuid().ToString("N");
+        public string StreamId { get { lock (_gate) return _streamId; } }
+
+        public bool Configure(OmniServer server, SessionId session, long cursor, int window)
+        {
+            lock (_gate)
+            {
+                if (_disposed || _configured || _worker is { IsCompleted: false }) return false;
+                _stop.Dispose();
+                _stop = new CancellationTokenSource();
+                _streamId = Guid.NewGuid().ToString("N");
+                _outstanding.Clear();
+                _gap = false;
+                _ready = false;
+                _started = false;
+                _server = server;
+                _session = session;
+                _cursor = cursor;
+                _lastAcknowledged = cursor - 1;
+                _window = window;
+                _configured = true;
+                return true;
+            }
+        }
+
+        public void StartIfConfigured()
+        {
+            lock (_gate)
+            {
+                if (!_configured || !_ready || _started) return;
+                _started = true;
+                var token = _stop.Token;
+                _worker = Task.Run(() => PumpAsync(token));
+            }
+        }
+
+        public bool MarkReady(string streamId)
+        {
+            lock (_gate)
+            {
+                if (!_configured || streamId != StreamId) return false;
+                _ready = true;
+                return true;
+            }
+        }
+
+        public bool StopSubscription(string streamId)
+        {
+            Task? worker;
+            lock (_gate)
+            {
+                if (!_configured || streamId != _streamId) return false;
+                _configured = false;
+                _ready = false;
+                _server = null;
+                _session = null;
+                _stop.Cancel();
+                worker = _worker;
+            }
+            try { if (worker is not null && !worker.Wait(TimeSpan.FromSeconds(2))) return false; }
+            catch (AggregateException) { }
+            lock (_gate)
+            {
+                if (_streamId != streamId) return false;
+                _started = false;
+                _worker = null;
+                _outstanding.Clear();
+                return true;
+            }
+        }
+
+        public bool Acknowledge(string streamId, long throughSequence)
+        {
+            lock (_gate)
+            {
+                if (!_configured || streamId != StreamId || throughSequence < _lastAcknowledged) return false;
+                if (throughSequence == _lastAcknowledged) return true;
+                if (!_outstanding.Contains(throughSequence)) return false;
+                while (_outstanding.Count > 0 && _outstanding.Peek() <= throughSequence) _outstanding.Dequeue();
+                _lastAcknowledged = throughSequence;
+                return true;
+            }
+        }
+
+        private async Task PumpAsync(CancellationToken token)
+        {
+            while (!token.IsCancellationRequested)
+            {
+                OmniServer server;
+                SessionId session;
+                long cursor;
+                int capacity;
+                string streamId;
+                lock (_gate)
+                {
+                    if (_gap || _server is null || _session is null) return;
+                    server = _server;
+                    session = _session!;
+                    cursor = _cursor;
+                    capacity = _window - _outstanding.Count;
+                    streamId = _streamId;
+                }
+                if (capacity <= 0)
+                {
+                    await Task.Delay(40, token).ConfigureAwait(false);
+                    continue;
+                }
+                // A short bounded journal read is the wake mechanism available in stdio 1.0.
+                // No events are buffered while credit is exhausted; writers and commands share no stdout wait.
+                var page = server.ReadStreamPage(session, cursor, Math.Min(capacity, 32));
+                if (page.HasGap)
+                {
+                    lock (_gate)
+                    {
+                        if (_streamId != streamId || !_configured) return;
+                        _gap = true;
+                    }
+                    var payload = "{\"streamId\":" + Quote(streamId) + ",\"kind\":\"gap\",\"requestedSequence\":"
+                        + cursor.ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"nextSequence\":"
+                        + page.NextSequence.ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"highWater\":"
+                        + page.HighWater.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}";
+                    WriteFrame(output, WireEnvelope.Event(WireEnvelope.NewId(), payload).ToJson());
+                    return;
+                }
+                if (page.Events.Count == 0)
+                {
+                    lock (_gate)
+                    {
+                        if (_streamId != streamId || !_configured) return;
+                        _cursor = Math.Max(_cursor, page.NextSequence);
+                    }
+                    await Task.Delay(40, token).ConfigureAwait(false);
+                    continue;
+                }
+                foreach (var item in page.Events)
+                {
+                    if (token.IsCancellationRequested) return;
+                    using var document = JsonDocument.Parse(item.PayloadJson);
+                    if (!document.RootElement.TryGetProperty("seq", out var sequenceElement)
+                        || sequenceElement.ValueKind != JsonValueKind.String
+                        || !long.TryParse(sequenceElement.GetString(), System.Globalization.NumberStyles.None,
+                            System.Globalization.CultureInfo.InvariantCulture, out var sequence)) continue;
+                    var envelopeJson = item.ToJson();
+                    var payload = "{\"streamId\":" + Quote(streamId) + ",\"kind\":\"event\",\"sequence\":"
+                        + sequence.ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"event\":" + envelopeJson + "}";
+                    var frame = WireEnvelope.Event(WireEnvelope.NewId(), payload).ToJson();
+                    if (Encoding.UTF8.GetByteCount(frame) > StdioProtocol.MaximumFrameBytes)
+                    {
+                        WriteFrame(output, WireEnvelope.Event(WireEnvelope.NewId(), "{\"streamId\":" + Quote(streamId)
+                            + ",\"kind\":\"frame_too_large\",\"sequence\":"
+                            + sequence.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}").ToJson());
+                        lock (_gate) { if (_streamId == streamId) _gap = true; }
+                        return;
+                    }
+                    lock (_gate)
+                    {
+                        if (_streamId != streamId || !_configured || token.IsCancellationRequested) return;
+                        if (_outstanding.Count >= _window) break;
+                        _outstanding.Enqueue(sequence);
+                        _cursor = sequence + 1;
+                    }
+                    lock (_gate)
+                    {
+                        if (_streamId != streamId || !_configured || token.IsCancellationRequested) return;
+                    }
+                    WriteFrame(output, frame);
+                }
+                lock (_gate)
+                {
+                    if (_streamId != streamId || !_configured) return;
+                    _cursor = Math.Max(_cursor, page.NextSequence);
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (_gate) { if (_disposed) return; _disposed = true; }
+            _stop.Cancel();
+            try { _worker?.Wait(TimeSpan.FromSeconds(2)); } catch (AggregateException) { }
+            _stop.Dispose();
+        }
+    }
 
     private sealed class ReplayFrameTooLargeException : Exception { }
 }

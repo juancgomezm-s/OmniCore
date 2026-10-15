@@ -5,6 +5,9 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Security.Cryptography;
 using System.Text;
+using System.Collections.Concurrent;
+using System.Threading.Channels;
+using System.Collections.Generic;
 
 /// <summary>Process-backed CLI client for the bounded M9 JSON-lines stdio transport.</summary>
 public sealed class StdioOmniClient : IOmniClient, IDisposable
@@ -12,15 +15,24 @@ public sealed class StdioOmniClient : IOmniClient, IDisposable
     private readonly Process _process;
     private readonly Stream _input;
     private readonly Stream _output;
-    private readonly object _gate = new();
+    private readonly object _writeGate = new();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<WireEnvelope>> _pending = new(StringComparer.Ordinal);
+    private readonly Channel<StdioStreamEvent> _streamEvents = Channel.CreateBounded<StdioStreamEvent>(
+        new BoundedChannelOptions(32) { FullMode = BoundedChannelFullMode.Wait, SingleReader = false, SingleWriter = true });
+    private readonly Task _readerTask;
+    private string? _activeStreamId;
+    private string? _activeStreamSession;
+    private Exception? _readerFailure;
     private int _disposed;
     private int _exchangeActive;
+    private int _streamActive;
 
     private StdioOmniClient(Process process, TimeSpan handshakeTimeout, CancellationToken cancellationToken)
     {
         _process = process;
         _input = process.StandardInput.BaseStream;
         _output = process.StandardOutput.BaseStream;
+        _readerTask = Task.Run(ReadLoop);
         var hello = WireEnvelope.Hello();
         var payload = "{\"supportedVersions\":[\"1.0\"],\"client\":\"omnicore-cli\"}";
         var request = new WireEnvelopeBuilder(hello.MessageId, MessageTypes.Hello, payload).Build();
@@ -31,6 +43,14 @@ public sealed class StdioOmniClient : IOmniClient, IDisposable
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             throw new TimeoutException($"The stdio Host did not complete protocol negotiation within {handshakeTimeout}.");
+        }
+        catch (Exception error) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException("The stdio Host protocol negotiation was cancelled.", error, cancellationToken);
+        }
+        catch (Exception error) when (handshake.IsCancellationRequested)
+        {
+            throw new TimeoutException($"The stdio Host did not complete protocol negotiation within {handshakeTimeout}.", error);
         }
         if (response.MessageType != MessageTypes.Response)
             throw new InvalidDataException("Host did not answer protocol negotiation.");
@@ -48,6 +68,73 @@ public sealed class StdioOmniClient : IOmniClient, IDisposable
     /// <summary>Capabilities acknowledged by this child process during hello.</summary>
     public IReadOnlySet<string> Capabilities { get; }
 
+    /// <summary>Consumes durable events in-order. ACK is written only after the caller returns from applying the event.</summary>
+    public async Task ConsumeEventStreamAsync(string sessionId, long fromSequence, int window,
+        Func<StdioStreamEvent, CancellationToken, ValueTask> consume, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentNullException.ThrowIfNull(consume);
+        if (!Capabilities.Contains("events.stream.v1")) throw new NotSupportedException("The stdio Host did not negotiate event streaming.");
+        if (fromSequence < 1 || window is < 1 or > 32) throw new ArgumentOutOfRangeException(nameof(fromSequence));
+        if (Interlocked.CompareExchange(ref _streamActive, 1, 0) != 0)
+            throw new InvalidOperationException("An event stream is already active.");
+        string? streamId = null;
+        try
+        {
+            var start = Exchange(WireEnvelope.Command(Ids.NewV7(), "{\"operation\":\"events.stream\",\"sessionId\":"
+                + QuoteJson(sessionId) + ",\"fromSequence\":" + fromSequence.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ",\"window\":" + window.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}"), cancellationToken);
+            using var startDocument = JsonDocument.Parse(start.PayloadJson);
+            var startPayload = startDocument.RootElement;
+            streamId = startPayload.GetProperty("streamId").GetString();
+            if (string.IsNullOrWhiteSpace(streamId)) throw new InvalidDataException("Host returned an empty event stream ID.");
+            _activeStreamId = streamId;
+            _activeStreamSession = sessionId;
+            if (startPayload.GetProperty("sessionId").GetString() != sessionId
+                || startPayload.GetProperty("cursor").GetInt64() != fromSequence
+                || startPayload.GetProperty("window").GetInt32() != window)
+                throw new InvalidDataException("Host returned a mismatched event stream subscription.");
+            _ = Exchange(WireEnvelope.Command(Ids.NewV7(), "{\"operation\":\"events.ready\",\"streamId\":"
+                + QuoteJson(streamId) + "}"), cancellationToken);
+            while (await _streamEvents.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                while (_streamEvents.Reader.TryRead(out var item))
+                {
+                    if (item.StreamId != streamId || item.SessionId != sessionId) throw new InvalidDataException("Event stream scope changed.");
+                    await consume(item, cancellationToken).ConfigureAwait(false);
+                    if (item.IsGap) return;
+                    var ack = Exchange(WireEnvelope.Command(Ids.NewV7(), "{\"operation\":\"events.ack\",\"streamId\":"
+                        + QuoteJson(streamId) + ",\"throughSequence\":"
+                        + item.Sequence.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}"), cancellationToken);
+                    using var ackDocument = JsonDocument.Parse(ack.PayloadJson);
+                    if (!ackDocument.RootElement.GetProperty("accepted").GetBoolean())
+                        throw new InvalidDataException("Host rejected an event stream ACK.");
+                }
+            }
+        }
+        finally
+        {
+            if (streamId is not null)
+            {
+                try
+                {
+                    using var stopTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                    _ = Exchange(WireEnvelope.Command(Ids.NewV7(), "{\"operation\":\"events.stop\",\"streamId\":"
+                        + QuoteJson(streamId) + "}"), stopTimeout.Token);
+                }
+                catch (Exception)
+                {
+                    if (Volatile.Read(ref _disposed) == 0 && !_process.HasExited) Dispose();
+                }
+            }
+            else if (Volatile.Read(ref _disposed) == 0 && !_process.HasExited) Dispose();
+            _activeStreamId = null;
+            _activeStreamSession = null;
+            while (_streamEvents.Reader.TryRead(out _)) { }
+            Interlocked.Exchange(ref _streamActive, 0);
+        }
+    }
+
     public static StdioOmniClient Start(string executable, IReadOnlyList<string> arguments,
         string workingDirectory, TimeSpan? handshakeTimeout = null, CancellationToken cancellationToken = default)
     {
@@ -64,21 +151,40 @@ public sealed class StdioOmniClient : IOmniClient, IDisposable
             UseShellExecute = false,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
-            RedirectStandardError = false,
+            RedirectStandardError = true,
             CreateNoWindow = true,
         };
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         var process = new Process { StartInfo = start, EnableRaisingEvents = true };
+        var diagnosticGate = new object();
+        var diagnostics = new StringBuilder();
+        process.ErrorDataReceived += (_, args) =>
+        {
+            if (args.Data is null) return;
+            lock (diagnosticGate)
+            {
+                diagnostics.AppendLine(args.Data);
+                if (diagnostics.Length > 4096) diagnostics.Remove(0, diagnostics.Length - 4096);
+            }
+        };
         if (!process.Start())
         {
             process.Dispose();
             throw new InvalidOperationException("Could not start the OmniCore stdio Host process.");
         }
+        process.BeginErrorReadLine();
         try { return new StdioOmniClient(process, timeout, cancellationToken); }
-        catch
+        catch (Exception error)
         {
+            string diagnosticText;
+            lock (diagnosticGate) diagnosticText = diagnostics.ToString().Trim();
             StopOwnedProcess(process);
-            throw;
+            if (error is TimeoutException or OperationCanceledException)
+            {
+                if (diagnosticText.Length > 0) error.Data["HostStderr"] = diagnosticText;
+                throw;
+            }
+            throw new IOException(diagnosticText.Length == 0 ? error.Message : error.Message + " Host stderr: " + diagnosticText, error);
         }
     }
 
@@ -221,41 +327,97 @@ public sealed class StdioOmniClient : IOmniClient, IDisposable
         return new SessionQueryResult(result.GetProperty("name").GetString()!, json.GetString()!);
     }
 
+    private void ReadLoop()
+    {
+        try
+        {
+            while (Volatile.Read(ref _disposed) == 0)
+            {
+                var json = WireFrame.Read(_output);
+                if (json is null) throw new EndOfStreamException("The stdio Host closed the protocol stream.");
+                var message = WireEnvelope.FromJson(json);
+                if (message.Version != ProtocolVersions.V1) throw new InvalidDataException("The stdio Host changed protocol version.");
+                if (message.MessageType == MessageTypes.Event)
+                {
+                    using var document = JsonDocument.Parse(message.PayloadJson);
+                    var payload = document.RootElement;
+                    var streamId = payload.GetProperty("streamId").GetString()!;
+                    var kind = payload.TryGetProperty("kind", out var kindElement) ? kindElement.GetString() : null;
+                    if (kind == "gap")
+                    {
+                        if (streamId != _activeStreamId) throw new InvalidDataException("The stdio Host reported a gap outside the active stream.");
+                        var requested = payload.GetProperty("requestedSequence").GetInt64();
+                        var next = payload.GetProperty("nextSequence").GetInt64();
+                        var highWater = payload.GetProperty("highWater").GetInt64();
+                        if (requested < 1 || next < requested || highWater < 0)
+                            throw new InvalidDataException("The stdio Host returned an invalid stream gap.");
+                        if (!_streamEvents.Writer.TryWrite(new StdioStreamEvent(streamId, _activeStreamSession, 0,
+                            null, IsGap: true, RequestedSequence: requested, NextSequence: next, HighWater: highWater)))
+                            throw new InvalidDataException("The event consumer exceeded its negotiated bounded window.");
+                        continue;
+                    }
+                    if (kind != "event") throw new InvalidDataException("The stdio Host reported an unsupported stream control frame.");
+                    var sequence = payload.GetProperty("sequence").GetInt64();
+                    var envelope = WireEnvelope.FromJson(payload.GetProperty("event").GetRawText());
+                    var session = envelope.PayloadJson.Length == 0 ? null
+                        : JsonDocument.Parse(envelope.PayloadJson);
+                    using (session)
+                    {
+                        var sessionId = session?.RootElement.TryGetProperty("sessionId", out var id) == true
+                            ? id.GetString() : null;
+                        if (streamId != _activeStreamId || sessionId != _activeStreamSession
+                            || envelope.MessageType != MessageTypes.Event || sequence < 1
+                            || !session!.RootElement.TryGetProperty("seq", out var rawSequence)
+                            || rawSequence.GetString() != sequence.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                            throw new InvalidDataException("The stdio Host returned an event outside the active stream scope.");
+                        if (!_streamEvents.Writer.TryWrite(new StdioStreamEvent(streamId, sessionId, sequence, envelope)))
+                            throw new InvalidDataException("The event consumer exceeded its negotiated bounded window.");
+                    }
+                    continue;
+                }
+                if (message.MessageType != MessageTypes.Response && message.MessageType != MessageTypes.Error)
+                    throw new InvalidDataException("The stdio Host returned an unexpected message type.");
+                if (_pending.TryRemove(message.MessageId, out var pending)) pending.TrySetResult(message);
+            }
+        }
+        catch (Exception ex)
+        {
+            Interlocked.CompareExchange(ref _readerFailure, ex, null);
+            foreach (var item in _pending.ToArray())
+                if (_pending.TryRemove(item.Key, out var pending)) pending.TrySetException(ex);
+            _streamEvents.Writer.TryComplete(ex);
+        }
+    }
+
     private WireEnvelope Exchange(WireEnvelope request, CancellationToken cancellationToken)
     {
-        lock (_gate)
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        if (Volatile.Read(ref _readerFailure) is { } readerFailure)
+            throw new IOException("The stdio Host protocol reader has stopped.", readerFailure);
+        cancellationToken.ThrowIfCancellationRequested();
+        Interlocked.Increment(ref _exchangeActive);
+        var pending = new TaskCompletionSource<WireEnvelope>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_pending.TryAdd(request.MessageId, pending))
         {
-            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-            cancellationToken.ThrowIfCancellationRequested();
-            Interlocked.Increment(ref _exchangeActive);
-            try
-            {
-            using var registration = cancellationToken.Register(static state =>
-            {
-                try { ((Process)state!).Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
-                catch (System.ComponentModel.Win32Exception) { }
-            }, _process);
-            try
-            {
-                WireFrame.Write(_input, request.ToJson());
-                var json = WireFrame.Read(_output)
-                    ?? throw new EndOfStreamException("The stdio Host closed without a response.");
-                cancellationToken.ThrowIfCancellationRequested();
-                var response = WireEnvelope.FromJson(json);
-                if (response.Version != ProtocolVersions.V1 || response.MessageId != request.MessageId)
-                    throw new InvalidDataException("The stdio Host returned a mismatched protocol response.");
-                if (response.MessageType == MessageTypes.Error)
-                    throw new InvalidDataException("The stdio Host rejected the request: " + response.PayloadJson);
-                if (response.MessageType != MessageTypes.Response)
-                    throw new InvalidDataException("The stdio Host returned an unexpected message type.");
-                return response;
-            }
-            catch (Exception) when (cancellationToken.IsCancellationRequested)
-            {
-                throw new OperationCanceledException(cancellationToken);
-            }
-            }
-            finally { Interlocked.Decrement(ref _exchangeActive); }
+            Interlocked.Decrement(ref _exchangeActive);
+            throw new InvalidOperationException("Duplicate stdio request ID.");
+        }
+        try
+        {
+            if (Volatile.Read(ref _readerFailure) is { } observedFailure)
+                throw new IOException("The stdio Host protocol reader has stopped.", observedFailure);
+            lock (_writeGate) WireFrame.Write(_input, request.ToJson());
+            var response = pending.Task.WaitAsync(cancellationToken).GetAwaiter().GetResult();
+            if (response.Version != ProtocolVersions.V1 || response.MessageId != request.MessageId)
+                throw new InvalidDataException("The stdio Host returned a mismatched protocol response.");
+            if (response.MessageType == MessageTypes.Error)
+                throw new InvalidDataException("The stdio Host rejected the request: " + response.PayloadJson);
+            return response;
+        }
+        finally
+        {
+            _pending.TryRemove(request.MessageId, out _);
+            Interlocked.Decrement(ref _exchangeActive);
         }
     }
 
@@ -294,5 +456,8 @@ public sealed class StdioOmniClient : IOmniClient, IDisposable
 
 public sealed record StdioReplayPage(string? SessionId, long RequestedSequence, long NextSequence, long HighWater,
     bool HasGap, bool Complete, IReadOnlyList<WireEnvelope> Events);
+
+public sealed record StdioStreamEvent(string StreamId, string? SessionId, long Sequence, WireEnvelope? Event,
+    bool IsGap = false, long? RequestedSequence = null, long? NextSequence = null, long? HighWater = null);
 
 public sealed record StdioCommandResult(CommandAck Ack, string? SessionId);
