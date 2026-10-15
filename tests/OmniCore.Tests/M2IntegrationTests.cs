@@ -905,9 +905,11 @@ public sealed class M2IntegrationTests
         var runtime = SystemProcessRuntime.Instance();
         // Proceso que vive +30s y genera salida abundante en stdout (para probar el drenaje
         // concurrente: en la versión anterior Wait() bloqueaba el ReadToEnd hasta la muerte).
-        var launch = new ProcessLaunch("cmd.exe", ["/c", "for /l %i in (1,1,200) do @echo fila-%i-de-salida-larga", "&",
-            "ping", "-n", "40", "127.0.0.1", ">", "NUL"], "",
-            new Dictionary<string, string>(), true);
+        var launch = OperatingSystem.IsWindows()
+            ? new ProcessLaunch("cmd.exe", ["/c", "for /l %i in (1,1,200) do @echo fila-%i-de-salida-larga", "&",
+                "ping", "-n", "40", "127.0.0.1", ">", "NUL"], "", new Dictionary<string, string>(), true)
+            : new ProcessLaunch("/bin/sh", ["-c", "i=1; while [ $i -le 200 ]; do echo fila-$i-de-salida-larga; i=$((i+1)); done; sleep 40"],
+                "", new Dictionary<string, string>(), true);
         var handle = runtime.Launch(launch, CancellationToken.None);
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -924,8 +926,10 @@ public sealed class M2IntegrationTests
     {
         var runtime = SystemProcessRuntime.Instance();
         // Salida abundante con proceso rápido: el drenaje concurrente la captura entera.
-        var launch = new ProcessLaunch("cmd.exe", ["/c", "for /l %i in (1,1,500) do @echo linea-%i"], "",
-            new Dictionary<string, string>(), true);
+        var launch = OperatingSystem.IsWindows()
+            ? new ProcessLaunch("cmd.exe", ["/c", "for /l %i in (1,1,500) do @echo linea-%i"], "", new Dictionary<string, string>(), true)
+            : new ProcessLaunch("/bin/sh", ["-c", "i=1; while [ $i -le 500 ]; do echo linea-$i; i=$((i+1)); done"],
+                "", new Dictionary<string, string>(), true);
         var handle = runtime.Launch(launch, CancellationToken.None);
 
         var result = runtime.Wait(handle, System.TimeSpan.FromSeconds(15), CancellationToken.None);

@@ -1071,7 +1071,9 @@ public sealed partial class TuiWiringTests
 
         int ThumbRow()
         {
-            var frame = CaptureConversationFrame(fx, 80, 25, "Enter enviar");
+            // Conversation focus can legitimately replace the footer with hyperlink
+            // navigation help. Wait for conversation content, not the composer hint.
+            var frame = CaptureConversationFrame(fx, 80, 25, "Historia");
             var origin = bar.ViewportToScreen(Point.Empty);
             var rail = Enumerable.Range(origin.Y, bar.Viewport.Height).Select(y => frame[y, origin.X]).ToArray();
             Assert.Equal("╷", rail[0].Grapheme);
@@ -1270,12 +1272,14 @@ public sealed partial class TuiWiringTests
     {
         using var captured = new ManualResetEventSlim();
         Terminal.Gui.Drawing.Cell[,]? result = null;
+        var lastFrame = "no draw event";
         EventHandler<EventArgs> handler = (_, _) =>
         {
             if (captured.IsSet) return;
             var cells = fx.Application.Driver!.Contents!;
+            var drawn = string.Join("\n", Enumerable.Range(0, cells.GetLength(0)).Select(y => string.Concat(Enumerable.Range(0, cells.GetLength(1)).Select(x => cells[y, x].Grapheme))));
+            lastFrame = $"{cells.GetLength(1)}x{cells.GetLength(0)}\n{drawn}";
             if (cells.GetLength(0) != rows || cells.GetLength(1) != columns) return;
-            var drawn = string.Join("\n", Enumerable.Range(0, rows).Select(y => string.Concat(Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme))));
             if (!drawn.Contains(marker, StringComparison.Ordinal)) return;
             result = (Terminal.Gui.Drawing.Cell[,])cells.Clone();
             captured.Set();
@@ -1284,7 +1288,8 @@ public sealed partial class TuiWiringTests
         try
         {
             fx.Invoke(() => { fx.App.MainWindow!.SetNeedsLayout(); fx.App.MainWindow.SetNeedsDraw(); });
-            Assert.True(captured.Wait(TimeSpan.FromSeconds(10)), "fotograma completo de conversación dibujado");
+            Assert.True(captured.Wait(TimeSpan.FromSeconds(10)),
+                $"fotograma completo de conversación dibujado; marker={marker}; loop={fx.LoopError}; last={lastFrame}");
             Assert.Null(fx.LoopError);
             return Assert.IsType<Terminal.Gui.Drawing.Cell[,]>(result);
         }
@@ -2056,7 +2061,10 @@ public sealed partial class TuiWiringTests
         fx.Invoke(() => fx.Application.Driver!.SetScreenSize(55, 18));
         fx.Wait(() => fx.App.MainWindow!.Frame.Width == 55 && fx.App.Overlay!.Frame.Height <= 18, "resize compacto aplicado");
         fx.Wait(() => list.Frame.Height > 0, "lista sigue siendo navegable");
-        Assert.All(fx.App.Overlay!.SubViews, child => Assert.True(child.Frame.Bottom <= fx.App.Overlay.Viewport.Height));
+        // The parent frame can change before the same layout pass reaches its children.
+        // Read the completed hierarchy on the UI thread instead of racing that pass.
+        fx.Invoke(() => Assert.All(fx.App.Overlay!.SubViews,
+            child => Assert.True(child.Frame.Bottom <= fx.App.Overlay.Viewport.Height)));
         if (noColor) Assert.Equal(Terminal.Gui.Drawing.Color.None, list.GetScheme().Normal.Foreground);
         Assert.Equal(1, client.Queries);
         Assert.Equal(0, client.Commands);

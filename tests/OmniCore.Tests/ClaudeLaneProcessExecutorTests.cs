@@ -64,5 +64,6 @@ public sealed class ClaudeLaneProcessExecutorTests
         Assert.Null(result.AgentResult);
     }
 
-    private static string FixtureExe => Path.Combine(AppContext.BaseDirectory, "OmniCore.SandboxTestProcess.exe");
+    private static string FixtureExe => Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows()
+        ? "OmniCore.SandboxTestProcess.exe" : "OmniCore.SandboxTestProcess");
 }

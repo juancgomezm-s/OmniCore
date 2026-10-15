@@ -61,7 +61,7 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IStreamingProcessRun
         }
         if (launch.InitialStandardInput is not null) psi.RedirectStandardInput = true;
 
-        psi.CreateNewProcessGroup = true;
+        if (OperatingSystem.IsWindows()) psi.CreateNewProcessGroup = true;
 
         var process = Process.Start(psi);
         if (process is null)

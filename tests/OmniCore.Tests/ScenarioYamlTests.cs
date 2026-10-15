@@ -155,6 +155,37 @@ public sealed class ScenarioYamlTests
         Assert.Contains("turnz", ex.Message);
     }
 
+    [Theory]
+    [InlineData("input: 'null'", "null")]
+    [InlineData("input: !!str null", "null")]
+    [InlineData("input: 'línea 1\\nentre comillas'", "línea 1\\nentre comillas")]
+    [InlineData("name: &objective objetivo\ninput: *objective", "objetivo")]
+    public void Reflection_free_yaml_preserves_quoted_scalars_and_aliases(string yaml, string expected)
+    {
+        Assert.Equal(expected, ScenarioLoader.Parse("scenario: 1\n" + yaml).Input);
+    }
+
+    [Fact]
+    public void Null_input_and_multiple_yaml_documents_are_rejected()
+    {
+        Assert.Equal("scenario.missing_input", Assert.Throws<ScenarioFormatException>(
+            () => ScenarioLoader.Parse("scenario: 1\ninput: null")).UserMessage.Key);
+        Assert.Equal("scenario.yaml_invalid", Assert.Throws<ScenarioFormatException>(
+            () => ScenarioLoader.Parse("input: first\n---\ninput: second")).UserMessage.Key);
+    }
+
+    [Fact]
+    public void Nesting_limit_rejects_input_before_loading_or_resolving_the_deep_graph()
+    {
+        var yaml = "input: probe\nexpect: " + string.Concat(Enumerable.Repeat("{x: ", 512))
+            + "*undefined" + new string('}', 512);
+        var error = Assert.Throws<ScenarioFormatException>(() => ScenarioLoader.Parse(yaml));
+
+        Assert.Equal("scenario.yaml_invalid", error.UserMessage.Key);
+        Assert.Contains("Maximum YAML nesting exceeded.", error.Message);
+        Assert.DoesNotContain("undefined", error.Message);
+    }
+
     [Fact]
     public void Values_with_quotes_and_newlines_survive_the_protocol()
     {
