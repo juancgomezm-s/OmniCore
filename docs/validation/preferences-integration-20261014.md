@@ -1,6 +1,6 @@
 # Integración local de la referencia de preferencias
 
-El 14 de octubre de 2026 el usuario confirmó explícitamente la captura de preferencias del checkpoint `bef46075a4042e2559a73c3f88e4bb56268155d0`: «Sí, esta versión integrada». Se conserva la rama original y su historial; la integración se prepara en `codex/preferencias-integradas`, sobre `0ffdadb88512b358760925de7f6ad7865c1ffa0f`, que incluye la documentación de M9-D.
+El 14 de octubre de 2026 el usuario confirmó explícitamente la captura de preferencias del checkpoint `bef46075a4042e2559a73c3f88e4bb56268155d0`: «Sí, esta versión integrada». Se conserva la rama original y su historial; la integración se prepara en `codex/preferencias-integradas`, inicialmente sobre `f823371` y actualizada después a `0ffdadb88512b358760925de7f6ad7865c1ffa0f`, que incluye la implementación y documentación de M9-D.
 
 ## Diagnóstico y alcance
 
@@ -19,6 +19,8 @@ Después del ajuste, los 20 casos de `UiLocalePreferencesTests` pasan en la comp
 Se generaron SVG desde las celdas reales del driver Terminal.Gui sobre esta integración, con fixtures y sin cuentas reales; los PNG conservan la paleta y el contenido. Se inspeccionó la captura española. Evidencia nueva: [español](assets/preferences-integration-20261014/settings-integrated-general-es-120x35.png), [English](assets/preferences-integration-20261014/settings-integrated-general-en-120x35.png), [français](assets/preferences-integration-20261014/settings-integrated-general-fr-120x35.png), [italiano](assets/preferences-integration-20261014/settings-integrated-general-it-120x35.png). Las capturas originales se conservan en [la evidencia del checkpoint](preferences-experience-20261013.md).
 
 Logs locales: `preferences-integrated-tests.log`, `preferences-integrated-final.log` y `preferences-locale-final.log`, bajo `C:/Users/juanc/.codex/omnicore-linux-20261014`. No hubo cambios de credenciales, inferencias, reinicios de motores ni cambios en la configuración personal.
+
+Tras integrar también el nuevo main con M9-D, se reconstruyó y ejecutó una focal de **28 casos, 28 PASS, 0 FAIL, 0 SKIP**: los 20 de idioma, los seis de experiencia integrada y los dos de navegación/detalles de memoria (80 y 120 columnas). Log `preferences-integrated-m9d.log`; las cuatro capturas se regeneraron en `preferences-integrated-captures-m9d`. M9-D no cambia los archivos de la TUI; no se atribuye esa focal al cierre completo de M9 ni de Linux.
 
 ## Estado de publicación
 
