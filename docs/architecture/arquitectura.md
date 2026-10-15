@@ -1004,6 +1004,15 @@ Contrato y evidencia de cada bloque en [el plan detallado](../plans/m8-m10-user-
 
 ### Estado real por epic
 
+**Ampliación M9-F2 (2026-10-15), pendiente de construcción:** aceptar imágenes
+generadas en respuestas nativas del modelo, con modalidades de salida separadas
+de visión de entrada, persistencia binaria CAS/journal, replay y visualización/
+exportación en OmniCoder/TUI. Alcance y aceptación en
+[el plan de salida visual](../plans/generated-image-responses.md). El catálogo
+`OutputModalities` no acredita el pipeline; no se declara generación construida.
+Conservar la detención de M9-F por aceptación visual sin clasificar y el bloque
+independiente de descubrimiento de skills/memorias; OR5 M8 permanece pendiente.
+
 **Ampliación M9 autorizada, pendiente de construcción (2026-10-14):** adaptar
 skills `SKILL.md` de Claude/Codex/OpenCode y descubrir instrucciones y memorias
 por directorio/proyecto exclusivamente en ubicaciones comunes acotadas.
