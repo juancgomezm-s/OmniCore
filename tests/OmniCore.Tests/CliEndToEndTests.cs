@@ -2112,7 +2112,9 @@ public sealed class CliEndToEndTests
                         }
                     }
                     return LocalServerSupervisor.HttpReady(endpoint, host.GeneratedApiKeyValue(), TimeSpan.FromSeconds(1));
-                }, TimeSpan.FromSeconds(10));
+                // Match the existing managed fixture's startup budget. On Windows CI the
+                // new ten-second budget expired before even the first TCP connection.
+                }, TimeSpan.FromSeconds(90));
                 Assert.True(probed, "The real child server accepted the empty connection.");
                 Assert.Equal(LocalServerStatus.Ready, status);
                 Assert.Contains("GET auth=ok", File.ReadAllLines(log));
