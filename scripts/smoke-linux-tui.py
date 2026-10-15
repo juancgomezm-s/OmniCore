@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import pty
 import select
+import shutil
 import signal
 import struct
 import sys
@@ -16,13 +17,17 @@ evidence.mkdir(parents=True, exist_ok=False)
 for columns, rows in ((120, 35), (80, 25)):
     root = evidence / f"{columns}x{rows}"
     root.mkdir()
+    runtime_path = root / "runtime-path"
+    runtime_path.mkdir()
+    if shutil.which("dotnet", path=str(runtime_path)) is not None:
+        raise RuntimeError("The terminal runtime PATH must not expose dotnet.")
     pid, fd = pty.fork()
     if pid == 0:
         os.chdir(root)
         env = dict(os.environ, TERM="xterm-256color", OMNI_LOCALE="en",
-                   COLORTERM="truecolor",
+                   COLORTERM="truecolor", PATH=str(runtime_path),
                    OMNICORE_DATA_DIR=str(root / "data"), OMNICORE_CONFIG_DIR=str(root / "config"))
-        for name in ("DOTNET_ROOT", "DOTNET_ROOT_X64", "DOTNET_ROOT_ARM64", "NO_COLOR"):
+        for name in ("DOTNET_ROOT", "DOTNET_ROOT_X64", "DOTNET_ROOT_X86", "DOTNET_ROOT_ARM64", "DOTNET_HOST_PATH", "NO_COLOR"):
             env.pop(name, None)
         os.execve(str(executable), [str(executable), "tui"], env)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))

@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -22,10 +23,14 @@ def main():
         root = evidence / scenario
         workspace = root / "workspace"
         workspace.mkdir(parents=True)
+        runtime_path = root / "runtime-path"
+        runtime_path.mkdir()
         env = dict(os.environ, OMNICORE_DATA_DIR=str(root / "data"),
-                   OMNICORE_CONFIG_DIR=str(root / "config"))
-        for name in ("DOTNET_ROOT", "DOTNET_ROOT_X64", "DOTNET_ROOT_ARM64"):
+                   OMNICORE_CONFIG_DIR=str(root / "config"), PATH=str(runtime_path))
+        for name in ("DOTNET_ROOT", "DOTNET_ROOT_X64", "DOTNET_ROOT_X86", "DOTNET_ROOT_ARM64", "DOTNET_HOST_PATH"):
             env.pop(name, None)
+        if shutil.which("dotnet", path=env["PATH"]) is not None:
+            raise RuntimeError("The distribution runtime PATH must not expose dotnet.")
 
         def run(name, command, expected=0):
             process = subprocess.run([str(executable), *command], cwd=workspace, env=env,

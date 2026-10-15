@@ -4,7 +4,7 @@ Fecha: 2026-10-14, Ciudad de México. Rama `codex/cierre-linux` y [PR #1](https:
 
 ## Workflow y criterio de cierre
 
-`.github/workflows/ci.yml` se ejecuta con push a main, PR hacia main y despacho manual. La matriz `test` restaura, compila y ejecuta toda la solución en Ubuntu y Windows; `fail-fast: false` permite observar ambas plataformas. `linux-package` es independiente: publica self-contained y Native AOT y ejecuta escenarios CLI, recuperación de SQLite y terminales PTY reales, sin SDK en el entorno de ejecución. No depende de la conclusión de los tests. Un fallo suyo es independiente; no es una consecuencia de `test`.
+`.github/workflows/ci.yml` se ejecuta con push a main, PR hacia main y despacho manual. La matriz `test` restaura, compila y ejecuta toda la solución en Ubuntu y Windows; `fail-fast: false` permite observar ambas plataformas. `linux-package` es independiente: publica self-contained y Native AOT y ejecuta escenarios CLI, recuperación de SQLite y terminales PTY reales, con PATH privado vacío y sin variables de localización del host .NET. No depende de la conclusión de los tests. Un fallo suyo es independiente; no es una consecuencia de `test`.
 
 Los tres jobs finales conservan todas las pruebas y validaciones de empaquetado. Windows añade una focal previa para obtener fallo temprano en los seis casos críticos de recuperación, Git y aislamiento; esos casos también siguen en la integral y sus cantidades no se suman. La preparación de NUL se revierte con `always()`; cualquier fallo de preparación/restauración falla el job. No hay `continue-on-error`, resultados simulados ni supresión de códigos de salida. El job de diagnóstico y los hooks nativos temporales fueron retirados.
 
@@ -38,10 +38,15 @@ La matriz ejecuta solución completa en serie con stdin cerrado. Linux publica a
 | [Run 38668015994](https://github.com/juancgomezm-s/OmniCore/actions/runs/38668015994), fuente 0789ebf | Ubuntu 4553 total / 4536 PASS / 17 SKIP / 0 FAIL; linux-package PASS; Windows 4543 PASS / 8 SKIP / 2 FAIL | Pasada integral que expuso los dos fallos Windows; no era cierre de CI. |
 | Debian sobre integración M9-D 793e1fa | Build 0 warnings/errores; 20/20 `StdioTransportTests` | Procesos reales, ownership, recibos, replay y nuevas acciones de M9-D. |
 | Windows `windows-wal-git-final.log` | 23/23 PASS, 0 omitidas | Los 20 casos de transporte M9-D, dos mapeos reales y el gate Git. Incluye doce caídas independientes; cualquier fallo aborta el estrés. |
+| Debian integral, fuente C# b673091 | 4557 total / 4538 PASS / 19 SKIP / 0 FAIL, 11m37s; build sin warnings/errores, runner exit 0 | `acceptance-b673-full.log`, `acceptance-b673-exit.txt`; ambas distribuciones publicadas y ejecutadas. |
 | Pruebas de mapeo real | Liberado: reapertura y recibo Completed persistido; retenido: error original 10/1546 tras cinco segundos, sin truncar el archivo; luego se puede reabrir | No se sustituye SQLite ni se simula el resultado del sistema operativo. |
 | [Checks del head del PR](https://github.com/juancgomezm-s/OmniCore/pull/1/checks) | Registro definitivo de Windows, Ubuntu y linux-package; run y cantidades en la descripción del PR | Deben aprobarse los tres antes del merge. |
 
 Los conjuntos son superpuestos y no se suman. El acta conserva los intentos fallidos y las evidencias anteriores. Los siete casos opt-in de cuentas/modelos reales continúan declarados; las pruebas específicas de Windows se omiten explícitamente en Linux. Ningún test existente se deshabilitó.
+
+La revisión final detectó un hueco de evidencia: los primeros smoke eliminaban DOTNET_ROOT pero heredaban PATH del proceso de publicación. Se corrigieron ambos scripts para usar un directorio privado vacío como PATH, retirar también DOTNET_HOST_PATH y verificar que `dotnet` no es descubrible. Las pasadas anteriores no acreditan ese aislamiento del entorno. La nueva validación no desinstala el SDK necesario para compilar: aísla el entorno de los ejecutables publicados.
+
+Los paquetes Debian recién publicados de b673091 se ejecutaron de nuevo con los scripts corregidos: seis escenarios verificados por paquete y cuatro PTY en total, todos con exit 0 (`strict-sdk-path-b673/`). La modificación final sólo cambia scripts/evidencia; la fuente C# coincide con b673091, cuya integral Debian está registrada arriba.
 
 ## Pendientes fuera de esta reparación
 
