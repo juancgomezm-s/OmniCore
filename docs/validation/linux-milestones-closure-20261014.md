@@ -395,3 +395,12 @@ Se mantienen 3 MB de stdout, auth, reutilización entre dos turnos, parada del h
 secretos y plazo de producción. Se añaden estos tres casos a la focal temprana,
 sin retirarlos de la integral. La siguiente pasada completa debe aprobar antes
 de integrar; ni esta focal ni la pasada anterior sustituyen ese requisito.
+
+La [focal 958b7d1](https://github.com/juancgomezm-s/OmniCore/actions/runs/38686930511/job/116263817546)
+confirma **7 PASS / 2 FAIL**: el caso administrado original pasa en 33,8s con el
+arreglo EOF; las dos regresiones añadidas terminan a los 10s sin conectar aún al
+primer socket. Su límite nuevo era menor que el arranque frío observado de
+PowerShell en la VM. Se alinean a los **90s ya usados por la fixture original**;
+no se amplía ningún plazo existente o de producción ni se omite la comprobación
+de socket y readiness autenticada. La siguiente pasada debe aprobar los nueve
+casos y la integral. El empaquetado de 958b7d1 ya aprueba con evidencia 11950023243.
