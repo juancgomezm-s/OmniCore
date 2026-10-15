@@ -2,7 +2,22 @@
 
 Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petición del usuario. Complementa la fuente de verdad [arquitectura §24](../architecture/arquitectura.md#24-roadmap-m1m10-fuente-de-verdad) y el [plan de preferencias e idiomas](preferences-and-localization.md). Define trabajo restante y aceptación; no declara construido lo que sólo tiene contrato o pantalla. La petición comprende traducciones y convenciones regionales de presentación.
 
-## Estado vigente (2026-10-14)
+## Estado vigente (2026-10-15)
+
+**Ampliación autorizada (2026-10-15):** M9-F2 incorpora imágenes generadas como
+salida del modelo, separando capacidades de entrada/salida, respuesta sólo visual
+o mixta, CAS/journal/replay, transporte acotado y presentación en OmniCoder/TUI.
+**Pendiente de construcción**; catálogo de modalidades no acredita recepción.
+Ver [contrato y aceptación](generated-image-responses.md). No reanuda el bloque
+de adjuntos detenido por la aceptación visual ni cambia el alcance independiente
+de skills/memorias. M8 OR5 continúa pendiente.
+
+**Ampliación independiente autorizada (2026-10-14):** descubrimiento local acotado
+de skills portables Claude/Codex/OpenCode, instrucciones `AGENTS.md`/`CLAUDE.md`
+y memorias por directorio/proyecto. **Pendiente de construcción**, separado del
+bloque de adjuntos de texto/documentos/imágenes y de la memoria completa M10.
+Alcance, ubicaciones, privacidad y aceptación en [su plan](external-agent-discovery.md).
+Mantener un solo worker Luna en alto y ejecutar ambos bloques secuencialmente.
 
 **`P0-OMNI-UNIFICACION` cerrado globalmente (2026-10-14):** [acta consolidada](../validation/omni-family-homologation-closure-20261014.md), evidencias de los tres productos y aceptación del usuario de OmniCoder Electron, OmniCore CLI/TUI y OmniLlama React, con Svelte fuera de esta fase. El usuario confirma animación remota funcionando. Se levanta el bloqueo de homologación y se autoriza iniciar M9 con un solo worker Luna en alto; los criterios técnicos y de aceptación propios de M8–M10 continúan vigentes. OR5 autenticado sigue pendiente y no se declara M8 cerrado.
 
@@ -236,9 +251,8 @@ exactly-once general y OR5 autenticado M8 sigue pendiente.
 | Reconexión e historial | **Construido en M9-B:** receipt hash-bound, `command.result` sin resend, `Unknown` no ejecutable, cursor/high-water SQL acotados, detección de gaps y tombstone de purge. No es exactly-once general ni reconexión push. Procedencia Native/Imported pendiente. | Prueba mata Host tras persistir receipt con ACK sin consumir, reconecta y confirma misma Session/ACK sin nuevos eventos. Unknown y cursor purgado muestran resultado/gap sin fingir finalización. |
 | Clientes y preferencias | **Core:** CLI in-process/stdio multi-target net8/net10, capabilities y goldens. **M9-C integrado:** consumer TypeScript, Host hijo y Sidecar. **M9-E integrado:** composer OmniCoder conectado a inferencia Core real y recuperación de historial vía journal/replay. `ui.locale` conserva su esquema actual. | Host real Windows y UI; E2E fixture HTTP determina el wiring. Smoke Ollama local qwen08 + reapertura pasó en perfil aislado; otros providers/configuraciones permanecen por validar. Multi-OS/cuatro idiomas y paridad completa siguen abiertos. |
 | Origen humano, conversación y resultado (U-C12) | **M9-D integrado + M9-E integrado:** Electron main confirma acciones y firma proof efímero; Core valida conexión/workspace/Session/Run/revisión y ejecuta una única entrada persistida con el pipeline real. Generic `session.input` sigue igual. ACK Accepted es admisión; `conversation.result` reconcilia sin reenvío. | E2E GUI→Host→fixture HTTP prueba respuesta real, replay, modo e interrupción/cancelación; focal Core prueba admisión separada del resultado y cancelación serializada con queries. El fixture no acredita proveedor local ni aceptación humana. Trust boundary: mismo principal OS. Ver ADR-0050/0051 y actas M9-D/E. |
-| Intake multimodal de texto, documentos e imágenes | **M9-F en construcción:** TUI `/paste`/Ctrl+V, picker y `/attach`; OmniCoder chips, picker/drop y staging. Upload por chunks dentro del frame 1 MiB, hash/MIME comprobados y snapshot CAS enlazado al input; extracción versionada PDFPig/DOCX/UTF-8. `media.read` exige ruta autorizada y perfil efectivo con imagen. Audio/vídeo están fuera del alcance por decisión del usuario. | Focales de CAS/journal/GC, replay, preadmisión de modalidad y contexto; recorrido Electron→Host→fixture HTTP. Windows Terminal puede interceptar Ctrl+V, por eso TUI ofrece `/paste` como acción explícita sin alterar preferencias de Terminal ([documentación de acciones de Windows Terminal](https://learn.microsoft.com/en-us/windows/terminal/customize-settings/actions)). La aceptación interactiva de clipboard en terminal real queda pendiente. Intake de imagen valida firma, MIME y cotas de dimensiones/píxeles, pero no decodifica íntegramente el flujo; WebP VP8L se rechaza. |
 
-**Salida M9:** transporte/lease/reconexión/net8, chat/inferencia y primer bloque de texto largo/documentos/imágenes desde TUI y OmniCoder están construidos; `media.read` está conectado con autorización y perfil efectivo. Siguen pendientes procesos persistentes/interactivos, procedencia Native/Imported, aceptación completa en cuatro idiomas y validación multiplataforma. Audio/vídeo quedan excluidos; OR5 autenticado de M8 sigue pendiente por separado. Mantener DTOs canónicos/wire invariantes. M9-F no cierra M9.
+**Salida M9:** transporte/lease/reconexión/net8 y chat/inferencia desde OmniCoder construidos e integrados; aún faltan `media.read` consumido por proveedor visual, recepción/persistencia/presentación de imágenes generadas ([M9-F2](generated-image-responses.md)), controles de procesos persistentes/interactivos, aceptación en cuatro idiomas y validación multiplataforma. Reusar Client/idioma y mantener DTOs canónicos/wire invariantes. M9-E no cierra el hito.
 
 ## M10: v1, memoria completa y evaluación
 

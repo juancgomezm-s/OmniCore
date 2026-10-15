@@ -24,12 +24,7 @@ if (args.Length == 1 && args[0] == "legacy-stdio")
 
 if (args.Length == 3 && args[0] == "session-lock")
 {
-    using var store = new OmniCore.Infrastructure.SqliteEventStore(args[1]);
-    store.AcquireSessionWriterLease(OmniCore.Domain.SessionId.Parse(args[2]));
-    Console.WriteLine("READY");
-    await Console.Out.FlushAsync();
-    await Console.In.ReadLineAsync();
-    return 0;
+    return OmniCore.SandboxTestProcess.SessionLockProbe.Run(args[1], args[2]);
 }
 
 if (args.Length == 1 && args[0] == "stream")
@@ -65,6 +60,8 @@ if (args.Length == 1 && args[0] == "stdin-echo")
     Console.Write(Console.ReadLine());
     return 0;
 }
+
+if (args.Length == 1 && args[0] == "stdin-state") return StandardInputProbe.Run();
 
 if (args.Length == 1 && args[0] is "mcp" or "mcp-error" or "mcp-stall")
 {
@@ -160,6 +157,13 @@ if (args.Length == 2 && args[0] == "connect")
         Console.Write("DENIED");
         return 24;
     }
+}
+
+if (args.Length == 2 && args[0] == "stdio-stall")
+{
+    File.WriteAllText(args[1], Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    await Task.Delay(TimeSpan.FromSeconds(30));
+    return 0;
 }
 
 if (args.Length == 1 && args[0] == "sleep")

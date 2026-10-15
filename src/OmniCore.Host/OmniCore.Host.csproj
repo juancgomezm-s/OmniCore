@@ -1,10 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <!-- ScenarioLoader permanece deliberadamente dinámico y está fuera del alcance M2 EPIC-013. -->
-    <NoWarn>$(NoWarn);IL3050</NoWarn>
-  </PropertyGroup>
-
   <ItemGroup>
     <PackageReference Include="Vecc.YamlDotNet.Analyzers.StaticGenerator" />
     <ProjectReference Include="..\OmniCore.Abstractions\OmniCore.Abstractions.csproj" />

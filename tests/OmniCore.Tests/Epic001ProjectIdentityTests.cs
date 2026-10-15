@@ -158,11 +158,30 @@ public sealed class Epic001ProjectIdentityTests
     {
         var root = Path.Combine(Path.GetTempPath(), "omni-canon-" + Guid.NewGuid().ToString("N"), "Repo");
         var slashes = root.Replace('\\', '/');
-        var backslashes = root.Replace('/', '\\') + Path.DirectorySeparatorChar;
+        var alternate = OperatingSystem.IsWindows()
+            ? root.Replace('/', '\\') + Path.DirectorySeparatorChar
+            : Path.Combine(root, ".") + Path.DirectorySeparatorChar;
 
         Assert.Equal(ProjectIdentity.CanonicalWorkspacePath(slashes, foldCase: true),
-            ProjectIdentity.CanonicalWorkspacePath(backslashes, foldCase: true));
+            ProjectIdentity.CanonicalWorkspacePath(alternate, foldCase: true));
         Assert.Equal(WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(slashes, foldCase: false)).ToString(),
             WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(root + "/", foldCase: false)).ToString());
+    }
+
+    [Fact]
+    public void Literal_backslash_in_a_unix_directory_name_preserves_workspace_identity()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Skip("A literal backslash in a directory name is a Unix path case.");
+            return;
+        }
+        var root = Path.Combine(Path.GetTempPath(), "omni-canon-" + Guid.NewGuid().ToString("N"));
+        var literal = Path.Combine(root, "Repo\\Child");
+        var nested = Path.Combine(root, "Repo", "Child");
+
+        Assert.Equal(literal, ProjectIdentity.CanonicalWorkspacePath(literal));
+        Assert.NotEqual(WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(literal)).ToString(),
+            WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(nested)).ToString());
     }
 }
