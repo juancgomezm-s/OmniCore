@@ -2,7 +2,8 @@ namespace OmniCore.Host;
 
 using OmniCore.Domain;
 using OmniCore.Engine;
-using YamlDotNet.Serialization;
+using YamlDotNet.Core;
+using YamlDotNet.RepresentationModel;
 
 /// <summary>
 /// Carga un escenario de simulación desde YAML (ADR-0041 §1). Formato:
@@ -46,7 +47,12 @@ public static class ScenarioLoader
         Dictionary<object, object>? root;
         try
         {
-            root = new DeserializerBuilder().Build().Deserialize<Dictionary<object, object>>(yaml);
+            var stream = new YamlStream();
+            stream.Load(new StringReader(yaml));
+            if (stream.Documents.Count > 1) throw new YamlException("Expected one YAML document.");
+            var value = stream.Documents.Count == 0 ? null : ReadNode(stream.Documents[0].RootNode,
+                new Dictionary<YamlNode, object>(ReferenceEqualityComparer.Instance), 0);
+            root = value is null ? null : AsMap(value, "scenario");
         }
         catch (YamlDotNet.Core.YamlException ex)
         {
@@ -116,6 +122,41 @@ public static class ScenarioLoader
             PlanApproval = planApproval,
             StallThresholdTurns = stall,
         };
+    }
+
+    // Read the YAML representation tree without reflection. Containers are memoized so
+    // aliases preserve their original identity instead of expanding exponentially.
+    private static object? ReadNode(YamlNode node, Dictionary<YamlNode, object> containers, int depth)
+    {
+        if (depth > 128) throw new YamlException(node.Start, node.End, "Maximum YAML nesting exceeded.");
+        if (containers.TryGetValue(node, out var known)) return known;
+        if (node is YamlScalarNode scalar)
+        {
+            var isNull = scalar.Tag == "tag:yaml.org,2002:null"
+                || scalar.Tag.IsEmpty && scalar.Style == ScalarStyle.Plain
+                    && scalar.Value is (null or "" or "~" or "null" or "Null" or "NULL");
+            return isNull ? null : scalar.Value ?? "";
+        }
+        if (node is YamlSequenceNode sequence)
+        {
+            var list = new List<object>();
+            containers.Add(node, list);
+            foreach (var item in sequence.Children) list.Add(ReadNode(item, containers, depth + 1)!);
+            return list;
+        }
+        if (node is YamlMappingNode mapping)
+        {
+            var map = new Dictionary<object, object>();
+            containers.Add(node, map);
+            foreach (var pair in mapping.Children)
+            {
+                var key = ReadNode(pair.Key, containers, depth + 1)
+                    ?? throw new YamlException(pair.Key.Start, pair.Key.End, "A mapping key cannot be null.");
+                map.Add(key, ReadNode(pair.Value, containers, depth + 1)!);
+            }
+            return map;
+        }
+        throw new YamlException(node.Start, node.End, "Unsupported YAML node.");
     }
 
     private static SimulatedPlanMutation ParsePlanItem(object entry)

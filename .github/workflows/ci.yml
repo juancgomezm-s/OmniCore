@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, 'codex/**']
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -61,7 +61,9 @@ jobs:
           path: |
             ${{ runner.temp }}/linux-package/*-publish.log
             ${{ runner.temp }}/linux-package/*-smoke.log
+            ${{ runner.temp }}/linux-package/*-terminal.log
             ${{ runner.temp }}/linux-package/*-files.txt
             ${{ runner.temp }}/linux-package/*.sha256
             ${{ runner.temp }}/linux-package/*-smoke/summary.json
+            ${{ runner.temp }}/linux-package/*-terminal/*/terminal.ansi
           if-no-files-found: error
