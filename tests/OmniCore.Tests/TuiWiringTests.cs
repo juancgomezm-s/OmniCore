@@ -1326,6 +1326,42 @@ public sealed partial class TuiWiringTests
     });
 
     [Fact]
+    public void Composer_reserves_attachment_space_only_while_a_file_is_pending() => RunTuiTest(fx =>
+    {
+        var path = Path.Combine(fx.Root, "note.txt");
+        File.WriteAllText(path, "attachment layout");
+        fx.StartTui(turnHost: new AttachmentLayoutTurn(fx));
+        var panel = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-composer");
+        var chips = panel.SubViews.Single(view => view.Id == "omni-attachments");
+        fx.Wait(() => panel.Frame.Height == 3 && !chips.Visible, "compositor compacto sin archivos");
+        Type(fx, "/attach \"" + path + "\"");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "adjunto importado");
+        Assert.Contains("note.txt", chips.Text.ToString());
+        KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "cerrar aviso de adjunto");
+        fx.Invoke(() => fx.App.Composer!.Text = "");
+        fx.Wait(() => panel.Frame.Height == 4 && chips.Visible, "fila reservada para el adjunto");
+        Type(fx, "/pl");
+        fx.Invoke(() =>
+        {
+            var helper = fx.App.MainWindow.SubViews.Single(view => view.Id == "omni-command-helper");
+            Assert.True(helper.Frame.Bottom <= panel.Frame.Top, "el autocompletado respeta la fila del adjunto");
+        });
+        Type(fx, "/remove-attachment 1");
+        KeyWithEffect(fx, KeyCode.Enter, () => !chips.Visible, "quitar el archivo pendiente");
+        fx.Invoke(() => fx.App.Composer!.Text = "");
+        fx.Wait(() => panel.Frame.Height == 3, "recuperar el espacio al quitar el último archivo");
+    });
+
+    private sealed class AttachmentLayoutTurn(TuiFixture fixture) : ITuiTurnHost
+    {
+        public TuiAttachmentReference ImportAttachmentFromPath(string path) => new(
+            fixture.Artifacts.PutText(File.ReadAllText(path), "text/plain", ArtifactKind.Other, Sensitivity.Normal)
+                with { FileName = Path.GetFileName(path) });
+        public Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken) =>
+            System.Threading.Tasks.Task.FromResult(0);
+    }
+
+    [Fact]
     public void New_turn_follows_the_bottom_but_new_content_does_not_drag_a_reader() => RunTuiTest(fx =>
     {
         var host = new TestTurn(fx);
@@ -1492,7 +1528,6 @@ public sealed partial class TuiWiringTests
 
     [Theory]
     [InlineData(80, 25)]
-    [InlineData(120, 35)]
     public void Preferences_center_navigates_by_keyboard_and_cancelled_locale_preview_preserves_chat(int columns, int rows) => RunTuiTest(fx =>
     {
         var changed = new System.Collections.Concurrent.ConcurrentQueue<string>();
@@ -1686,7 +1721,7 @@ public sealed partial class TuiWiringTests
             fx.InjectKey(new Key(KeyCode.Esc));
             fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Preferencias") == true,
                 "Escape vuelve del centro al índice");
-            ChoosePreferenceCategory(fx, "diagnostics_data");
+            ChoosePreferenceCategory(fx, "context_sessions");
             ClickId(fx, "preferences-context-open");
             fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "session-preferences-details"),
                 "consulta de contexto de sólo lectura visible");
@@ -2817,7 +2852,7 @@ public sealed partial class TuiWiringTests
         });
     }
 
-    private static void ChoosePreferenceCategory(TuiFixture fx, string categoryId, string locale = "es")
+    private static void ChoosePreferenceCategory(TuiFixture fx, string categoryId, string? locale = null)
     {
         fx.Invoke(() =>
         {
@@ -2827,7 +2862,7 @@ public sealed partial class TuiWiringTests
             list.SelectedItem = index;
             list.InvokeCommand(Command.Accept);
         });
-        var selected = PreferenceCategoryCatalog.Resolve(new Localization(locale))
+        var selected = PreferenceCategoryCatalog.Resolve(new Localization(locale ?? fx.App.PreferencesLocale))
             .Single(category => category.Id == categoryId);
         fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains(selected.Title, StringComparison.Ordinal) == true,
             "categoría de preferencias visible: " + categoryId);

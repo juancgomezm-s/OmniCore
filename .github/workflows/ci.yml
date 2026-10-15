@@ -50,6 +50,29 @@ jobs:
         if: always() && runner.os == 'Windows' && env.OMNICORE_CI_NUL_PREPARED == 'true'
         run: ./scripts/prepare-windows-ci.ps1 -Action Restore
 
+  npm-install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - name: Install, exercise and update the npm application
+        shell: bash
+        run: |
+          npm test
+          npm run install:cli -- --prefix "$RUNNER_TEMP/omnicore-npm"
+          python scripts/smoke-npm-install.py "$RUNNER_TEMP/omnicore-npm" "$RUNNER_TEMP/npm-smoke"
+          npm run install:cli -- --prefix "$RUNNER_TEMP/omnicore-npm"
+          python scripts/smoke-npm-install.py "$RUNNER_TEMP/omnicore-npm" "$RUNNER_TEMP/npm-smoke" --after-update
+
   linux-package:
     runs-on: ubuntu-latest
     timeout-minutes: 25
