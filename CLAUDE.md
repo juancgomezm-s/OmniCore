@@ -10,6 +10,8 @@ Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe func
 
 **Alcance de Core aclarado por el usuario (2026-10-14): conservar la experiencia y los menús actuales, que ya considera una buena referencia.** La matriz U-C es una lista de contraste, no un programa obligatorio de rediseño. Leer primero el plan vigente de Core; abrir sólo correcciones de discrepancias concretas de uso, con verificación proporcional. Consultar un donante sólo para la pieza implicada y respetar sus cambios/retiradas recientes. No reconstruir superficies sanas ni adelantar funciones de M9/M10 por buscar paridad visual.
 
+**Referencia de preferencias confirmada por el usuario (2026-10-14): «Sí, esta versión integrada».** Es el checkpoint `bef4607` de `codex/preferences-experience-20261013`: categorías laterales persistentes y controles directos en terminal amplia, con la paleta existente. Su integración sobre `0ffdadb` se prepara en `codex/preferencias-integradas`; conservar los accesos y contratos de M8, memoria y M9. No volver a presentar la pantalla descriptiva anterior como referencia aceptada ni confundir una captura sin color con un cambio de diseño. Evidencia de integración en `docs/validation/preferences-integration-20261014.md`.
+
 **Contribución de OmniCore a la homologación cerrada en Windows (2026-10-14):** U-C01–U-C12
 resueltos para el alcance actual, con diferencias explícitas; menús conservados y corregidos
 recorte del prompt/pérdida de borrador ante rechazo o referencia no disponible. Evidencia en

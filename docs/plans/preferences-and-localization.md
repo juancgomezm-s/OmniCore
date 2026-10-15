@@ -1,5 +1,7 @@
 # Preferencias e idiomas de OmniCore
 
+La mejora de experiencia aprobada el 13 de octubre continúa en [Experiencia de preferencias e inferencia local](preferences-experience-20261013.md). Ese plan reorganiza navegación y formularios sobre los contratos ya construidos y separa el nuevo soporte de muestreo local del cierre funcional anterior.
+
 Plan independiente de producto e implementación, acordado a partir de la petición del 11 de octubre de 2026. Responsable de integración y revisión: Codex. Implementación por paquetes: dos workers Luna con razonamiento alto, tras la ampliación solicitada por el usuario. El objetivo es que una persona encuentre y configure las funciones construidas sin conocer comandos, archivos YAML ni la arquitectura interna, con toda la interfaz propia disponible en español, inglés, francés e italiano.
 
 El rediseño no se limita a cambiar etiquetas. Separa cuentas, conexiones y motores locales; une las preferencias dispersas; da representación a las capacidades recientes de M8; y sustituye la localización parcial por un contrato verificable de extremo a extremo. No declara M8 terminado ni adelanta MCP, hooks o memoria global por el hecho de añadir una entrada al menú.

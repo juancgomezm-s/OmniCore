@@ -28,7 +28,7 @@ public sealed class PreferencesCenterTests
     [Theory]
     [InlineData("es", "local", "local_engines")]
     [InlineData("en", "permissions", "tools_security")]
-    [InlineData("fr", "mémoire", "diagnostics_data")]
+    [InlineData("fr", "mémoire", "context_sessions")]
     [InlineData("it", "barra laterale", "general")]
     public void Category_search_matches_localized_titles_and_four_language_synonyms(
         string locale, string query, string expectedCategory)
@@ -44,6 +44,33 @@ public sealed class PreferencesCenterTests
     [InlineData(120, true)]
     public void Preference_layout_switches_at_the_documented_terminal_width(int width, bool wide) =>
         Assert.Equal(wide, PreferencesPresentation.IsWideLayout(width));
+
+    [Theory]
+    [InlineData("es", "ejecutable", "local_engines")]
+    [InlineData("en", "output limit", "models_execution")]
+    [InlineData("fr", "délai", "local_engines")]
+    [InlineData("it", "orchestrazione", "models_execution")]
+    public void Search_finds_existing_configuration_fields(string locale, string term, string expected)
+    {
+        var categories = PreferenceCategoryCatalog.Resolve(new Localization(locale));
+        Assert.Equal(expected, Assert.Single(PreferencesPresentation.Search(categories, term, locale)).Id);
+    }
+
+    [Fact]
+    public void Context_and_memory_are_separate_from_diagnostics_in_every_locale()
+    {
+        foreach (var locale in UiLocaleCodes.Supported)
+        {
+            var categories = PreferenceCategoryCatalog.Resolve(new Localization(locale));
+            var context = Assert.Single(categories, category => category.Id == "context_sessions");
+            Assert.False(new Localization(locale).ResolveDetailed("preferences.category.context_sessions.title").UsedFallback);
+            Assert.NotEmpty(context.Description);
+            Assert.NotEmpty(context.Help);
+            Assert.DoesNotContain(PreferencesPresentation.Search(categories, locale switch
+                { "en" => "memory", "fr" => "mémoire", "it" => "memoria", _ => "memoria" }, locale),
+                category => category.Id == "diagnostics_data");
+        }
+    }
 
     [Fact]
     public void Local_engine_argument_editor_roundtrips_literal_argv_without_shell_parsing()

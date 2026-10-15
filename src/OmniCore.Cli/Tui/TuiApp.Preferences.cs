@@ -77,37 +77,23 @@ public sealed partial class TuiApp
         var matches = PreferencesPresentation.Search(categories, _preferencesQuery, _locale);
         var selected = categories.FirstOrDefault(item => item.Id == _preferencesCategory) ?? categories[0];
         var wide = PreferencesPresentation.IsWideLayout(_window.Frame.Width);
+        // Wide terminals open the actual category, not a second descriptive landing page.
+        categoryPage |= wide;
+        _preferencesCategoryPage = categoryPage;
         var title = categoryPage ? Pref("title") + " › " + selected.Title : Pref("title");
         var frame = OverlayFrame(title, _window.Frame.Height - 3);
-        frame.Width = wide ? Dim.Percent(82) : Dim.Percent(92);
+        frame.Width = Dim.Percent(92);
         frame.Height = Dim.Fill(2);
         if (!categoryPage)
         {
             var searchLabel = new Label { X = 2, Y = 3, Width = 10, Height = 1, Text = Pref("search") };
             var search = new TextField { Id = "preferences-search", X = 12, Y = 3,
-                Width = wide ? Dim.Percent(47) : Dim.Fill(4), Height = 1, Text = _preferencesQuery };
+                Width = Dim.Fill(4), Height = 1, Text = _preferencesQuery };
             var categoryList = new ListView { Id = "preferences-categories", X = 2, Y = 5,
-                Width = wide ? 30 : Dim.Fill(4), Height = Dim.Fill(5), ShowMarks = false,
+                Width = Dim.Fill(4), Height = Dim.Fill(5), ShowMarks = false,
                 CanFocus = true, Visible = matches.Count > 0 };
-            var contentX = wide ? 35 : 2;
-            var contentWidth = wide ? Dim.Fill(3) : Dim.Fill(4);
-            var panel = new View { Id = "preferences-panel", X = contentX, Y = 2,
-                Width = contentWidth, Height = Dim.Fill(5), CanFocus = true };
-            var accent = new View { Id = "preferences-accent", X = 0, Y = 0, Width = 1,
-                Height = Dim.Fill(), CanFocus = false };
-            var heading = new Label { Id = "preferences-panel-title", X = 2, Y = 1,
-                Width = Dim.Fill(3), Height = 1, Text = selected.Title };
-            var description = new Label { Id = "preferences-panel-description", X = 2, Y = 3,
-                Width = Dim.Fill(3), Height = wide ? 3 : 4, Text = selected.Description };
-            var categoryHelp = new Label { Id = "preferences-panel-help", X = 2,
-                Y = wide ? 7 : 8, Width = Dim.Fill(3), Height = 3, Text = selected.Help };
-            var open = new Button { Id = "preferences-open-category", X = 2,
-                Y = wide ? 11 : 13, Width = Dim.Fill(3), TextAlignment = Alignment.Start,
-                Text = selected.Title + "  ›" };
             var emptySearch = new Label { Id = "preferences-empty-search", X = 2, Y = 5,
-                Width = wide ? 30 : Dim.Fill(4), Height = 2, Text = Pref("no_matches"), Visible = matches.Count == 0 };
-            var notice = new Label { Id = "preferences-notice", X = 2, Y = Pos.AnchorEnd(4),
-                Width = Dim.Fill(4), Height = 3, Text = _localization.Resolve("shell.preferences_language_note") };
+                Width = Dim.Fill(4), Height = 2, Text = Pref("no_matches"), Visible = matches.Count == 0 };
             var categoryBack = new Button { Id = "preferences-close", X = 2, Y = Pos.AnchorEnd(2), Text = Pref("close") };
             categoryBack.Accepted += (_, _) => ClosePreferenceCenter();
             categoryList.SetSource(new ObservableCollection<string>(matches.Select(item => item.Title)));
@@ -117,21 +103,8 @@ public sealed partial class TuiApp
             {
                 emptySearch.Visible = matches.Count == 0;
                 categoryList.Visible = matches.Count > 0;
-                open.Enabled = matches.Count > 0;
-                if (matches.Count == 0)
-                {
-                    heading.Text = Pref("no_matches");
-                    description.Text = "";
-                    categoryHelp.Text = "";
-                    open.Text = Pref("no_matches");
-                    return;
-                }
                 if (categoryList.SelectedItem is not int index || index < 0 || index >= matches.Count) return;
                 selected = matches[index];
-                heading.Text = selected.Title;
-                description.Text = selected.Description;
-                categoryHelp.Text = selected.Help;
-                open.Text = selected.Title + "  ›";
             }
             void OpenCategory()
             {
@@ -143,7 +116,6 @@ public sealed partial class TuiApp
             }
             categoryList.ValueChanged += (_, _) => SyncPanel();
             categoryList.Accepted += (_, args) => { args.Handled = true; OpenCategory(); };
-            open.Accepted += (_, _) => OpenCategory();
             search.TextChanged += (_, _) =>
             {
                 _preferencesQuery = search.Text.ToString();
@@ -170,20 +142,83 @@ public sealed partial class TuiApp
             };
             frame.Add(searchLabel, search, categoryList, categoryBack, emptySearch,
                 new Label { Id = "preferences-help", X = 2, Y = Pos.AnchorEnd(3),
-                    Width = Dim.Fill(3), Height = 1, Text = Pref(wide ? "help" : "help_narrow") });
-            if (wide)
-            {
-                frame.Add(panel);
-                panel.Add(accent, heading, description, categoryHelp, open, notice);
-            }
+                    Width = Dim.Fill(3), Height = 1, Text = Pref("help_narrow") });
             ApplyTheme(frame);
             _overlay = frame; _window.Add(frame);
             categoryList.SetFocus();
             return;
         }
 
-        var contentPanel = new View { Id = "preferences-panel", X = 2, Y = 3,
-            Width = Dim.Fill(4), Height = Dim.Fill(6), CanFocus = true };
+        ListView? navigation = null;
+        View? categoryFocus = null;
+        var navigationViews = new HashSet<View>();
+        var filtering = false;
+        if (wide)
+        {
+            var searchLabel = new Label { X = 2, Y = 1, Width = 30, Height = 1, Text = Pref("search") };
+            var search = new TextField { Id = "preferences-search", X = 2, Y = 2, Width = 30, Height = 1, Text = _preferencesQuery };
+            navigation = new ListView { Id = "preferences-categories", X = 2, Y = 4, Width = 30,
+                Height = Dim.Fill(5), ShowMarks = false, CanFocus = true, Visible = matches.Count > 0 };
+            var empty = new Label { Id = "preferences-empty-search", X = 2, Y = 4, Width = 26,
+                Height = 3, Text = Pref("no_matches"), Visible = matches.Count == 0 };
+            navigation.SetSource(new ObservableCollection<string>(matches.Select(item => item.Title)));
+            var initialIndex = matches.ToList().FindIndex(item => item.Id == selected.Id);
+            if (initialIndex >= 0) navigation.SelectedItem = initialIndex;
+            frame.Add(searchLabel, search, navigation, empty);
+            navigationViews.UnionWith(frame.SubViews);
+            void RenderSelection(bool focusContent)
+            {
+                if (navigation.SelectedItem is not int at || at < 0 || at >= matches.Count) return;
+                if (selected.Id == matches[at].Id)
+                { if (focusContent) categoryFocus?.SetFocus(); return; }
+                selected = matches[at];
+                _preferencesCategory = selected.Id;
+                foreach (var view in frame.SubViews.Where(view => !navigationViews.Contains(view)).ToArray())
+                { frame.Remove(view); view.Dispose(); }
+                categoryFocus = RenderPreferenceCategory(frame, selected, wide);
+                frame.Title = Pref("title") + " › " + selected.Title;
+                if (FindPreferenceView(frame, "omni-menu-title") is Label heading) heading.Text = frame.Title;
+                ApplyTheme(frame);
+                if (focusContent) categoryFocus?.SetFocus();
+            }
+            navigation.ValueChanged += (_, _) => { if (!filtering) RenderSelection(false); };
+            navigation.Accepted += (_, args) => { args.Handled = true; RenderSelection(true); };
+            search.TextChanged += (_, _) =>
+            {
+                _preferencesQuery = search.Text.ToString();
+                matches = PreferencesPresentation.Search(categories, _preferencesQuery, _locale);
+                filtering = true;
+                try
+                {
+                    navigation.SetSource(new ObservableCollection<string>(matches.Select(item => item.Title)));
+                    var next = matches.ToList().FindIndex(item => item.Id == _preferencesCategory);
+                    if (matches.Count > 0) navigation.SelectedItem = Math.Max(0, next);
+                }
+                finally { filtering = false; }
+                empty.Visible = matches.Count == 0;
+                navigation.Visible = matches.Count > 0;
+                // Filtering is navigation only: do not discard/rebuild the current form or its draft.
+            };
+            search.KeyDown += (_, key) =>
+            {
+                if (key.KeyCode is KeyCode.CursorDown or KeyCode.Enter && matches.Count > 0)
+                { navigation.SetFocus(); RenderSelection(false); key.Handled = true; }
+            };
+            frame.KeyDown += (_, key) =>
+            {
+                if (key.KeyCode == (KeyCode.F | KeyCode.CtrlMask)) { search.SetFocus(); key.Handled = true; }
+            };
+        }
+        categoryFocus = RenderPreferenceCategory(frame, selected, wide);
+        ApplyTheme(frame); _overlay = frame; _window.Add(frame);
+        if (wide && categoryId is null) navigation?.SetFocus();
+        else categoryFocus?.SetFocus();
+    }
+
+    private View? RenderPreferenceCategory(FrameView frame, LocalizedPreferenceCategory selected, bool wide)
+    {
+        var contentPanel = new View { Id = "preferences-panel", X = wide ? 35 : 2, Y = 3,
+            Width = Dim.Fill(wide ? 2 : 4), Height = Dim.Fill(6), CanFocus = true };
         contentPanel.Add(new View { Id = "preferences-accent", X = 0, Y = 0, Width = 1,
             Height = Dim.Fill(), CanFocus = false });
         var descriptionLabel = new Label { Id = "preferences-description", X = 2, Y = 0,
@@ -228,18 +263,25 @@ public sealed partial class TuiApp
                 } : _preferencesDraftLocale != (_preferencesLocaleSnapshot?.Locale ?? _locale)
                     ? "source_preview" : _localeSelection?.Source == LocaleSelectionSource.UserSetting
                         || _preferencesLocaleSnapshot?.IsConfigured == true ? "source_user" : "source_default";
-                Add(new Label { Id = "preferences-locale-source", X = MenuIndent.Level1, Y = y, Width = Dim.Percent(50), Height = 1,
+                Add(new Label { Id = "preferences-locale-source", X = MenuIndent.Level1, Y = y,
+                    Width = wide ? Dim.Fill(4) : Dim.Percent(50), Height = wide ? 2 : 1,
                     Text = Pref("source_label") + ": " + Pref(sourceKey) + " · " + Pref("locale_" + _locale) });
-                Add(new Label { Id = "preferences-locale-saved", X = Pos.Percent(50) + MenuIndent.Level1, Y = y++, Width = Dim.Fill(4), Height = 1,
+                if (wide) y += 2;
+                Add(new Label { Id = "preferences-locale-saved", X = wide ? MenuIndent.Level1 : Pos.Percent(50) + MenuIndent.Level1,
+                    Y = y++, Width = Dim.Fill(4), Height = 1,
                     Text = Pref("preference_label") + ": " + Pref(_preferencesLocaleSnapshot?.IsConfigured == true ? "preference_saved" : "preference_default")
                         + " · " + (_preferencesLocaleSnapshot?.Locale ?? _locale) });
                 // Heading and its two actions share one row so General fits an 80x25 terminal.
                 var interfaceHeading = new Label { Id = "omni-section", X = MenuIndent.Level0, Y = y,
                     Width = Pref("section_interface").Length + 2, Height = 1, Text = "▸ " + Pref("section_interface") };
                 contentPanel.Add(interfaceHeading);
-                var sidebarOpen = new Button { Id = "preferences-sidebar-open", X = Pos.Right(interfaceHeading) + 2, Y = y, Text = Pref("sidebar_open") };
+                if (wide) y++;
+                var sidebarOpen = new Button { Id = "preferences-sidebar-open", X = wide ? MenuIndent.Level1 : Pos.Right(interfaceHeading) + 2,
+                    Y = y, Text = Pref("sidebar_open") };
                 sidebarOpen.Accepted += (_, _) => { CloseOverlay(); ShowSidebarSettings(); };
-                var animationsOpen = new Button { Id = "preferences-animations-open", X = Pos.Right(sidebarOpen) + 2, Y = y, Text = Pref("animations_open") };
+                if (wide) y += 2;
+                var animationsOpen = new Button { Id = "preferences-animations-open", X = wide ? MenuIndent.Level1 : Pos.Right(sidebarOpen) + 2,
+                    Y = y, Text = Pref("animations_open") };
                 animationsOpen.Accepted += (_, _) => { CloseOverlay(); ShowAnimationSettings(); };
                 Add(sidebarOpen); Add(animationsOpen);
                 break;
@@ -309,7 +351,9 @@ public sealed partial class TuiApp
                 break;
             case "diagnostics_data":
                 Section("section_diagnostics", y++);
-                AddAction("preferences-diagnostics-open", "diagnostics_open", y, () => { CloseOverlay(); ShowDiagnosticsPreferences("diagnostics_data"); }); y += 2;
+                AddAction("preferences-diagnostics-open", "diagnostics_open", y, () => { CloseOverlay(); ShowDiagnosticsPreferences("diagnostics_data"); });
+                break;
+            case "context_sessions":
                 Section("section_context", y++);
                 Add(new Label { X = MenuIndent.Level1, Y = y, Width = Dim.Fill(4), Height = 2, Text = Pref("context_hint") }); y += 2;
                 AddAction("preferences-context-open", "context_open", y++, () => RunPreferenceAction(ClientActionIds.ContextInspect));
@@ -327,10 +371,12 @@ public sealed partial class TuiApp
                 AddAction("preferences-memory-open", "memory_open", y, () => RunPreferenceAction(ClientActionIds.MemorySession));
                 break;
         }
+        if (wide && selected.Id != "local_engines") ConfigurePreferenceScroll(contentPanel, y + 3);
         frame.Add(_preferencesNotice);
-        var back = new Button { Id = "preferences-back", X = 2, Y = Pos.AnchorEnd(2), Text = Pref("back") };
+        var back = new Button { Id = "preferences-back", X = 2, Y = Pos.AnchorEnd(2), Text = Pref(wide ? "close" : "back") };
         back.Accepted += (_, _) =>
         {
+            if (wide) { ClosePreferenceCenter(); return; }
             if (selected.Id == "general") CancelPreferenceLocaleDraft();
             CloseOverlay(); ShowPreferences(_preferencesCategory);
         };
@@ -346,18 +392,17 @@ public sealed partial class TuiApp
                 Width = 12, Text = Pref("reload"), Enabled = false };
             _preferencesReload.Accepted += (_, _) => ReloadPreferenceLocale(frame);
             frame.Add(contentPanel, back, cancel, save, _preferencesReload, new Label { Id = "preferences-help", X = 2, Y = Pos.AnchorEnd(3),
-                Width = Dim.Fill(3), Height = 1, Text = Pref("help_detail") });
+                Width = Dim.Fill(3), Height = 1, Text = Pref(wide ? "help_integrated" : "help_detail") });
         }
         else frame.Add(contentPanel, back, new Label { Id = "preferences-help", X = 2, Y = Pos.AnchorEnd(3),
-            Width = Dim.Fill(3), Height = 1, Text = Pref("help_detail") });
-        ApplyTheme(frame); _overlay = frame; _window.Add(frame);
+            Width = Dim.Fill(3), Height = 1, Text = Pref(wide ? "help_integrated" : "help_detail") });
         View? focus = controls.OfType<View>().FirstOrDefault(view => view.CanFocus);
         if (selected.Id == "local_engines")
         {
             var engineList = FindPreferenceView(frame, "local-engine-list");
             if (engineList?.CanFocus == true) focus = engineList;
         }
-        if (focus is not null) focus.SetFocus(); else back.SetFocus();
+        return focus ?? back;
     }
 
     private void ReflowPreferencesIfNeeded()
@@ -907,6 +952,8 @@ public sealed partial class TuiApp
 
     private void HandlePreferencesEscape()
     {
+        if (_window is not null && PreferencesPresentation.IsWideLayout(_window.Frame.Width))
+        { ClosePreferenceCenter(); return; }
         if (_preferencesCategoryPage)
         {
             if (_preferencesCategory == "general") CancelPreferenceLocaleDraft();
