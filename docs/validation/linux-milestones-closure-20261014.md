@@ -253,3 +253,27 @@ la distribución oficial exacta a un directorio de diagnóstico, verificando su 
 sin cambiar Git instalado ni versiones del proyecto. Se añade temporalmente un job
 focal Windows para exponer SQLiteErrorCode/ExtendedErrorCode y el stderr completo;
 la matriz y todas las pruebas integrales siguen activas.
+
+El [diagnóstico focal Windows](https://github.com/juancgomezm-s/OmniCore/actions/runs/38671700600/job/116216065675)
+mostró el texto completo: «could not open '/dev/null' for reading and writing:
+Permission denied». SQLite pasó en esa focal aislada. La diferencia de versión de
+Git no basta para explicar el fallo: el probe directo con la copia 2.55 y su raíz
+de lectura declarada arranca correctamente aquí. La copia portátil sin esa raíz
+completa fallaba por otra causa (localización/configuración), no reproduce por sí
+sola el NUL denegado del runner. Este equipo ya tiene una ACE AppContainer en NUL;
+el dispositivo requiere preparación en hosts Windows nuevos, como documenta el
+[harness de libuv](https://github.com/libuv/libuv/blob/v1.x/test/appcontainer.c).
+
+Se prepara únicamente NUL en la VM efímera de GitHub, mediante APIs de seguridad
+basadas en handle. Se conserva su descriptor y se restaura la DACL en un paso
+always; cada código de error aborta. La modificación añade lectura/escritura al
+dispositivo de descarte para AppContainer, sin tocar ACL de archivos, red o permisos
+del workspace. El script rechaza Enable/Restore fuera de GitHub Actions; en este
+equipo se ejecuta sólo Inspect, de lectura. No se cambia Git ni el sandbox a Weak.
+El soporte de Git Strong en una instalación Windows nueva depende de ese requisito
+del host; no se atribuye provisión automática del dispositivo al runtime.
+
+Se añade estrés acotado de doce caídas/reaperturas con journals independientes.
+Cada iteración conserva todas las assertions de recibos, conteos y deduplicación;
+un solo fallo hace fallar el test. No son reintentos para acreditar una pasada: se
+busca el código extendido del I/O intermitente antes de decidir la corrección.

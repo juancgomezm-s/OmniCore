@@ -86,6 +86,15 @@ public sealed class StdioTransportTests
     }
 
     [Fact]
+    public async Task Crash_receipt_recovery_stress_requires_every_attempt_to_preserve_effects()
+    {
+        // This is a bounded crash stress test, not a retry: any failed iteration fails
+        // the test, and all twelve independent journals must preserve every assertion.
+        for (var attempt = 0; attempt < 12; attempt++)
+            await Unread_ack_reconnect_lookup_and_unknown_reservation_never_repeat_command_effects();
+    }
+
+    [Fact]
     public async Task Unread_ack_reconnect_lookup_and_unknown_reservation_never_repeat_command_effects()
     {
         var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-lost-ack-" + Guid.NewGuid().ToString("N"));

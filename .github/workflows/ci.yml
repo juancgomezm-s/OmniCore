@@ -26,6 +26,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Prepare Windows sandbox null device
+        run: ./scripts/prepare-windows-ci.ps1 -Action Enable
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           global-json-file: global.json
@@ -33,7 +35,10 @@ jobs:
       - run: dotnet build OmniCore.slnx --no-restore
       - name: Diagnose real Windows crash recovery and Git failures
         shell: bash
-        run: dotnet test --project tests/OmniCore.Tests/OmniCore.Tests.csproj --no-build --no-restore --parallel none --output Detailed --no-progress --filter 'FullyQualifiedName~Unread_ack_reconnect_lookup_and_unknown_reservation|FullyQualifiedName~Failing_test_gate_returns_output_feedback' < /dev/null
+        run: dotnet test --project tests/OmniCore.Tests/OmniCore.Tests.csproj --no-build --no-restore --parallel none --output Detailed --no-progress --filter 'FullyQualifiedName~Unread_ack_reconnect_lookup_and_unknown_reservation|FullyQualifiedName~Crash_receipt_recovery_stress|FullyQualifiedName~Failing_test_gate_returns_output_feedback' < /dev/null
+      - name: Restore Windows null-device permissions
+        if: always() && env.OMNICORE_CI_NUL_PREPARED == 'true'
+        run: ./scripts/prepare-windows-ci.ps1 -Action Restore
 
   test:
     strategy:
@@ -47,6 +52,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Prepare Windows sandbox null device
+        if: runner.os == 'Windows'
+        run: ./scripts/prepare-windows-ci.ps1 -Action Enable
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
@@ -55,6 +63,9 @@ jobs:
       - name: All tests, including architecture and process recovery
         shell: bash
         run: dotnet test --solution OmniCore.slnx --no-build --no-restore --max-parallel-test-modules 1 --parallel none --output Detailed --no-progress < /dev/null
+      - name: Restore Windows null-device permissions
+        if: always() && runner.os == 'Windows' && env.OMNICORE_CI_NUL_PREPARED == 'true'
+        run: ./scripts/prepare-windows-ci.ps1 -Action Restore
 
   linux-package:
     runs-on: ubuntu-latest
