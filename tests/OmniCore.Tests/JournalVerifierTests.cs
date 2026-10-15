@@ -100,6 +100,37 @@ public sealed class JournalVerifierTests
     }
 
     [Fact]
+    public void Malformed_nested_image_envelope_is_reported_as_issue_without_aborting_journal_verification()
+    {
+        using var fx = NewFixture();
+        var session = SessionId.New();
+        var run = RunId.New();
+        var turn = TurnId.New();
+        var lane = LaneId.New();
+        var response = fx.Artifacts.PutText("{\"visibleContent\":{\"blocks\":[{\"kind\":\"image\",\"hash\":{},\"size\":\"overflow\"}]}}",
+            "application/vnd.omnicore.model-usage+json", ArtifactKind.ModelResponse, Sensitivity.Sensitive);
+        fx.AppendEvent(session, EventType.Of("session.created"), 1,
+            fx.Encode(new SessionCreated(session, "ws", fx.Root, ProfileId.New(), DateTimeOffset.UtcNow)));
+        fx.AppendEvent(session, EventType.Of("run.created"), 1,
+            fx.Encode(new RunCreated(run, session, "malformed response envelope", RunMode.Plan, ExecutionStrategy.Direct,
+                FailurePolicy.FailRun, new TaskBudget(null, null, null, null), TaskId.New(), DateTimeOffset.UtcNow)),
+            runId: run, correlationId: run);
+        fx.AppendEvent(session, EventType.Of("turn.started"), fx.Codecs.CurrentVersion(EventType.Of("turn.started")),
+            fx.Encode(new TurnStarted(turn, lane)), runId: run, correlationId: run, turnId: turn);
+        fx.AppendEvent(session, EventType.Of("model_step.completed"), fx.Codecs.CurrentVersion(EventType.Of("model_step.completed")),
+            fx.Encode(new ModelStepCompleted(turn, 0, new TokenUsage(0, 0, 0, 0, 0), StopReason.EndTurn,
+                response, DateTimeOffset.UtcNow.ToString("yyyy-MM-dd"), null)), runId: run, correlationId: run,
+            turnId: turn, refs: [response]);
+
+        var report = fx.VerifySession(session);
+
+        Assert.False(report.Ok);
+        Assert.Contains(report.Issues, issue => issue.Field == "model_step.completed.visibleContent.blocks"
+            && issue.Code == JournalIssueCode.ArtifactHashInvalid);
+        Assert.Equal(4, report.EventCount);
+    }
+
+    [Fact]
     public void Multiple_sessions_verify_independently_even_interleaved()
     {
         using var fx = NewFixture();

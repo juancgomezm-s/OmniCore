@@ -13,6 +13,20 @@ public sealed class TuiAttachmentReference
     internal TuiAttachmentReference(ArtifactRef artifact) => Artifact = artifact;
 }
 
+/// <summary>Safe display metadata for a generated image; bytes remain behind authorized Host reads.</summary>
+public sealed class TuiGeneratedImage
+{
+    internal ArtifactRef Artifact { get; }
+    public string Hash => Artifact.Hash.Value;
+    public string MediaType => Artifact.MediaType;
+    public long Size => Artifact.Size;
+    public int Width { get; }
+    public int Height { get; }
+
+    internal TuiGeneratedImage(AssistantImageOutput output)
+    { Artifact = output.Artifact; Width = output.Width; Height = output.Height; }
+}
+
 /// <summary>Production turns behind the Host boundary; the TUI never composes providers or credentials.</summary>
 public interface ITuiTurnHost
 {
@@ -37,6 +51,9 @@ public interface ITuiTurnHost
     Task<int> ResumeQuotaAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         System.Threading.Tasks.Task.FromResult(1);
     bool SetNextTurnReasoningBoost(string kind, int? budgetTokens) => false;
+    IReadOnlyList<TuiGeneratedImage> ListGeneratedImages() => [];
+    string SaveGeneratedImage(int index, string destination) => throw new NotSupportedException("Generated image saving is not supported by this turn host.");
+    string OpenGeneratedImage(int index) => throw new NotSupportedException("Opening generated images is not supported by this turn host.");
 }
 
 public sealed class TuiTurnHost : ITuiTurnHost
@@ -45,6 +62,9 @@ public sealed class TuiTurnHost : ITuiTurnHost
     public UsageSnapshot? CurrentUsage() => _runtime.CurrentUsage();
     public TuiAttachmentReference ImportAttachment(byte[] bytes, string fileName) => new(_runtime.ImportTuiAttachment(bytes, fileName));
     public TuiAttachmentReference ImportAttachmentFromPath(string path) => new(_runtime.ImportTuiAttachmentFromPath(path));
+    public IReadOnlyList<TuiGeneratedImage> ListGeneratedImages() => _runtime.ListTuiGeneratedImages();
+    public string SaveGeneratedImage(int index, string destination) => _runtime.SaveTuiGeneratedImage(index, destination);
+    public string OpenGeneratedImage(int index) => _runtime.OpenTuiGeneratedImage(index);
     private readonly object _boostGate = new();
     private sealed record PendingTurnBoost(Guid Id, ReasoningRequest Request);
     private PendingTurnBoost? _nextTurnReasoningBoost;

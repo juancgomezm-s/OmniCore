@@ -3109,6 +3109,37 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         return null;
     }
 
+    internal (byte[] Bytes, long Size)? ReadAuthorizedBinaryArtifactChunk(string sessionId, string hash,
+        long offset, int length)
+    {
+        var activeSession = _lastSessionId;
+        if (activeSession?.ToString() != sessionId || _artifacts is not IBinaryArtifactStore binary
+            || length is < 1 or > 512 * 1024 || offset < 0 || !IsCanonicalSha256(hash)) return null;
+        var authorization = new SessionArtifactReadAuthorization(_store, () => _lastSessionId, _artifacts);
+        if (!authorization.IsReferenced(hash)) return null;
+        // FileArtifactStore deliberately requires an expected raw byte size for binary reads.
+        // Obtain it from the canonical session event reference; never trust a size supplied by
+        // the wire caller or reinterpret image bytes as UTF-8.
+        var expectedSize = _store.ReadFrom(activeSession!, 1)
+            .SelectMany(evt => evt.ArtifactRefs)
+            .FirstOrDefault(reference => reference.Hash.Algorithm == "sha256"
+                && string.Equals(reference.Hash.Value, hash, StringComparison.Ordinal))?.Size;
+        if (expectedSize is not { } size || size is < 1 or > 32 * 1024 * 1024) return null;
+        var bytes = binary.GetBytes(ContentHash.Sha256(hash), size);
+        if (bytes is null || offset > bytes.LongLength || offset + length > bytes.LongLength) return null;
+        return (bytes.AsSpan(checked((int)offset), length).ToArray(), bytes.LongLength);
+    }
+
+    internal IReadOnlyList<AssistantImageOutput> CurrentGeneratedImages()
+    {
+        if (_lastSessionId is not { } session) return [];
+        return _store.ReadFrom(session, 1).Select(_codecs.Decode).OfType<AssistantImagesRecorded>()
+            .SelectMany(record => record.Images).ToArray();
+    }
+
+    private static bool IsCanonicalSha256(string hash) => hash.Length == 64
+        && hash.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+
     internal static ProviderQuotaSnapshot OpenRouterQuota(string providerId, OpenRouterCreditSnapshot snapshot)
     {
         var availability = snapshot.Measurements.Any(item => item.Amount.Availability == MetricAvailability.Stale)

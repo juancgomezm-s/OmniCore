@@ -573,6 +573,8 @@ public sealed class OmniHost
         ArgumentNullException.ThrowIfNull(descriptor);
         return descriptor.Family switch
         {
+            ProviderFamily.OpenAiChatCompatible when descriptor.Profile == OpenRouterImageGenerationProvider.ProfileName
+                => ConnectOpenRouterImageGeneration(descriptor, baseUrl, secretRef, apiKey),
             ProviderFamily.OpenAiChatCompatible => ConnectOpenAiChatCompatible(descriptor, baseUrl, secretRef, apiKey, circuits, chatCompletionsRequestTimeout),
             ProviderFamily.AnthropicMessages => ConnectAnthropicMessages(descriptor, baseUrl, secretRef, apiKey, circuits, claudeOAuth, oauthIdentity, anthropicHttpFactory),
             ProviderFamily.OpenAIResponses => ConnectOpenAIResponses(descriptor, baseUrl, secretRef, apiKey, subscription, circuits),
@@ -658,6 +660,21 @@ public sealed class OmniHost
         // works for the first completion only, then every follow-up Turn fails as disposed.
         return new OpenAiChatCompatibleProvider(configured, secrets, CreateClient,
             new OpenAiProviderOptions { CircuitCatalog = circuits });
+    }
+
+    private static OpenRouterImageGenerationProvider ConnectOpenRouterImageGeneration(ProviderDescriptor descriptor,
+        string baseUrl, string secretRef, string apiKey)
+    {
+        if (descriptor.Auth.Kind != AuthKind.ApiKey || string.IsNullOrWhiteSpace(secretRef))
+            throw new ModelProviderException("AuthenticationRequired", "The OpenRouter images profile requires an API key reference.");
+        var configured = new ProviderDescriptor(descriptor.Id, descriptor.Family, baseUrl, descriptor.Auth,
+            descriptor.SupportsJsonSchemaPerRequest, descriptor.SupportsGrammarPerRequest,
+            descriptor.SupportsNativeToolCalls)
+        { TrustedCertificatePath = descriptor.TrustedCertificatePath, Profile = descriptor.Profile, BillingMode = descriptor.BillingMode };
+        var secrets = new SimpleSecretProvider("OMNI_").With(secretRef, apiKey);
+        HttpClient CreateClient() => new(CreateTlsHandler(baseUrl, descriptor.TrustedCertificatePath))
+        { Timeout = TimeSpan.FromMinutes(10) };
+        return new OpenRouterImageGenerationProvider(configured, secrets, CreateClient);
     }
 
     // An explicit per-connection override lets slow local-prefill acceptance keep the

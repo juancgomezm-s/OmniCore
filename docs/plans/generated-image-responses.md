@@ -1,9 +1,11 @@
 # M9-F2: imágenes generadas en las respuestas
 
-Estado: **requisito autorizado, pendiente de construcción** (2026-10-15).
-Complementa M9-F (entrada de adjuntos); no acredita su aceptación visual pendiente
-ni reanuda su construcción detenida. M9-G (skills, instrucciones y memorias) sigue
-siendo independiente. M8 conserva OR5 pendiente.
+Estado: **implementado en el worktree M9-F2; pendiente de revisión e integración** (2026-10-15).
+Complementa M9-F (entrada de adjuntos). La integración con proveedor HTTP fixture
+se verificó hasta Electron, CAS/journal y reapertura, pero la aceptación de generación
+live sigue pendiente porque no hay una ruta compatible configurada y verificada.
+M9-G (skills, instrucciones y memorias) sigue siendo independiente y no iniciado.
+M8 conserva OR5 pendiente.
 
 ## Base comprobada y objetivo
 
@@ -81,3 +83,44 @@ no generación real. La aceptación final exige una generación real autorizada 
 modelo/ruta que declare salida de imagen y confirma recepción y reapertura de
 esos mismos bytes. No usar proveedores pagados ni cuentas nuevas por actualizar
 el plan. Audio/vídeo siguen fuera del alcance acordado.
+
+## Resultado de implementación M9-F2 (2026-10-15)
+
+Core admite respuestas nativas OpenRouter `/images` por una ruta de imagen explícita
+e independiente, y OpenAI Responses sólo cuando el provider/dialecto declara la
+capacidad efectiva. La UI de preferencias permite derivar una ruta `/images` de una
+conexión OpenRouter existente, conservando referencia de credencial y CA de origen;
+no duplica ni toma posesión del secreto. La cota de coste es configurable y se
+interpreta con cultura invariante. Coste/uso reportado por el proveedor se conserva
+con su procedencia; cuando falta, sigue Unknown. El coste estimado no se presenta
+como gasto observado. Una recuperación que sólo termina de publicar una imagen ya
+durable tras un crash no vuelve a invocar al proveedor aunque el coste quede Unknown;
+la cota/consentimiento sigue gobernando llamadas nuevas.
+
+La imagen recibida se valida por MIME real, firma y decodificación completa PNG/JPEG,
+se guarda en CAS y se registra con identidad de resultado y ModelStep. Los bytes y
+la procedencia sobreviven replay, GC y recuperación de ambas ventanas de publicación.
+OpenRouter no envía herramientas incompatibles al endpoint `/images`; texto histórico
+se proyecta según contrato y las imágenes de salida no se reenvían automáticamente
+como contexto. La TUI puede listar/abrir/guardar el resultado desde el facade/DTO;
+OmniCoder muestra vista ampliada y guarda mediante IPC main que relee bytes canónicos
+del Host después de validar scope, en vez de aceptar bytes o rutas del renderer.
+
+Validación focal Windows: `dotnet build OmniCore.slnx --no-restore -v:q`;
+38 pruebas Core relacionadas con provider, publicación/recuperación, codecs,
+configuración y transporte; arquitectura 62/62. OmniCoder: build de workspaces con
+Node 24.19.0, serialización IPC binaria focal 2/2, catálogo IPC 136/136/136 y E2E
+Electron→Host→fixture HTTP `POST /api/v1/images`. El E2E muestra 512×512, exporta
+exactamente 7103 bytes con SHA-256
+`a7d00e900af8750f3da912451740f779f64884dc8ed9804d3c25a47f5b894362`, cierra el
+proveedor, reinicia Host y restaura los mismos bytes sin una segunda solicitud.
+Reporte y capturas: `%TEMP%\omnicoder-m9f2-image-evidence-NgMZ0A\report.json`,
+`image-visible.png` y `image-reopened.png`. Es aceptación del transporte y persistencia
+con fixture, no aceptación live de un generador de imágenes.
+
+Límites: salida admitida PNG/JPEG; WebP y otros formatos se rechazan explícitamente.
+No hay ruta live de generación de imagen configurada/verificada, por lo que no se
+afirma disponibilidad de `image_generation` en Codex/Responses ni se usa ChatGPT
+built-in como API de Core. Generación pagada no se acepta por la E2E Local; exige
+ruta, consentimiento y budget configurados. La aceptación visual live y la
+multi-OS/cuatro idiomas quedan pendientes. M9 y M8 OR5 continúan abiertos.

@@ -10,6 +10,7 @@ public static class StdioProtocol
     public const string CommandResultOperation = "command.result";
     public const string ReplayPageOperation = "events.replay.page";
     public const string ConversationResultOperation = "conversation.result";
+    public const string ArtifactReadOperation = "artifact.read";
 
     public static readonly string[] SupportedCapabilities =
     [
@@ -28,6 +29,7 @@ public static class StdioProtocol
         "events.replay",
         "events.replay.page",
         "conversation.result.lookup",
+        "artifact.read.chunk",
     ];
 
     /// <summary>Capabilities available only to a stdio connection with a private user-action bootstrap.</summary>

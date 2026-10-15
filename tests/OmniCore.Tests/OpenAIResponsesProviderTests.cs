@@ -12,6 +12,54 @@ using OmniCore.Models;
 public sealed class OpenAIResponsesProviderTests
 {
     [Fact]
+    public async System.Threading.Tasks.Task Explicit_cost_bounded_image_output_is_sent_and_completed_with_original_png_bytes()
+    {
+        var png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=";
+        var stream = """
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"image_generation_call","id":"img_1"}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"image_generation_call","id":"img_1","status":"completed","result":"PNGDATA"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"status":"completed","model":"gpt-image","usage":{"input_tokens":2,"output_tokens":1}}}
+
+""".Replace("PNGDATA", png, StringComparison.Ordinal);
+        var handler = new QueueHandler(_ => Sse(stream));
+        var model = new ModelSelection(new ModelIdValue("gpt-image"), 4096, ToolMode.Direct, null,
+            outputModalities: ["text", "image"], imageGenerationMaxCostUsd: 0.08m);
+        var request = new ModelRequest(model, [new ModelMessage(MessageRole.User, [new TextBlock("draw a red circle")])],
+            null, [], ToolChoice.Auto(), null, null, null, null);
+
+        var events = await Collect(CreateProvider(handler).StreamAsync(request, TestContext.Current.CancellationToken));
+
+        using var body = JsonDocument.Parse(handler.Requests.Single().Body);
+        Assert.Equal("image_generation", body.RootElement.GetProperty("tools")[0].GetProperty("type").GetString());
+        var response = Assert.IsType<ResponseCompleted>(events[^1]).Response;
+        var image = Assert.IsType<ImageBlock>(Assert.Single(response.Content));
+        Assert.Equal("image/png", image.MediaType);
+        Assert.Equal(Convert.FromBase64String(png), image.Bytes.ToArray());
+        Assert.Equal(0.08m, response.AdditionalCostUpperBoundUsd);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Image_generation_is_not_enabled_for_codex_profile_or_without_explicit_cost_bound()
+    {
+        var model = new ModelSelection(new ModelIdValue("gpt-image"), 4096, ToolMode.Direct, null,
+            outputModalities: ["text", "image"], imageGenerationMaxCostUsd: 0.08m);
+        var request = new ModelRequest(model, [new ModelMessage(MessageRole.User, [new TextBlock("draw")])],
+            null, [], ToolChoice.Auto(), null, null, null, null);
+        Assert.Throws<NotSupportedException>(() => OpenAIResponsesProvider.BuildBody(request,
+            new OpenAIResponsesOptions { Profile = ResponsesProfile.Codex }));
+
+        var unbounded = new ModelSelection(new ModelIdValue("gpt-image"), 4096, ToolMode.Direct, null,
+            outputModalities: ["text", "image"]);
+        var unboundedRequest = new ModelRequest(unbounded, request.Messages, null, [], ToolChoice.Auto(), null, null, null, null);
+        Assert.Throws<NotSupportedException>(() => OpenAIResponsesProvider.BuildBody(unboundedRequest, new OpenAIResponsesOptions()));
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Host_native_limit_reaches_the_http_request()
     {
         var descriptor = Descriptor("https://api.example.test/v1", AuthConfig.None());

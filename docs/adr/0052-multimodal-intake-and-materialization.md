@@ -67,3 +67,22 @@ CAS, nunca vuelve a abrir el original.
   aceptación de idioma/proveedor. OR5 autenticado de M8 permanece pendiente por separado.
 
 Ver contrato [stdio 1.0](../protocol/stdio/1.0/README.md) y [acta M9-F](../validation/m9-block-f-20261015.md).
+
+## Nota M9-F2 — salida de imágenes (2026-10-15)
+
+M9-F2 añade la proyección de salida nativa, sin alterar la semántica de entrada:
+OpenRouter usa su endpoint dedicado `/images` mediante una ruta de imágenes
+explícita derivada desde Preferencias, y no comparte herramientas o parámetros del
+chat incompatible. Responses sólo se habilita ante capacidad efectiva declarada;
+la ruta Codex no se considera generadora por inferencia. Recepción, validación
+completa PNG/JPEG, CAS, evento, atribución a ModelStep, GC, recuperación y lectura
+autorizada del cliente quedan cableados. El IPC de Guardar transmite la referencia,
+no bytes/path autoritativos; main relee desde Host con scope revalidado.
+
+La E2E Electron→Host→HTTP fixture `/api/v1/images` presenta y exporta el PNG de
+512×512, verifica hash idéntico y reabre desde el journal con proveedor apagado y
+sin repetir petición. No es aceptación de un modelo generador live. No hay ruta live
+configurada/verificada; consentimiento/coste desconocido permanecen sujetos a
+política y budget. Sólo se admiten PNG/JPEG decodificados; WebP y otros formatos se
+rechazan. Evidencia y validación exacta: [acta M9-F2](../validation/m9-block-f2-20261015.md).
+La decisión y trabajo no cierran M9, la entrada de M9-F ni M8 OR5.

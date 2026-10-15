@@ -626,6 +626,58 @@ public sealed class JournalVerifier
                 hashAlgorithm: artifactRef.Hash.Algorithm, hashValue: artifactRef.Hash.Value, field: field,
                 expectedSize: artifactRef.Size, cancellationToken: cancellationToken);
         }
+
+        // ModelStepCompleted response envelopes may contain immutable binary refs inside
+        // visibleContent. Validate those nested roots as well as the enclosing usage artifact.
+        if (payload is ModelStepCompleted { ResponseArtifact: { } responseArtifact })
+        {
+            var responseProbe = _artifacts.Probe(responseArtifact.Hash);
+            if (responseProbe.Status == BlobStatus.Ok && responseProbe.Content is { } responseJson)
+            {
+                try
+                {
+                    using var response = System.Text.Json.JsonDocument.Parse(responseJson);
+                    if (response.RootElement.TryGetProperty("visibleContent", out var visible)
+                        && visible.TryGetProperty("blocks", out var blocks) && blocks.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        var imageIndex = 0;
+                        foreach (var block in blocks.EnumerateArray())
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            if (!block.TryGetProperty("kind", out var kind)
+                                || kind.GetString() != "image") continue;
+                            var hashText = block.GetProperty("hash").GetString();
+                            var split = hashText?.Split(':', 2);
+                            if (split is not { Length: 2 } || !IsSha256Hex64(split[0], split[1]))
+                            {
+                                result.Add(scan, row, JournalIssueCode.ArtifactHashInvalid,
+                                    "model_step.completed.visibleContent.blocks[" + imageIndex + "].hash",
+                                    "hash anidado de imagen malformado");
+                                imageIndex++;
+                                continue;
+                            }
+                            var size = block.GetProperty("size").GetInt64();
+                            VerifyBlobRef(scan, row, result, probes, artifactId: responseArtifact.Id.ToString(),
+                                hashAlgorithm: split![0], hashValue: split[1],
+                                field: "model_step.completed.visibleContent.blocks[" + imageIndex + "]",
+                                expectedSize: size, cancellationToken: cancellationToken);
+                            imageIndex++;
+                        }
+                    }
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    // Older response artifacts may be plain text. Nested immutable refs are
+                    // optional; malformed JSON cannot contain a traversable visibleContent root.
+                }
+                catch (Exception exception) when (exception is InvalidOperationException
+                    or KeyNotFoundException or FormatException or OverflowException)
+                {
+                    result.Add(scan, row, JournalIssueCode.ArtifactHashInvalid,
+                        "model_step.completed.visibleContent.blocks", "contenido visible de imagen malformado");
+                }
+            }
+        }
     }
 
     /// <summary>Sondea el blob una vez por hash (cache) y traduce el estado a un problema preciso.</summary>
@@ -709,6 +761,16 @@ public sealed class JournalVerifier
         if (payload is AssistantMessageRecorded message && message.ContentRef is not null)
         {
             refs.Add((message.ContentRef, "contentRef"));
+        }
+        if (payload is AssistantImagesRecorded images)
+        {
+            for (var i = 0; i < images.Images.Count; i++)
+                refs.Add((images.Images[i].Artifact, $"images[{i}].artifact"));
+            if (images.OrderedParts is not null)
+            {
+                for (var i = 0; i < images.OrderedParts.Count; i++)
+                    refs.Add((images.OrderedParts[i].Artifact, $"orderedParts[{i}].artifact"));
+            }
         }
 
         if (payload is ModelCompleted model && model.ResponseArtifact is not null)

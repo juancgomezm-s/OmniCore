@@ -320,6 +320,20 @@ public static class StdioProtocolHost
                     page = store.ReadPage(session, from, pageSize, page.HighWater);
                 }
             }
+            case StdioProtocol.ArtifactReadOperation:
+            {
+                if (client is not OmniServer imageServer
+                    || !root.TryGetProperty("sessionId", out var sessionElement) || sessionElement.ValueKind != JsonValueKind.String
+                    || !root.TryGetProperty("hash", out var hashElement) || hashElement.ValueKind != JsonValueKind.String
+                    || !root.TryGetProperty("offset", out var offsetElement) || !offsetElement.TryGetInt64(out var offset)
+                    || !root.TryGetProperty("length", out var lengthElement) || !lengthElement.TryGetInt32(out var length))
+                    throw new InvalidDataException();
+                var chunk = imageServer.ReadAuthorizedBinaryArtifactChunk(sessionElement.GetString()!, hashElement.GetString()!, offset, length);
+                if (chunk is null) throw new NotSupportedException();
+                return "{\"offset\":" + offset.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + ",\"size\":" + chunk.Value.Size.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + ",\"data\":" + Quote(Convert.ToBase64String(chunk.Value.Bytes)) + "}";
+            }
             default: throw new InvalidDataException();
         }
     }

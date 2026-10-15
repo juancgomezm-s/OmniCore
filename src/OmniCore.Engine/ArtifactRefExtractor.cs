@@ -105,6 +105,11 @@ internal static class ArtifactRefExtractor
             case AssistantMessageRecorded a when a.ContentRef is not null:
                 refs.Add(a.ContentRef!);
                 break;
+            case AssistantImagesRecorded images:
+                foreach (var image in images.Images) refs.Add(image.Artifact);
+                if (images.OrderedParts is not null)
+                    foreach (var part in images.OrderedParts) refs.Add(part.Artifact);
+                break;
 
             case InteractionRequested i when i.QuestionnaireSchemaRef is not null:
                 refs.Add(i.QuestionnaireSchemaRef!);

@@ -587,6 +587,26 @@ public sealed class StdioTransportTests
                     .Select(codecs.Decode).OfType<OmniCore.Domain.UserInputReceived>().Single();
                 Assert.Equal("fixture.png", Assert.Single(liveInput.Attachments!).FileName);
             }
+
+            // Read the admitted binary back through the real stdio artifact.read route.
+            // The size comes from its canonical journal reference, never from the reader.
+            var validRead = RawExchange(host, WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"operation\":\"artifact.read\",\"sessionId\":" + JsonSerializer.Serialize(scope.SessionId)
+                + ",\"hash\":" + JsonSerializer.Serialize(imageHash) + ",\"offset\":0,\"length\":" + image.Length + "}"));
+            Assert.Equal(OmniCore.Protocol.MessageTypes.Response, validRead.MessageType);
+            using (var readPayload = JsonDocument.Parse(validRead.PayloadJson))
+            {
+                Assert.Equal(image.Length, readPayload.RootElement.GetProperty("size").GetInt32());
+                Assert.Equal(image, Convert.FromBase64String(readPayload.RootElement.GetProperty("data").GetString()!));
+            }
+            var foreignHashRead = RawExchange(host, WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"operation\":\"artifact.read\",\"sessionId\":" + JsonSerializer.Serialize(scope.SessionId)
+                + ",\"hash\":\"" + new string('0', 64) + "\",\"offset\":0,\"length\":1}"));
+            Assert.Equal(OmniCore.Protocol.MessageTypes.Error, foreignHashRead.MessageType);
+            var foreignSessionRead = RawExchange(host, WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"operation\":\"artifact.read\",\"sessionId\":\"00000000-0000-7000-8000-000000000099\",\"hash\":"
+                + JsonSerializer.Serialize(imageHash) + ",\"offset\":0,\"length\":1}"));
+            Assert.Equal(OmniCore.Protocol.MessageTypes.Error, foreignSessionRead.MessageType);
             Assert.True(provider.RequestBody.Contains("input_image", StringComparison.Ordinal), provider.RequestBody);
             var requestHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
             var running = ConversationResult(host, command.MessageId, requestHash);

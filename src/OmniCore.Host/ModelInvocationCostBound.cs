@@ -38,9 +38,13 @@ internal static class ModelInvocationCostBound
         {
             // ContextBudget bounds materialization policy, not necessarily native tokenization.
             // Reserve the whole declared model ceiling rather than pretend an estimate is exact.
-            return checked((modelContextCapacity.Value / 1_000_000m * pricing.InputPricePerMillionUsd!.Value
+            var tokenUpperBound = (modelContextCapacity.Value / 1_000_000m * pricing.InputPricePerMillionUsd!.Value
                 + selection.MaxOutputTokens.Value / 1_000_000m * pricing.OutputPricePerMillionUsd!.Value)
-                * maximumGenerationRequestAttempts.Value);
+                * maximumGenerationRequestAttempts.Value;
+            var imageUpperBound = selection.OutputModalities.Contains("image", StringComparer.Ordinal)
+                ? selection.ImageGenerationMaxCostUsd : 0m;
+            if (selection.OutputModalities.Contains("image", StringComparer.Ordinal) && imageUpperBound is null) return null;
+            return checked(tokenUpperBound + imageUpperBound!.Value * maximumGenerationRequestAttempts.Value);
         }
         catch (OverflowException) { return null; }
     }

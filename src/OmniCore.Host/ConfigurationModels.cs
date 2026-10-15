@@ -112,6 +112,8 @@ public sealed class ModelFileYaml
     public double? ParametersBillions { get; set; }
     public List<string>? Aliases { get; set; }
     public List<string>? InputModalities { get; set; }
+    public List<string>? OutputModalities { get; set; }
+    public decimal? ImageGenerationMaxCostUsd { get; set; }
     public decimal? InputPricePerMillionUsd { get; set; }
     public decimal? OutputPricePerMillionUsd { get; set; }
 }

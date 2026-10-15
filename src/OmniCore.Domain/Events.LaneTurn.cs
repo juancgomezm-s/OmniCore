@@ -97,10 +97,11 @@ public record ModelStepStarted(TurnId TurnId, int StepIndex, string ModelId, lon
 /// <summary>Uso confirmado de una invocación, durable aunque el Turn luego quede suspendido.</summary>
 public record ModelStepCompleted(TurnId TurnId, int StepIndex, TokenUsage Usage, StopReason StopReason,
     ArtifactRef? ResponseArtifact, string Day, decimal? CostUsd, TokenUsageFields? ReportedUsageFields = null,
-    GenerationRequestAttemptEvidence? GenerationAttempts = null) : DomainEventPayload
+    GenerationRequestAttemptEvidence? GenerationAttempts = null, bool CostIncomplete = false,
+    decimal? ReportedProviderCostUsd = null) : DomainEventPayload
 {
     public EventType Type() => EventType.Of("model_step.completed");
-    public int SchemaVersion() => 3;
+    public int SchemaVersion() => 5;
 }
 
 /// <summary>A durable start was recorded, but the provider invocation was never entered.

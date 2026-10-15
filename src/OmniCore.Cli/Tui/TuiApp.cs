@@ -501,7 +501,7 @@ public sealed partial class TuiApp
         _disabledCommandReasons = ReadDisabledCommandReasons(commandCatalogJson);
         var names = ReadStringArray(commandCatalogJson, "commands")
             .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode", "reasoning",
-                "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente", "agents", "delegate", "agent", "join", "fanout", "animation" })
+                "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente", "agents", "delegate", "agent", "join", "fanout", "animation", "images" })
             .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name));
         var suggestions = ComposerAutocomplete.Complete(draft,
         new UserCommandAliases((_policyPreferencesOverride ?? PolicyPreferencesHost.Create(Environment.CurrentDirectory))
@@ -680,6 +680,59 @@ public sealed partial class TuiApp
             return;
         }
         if (input.Length == 0) return;
+        if (input == "/images")
+        {
+            if (_turnHost is null) ShowMessage(_localization.Resolve("shell.images.unavailable"));
+            else
+            {
+                var images = _turnHost.ListGeneratedImages();
+                ShowMessage(images.Count == 0 ? _localization.Resolve("shell.images.empty")
+                    : string.Join(Environment.NewLine, images.Select((image, imageIndex) => _localization.Resolve("shell.images.item",
+                        new Dictionary<string, string> { ["index"] = (imageIndex + 1).ToString(), ["type"] = image.MediaType,
+                            ["size"] = image.Size.ToString(), ["dimensions"] = $"{image.Width}×{image.Height}", ["hash"] = image.Hash[..12] }))));
+            }
+            _composer.Text = ""; return;
+        }
+        if (input.StartsWith("/images save ", StringComparison.Ordinal))
+        {
+            if (_turnHost is null) ShowMessage(_localization.Resolve("shell.images.unavailable"));
+            else
+            {
+                var arguments = input[13..].Trim();
+                var separator = arguments.IndexOf(' ');
+                if (separator <= 0 || !int.TryParse(arguments[..separator], out var imageIndex) || imageIndex < 1)
+                    ShowMessage(_localization.Resolve("shell.images.save_usage"));
+                else
+                {
+                    var destination = arguments[(separator + 1)..].Trim().Trim('"');
+                    try
+                    {
+                        var saved = _turnHost.SaveGeneratedImage(imageIndex, destination);
+                        ShowMessage(_localization.Resolve("shell.images.saved", new Dictionary<string, string> { ["path"] = saved }));
+                    }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+                    { ShowMessage(_localization.Resolve("shell.images.save_failed", new Dictionary<string, string> { ["reason"] = error.Message })); }
+                }
+            }
+            _composer.Text = ""; return;
+        }
+        if (input.StartsWith("/images open ", StringComparison.Ordinal))
+        {
+            if (_turnHost is null) ShowMessage(_localization.Resolve("shell.images.unavailable"));
+            else if (!int.TryParse(input[13..].Trim(), out var imageIndex) || imageIndex < 1)
+                ShowMessage(_localization.Resolve("shell.images.open_usage"));
+            else
+            {
+                try
+                {
+                    var opened = _turnHost.OpenGeneratedImage(imageIndex);
+                    ShowMessage(_localization.Resolve("shell.images.opened", new Dictionary<string, string> { ["path"] = opened }));
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or System.ComponentModel.Win32Exception)
+                { ShowMessage(_localization.Resolve("shell.images.open_failed", new Dictionary<string, string> { ["reason"] = error.Message })); }
+            }
+            _composer.Text = ""; return;
+        }
         if (_commandList?.SelectedItem is int index && index < _commandSuggestions.Length && input != HumanCommandAliases.NormalizeSlashHead(_commandSuggestions[index]))
         { CompleteCommand(); return; }
         HideCommandHelper();

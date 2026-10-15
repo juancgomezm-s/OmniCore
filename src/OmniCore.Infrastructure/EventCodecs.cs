@@ -34,6 +34,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.TurnSteeringApplied())
             .Plus(Typed.TurnSteeringDropped())
             .Plus(Typed.AssistantMessageRecorded())
+            .Plus(Typed.AssistantImagesRecorded())
             .Plus(Typed.RunValidationStarted())
             .Plus(Typed.RunValidationRejected())
             .Plus(Typed.PostEditValidationPending())
@@ -190,6 +191,8 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.started"), 3))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.completed"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.completed"), 2))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.completed"), 3))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.completed"), 4))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("meta_model.invocation_completed"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("meta_model.invocation_completed"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("meta_model.invocation_failed"), 1))
@@ -206,7 +209,8 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model.escalation_approved"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model.escalation_completed"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("hook.applied"), 1))
-            .WithUpcaster(new IdentityUpcaster(EventType.Of("hook.applied"), 2));
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("hook.applied"), 2))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("assistant_images.recorded"), 1));
 
     public IDomainEventCodec CodecFor(EventType type)
     {
@@ -404,6 +408,9 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(TurnSteeringApplied))]
 [JsonSerializable(typeof(TurnSteeringDropped))]
 [JsonSerializable(typeof(AssistantMessageRecorded))]
+[JsonSerializable(typeof(AssistantImagesRecorded))]
+[JsonSerializable(typeof(AssistantImageOutput))]
+[JsonSerializable(typeof(AssistantResponsePart))]
 [JsonSerializable(typeof(RunValidationStarted))]
 [JsonSerializable(typeof(RunValidationRejected))]
 [JsonSerializable(typeof(PostEditValidationPending))]
@@ -612,6 +619,9 @@ public sealed class Typed
 
     public static CodecPair AssistantMessageRecorded() =>
         Of(EventType.Of("assistant_message.recorded"), EventJsonContext.Default.AssistantMessageRecorded);
+
+    public static CodecPair AssistantImagesRecorded() =>
+        Of(EventType.Of("assistant_images.recorded"), EventJsonContext.Default.AssistantImagesRecorded, currentVersion: 2);
 
     public static CodecPair RunValidationStarted() =>
         Of(EventType.Of("run.validation_started"), EventJsonContext.Default.RunValidationStarted);
@@ -879,7 +889,7 @@ public sealed class Typed
         Of(EventType.Of("model_step.started"), EventJsonContext.Default.ModelStepStarted, currentVersion: 4);
 
     public static CodecPair ModelStepCompleted() =>
-        Of(EventType.Of("model_step.completed"), EventJsonContext.Default.ModelStepCompleted, currentVersion: 3);
+        Of(EventType.Of("model_step.completed"), EventJsonContext.Default.ModelStepCompleted, currentVersion: 5);
 
     public static CodecPair ModelStepNotDispatched() =>
         Of(EventType.Of("model_step.not_dispatched"), EventJsonContext.Default.ModelStepNotDispatched);

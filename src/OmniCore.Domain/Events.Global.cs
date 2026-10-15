@@ -72,6 +72,21 @@ public record AssistantMessageRecorded(RunId RunId, LaneId LaneId, TurnId TurnId
     public int SchemaVersion() => 1;
 }
 
+/// <summary>Ordered, durable image-only or mixed visual outputs of a completed assistant response.</summary>
+public sealed record AssistantImagesRecorded(RunId RunId, LaneId LaneId, TurnId TurnId,
+    IReadOnlyList<AssistantImageOutput> Images,
+    IReadOnlyList<AssistantResponsePart>? OrderedParts = null) : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("assistant_images.recorded");
+    public int SchemaVersion() => 2;
+}
+
+public sealed record AssistantImageOutput(ArtifactRef Artifact, int Width, int Height, int OutputIndex,
+    string ProviderId, string ModelId, int ModelStepIndex = 0);
+
+/// <summary>Exact ordering for mixed final text/image responses; referenced artifacts remain immutable.</summary>
+public sealed record AssistantResponsePart(string Kind, ArtifactRef Artifact, int OutputIndex);
+
 /// <summary>
 /// InteractionRequested: petición humana (ADR-0034 §3). Para <c>Kind == Question</c> (ADR-0045)
 /// el schema del cuestionario viaja como artifact content-addressed (<c>QuestionnaireSchemaRef</c>)

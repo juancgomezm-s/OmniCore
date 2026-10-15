@@ -126,7 +126,9 @@ public sealed record ModelResponse(
     StopReason StopReason,
     TokenUsage Usage,
     ProviderState? State,
-    ProviderMetadata Metadata, TokenUsageFields ReportedUsageFields = TokenUsageFields.All) { }
+    ProviderMetadata Metadata, TokenUsageFields ReportedUsageFields = TokenUsageFields.All,
+    decimal? AdditionalCostUpperBoundUsd = null,
+    decimal? ReportedProviderCostUsd = null) { }
 
 /// <summary>Mensaje hacia el modelo.</summary>
 public sealed record ModelMessage(MessageRole Role, IReadOnlyList<ContentBlock> Content) { }

@@ -38,12 +38,15 @@ public sealed class OpenRouterConnectionService
     {
         cancellationToken.ThrowIfCancellationRequested();
         var loaded = OmniHost.LoadUserConfiguration(_paths);
-        var found = loaded.Registry.Providers().Where(IsOpenRouterProvider).ToArray();
+        var allProviders = loaded.Registry.Providers();
+        var found = allProviders.Where(IsOpenRouterProvider).ToArray();
         var rows = new List<ProviderConnectionStatus>();
         foreach (var provider in found)
         {
-            var present = CredentialPresent(provider.Auth.SecretRef!, cancellationToken);
-            var metadata = ProviderConnectionMetadataStore.Read(_paths.DataDirectory, provider.Id, cancellationToken);
+            var owner = SharedImageRouteOwner(provider, allProviders);
+            var credentialOwner = owner ?? provider;
+            var present = CredentialPresent(credentialOwner.Auth.SecretRef!, cancellationToken);
+            var metadata = ProviderConnectionMetadataStore.Read(_paths.DataDirectory, credentialOwner.Id, cancellationToken);
             var state = !present ? ProviderConnectionState.NotConfigured : metadata.ValidationState switch
             {
                 "valid" => ProviderConnectionState.Connected,
@@ -52,14 +55,16 @@ public sealed class OpenRouterConnectionService
                 _ => ProviderConnectionState.Unknown,
             };
             rows.Add(new(provider.Id, ProviderConnectionMethod.ApiKey, state, provider.BillingMode,
-                metadata.MaskedKey, state switch
+                metadata.MaskedKey, owner is not null
+                    ? LocalizedText.Of("providers.notice.imageRouteSharesCredential", ("provider", owner.Id))
+                    : state switch
                 {
                     ProviderConnectionState.NotConfigured => LocalizedText.Of("providers.notice.missingKey", "ref", provider.Auth.SecretRef!),
                     ProviderConnectionState.Invalid => LocalizedText.Of("providers.notice.storedKeyRejected"),
                     ProviderConnectionState.Unreachable => LocalizedText.Of("providers.notice.storedKeyUnreachable"),
                     ProviderConnectionState.Unknown when present => LocalizedText.Of("providers.notice.storedKeyUnverified"),
                     _ => null,
-                }, true, present, present, present));
+                }, owner is null, owner is null && present, owner is null && present, owner is null && present));
         }
         if (found.Length == 0)
         {
@@ -81,6 +86,8 @@ public sealed class OpenRouterConnectionService
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (FindSharedImageRouteOwner(providerId, cancellationToken) is { } sharedOwner)
+            throw new ProviderConnectionException("sharedCredential", "Image route uses the existing credential from " + sharedOwner + ".");
         var key = (apiKey ?? string.Empty).Trim();
         if (key.Length < Secret.MinimumLength)
             throw new ProviderConnectionException("tooShort", "OpenRouter API key is too short.");
@@ -389,6 +396,8 @@ public sealed class OpenRouterConnectionService
     public void Disconnect(string providerId, CancellationToken cancellationToken)
     {
         var provider = Resolve(providerId, cancellationToken);
+        if (FindSharedImageRouteOwner(providerId, cancellationToken) is { } sharedOwner)
+            throw new ProviderConnectionException("sharedCredential", "Image route uses the existing credential from " + sharedOwner + ".");
         var metadata = ProviderConnectionMetadataStore.Read(_paths.DataDirectory, providerId, cancellationToken);
         _credentials.Delete(provider.Auth.SecretRef!, cancellationToken);
         ProviderConnectionMetadataStore.Clear(_paths.DataDirectory, providerId, CancellationToken.None);
@@ -402,6 +411,25 @@ public sealed class OpenRouterConnectionService
         if (provider is null || !IsOpenRouterProvider(provider))
             throw new ProviderConnectionException("unknownProvider", "Unknown OpenRouter provider.");
         return provider;
+    }
+
+    private string? FindSharedImageRouteOwner(string providerId, CancellationToken cancellationToken)
+    {
+        var providers = OmniHost.LoadUserConfiguration(_paths).Registry.Providers();
+        var provider = providers.FirstOrDefault(item => string.Equals(item.Id, providerId, StringComparison.Ordinal));
+        return provider is null ? null : SharedImageRouteOwner(provider, providers)?.Id;
+    }
+
+    private static ProviderDescriptor? SharedImageRouteOwner(ProviderDescriptor route,
+        IReadOnlyList<ProviderDescriptor> providers)
+    {
+        if (!string.Equals(route.Profile, OpenRouterImageGenerationProvider.ProfileName, StringComparison.Ordinal)
+            || string.IsNullOrWhiteSpace(route.Auth.SecretRef)) return null;
+        return providers.FirstOrDefault(provider => provider.Id != route.Id
+            && provider.Family == ProviderFamily.OpenAiChatCompatible
+            && provider.Auth.Kind == AuthKind.ApiKey
+            && string.Equals(provider.Auth.SecretRef, route.Auth.SecretRef, StringComparison.Ordinal)
+            && !string.Equals(provider.Profile, OpenRouterImageGenerationProvider.ProfileName, StringComparison.Ordinal));
     }
 
     internal static bool IsOpenRouterProvider(ProviderDescriptor provider) =>

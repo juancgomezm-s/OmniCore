@@ -14,6 +14,7 @@ using OmniCore.Tools;
 using OmniCore.Extensions;
 using OmniCore.Memory;
 using System.Globalization;
+using System.Diagnostics;
 using System.Text.Json;
 
 /// <summary>Fachada tipada del runtime usada por el CLI; oculta composición y tipos internos.</summary>
@@ -625,6 +626,56 @@ public sealed class OmniCliRuntime : IDisposable
 
     public ArtifactRef ImportTuiAttachment(byte[] bytes, string fileName) => Server().ImportUserAttachment(bytes, fileName);
 
+    internal IReadOnlyList<TuiGeneratedImage> ListTuiGeneratedImages() =>
+        Server().CurrentGeneratedImages().Select(image => new TuiGeneratedImage(image)).ToArray();
+
+    internal string SaveTuiGeneratedImage(int index, string destination)
+    {
+        if (index < 1) throw new ArgumentOutOfRangeException(nameof(index));
+        ArgumentException.ThrowIfNullOrWhiteSpace(destination);
+        var server = Server();
+        var session = server.LastSessionId() ?? throw new InvalidOperationException("No active session has generated images.");
+        var image = server.CurrentGeneratedImages().Skip(index - 1).FirstOrDefault()
+            ?? throw new InvalidOperationException("Generated image number does not exist in the current session.");
+        if (image.Artifact.Size is <= 0 or > GeneratedImageValidator.MaximumResponseBytes)
+            throw new InvalidDataException("Generated image size is outside the supported limit.");
+        var bytes = new byte[checked((int)image.Artifact.Size)];
+        for (var offset = 0; offset < bytes.Length; offset += 512 * 1024)
+        {
+            var length = Math.Min(512 * 1024, bytes.Length - offset);
+            var chunk = server.ReadAuthorizedBinaryArtifactChunk(session.ToString(), image.Artifact.Hash.Value, offset, length)
+                ?? throw new UnauthorizedAccessException("The image is no longer authorized in the active session.");
+            if (chunk.Size != bytes.Length || chunk.Bytes.Length != length)
+                throw new InvalidDataException("Generated image changed during authorized read.");
+            chunk.Bytes.CopyTo(bytes, offset);
+        }
+        var actual = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
+        if (!StringComparer.Ordinal.Equals(actual, image.Artifact.Hash.Value))
+            throw new InvalidDataException("Generated image hash does not match its journal reference.");
+        var path = Path.GetFullPath(destination);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using (var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            output.Write(bytes);
+        return path;
+    }
+
+    internal string OpenTuiGeneratedImage(int index)
+    {
+        var image = ListTuiGeneratedImages().Skip(index - 1).FirstOrDefault()
+            ?? throw new InvalidOperationException("Generated image number does not exist in the current session.");
+        var extension = image.MediaType switch
+        {
+            "image/png" => ".png",
+            "image/jpeg" => ".jpg",
+            _ => throw new InvalidDataException("Generated image format is not supported by the image opener."),
+        };
+        var path = Path.Combine(Path.GetTempPath(), "omnicore-generated-" + Guid.NewGuid().ToString("N") + extension);
+        _ = SaveTuiGeneratedImage(index, path);
+        _ = Process.Start(new ProcessStartInfo(path) { UseShellExecute = true })
+            ?? throw new InvalidOperationException("No image viewer is available; use /images save instead.");
+        return path;
+    }
+
     /// <summary>Fail-closed profile preflight before a trusted attachment command admits input/run events.</summary>
     internal string? ValidateConversationAttachmentsBeforeAdmission(IReadOnlyList<ArtifactRef> attachments)
     {
@@ -779,8 +830,9 @@ public sealed class OmniCliRuntime : IDisposable
                 .Select(item => ((TurnStarted)item.Payload).TurnId).ToHashSet();
             var completed = journal.Where(item => item.Payload is TurnCompleted)
                 .Select(item => ((TurnCompleted)item.Payload).TurnId).ToHashSet();
-            return started.Intersect(completed).Any(turnId => journal.Any(item => item.Payload is AssistantMessageRecorded assistant
-                && assistant.TurnId == turnId)) ? 0 : 1;
+            return started.Intersect(completed).Any(turnId => journal.Any(item =>
+                item.Payload is AssistantMessageRecorded assistant && assistant.TurnId == turnId
+                || item.Payload is AssistantImagesRecorded images && images.TurnId == turnId)) ? 0 : 1;
         }
         if (journal.Any(item => item.Payload is TurnInterrupted)) return 130;
         return exitCode == 130 ? 1 : exitCode;
@@ -2107,7 +2159,8 @@ public sealed class OmniCliRuntime : IDisposable
                 var requestedToolName = pendingForcedToolName;
                 pendingForcedToolName = null;
                 var selection = new ModelSelection(new ModelIdValue(model), usableContext, effectivePolicy.ToolPolicy.Mode,
-                    appliedReasoning, route.Id, route, selectedMaxOutputTokens, resolution, effectiveProfile.InputModalities);
+                    appliedReasoning, route.Id, route, selectedMaxOutputTokens, resolution, effectiveProfile.InputModalities,
+                    effectiveProfile.OutputModalities, effectiveProfile.ImageGenerationMaxCostUsd);
                 var preparedFingerprint = RuntimeFingerprintFactory.Prepare(runtimeModel, effectiveProfile, harness,
                     selection, harnessHash, contextPolicyHash, effectivePolicyFingerprint, tokenCounter.Id.Value,
                     provider, qualification, artifacts);

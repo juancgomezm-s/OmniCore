@@ -232,11 +232,16 @@ public sealed class ModelDefinition
     public ReasoningCapability ReasoningCapability { get; }
     /// <summary>Modalidades de entrada declaradas explícitamente para este modelo.</summary>
     public IReadOnlyList<string> InputModalities { get; }
+    /// <summary>Modalidades de salida declaradas explícitamente; omission remains text-only.</summary>
+    public IReadOnlyList<string> OutputModalities { get; }
+    /// <summary>Explicit per-request upper bound for native image output. Missing means disabled.</summary>
+    public decimal? ImageGenerationMaxCostUsd { get; }
 
     public ModelDefinition(string id, string providerId, long contextWindow, long recommendedUsableContext,
         long maxOutputTokens, double? parameterCountBillions = null, IEnumerable<string>? aliases = null,
         ReasoningCapability? reasoningCapability = null, bool outputLimitConfigured = true,
-        IEnumerable<string>? inputModalities = null)
+        IEnumerable<string>? inputModalities = null, IEnumerable<string>? outputModalities = null,
+        decimal? imageGenerationMaxCostUsd = null)
     {
         Id = id;
         ProviderId = providerId;
@@ -248,6 +253,9 @@ public sealed class ModelDefinition
         Aliases = (aliases ?? Array.Empty<string>()).ToArray();
         ReasoningCapability = reasoningCapability ?? OmniCore.Domain.ReasoningCapability.Unknown;
         InputModalities = (inputModalities ?? ["text"]).Distinct(StringComparer.Ordinal).ToArray();
+        OutputModalities = (outputModalities ?? ["text"]).Distinct(StringComparer.Ordinal).ToArray();
+        if (imageGenerationMaxCostUsd is <= 0m) throw new ArgumentOutOfRangeException(nameof(imageGenerationMaxCostUsd));
+        ImageGenerationMaxCostUsd = imageGenerationMaxCostUsd;
     }
 }
 

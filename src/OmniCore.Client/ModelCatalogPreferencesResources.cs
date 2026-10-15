@@ -24,7 +24,8 @@ public static class ModelCatalogPreferencesResources
                     "El modelo está referenciado por la configuración actual.", "El catálogo de configuración no está disponible.",
                     "No se pudo revisar el ámbito local. Eliminar está deshabilitado.", "Referencia: modelo predeterminado de User.",
                     "Referencia: modelo predeterminado de Project.", "Referencia: modelo predeterminado de Workspace.",
-                    "Referencia en una ruta de ejecución.", "En otras carpetas también podría haber referencias; no se modifican.", "Filtrar", "{index} de {total}", "inicio", "fin", "Ningún modelo coincide con el filtro.", "Modelo · Proveedor (familia) · Contexto", "Modalidades de entrada (text,image; las desconocidas quedan desactivadas)"),
+                    "Referencia en una ruta de ejecución.", "En otras carpetas también podría haber referencias; no se modifican.", "Filtrar", "{index} de {total}", "inicio", "fin", "Ningún modelo coincide con el filtro.", "Modelo · Proveedor (familia) · Contexto", "Modalidades de entrada (text,image; las desconocidas quedan desactivadas)", "Modalidades de salida (text,image; las desconocidas quedan desactivadas)", "Tope superior por solicitud para generación de imagen (USD)", "El tope de imagen debe ser un número positivo", "La salida de imagen requiere un tope superior explícito",
+                    "Crear ruta OpenRouter /images", "Ruta de imagen creada; la credencial sigue siendo de {provider}.", "Ruta derivada; autenticación administrada por {provider}", "Elige un proveedor OpenRouter conectado con referencia de credencial.", "Rutas OpenRouter de origen"),
                 ["en"] = Build(
                     "Model catalog", "Model catalog", "Register models already offered by a configured provider. No network or model execution is used.",
                     "Models", "Provider", "Family", "Context", "Usable context", "Max output (optional)", "Params (billions)",
@@ -40,7 +41,8 @@ public static class ModelCatalogPreferencesResources
                     "The model is referenced by current configuration.", "The configuration catalog is unavailable.",
                     "The local scope could not be checked. Deletion is disabled.", "Reference: User default model.",
                     "Reference: Project default model.", "Reference: Workspace default model.",
-                    "Reference in a routing list.", "Other folders may also reference this model; they are not changed.", "Filter", "{index} of {total}", "start", "end", "No model matches the filter.", "Model · Provider (family) · Context", "Input modalities (text,image; unknown values remain disabled)"),
+                    "Reference in a routing list.", "Other folders may also reference this model; they are not changed.", "Filter", "{index} of {total}", "start", "end", "No model matches the filter.", "Model · Provider (family) · Context", "Input modalities (text,image; unknown values remain disabled)", "Output modalities (text,image; unknown values remain disabled)", "Per-request upper bound for image generation (USD)", "Image upper bound must be a positive number", "Image output requires an explicit upper bound",
+                    "Create OpenRouter /images route", "Image route created; credential remains owned by {provider}.", "Derived route; authentication is managed by {provider}", "Choose a connected OpenRouter provider with a credential reference.", "OpenRouter source routes"),
                 ["fr"] = Build(
                     "Catalogue de modèles", "Catalogue de modèles", "Enregistre les modèles déjà proposés par un fournisseur configuré. Aucun accès réseau ni lancement de modèle.",
                     "Modèles", "Fournisseur", "Famille", "Contexte", "Contexte utilisable", "Sortie max. (option.)", "Param. (milliards)",
@@ -56,7 +58,8 @@ public static class ModelCatalogPreferencesResources
                     "Le modèle est référencé par la configuration actuelle.", "Catalogue de configuration indisponible.",
                     "Impossible de vérifier la portée locale. La suppression est désactivée.", "Référence : modèle par défaut User.",
                     "Référence : modèle par défaut Project.", "Référence : modèle par défaut Workspace.",
-                    "Référence dans une liste de routage.", "D’autres dossiers peuvent référencer ce modèle ; ils ne sont pas modifiés.", "Filtrer", "{index} sur {total}", "début", "fin", "Aucun modèle ne correspond au filtre.", "Modèle · Fournisseur (famille) · Contexte", "Modalités d’entrée (text,image ; les valeurs inconnues restent désactivées)"),
+                    "Référence dans une liste de routage.", "D’autres dossiers peuvent référencer ce modèle ; ils ne sont pas modifiés.", "Filtrer", "{index} sur {total}", "début", "fin", "Aucun modèle ne correspond au filtre.", "Modèle · Fournisseur (famille) · Contexte", "Modalités d’entrée (text,image ; les valeurs inconnues restent désactivées)", "Modalités de sortie (text,image ; les valeurs inconnues restent désactivées)", "Plafond par requête pour la génération d’image (USD)", "Le plafond doit être un nombre positif", "La sortie d’image exige un plafond explicite",
+                    "Créer une route OpenRouter /images", "Route image créée ; la référence d’authentification reste gérée par {provider}.", "Route dérivée ; l’authentification est gérée par {provider}", "Choisissez un fournisseur OpenRouter connecté avec une référence d’identifiant.", "Routes OpenRouter sources"),
                 ["it"] = Build(
                     "Catalogo modelli", "Catalogo modelli", "Registra modelli già offerti da un provider configurato. Nessuna rete o esecuzione del modello.",
                     "Modelli", "Provider", "Famiglia", "Contesto", "Contesto utilizzabile", "Output max. (opzionale)", "Param. (mld)",
@@ -72,7 +75,8 @@ public static class ModelCatalogPreferencesResources
                     "Il modello è referenziato dalla configurazione corrente.", "Catalogo di configurazione non disponibile.",
                     "Impossibile verificare l’ambito locale. L’eliminazione è disabilitata.", "Riferimento: modello predefinito User.",
                     "Riferimento: modello predefinito Project.", "Riferimento: modello predefinito Workspace.",
-                    "Riferimento in una lista di instradamento.", "Altre cartelle potrebbero riferire questo modello; non vengono modificate.", "Filtra", "{index} di {total}", "inizio", "fine", "Nessun modello corrisponde al filtro.", "Modello · Provider (famiglia) · Contesto", "Modalità di input (text,image; i valori sconosciuti restano disabilitati)")
+                    "Riferimento in una lista di instradamento.", "Altre cartelle potrebbero riferire questo modello; non vengono modificate.", "Filtra", "{index} di {total}", "inizio", "fine", "Nessun modello corrisponde al filtro.", "Modello · Provider (famiglia) · Contesto", "Modalità di input (text,image; i valori sconosciuti restano disabilitati)", "Modalità di output (text,image; i valori sconosciuti restano disabilitati)", "Limite massimo per richiesta di generazione immagini (USD)", "Il limite deve essere un numero positivo", "L’output immagine richiede un limite massimo esplicito",
+                    "Crea route OpenRouter /images", "Route immagini creata; il riferimento resta gestito da {provider}.", "Route derivata; autenticazione gestita da {provider}", "Scegli un provider OpenRouter connesso con riferimento credenziale.", "Route OpenRouter di origine")
             });
 
     private static IReadOnlyDictionary<string, string> Build(params string[] values)
@@ -83,7 +87,9 @@ public static class ModelCatalogPreferencesResources
             "saveFailed", "stale", "unknownProvider", "modelAlreadyExists", "modelNotFound", "invalidId", "invalidProvider",
             "invalidLimits", "invalidParameters", "invalidAliases", "ambiguousAlias", "referenced", "catalogUnavailable",
             "workspaceScopeUnavailable", "referenceUserDefault", "referenceProjectDefault", "referenceWorkspaceDefault",
-            "referenceRouting", "otherFoldersWarning", "filter", "position", "atStart", "atEnd", "noMatches", "columns", "inputModalities"];
+            "referenceRouting", "otherFoldersWarning", "filter", "position", "atStart", "atEnd", "noMatches", "columns", "inputModalities",
+            "outputModalities", "imageGenerationCost", "invalidImageCost", "imageCostRequired",
+            "createOpenRouterImageRoute", "imageRouteCreated", "derivedImageRoute", "imageRouteSourceUnsupported", "imageRouteSources"];
         if (values.Length != keys.Length) throw new InvalidOperationException("Model catalog resource shape mismatch.");
         return new ReadOnlyDictionary<string, string>(keys.Zip(values).ToDictionary(pair => pair.First, pair => pair.Second,
             StringComparer.Ordinal));

@@ -216,7 +216,16 @@ public sealed class ProtocolMapper
             ["reasoningBudgetTokens"] = e.ReasoningBudgetTokens?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "",
         },
         UserInputReceived e => InputFields(e),
-        AssistantMessageRecorded e => new() { ["text"] = _redaction.Redact(ArtifactText(e.ContentRef)) },
+        AssistantMessageRecorded e => new()
+        {
+            ["text"] = _redaction.Redact(ArtifactText(e.ContentRef)),
+            ["runId"] = e.RunId.ToString(), ["laneId"] = e.LaneId.ToString(), ["turnId"] = e.TurnId.ToString(),
+        },
+        AssistantImagesRecorded e => new()
+        {
+            ["images"] = ImageOutputsJson(e.Images),
+            ["parts"] = e.OrderedParts is null ? "[]" : ResponsePartsJson(e.OrderedParts),
+        },
         TurnStarted e => new() { ["turnId"] = e.TurnId.ToString(), ["laneId"] = e.LaneId.ToString() },
         TurnCompleted e => new() { ["turnId"] = e.TurnId.ToString() },
         TurnInterrupted e => new() { ["turnId"] = e.TurnId.ToString() },
@@ -306,6 +315,31 @@ public sealed class ProtocolMapper
         },
         _ => null,
     };
+
+    private static string ImageOutputsJson(IReadOnlyList<AssistantImageOutput> images) =>
+        "[" + string.Join(",", images.Select(image => "{"
+            + JsonObj.Field("artifactId", image.Artifact.Id.ToString()) + ","
+            + JsonObj.Field("hash", image.Artifact.Hash.Value) + ","
+            + JsonObj.Field("mediaType", image.Artifact.MediaType) + ","
+            + JsonObj.Field("kind", image.Artifact.Kind.ToString()) + ","
+            + JsonObj.Field("sensitivity", image.Artifact.Sensitivity.ToString()) + ","
+            + "\"size\":" + image.Artifact.Size.ToString(System.Globalization.CultureInfo.InvariantCulture) + ","
+            + "\"width\":" + image.Width.ToString(System.Globalization.CultureInfo.InvariantCulture) + ","
+            + "\"height\":" + image.Height.ToString(System.Globalization.CultureInfo.InvariantCulture) + ","
+            + "\"outputIndex\":" + image.OutputIndex.ToString(System.Globalization.CultureInfo.InvariantCulture) + ","
+            + "\"modelStepIndex\":" + image.ModelStepIndex.ToString(System.Globalization.CultureInfo.InvariantCulture) + ","
+            + JsonObj.Field("providerId", image.ProviderId) + "," + JsonObj.Field("modelId", image.ModelId) + "}")) + "]";
+
+    private string ResponsePartsJson(IReadOnlyList<AssistantResponsePart> parts) =>
+        "[" + string.Join(",", parts.OrderBy(part => part.OutputIndex).Select(part => "{"
+            + JsonObj.Field("kind", part.Kind) + ","
+            + JsonObj.Field("artifactId", part.Artifact.Id.ToString()) + ","
+            + JsonObj.Field("hash", part.Artifact.Hash.Value) + ","
+            + JsonObj.Field("mediaType", part.Artifact.MediaType) + ","
+            + (part.Kind == "text" && _artifacts?.GetText(part.Artifact.Hash) is { } text
+                ? JsonObj.Field("text", _redaction.Redact(text)) + "," : "")
+            + "\"size\":" + part.Artifact.Size.ToString(System.Globalization.CultureInfo.InvariantCulture) + ","
+            + "\"outputIndex\":" + part.OutputIndex.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}")) + "]";
 
     private static string Mode(RunMode mode) => mode.ToString().ToLowerInvariant();
 
