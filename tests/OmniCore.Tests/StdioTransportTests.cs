@@ -89,6 +89,15 @@ public sealed class StdioTransportTests
     }
 
     [Fact]
+    public async Task Crash_receipt_recovery_stress_requires_every_attempt_to_preserve_effects()
+    {
+        // This is a bounded crash stress test, not a retry: any failed iteration fails
+        // the test, and all twelve independent journals must preserve every assertion.
+        for (var attempt = 0; attempt < 12; attempt++)
+            await Unread_ack_reconnect_lookup_and_unknown_reservation_never_repeat_command_effects();
+    }
+
+    [Fact]
     public async Task Unread_ack_reconnect_lookup_and_unknown_reservation_never_repeat_command_effects()
     {
         var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-lost-ack-" + Guid.NewGuid().ToString("N"));
@@ -98,6 +107,18 @@ public sealed class StdioTransportTests
         var oldConfig = Environment.GetEnvironmentVariable("OMNICORE_CONFIG_DIR");
         var oldDirectory = Environment.CurrentDirectory;
         Process? firstHost = null;
+        SqliteEventStore OpenJournal(string journal, bool readOnly = false)
+        {
+            try { return new SqliteEventStore(journal, readOnly); }
+            catch (Microsoft.Data.Sqlite.SqliteException error)
+            {
+                var files = string.Join(", ", Directory.GetFiles(Path.GetDirectoryName(journal)!)
+                    .Select(path => Path.GetFileName(path) + "=" + new FileInfo(path).Length));
+                throw new InvalidOperationException($"Journal open failed: readOnly={readOnly}; "
+                    + $"SQLite={error.SqliteErrorCode}/{error.SqliteExtendedErrorCode}; "
+                    + $"hostExited={firstHost?.HasExited}; files={files}", error);
+            }
+        }
         try
         {
             Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", Path.Combine(root, "data"));
@@ -122,7 +143,7 @@ public sealed class StdioTransportTests
             {
                 if (File.Exists(journal))
                 {
-                    using var read = new SqliteEventStore(journal, readOnly: true);
+                    using var read = OpenJournal(journal, readOnly: true);
                     receipt = read.ReadCommandReceipt(command.MessageId);
                     if (receipt?.State == CommandReceiptState.Completed) break;
                 }
@@ -131,17 +152,20 @@ public sealed class StdioTransportTests
             Assert.NotNull(receipt);
             Assert.Equal(CommandReceiptState.Completed, receipt.State);
             Assert.False(firstHost.HasExited);
+            var session = OmniCore.Domain.SessionId.Parse(receipt.SessionId!);
+            long committedCount;
+            using (var read = OpenJournal(journal, readOnly: true))
+                committedCount = read.CountEvents(session);
             firstHost.Kill(entireProcessTree: true); // response was deliberately left unread by this client.
             await firstHost.WaitForExitAsync(TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
-            var session = OmniCore.Domain.SessionId.Parse(receipt.SessionId!);
-            long committedCount;
-            using (var read = new SqliteEventStore(journal, readOnly: true))
-                committedCount = read.CountEvents(session);
+            // The next writer performs WAL crash recovery. Compare its replay against
+            // the count observed before the crash, rather than requiring a read-only
+            // connection to recover an abruptly terminated Windows WAL.
             var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
             var unknownId = "00000000-0000-7000-8000-000000000099";
-            using (var reserveUnknown = new SqliteEventStore(journal))
+            using (var reserveUnknown = OpenJournal(journal))
                 Assert.Equal(CommandReceiptState.Reserved,
                     reserveUnknown.ReserveCommandReceipt(unknownId, hash, sessionId: receipt.SessionId).State);
 
@@ -156,7 +180,7 @@ public sealed class StdioTransportTests
             var unknownAck = reconnected.Send(unknown, TestContext.Current.CancellationToken);
             Assert.Equal("unknown", unknownAck.Status);
             Assert.Contains("command_result_unknown", unknownAck.Error, StringComparison.Ordinal);
-            using var after = new SqliteEventStore(journal, readOnly: true);
+            using var after = OpenJournal(journal, readOnly: true);
             Assert.Equal(committedCount, after.CountEvents(session));
             Assert.Equal(CommandReceiptState.Unknown, after.ReadCommandReceipt(unknownId)?.State);
         }
@@ -812,17 +836,15 @@ public sealed class StdioTransportTests
     [Fact]
     public async Task Handshake_timeout_and_cancellation_kill_the_owned_child_process()
     {
-        if (!OperatingSystem.IsWindows())
-            Assert.Skip("La fixture adversaria de negociación requiere Windows PowerShell; no acredita Linux.");
         var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-stall-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
-        var script = Path.Combine(root, "stall.ps1");
         var pidFile = Path.Combine(root, "child.pid");
-        File.WriteAllText(script, "$PID | Set-Content -LiteralPath '" + pidFile + "'; Start-Sleep -Seconds 30");
+        var executable = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows()
+            ? "OmniCore.SandboxTestProcess.exe" : "OmniCore.SandboxTestProcess");
         try
         {
-            var timedOut = Assert.Throws<TimeoutException>(() => StdioOmniClient.Start("powershell.exe",
-                ["-NoProfile", "-NonInteractive", "-File", script], root, TimeSpan.FromSeconds(2),
+            var timedOut = Assert.Throws<TimeoutException>(() => StdioOmniClient.Start(executable,
+                ["stdio-stall", pidFile], root, TimeSpan.FromSeconds(2),
                 TestContext.Current.CancellationToken));
             Assert.Contains("negotiation", timedOut.Message, StringComparison.OrdinalIgnoreCase);
             Assert.True(File.Exists(pidFile));
@@ -833,7 +855,7 @@ public sealed class StdioTransportTests
             cancellation.CancelAfter(TimeSpan.FromSeconds(2));
 #pragma warning disable xUnit1051 // The linked token also carries the test cancellation token.
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Task.Run(() => StdioOmniClient.Start(
-                "powershell.exe", ["-NoProfile", "-NonInteractive", "-File", script], root,
+                executable, ["stdio-stall", pidFile], root,
                 TimeSpan.FromSeconds(5), cancellation.Token)));
 #pragma warning restore xUnit1051
             Assert.True(File.Exists(pidFile));
