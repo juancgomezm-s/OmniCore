@@ -148,7 +148,7 @@ public sealed class TuiPresentationTests
     #region TuiLayoutModel — width breakpoints
 
     [Fact]
-    public void Layout_Width120OrMore_StackedMode_SidebarWidthClamped32To40()
+    public void Layout_Width120OrMore_StackedMode_SidebarStopsGrowingAt40Columns()
     {
         var model120 = TuiLayoutModel.ForWidth(120);
         Assert.Equal(TuiLayoutMode.Stacked, model120.Mode);
@@ -175,25 +175,43 @@ public sealed class TuiPresentationTests
         Assert.Equal(26, model119.SidebarWidth);
     }
 
-    [Fact]
-    public void Layout_WidthBelow90_OverlayMode_SidebarWidthClamped20To44()
+    [Theory]
+    [InlineData(89, 29)]
+    [InlineData(80, 26)]
+    [InlineData(50, 16)]
+    [InlineData(30, 10)]
+    [InlineData(25, 8)]
+    [InlineData(23, 7)]
+    public void Layout_WidthBelow90_OverlayMode_UsesAtMostOneThird(int width, int expected)
     {
-        var model89 = TuiLayoutModel.ForWidth(89);
-        Assert.Equal(TuiLayoutMode.Overlay, model89.Mode);
-        Assert.True(model89.SidebarVisible);
-        Assert.Equal(44, model89.SidebarWidth); // 89-4 = 85, clamped to max 44
+        var model = TuiLayoutModel.ForWidth(width);
+        Assert.Equal(TuiLayoutMode.Overlay, model.Mode);
+        Assert.True(model.SidebarVisible);
+        Assert.Equal(expected, model.SidebarWidth);
+        Assert.True(model.SidebarWidth <= width / 3);
+    }
 
-        var model50 = TuiLayoutModel.ForWidth(50);
-        Assert.Equal(44, model50.SidebarWidth); // 50-4 = 46, clamped to max 44
-
-        var model30 = TuiLayoutModel.ForWidth(30);
-        Assert.Equal(26, model30.SidebarWidth); // 30-4 = 26, within 20-44
-
-        var model25 = TuiLayoutModel.ForWidth(25);
-        Assert.Equal(21, model25.SidebarWidth); // 25-4 = 21, within 20-44
-
-        var model23 = TuiLayoutModel.ForWidth(23);
-        Assert.Equal(20, model23.SidebarWidth); // 23-4 = 19, clamped to min 20
+    [Theory]
+    [InlineData("auto")]
+    [InlineData("stacked")]
+    [InlineData("tabbed")]
+    [InlineData("overlay")]
+    public void Sidebar_width_limit_cannot_be_bypassed_by_mode_or_custom_breakpoints(string mode)
+    {
+        foreach (var settings in new[]
+        {
+            new OmniCore.Protocol.SidebarPreferences(Mode: mode),
+            new OmniCore.Protocol.SidebarPreferences(Mode: mode, StackedMinWidth: 60, TabbedMinWidth: 30)
+        })
+        foreach (var width in Enumerable.Range(0, 1001).Append(-1).Append(int.MaxValue))
+        {
+            var shown = TuiLayoutModel.ForWidth(width, preferences: settings);
+            Assert.InRange(shown.SidebarWidth, 0, Math.Min(Math.Max(0, width) / 3, 40));
+            Assert.Equal(shown.SidebarWidth > 0, shown.SidebarVisible);
+            var hidden = TuiLayoutModel.ForWidth(width, sidebarRequested: false, preferences: settings);
+            Assert.False(hidden.SidebarVisible);
+            Assert.Equal(0, hidden.SidebarWidth);
+        }
     }
 
     [Fact]
