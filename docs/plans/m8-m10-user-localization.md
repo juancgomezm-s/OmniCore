@@ -198,15 +198,32 @@ recorridos de aceptación en cuatro idiomas y verificación Linux. Las respuesta
 como `Unknown`; no hay reenvío ciego, lease por tiempo, reconexión push ni garantía exactly-once
 indiscriminada. El contrato y los límites exactos están en el README de stdio 1.0 y el ADR-0049.
 
+**Bloque M9-D construido en Core y OmniCoder (2026-10-14; revisión/integración de root pendiente):**
+equivalente externo estrecho a `ITrustedUserActionClient` para la conexión local Electron main→Host,
+sin alterar el wire genérico 1.0. El main solicita confirmación nativa por workspace/acción y firma
+el payload exacto con bootstrap efímero, nonce de Host, workspace físico, Session/Run y revisión.
+Core elimina la copia del bootstrap del entorno antes del runtime, comprueba HMAC en tiempo constante,
+revalida scope bajo ownership y conserva receipts/lookup sin reejecución. El Sidecar conecta controles
+reales de input en Plan, selección de modo, interrupción y cancelación. El input sólo abre/actualiza
+un Run: no inicia inferencia ni genera respuesta de modelo. El contrato genérico permanece utilizable.
+Evidencia: [acta M9-D](../validation/m9-block-d-20261014.md) y ADR-0050.
+La frontera asume mismo principal local del SO; no pretende proteger contra procesos maliciosos de ese
+mismo usuario. Capabilities no otorgan consentimiento y el JSON genérico no concede autoridad.
+
+Pendientes explícitos para cerrar M9: `media.read` consumido por proveedor con visión, controles de
+procesos persistentes/ConPTY, push/backpressure, validación Linux/macOS/filesystems, chat/inferencia
+completo sobre Core, aceptación nativa es/en/fr/it y procedencia `Native/Imported`. No hay garantía
+exactly-once general y OR5 autenticado M8 sigue pendiente.
+
 | Resto de M9 tras M9-B | Construcción | Presentación y aceptación |
 |---|---|---|
 | Transporte y negociación | **Construido en M9-A/B:** Host real por stdio, framing UTF-8 y cap del frame final, `hello`/versiones/capabilities, queries/read models y replay legacy/paginado. Sin backpressure adicional. | Focales cross-process cubren caracteres es/en/fr/it, incompatible, malformed y oversized. La verificación de OS en este bloque es Windows. |
 | Lease y supervisión | **Construido en M9-B:** lock OS no expirable por Session, adquisición antes de mutación y reclaim tras muerte; sin heartbeat por reloj. M9-C agrega supervisor de proceso y reserva de workspace antes de spawn; esa reserva de producto no es el lease Core. | Pruebas de dos procesos/reclaim y lifecycle de child verificadas en Windows local. La UI muestra reserva y desconexión/fallo; falta aceptación de otros OS/filesystems y ownership coordinado con otros productos externos. |
 | Reconexión e historial | **Construido en M9-B:** receipt hash-bound, `command.result` sin resend, `Unknown` no ejecutable, cursor/high-water SQL acotados, detección de gaps y tombstone de purge. No es exactly-once general ni reconexión push. Procedencia Native/Imported pendiente. | Prueba mata Host tras persistir receipt con ACK sin consumir, reconecta y confirma misma Session/ACK sin nuevos eventos. Unknown y cursor purgado muestran resultado/gap sin fingir finalización. |
 | Clientes y preferencias | **Construido en Core:** CLI in-process y stdio con Client multi-target net8/net10, capacidades consultables, fallback al `subscribe` legacy y goldens wire. **Consumidor M9-C revisado e integrado en OmniCoder main:** TypeScript sin CLR, Host hijo real y Sidecar de lectura. `ui.locale` sigue por Host con su esquema durable existente. | Consumer probado contra Host real en Windows con replay/receipt; revisión e integración completadas; queda aceptación multi-OS/cuatro idiomas y paridad Core completa. Goldens validan wire canónico, no traducción. No almacenar copy traducido en read models. |
-| Origen humano y resultado de acciones (U-C12) | **Construido en M9-B:** lookup/dedup con `CommandAck.Outcome/FirstSeq/LastSeq`. Falta definir equivalente externo seguro de `ITrustedUserActionClient` ligado a conexión/ownership/permiso; el marcador in-process no es serializable. | El wire genérico rechaza acciones que requieran autoridad humana; JSON y capabilities no crean grants. Falta acción real autorizada Electron→Host y denegación sin origen válido. |
+| Origen humano y resultado de acciones (U-C12) | **M9-D construido, revisión pendiente:** Electron main confirma workspace/acción y firma proof efímero vinculado a Host, nonce, payload exacto, Session/Run y revisión; Core revalida bajo lease y usa receipts M9-B. El contrato genérico se conserva y no concede autoridad. El input registra/abre Run, sin inferencia/respuesta. | E2E Electron→Host prueba denegación/aceptación del diálogo de fixture, input, modo, interrupt/cancel; test Core real rechaza firma, workspace/Run/revisión/nonce ajenos o obsoletos sin nuevos efectos. El diálogo de prueba no equivale a aceptación humana. Trust boundary: procesos del mismo principal local. Ver ADR-0050 y acta M9-D. |
 
-**Salida M9:** escenarios reales de transporte/lease/reconexión/net8, lectura `media.read` que alcanza un proveedor con visión compatible y controles de procesos persistentes/interactivos, recorridos en cuatro idiomas y JSON/wire invariantes. Reusar la presentación Client y el mecanismo de idioma; no mandar frases ya traducidas por el Host para sustituir claves/argumentos. Negociación de recursos/capabilities y payload visual, si necesitan DTOs nuevos, respetan ADR0013 sin migrar journals por un cambio de copy.
+**Salida M9:** escenarios reales de transporte/lease/reconexión/net8, origen humano acotado Electron→Host, lectura `media.read` que alcanza un proveedor con visión compatible y controles de procesos persistentes/interactivos; validar aceptación en los cuatro idiomas y JSON/wire invariantes. Reusar la presentación Client y el mecanismo de idioma; no mandar frases ya traducidas por el Host para sustituir claves/argumentos. Negociación de recursos/capabilities y payload visual, si necesitan DTOs nuevos, respetan ADR-0013 sin migrar journals por un cambio de copy. M9-D no cierra el hito.
 
 ## M10: v1, memoria completa y evaluación
 

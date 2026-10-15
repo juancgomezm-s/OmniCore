@@ -105,3 +105,12 @@ v1.0 están en [`docs/protocol/stdio/1.0`](../protocol/stdio/1.0/README.md).
 | `IOmniClient`, `WireEnvelope`/`WireEvent`/`WireCommand` mínimos, `InProcessTransport`, `ProtocolMapper` para los eventos que usa el CLI de M1 | **Necesario desde M1** |
 | `StdioTransport`, negociación de versión, primer Host hijo, cliente de proceso, dispatch acotado y goldens (M9, primer bloque 2026-10-14) | **Implementado parcialmente; detalles y límites en §4** |
 | Named Pipes y autenticación de clientes remotos | **Deferable** |
+
+## Nota posterior M9-D (2026-10-14)
+
+El párrafo histórico anterior describe correctamente el primer bloque M9-A y no se elimina. M9-D
+añade una extensión opcional stdio 1.0 para acciones explícitas iniciadas en Electron main, con
+bootstrap efímero y proof HMAC ligado a conexión, payload y scope. Un Host genérico continúa sin
+`ITrustedUserActionClient` y rechaza acciones privilegiadas. La extensión no confía en renderer,
+modelo ni JSON genérico, y el input registra/abre un Run sin inferencia. Ver [ADR-0050](0050-autoridad-humana-stdio-omnicoder.md)
+y [acta M9-D](../validation/m9-block-d-20261014.md).

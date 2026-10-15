@@ -65,4 +65,5 @@ Cada ADR registra una decisión que precisa o modifica `docs/spec/OmniCore-v1.md
 | [0046](0046-fronteras-pre-m6.md) | Fronteras pre-M6: ejecución, routing autorizado, eventos y control | Aceptada (con ajustes al anexo, §8) |
 | [0047](0047-modos-explicitos-y-ultracode.md) | Modos explícitos, ejecución directa y esfuerzo UltraCode | Aceptada (implementación en M5.5; delegación real en M6) |
 | [0048](0048-watchdog-y-respuesta-al-estancamiento.md) | Watchdog en Runs reales y respuesta al estancamiento (`StallPolicy`) | Aceptada (precisa 0016 §9 y 0036 §7) |
-| [0049](0049-ownership-durable-y-reconexion-stdio.md) | Ownership durable por Session y recuperación stdio M9-B | Aceptada para el bloque M9-B; pendiente de integrar en main |
+| [0049](0049-ownership-durable-y-reconexion-stdio.md) | Ownership durable por Session y recuperación stdio M9-B | Aceptada e integrada para M9-B; nota posterior M9-D |
+| [0050](0050-autoridad-humana-stdio-omnicoder.md) | Autoridad humana acotada desde OmniCoder a Host stdio | Aceptada para M9-D; entrega en revisión |
