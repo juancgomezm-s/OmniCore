@@ -1,5 +1,91 @@
 # Reparación y validación de CI/Linux de OmniCore
 
+## Seguimiento: regresiones de Core tras M9-F/F2 — 2026-10-15
+
+Rama de corrección: `codex/core-ci-regressions`. Se conserva la interfaz integrada
+y el recorrido de instalación Windows/Linux. Las secciones siguientes a este
+seguimiento documentan la reparación histórica del 14 de octubre.
+
+La [ejecución 38767223307 sobre df3d148](https://github.com/juancgomezm-s/OmniCore/actions/runs/38767223307/job/116533681326)
+falla en `All tests, including architecture and process recovery`, comando
+`dotnet test --solution OmniCore.slnx --no-build --no-restore --max-parallel-test-modules 1 --parallel none --output Detailed --no-progress`.
+Ubuntu informa 16 fallos y salida 2. El empaquetado independiente pasa. La
+reproducción focal **antes de corregir**, en Windows y Debian, da el mismo
+resultado: 54 casos, 38 PASS, 16 FAIL, 0 SKIP, salida 2.
+
+| Causa raíz y origen | Casos y evidencia exacta | Reparación |
+|---|---|---|
+| Regresión de disponibilidad del costo en `22128b1` (M9-F2): separó facturas de tokens, pero permitió también estimaciones sin evidencia válida de tokens. | 11: `Unrepresentable_token_sum...` (5), `Assert.Null`: `Money { Amount = 0, Currency = USD }`; `Contradictory_reported_breakdown...` (6), `Expected: Unknown / Actual: Estimated`. | Exigir evidencia completa, coherente y representable para las estimaciones; mantener las facturas reales independientes de los contadores de tokens. Pruebas adicionales de sesiones mixtas, persistencia y reapertura. |
+| Pruebas de versiones desactualizadas tras M9-F/F2 (`67c9a03`, `22128b1`). | 2: `EventCodecTests.cs:55`, `Expected: 2 / Actual: 3`; `GenerationRequestAttemptEvidenceTests.cs:59`, `Expected: 3 / Actual: 5`. | Conservar schemas actuales y verificar explícitamente input v1/v2 y completions v2/v3/v4, con defaults y evidencia de intentos intactos. No se bajan versiones ni se retiran assertions de compatibilidad. |
+| `22128b1` cambió el JSON de `model.profile` sin cambiar su etiqueta v2. | 2: hashes exactos de `QualificationFingerprintTests.cs:44,56` difieren. | Restituir exactamente el perfil v2; registrar modalidades de salida y cota de imagen en `model.output` v1. Los hashes históricos esperados permanecen sin editar. Se comprueba hash canónico, aislamiento de componentes y contenido CAS. ADR-0017 documenta el componente. |
+| Golden de negociación sin actualizar al añadir lectura de artifacts en `22128b1`. | 1: `StdioTransportTests.cs:1045`, falta `artifact.read.chunk` en `goldens.jsonl`. | Añadir la capacidad real al golden; mantener la comparación exacta con el contrato del Host. |
+
+No se modifica el workflow para obtener verde ni se deshabilitan pruebas. Son
+fallos reproducibles de lógica y contratos, sin dependencia de cuentas, claves,
+red de proveedores ni diferencias de mayúsculas/rutas entre sistemas.
+
+### Validación final de la corrección
+
+El [PR #2](https://github.com/juancgomezm-s/OmniCore/pull/2) valida el head `fa16299`
+en la [ejecución real 38781560543](https://github.com/juancgomezm-s/OmniCore/actions/runs/38781560543).
+Conserva también el commit local `594f2e3` de Main: panel lateral limitado a
+un tercio del ancho y 40 columnas, y la integración M9-G `f42d16e` de skills,
+instrucciones y memorias externas. Los cinco jobs pasan con toda la combinación:
+
+| Job | Resultado confirmado |
+|---|---|
+| [test (windows-latest)](https://github.com/juancgomezm-s/OmniCore/actions/runs/38781560543/job/116583130514) | PASS; 4664 casos, 4656 PASS, 8 SKIP existentes, 0 FAIL |
+| [test (ubuntu-latest)](https://github.com/juancgomezm-s/OmniCore/actions/runs/38781560543/job/116583130082) | PASS; 4664 casos, 4643 PASS, 21 SKIP existentes, 0 FAIL |
+| [npm-install (windows-latest)](https://github.com/juancgomezm-s/OmniCore/actions/runs/38781560543/job/116583130600) | PASS; pruebas Node, instalación y actualización reales con journal conservado |
+| [npm-install (ubuntu-latest)](https://github.com/juancgomezm-s/OmniCore/actions/runs/38781560543/job/116583130737) | PASS; mismas comprobaciones reales |
+| [linux-package](https://github.com/juancgomezm-s/OmniCore/actions/runs/38781560543/job/116583130645) | PASS; self-contained, Native AOT, SQLite, seis escenarios y terminales PTY |
+
+Los nueve casos focales de recuperación Windows también pasan antes de la
+integral y permanecen incluidos en ella; sus cantidades no se suman.
+Las omisiones corresponden a pruebas existentes de plataforma, entorno o
+aceptación opt-in de proveedores; no se añade ninguna omisión ni se desactiva
+ninguna validación. La fuente C# integrada coincide con el head validado.
+
+Validación local adicional:
+
+- Windows: builds multi-target sin advertencias ni errores; focal amplia
+  de Core 198/198 PASS. Tras corregir la referencia E2E, compilación nueva de
+  `31fdf8b` y focal final 59/59 PASS, incluidos los 16 casos originales y ese E2E.
+- Combinación con el panel lateral `594f2e3` y M9-G `f42d16e`: 538/538 PASS en Windows,
+  incluyendo TUI, presentación, fingerprints, costos, transporte, skills externas
+  y E2E de ruta. Compilación de la solución sin advertencias ni errores.
+- Debian 13.5 / WSL2, Core `31fdf8b`: solución completa 4626 casos, 4605 PASS,
+  21 SKIP existentes, 0 FAIL, salida 0; 8m34s. Build sin advertencias/errores.
+  La combinación final con el panel lateral y M9-G se valida íntegra en Ubuntu CI.
+- Instalaciones locales Windows y Debian actualizadas desde `fa16299` con los
+  scripts públicos; se verifica el hash/contenido del Host instalado y `omni --help`.
+  WSL queda apagado tras la comprobación, sin procesos vmmem activos.
+- La integral Windows intermedia `2c05388` registró 4626 casos, 4613 PASS,
+  12 SKIP de entorno y el único FAIL de la lista E2E corregida después.
+  El resultado definitivo de toda la suite Windows es el CI del head final.
+
+Logs completos y evidencia local en
+`C:/Users/juanc/.codex/omnicore-linux-20261014/core-ci-*.log` y los logs de
+los jobs enlazados. Las suites son superpuestas; no se suman sus casos.
+El [CI de Main](https://github.com/juancgomezm-s/OmniCore/actions/workflows/ci.yml?query=branch%3Amain)
+ejecuta de nuevo los mismos cinco jobs al publicar la integración. El PR
+conserva además el enlace al resultado posterior de Main.
+
+Los 16 fallos de esta reparación quedan cerrados; no hay regresiones conocidas
+introducidas por el cambio. No se atribuye aceptación de proveedores reales,
+ARM64, macOS, Strong Linux, OR5 ni el actualizador automático M10.
+
+### Pasadas intermedias (no son el resultado final)
+
+Pasadas intermedias: la focal ampliada de Windows pasa 198/198 sin omisiones.
+La primera integral Debian sobre `2c05388` obtiene 4626 casos, 4604 PASS,
+21 SKIP existentes y 1 FAIL: `CliEndToEndTests` aún esperaba la lista anterior
+de componentes. Se añade `model.output` a esa lista exacta, conservando todos
+sus elementos y la comprobación del orden. Se repite la integral; esa pasada
+intermedia no se acredita como cierre.
+
+## Reparación inicial del 2026-10-14 (histórico)
+
 Fecha: 2026-10-14, Ciudad de México. Rama `codex/cierre-linux` y [PR #1](https://github.com/juancgomezm-s/OmniCore/pull/1). El [acta Linux](validation/linux-milestones-closure-20261014.md) conserva el inventario, logs, hashes y pasadas intermedias. La recuperación de la interfaz de preferencias confirmada por el usuario se prepara en otra rama; esta reparación no modifica su diseño.
 
 ## Workflow y criterio de cierre

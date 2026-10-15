@@ -52,6 +52,7 @@ public sealed class FingerprintComponentsContractTests
     [Theory]
     [InlineData("model.route")]
     [InlineData("model.profile")]
+    [InlineData("model.output")]
     [InlineData("context.policy")]
     [InlineData("tools.plan")]
     [InlineData("prompt.template")]

@@ -11,6 +11,32 @@ namespace OmniCore.Tests;
 public sealed class RuntimeFingerprintFactoryTests
 {
     [Fact]
+    public void Output_configuration_hashes_exact_v1_content_separately_from_legacy_profile()
+    {
+        var component = Part(Create(), "model.output");
+        const string json = "{\"outputModalities\":[\"text\"],\"imageGenerationMaxCostUpperBoundUsd\":null}";
+        Assert.Equal("1", component.Version);
+        Assert.Equal(ContentHash.Sha256(Digest(json)), component.Hash);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void Output_modalities_and_image_cost_change_only_the_new_output_component(bool image, bool bound)
+    {
+        var baseline = Create();
+        var changed = Create(outputModalities: image ? ["text", "image"] : ["text"],
+            imageCost: bound ? .25m : null);
+
+        Assert.NotEqual(baseline.Hash(), changed.Hash());
+        Assert.NotEqual(Part(baseline, "model.output"), Part(changed, "model.output"));
+        Assert.Equal(baseline.Components.Where(c => c.Name != "model.output"),
+            changed.Components.Where(c => c.Name != "model.output"));
+        Assert.Equal("2", Part(changed, "model.profile").Version);
+    }
+
+    [Fact]
     public void Trait_insertion_order_does_not_change_the_resolved_profile_fingerprint()
     {
         var first = Create(traits: new Dictionary<string, double> { ["B"] = .8, ["A"] = .4 });
@@ -162,7 +188,8 @@ public sealed class RuntimeFingerprintFactoryTests
 
     private static ExecutionFingerprint Create(string endpoint = "http://fixture-one.invalid/v1",
         IReadOnlyDictionary<string, double>? traits = null, long budget = 7000,
-        string tokenizer = "fixture-tokenizer/1", long? outputLimit = null, IModelProvider? provider = null)
+        string tokenizer = "fixture-tokenizer/1", long? outputLimit = null, IModelProvider? provider = null,
+        IReadOnlyList<string>? outputModalities = null, decimal? imageCost = null)
     {
         var model = new ModelDefinition("fixture-model", "fixture-provider", 8192, 7000, 1024);
         var route = new ModelRoute(model.ProviderId, endpoint, ProviderFamily.OpenAiChatCompatible,
@@ -171,7 +198,8 @@ public sealed class RuntimeFingerprintFactoryTests
             route.Id, route, outputLimit);
         var profile = new EffectiveModelProfile(model.Id, 8192, 7000, 1024,
             new[] { "text" }, new[] { ToolCallFormat.Native }, false,
-            traits ?? new Dictionary<string, double>(), route.Id);
+            traits ?? new Dictionary<string, double>(), route.Id,
+            outputModalities: outputModalities, imageGenerationMaxCostUsd: imageCost);
         var harness = new HarnessPolicyResolver().Resolve(profile);
         return RuntimeFingerprintFactory.Create(model, profile, harness, selection,
             "fixture-harness-hash", "fixture-context-hash", "fixture-policy-hash", tokenizer, provider);

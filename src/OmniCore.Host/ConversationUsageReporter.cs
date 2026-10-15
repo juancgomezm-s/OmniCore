@@ -116,9 +116,24 @@ public static partial class SessionUsageReporter
             || TokenUsageValidation.IsInvalid(pair.Value.Usage, pair.Value.Fields)
             || !pair.Value.Fields.HasFlag(TokenUsageFields.Input | TokenUsageFields.Output));
         var allTokens = incomplete == 0 && !conflict && tokens is not null;
-        // A provider-reported invoice can be known even when it omitted token counts.
+        // Estimates require valid, complete and representable token evidence. Provider invoices
+        // are independent facts: missing token counts must not erase an actual reported charge.
+        var estimates = steps.Values.Where(s => !s.ProviderReportedCost).ToArray();
+        var estimatesKnown = estimates.All(s => s.Usage is not null
+            && !TokenUsageValidation.IsInvalid(s.Usage, s.Fields)
+            && s.Fields.HasFlag(TokenUsageFields.Input | TokenUsageFields.Output));
+        if (estimatesKnown)
+        {
+            try
+            {
+                _ = checked(estimates.Sum(s => s.Usage!.Input) + estimates.Sum(s => s.Usage!.Output));
+                _ = estimates.Sum(s => s.Usage!.CacheRead);
+                _ = estimates.Sum(s => s.Usage!.CacheWrite);
+            }
+            catch (OverflowException) { estimatesKnown = false; }
+        }
         var allCost = steps.Count > 0 && !conflict && uncertainAttempts.Count == 0 && uncertainCosts.Count == 0
-            && steps.Values.All(s => s.Cost is >= 0);
+            && estimatesKnown && steps.Values.All(s => s.Cost is >= 0);
         decimal? costTotal = null;
         if (allCost)
         {

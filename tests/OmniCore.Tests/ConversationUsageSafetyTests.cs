@@ -128,6 +128,38 @@ public sealed class ConversationUsageSafetyTests
         Assert.Equal(first, fixture.Read());
     }
 
+    [Fact]
+    public void Reported_invoice_without_tokens_and_valid_token_estimate_have_known_combined_cost()
+    {
+        using var fixture = new Fixture();
+        fixture.Spend(new TokenUsage(0, 0, 0, 0, 0), .3m,
+            providerReportedCost: true, fields: TokenUsageFields.None);
+        fixture.Spend(new TokenUsage(17, 4, 0, 0, 0), .000021m);
+
+        var first = fixture.Read();
+        Assert.Equal(MetricAvailability.Unknown, first.Tokens.Availability);
+        Assert.Equal(MetricAvailability.Estimated, first.Cost.Availability);
+        Assert.Equal(new Money(.300021m, "USD"), first.Cost.Value);
+        fixture.Reopen();
+        Assert.Equal(first, fixture.Read());
+    }
+
+    [Fact]
+    public void Reported_invoice_cannot_make_a_contradictory_token_estimate_known()
+    {
+        using var fixture = new Fixture();
+        fixture.Spend(new TokenUsage(0, 0, 0, 0, 0), .3m,
+            providerReportedCost: true, fields: TokenUsageFields.None);
+        fixture.Spend(new TokenUsage(10, 4, 11, 0, 0), .000014m);
+
+        var first = fixture.Read();
+        Assert.Equal(MetricAvailability.Unknown, first.Tokens.Availability);
+        Assert.Equal(MetricAvailability.Unknown, first.Cost.Availability);
+        Assert.Null(first.Cost.Value);
+        fixture.Reopen();
+        Assert.Equal(first, fixture.Read());
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -217,12 +249,14 @@ public sealed class ConversationUsageSafetyTests
             DomainEvent.Create(_session, payload.Type(), payload.SchemaVersion(), null, _run, _run,
                 null, null, null, null, null, [], _codecs.CodecFor(payload.Type()).Encode(payload)),
             DurabilityClass.Barrier, TestContext.Current.CancellationToken);
-        public void Spend(TokenUsage usage, decimal cost)
+        public void Spend(TokenUsage usage, decimal cost, bool providerReportedCost = false,
+            TokenUsageFields fields = TokenUsageFields.All)
         {
             var turn = TurnId.New();
             Start(false, turn);
             Add(new ModelStepCompleted(turn, 0, usage, StopReason.EndTurn, null, "2026-10-07",
-                cost, TokenUsageFields.All, new GenerationRequestAttemptEvidence(1, 1)));
+                cost, fields, new GenerationRequestAttemptEvidence(1, 1),
+                ReportedProviderCostUsd: providerReportedCost ? cost : null));
         }
         public void Start(bool meta, TurnId turn)
         {

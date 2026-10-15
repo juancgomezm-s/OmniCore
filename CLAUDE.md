@@ -22,6 +22,8 @@ capacidades diferidas; reabrir sólo por un defecto concreto. El cierre global y
 de M8 permanecen separados. M9-B añade lease por OS, recibos/dedup, resultado ambiguo y replay
 paginado integrados en `main` (2026-10-14); evidencia en `docs/validation/m9-block-b-20261014.md`. M9-C integra el consumidor TypeScript de lectura y supervisor Electron; evidencia en `docs/validation/m9-block-c-20261014.md`. El bloque M9-D está revisado e integrado en ambos main y añade acciones humanas explícitas input-Plan/mode/interrupt/cancel con proof efímero firmado desde Electron main y revalidación de scope en Core; evidencia en `docs/validation/m9-block-d-20261014.md`, decisión ADR-0050. M9-E revisado e integrado en ambos main añade `conversation.start.user` enlazado a pipeline Core real desde el composer OmniCoder, con ACK de admisión separado del resultado y replay durable; ADR-0051 y `docs/validation/m9-block-e-20261014.md`. La fixture GUI→Host verifica wiring, no sustituye la aceptación del proveedor local. M9 permanece abierto: `media.read`, push/streaming, procesos persistentes/ConPTY, multi-OS/cuatro idiomas y aceptación manual; OR5 M8 sigue pendiente.
 
+**CI de Core reparado (2026-10-15):** las 16 regresiones de M9-F/F2 se corrigen en el PR #2 (`fa16299`), conservando el ajuste de panel lateral `594f2e3` y la integración M9-G `f42d16e`. Los cinco jobs Windows/Ubuntu, instaladores y paquetes Linux pasan antes de integrar. Se mantienen las facturas reales de imágenes, los hashes históricos de `model.profile` v2 y la interfaz integrada confirmada por el usuario. Evidencia y resultados: `docs/ci-failure-analysis.md`. Este cierre de CI no sustituye la aceptación funcional pendiente de M9/OR5.
+
 ## Comandos
 
 ```bash
