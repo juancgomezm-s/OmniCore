@@ -460,6 +460,12 @@ desde JSON con Python 3 es opcional y no usa dependencias externas.
 
 ### Conversaciones y contexto
 
+Una conversación admite una ventana de escritura a la vez. Si otra ventana la
+tiene abierta, la TUI explica cómo continuar y conserva el mensaje en el editor.
+Aceptar el aviso vuelve al chat. Tras cerrar la ventana anterior puedes reenviar
+desde la misma conversación; el intento rechazado no llama al proveedor ni
+duplica el mensaje en el historial.
+
 | Comando de la TUI en español | Acción |
 | --- | --- |
 | `/nuevo` | Crear una conversación vacía y conservar la anterior. |

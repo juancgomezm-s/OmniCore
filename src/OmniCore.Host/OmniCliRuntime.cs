@@ -289,6 +289,9 @@ public sealed class OmniCliRuntime : IDisposable
         return Server();
     }
 
+    /// <summary>Admits a local writer without submitting input, starting a provider or changing Session.</summary>
+    public bool TryAcquireSessionWriter() => (_server ?? Server()).EnsureWriterOwnershipForCommand();
+
     /// <summary>
     /// Establishes the configured non-metered initial routing snapshot before stdio can admit
     /// its first input (which may create the Session). Existing Sessions keep their own snapshot.
@@ -1417,6 +1420,11 @@ public sealed class OmniCliRuntime : IDisposable
         }
         WriteDiagnostics(workspaceConfig.Diagnostics, writeLine);
         var server = Server(workspaceData);
+        if (!server.EnsureWriterOwnershipForCommand())
+        {
+            writeLine(Text(LocalizedText.Of("session_writer_owned")));
+            return TurnExitCodes.SessionBusy;
+        }
         var delegation = delegationId is null ? null : server.ReadCurrentDelegation(delegationId);
         var principalSourceStep = delegation is null ? null : server.SourceModelStepForDelegation(delegation);
         var externalDelegation = delegation is not null && server.LastSessionId() is { } externalSession

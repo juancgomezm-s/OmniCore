@@ -27,6 +27,39 @@ namespace OmniCore.Tests;
 public sealed class CliEndToEndTests
 {
     [Fact]
+    public async Task Occupied_session_rejects_input_without_provider_work_and_same_window_can_retry_after_owner_closes()
+    {
+        await InIsolatedCli(async (workspace, _, _, provider) =>
+        {
+            Assert.Equal(0, (await Run("ask", "seed writer ownership")).Code);
+            var original = ReadCurrentSessionEvents(workspace);
+            var requests = provider.RequestCount;
+            using var contender = OmniCliRuntime.Create(workspace);
+            contender.Localize = (key, values) => Localization.Spanish().Resolve(key, values);
+            _ = contender.Connect(TestContext.Current.CancellationToken);
+            var host = new TuiTurnHost(contender);
+            var diagnostics = new List<string>();
+            const string prompt = "mensaje conservado para reintentar";
+            var blocked = await host.ExecuteAsync(prompt, diagnostics.Add, TestContext.Current.CancellationToken);
+            Assert.True(blocked == TurnExitCodes.SessionBusy, string.Join("\n", diagnostics));
+            Assert.Equal(requests, provider.RequestCount);
+            Assert.Equal(original.Count, ReadCurrentSessionEvents(workspace).Count);
+            Assert.DoesNotContain("InvalidOperationException", string.Join("\n", diagnostics));
+            Assert.Contains("otra ventana", string.Join("\n", diagnostics), StringComparison.OrdinalIgnoreCase);
+
+            // Release the actual owner, not its lock file; keep the contender runtime alive.
+            CliApp.UseRuntimeForTests(OmniCliRuntime.Create(workspace)).Dispose();
+            diagnostics.Clear();
+            Assert.True(0 == await host.ExecuteAsync(prompt, diagnostics.Add, TestContext.Current.CancellationToken),
+                string.Join("\n", diagnostics));
+            Assert.Equal(requests + 1, provider.RequestCount);
+            var after = ReadCurrentSessionEvents(workspace);
+            Assert.Single(after.OfType<UserInputReceived>(), input => input.InputPartsJson.Contains(prompt, StringComparison.Ordinal));
+            Assert.Equal(original.OfType<SessionCreated>().Single().SessionId, after.OfType<SessionCreated>().Single().SessionId);
+        });
+    }
+
+    [Fact]
     public async Task Explicit_project_skill_read_ceiling_is_applied_by_the_real_cli_runtime()
     {
         await InIsolatedCli(async (workspace, _, data, provider) =>

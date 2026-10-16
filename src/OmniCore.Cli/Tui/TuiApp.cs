@@ -1209,6 +1209,16 @@ public sealed partial class TuiApp
         { ShowMessage(_localization.Resolve("shell.attachment.act_unsupported")); return false; }
         if (delegationId is not null) return StartDelegationTurn(delegationId);
         if (_turnBusy) { ShowMessage(_localization.Resolve("shell.a_turn_is_already_processing_wait_or_use_cancel")); return false; }
+        try
+        {
+            if (!_turnHost.TryAcquireSessionWriter())
+            { ShowMessage(_localization.Resolve("session_writer_owned")); return false; }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            ShowMessage(_localization.Resolve("shell.turn_failed_check_omni_doctor") + "\n" + OmniCliRuntime.RedactSensitive(error.Message));
+            return false;
+        }
         _turnCancellation?.Dispose();
         var cancellation = _turnCancellation = new CancellationTokenSource();
         var submittedAttachments = attachments?.ToArray() ?? [];
@@ -2626,7 +2636,7 @@ public sealed partial class TuiApp
         var frame = OverlayFrame(title, Math.Max(6, visible.Length + 5));
         frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Height = visible.Length, Text = string.Join("\n", visible) });
         var ok = new Button { X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = _localization.Resolve("shell.ok") };
-        ok.Accepted += (_, _) => CloseOverlay(); frame.Add(ok); ApplyTheme(frame); _overlay = frame; _window.Add(frame); frame.SetFocus();
+        ok.Accepted += (_, e) => { e.Handled = true; CloseOverlay(); }; frame.Add(ok); ApplyTheme(frame); _overlay = frame; _window.Add(frame); frame.SetFocus();
     }
 
     private void CloseOverlay()

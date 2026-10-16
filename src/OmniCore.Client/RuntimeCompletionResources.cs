@@ -5,6 +5,7 @@ public static class RuntimeCompletionResources
 {
     private static readonly (string Key, string Es, string En, string Fr, string It)[] Rows =
     [
+        ("session_writer_owned", "Otra ventana de OmniCore tiene esta conversación abierta.\nPuedes continuar allí o cerrar esa ventana.\nDespués vuelve a enviar tu mensaje aquí.", "Another OmniCore window has this conversation open.\nContinue there, or close that window.\nThen send your message again here.", "Une autre fenêtre OmniCore utilise cette conversation.\nContinuez-y ou fermez cette fenêtre.\nRenvoyez ensuite votre message ici.", "Un’altra finestra di OmniCore usa questa conversazione.\nContinua lì, oppure chiudi quella finestra.\nPoi invia di nuovo il messaggio qui."),
         ("runtime.session.required", "No hay una sesión activa.", "There is no active session.", "Aucune session n’est active.", "Non c’è una sessione attiva."),
         ("cli.runtime.workflow.busy", "Ya hay un turno principal activo; el flujo queda aplazado.", "A principal turn is already active; workflow dispatch is deferred.", "Un tour principal est déjà actif ; le flux est reporté.", "È già attivo un turno principale; il flusso è rinviato."),
         ("cli.runtime.workflow.progress", "Flujo {instance} · {stage}", "Workflow {instance} · {stage}", "Flux {instance} · {stage}", "Flusso {instance} · {stage}"),

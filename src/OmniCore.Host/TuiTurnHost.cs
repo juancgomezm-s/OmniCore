@@ -30,6 +30,8 @@ public sealed class TuiGeneratedImage
 /// <summary>Production turns behind the Host boundary; the TUI never composes providers or credentials.</summary>
 public interface ITuiTurnHost
 {
+    /// <summary>Checks writer admission before the renderer clears a human draft; never submits input.</summary>
+    bool TryAcquireSessionWriter() => true;
     UsageSnapshot? CurrentUsage() => null;
     Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken);
     TuiAttachmentReference ImportAttachment(byte[] bytes, string fileName) => throw new NotSupportedException("Attachments are not supported by this turn host.");
@@ -59,6 +61,7 @@ public interface ITuiTurnHost
 public sealed class TuiTurnHost : ITuiTurnHost
 {
     private readonly OmniCliRuntime _runtime;
+    public bool TryAcquireSessionWriter() => _runtime.TryAcquireSessionWriter();
     public UsageSnapshot? CurrentUsage() => _runtime.CurrentUsage();
     public TuiAttachmentReference ImportAttachment(byte[] bytes, string fileName) => new(_runtime.ImportTuiAttachment(bytes, fileName));
     public TuiAttachmentReference ImportAttachmentFromPath(string path) => new(_runtime.ImportTuiAttachmentFromPath(path));
