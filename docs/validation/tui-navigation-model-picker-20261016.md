@@ -64,3 +64,36 @@ Los logs y capturas se conservan fuera del repositorio en
 `tui-navigation-model`. Las cuentas y HTTP de las pruebas son fixtures:
 no acreditan autenticación real de ChatGPT/OpenRouter ni una ejecución remota de CI.
 WSL no se inició. La aplicación se publica por separado de la instalación global.
+
+## Corrección posterior: extremos de categorías y acciones del submenú
+
+La revisión manual detectó que en el primer/último elemento Terminal.Gui dejaba
+propagar arriba/abajo hacia la navegación de foco entre controles. Se consumen
+ambas teclas en la lista de categorías y se calcula el siguiente índice en ciclo,
+tanto en la vista integrada como en la compacta. Entrar al contenido continúa
+siendo una acción explícita con Enter/derecha/Tab o clic.
+
+Recargar, Cancelar y Guardar se trasladan del pie global al contenido de General
+y apariencia. En la vista integrada el grupo sólo aparece mientras se edita esa
+categoría y queda fuera del recorrido de foco al volver al menú. En la compacta
+pertenece exclusivamente a la página General. Cancelar revierte el borrador de
+idioma y vuelve a categorías, conservando Preferencias abierta. Se comprueba la
+ausencia de solapamientos y, en 80×25, que el foco desplaza el contenido para
+mostrar las acciones. Guardar y Cancelar se prueban con clic por coordenadas.
+
+Las nuevas pruebas inyectan flechas para recorrer dos vueltas completas por
+sentido, verifican la permanencia del foco en cada paso y comprueban entrada
+explícita, visibilidad del grupo y cancelación sin escritura de la preferencia.
+
+Validación de esta corrección: 29/29 pruebas aprobadas, cero fallos y omisiones
+(`tui-category-cycle-final.log`, 57,487 s). Incluye navegación, clics de Guardar y
+Cancelar, conflicto de revisión y recarga, redimensionado, contraste/sin color y
+recorrido de las ocho categorías en los cuatro idiomas y dos tamaños. La
+comprobación vertical de General usa su extensión desplazable, mantiene la
+ausencia de solapamientos y se complementa con la prueba de que las acciones
+quedan visibles al recibir foco en 80×25. La compilación terminó sin errores ni
+advertencias (`tui-category-cycle-build.log`) y la publicación Release con código
+0 (`tui-category-cycle-publish.log`). Las capturas del driver muestran el grupo
+ausente al explorar categorías y dentro del contenido al editar. Los registros
+y capturas usan el mismo directorio externo indicado arriba. Esta validación es
+local en Windows; no acredita un nuevo resultado remoto de CI ni una prueba Linux.

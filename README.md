@@ -362,10 +362,15 @@ dotnet run --project src/OmniCore.Cli -- tui
 | `/` | Ayuda de comandos |
 | `F2` / `F3` / `F4` | Panel lateral / elegir modelo / ajustes |
 | `↑` / `↓` en el selector | Navegación vertical y circular |
+| `↑` / `↓` en categorías de Preferencias | Recorrer el menú en ciclo sin entrar a los campos |
 | `Enter` / `→` en categorías | Entrar al contenido seleccionado |
 | `←` en listas y botones de Preferencias | Volver a las categorías |
 | `Ctrl+F` | Buscar en el menú actual |
 | `Esc` en un menú | Volver al nivel anterior; desde la raíz, cerrar Preferencias |
+
+En **General y apariencia**, Recargar, Cancelar y Guardar pertenecen al contenido
+de esa categoría. En la vista integrada aparecen al entrar a editarla; Cancelar
+descarta el borrador de idioma y vuelve a las categorías sin cerrar Preferencias.
 
 En el selector puedes elegir con Enter un modelo ya registrado aunque falle la
 consulta del catálogo. **Actualizar modelos** permite reintentar sin cerrar el

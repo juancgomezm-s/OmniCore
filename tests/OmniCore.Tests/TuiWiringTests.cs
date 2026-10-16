@@ -1577,7 +1577,7 @@ public sealed partial class TuiWiringTests
                 "User", "en", snapshot.Revision), CancellationToken.None);
             Assert.Equal("ok", external.Status);
             ClickId(fx, "preferences-save");
-            fx.Wait(() => fx.App.Overlay?.SubViews.OfType<Button>()
+            fx.Wait(() => fx.App.Overlay is { } frame && Descendants(frame).OfType<Button>()
                 .Single(button => button.Id == "preferences-reload").Enabled == true,
                 "revision stale ofrece recarga explícita");
             Assert.NotEmpty(Descendants(fx.App.Overlay!).OfType<Label>()
@@ -2773,7 +2773,7 @@ public sealed partial class TuiWiringTests
         var panel = frame.SubViews.Single(view => view.Id == "preferences-panel");
         var controls = panel.SubViews.Where(view => view.Id != "preferences-accent").ToArray();
         foreach (var control in controls)
-            Assert.True(control.Frame.Bottom <= panel.Viewport.Height, $"{control.Id} must fit in General: {control.Frame}");
+            Assert.True(control.Frame.Bottom <= panel.GetContentSize().Height, $"{control.Id} must fit in General's scrollable content: {control.Frame}");
         for (var left = 0; left < controls.Length; left++)
         for (var right = left + 1; right < controls.Length; right++)
         {

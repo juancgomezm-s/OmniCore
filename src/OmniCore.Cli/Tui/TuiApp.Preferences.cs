@@ -126,6 +126,12 @@ public sealed partial class TuiApp
             categoryList.Accepted += (_, args) => { args.Handled = true; OpenCategory(); };
             categoryList.KeyDown += (_, key) =>
             {
+                if (key.KeyCode is KeyCode.CursorUp or KeyCode.CursorDown)
+                {
+                    key.Handled = true;
+                    CyclePreferenceCategory(categoryList, key.KeyCode == KeyCode.CursorDown ? 1 : -1);
+                    return;
+                }
                 if (key.KeyCode == KeyCode.CursorRight) { OpenCategory(); key.Handled = true; }
                 else if (key.KeyCode == KeyCode.CursorLeft) key.Handled = true;
             };
@@ -202,6 +208,12 @@ public sealed partial class TuiApp
             navigation.Accepted += (_, args) => { args.Handled = true; RenderSelection(true); };
             navigation.KeyDown += (_, key) =>
             {
+                if (key.KeyCode is KeyCode.CursorUp or KeyCode.CursorDown)
+                {
+                    key.Handled = true;
+                    CyclePreferenceCategory(navigation, key.KeyCode == KeyCode.CursorDown ? 1 : -1);
+                    return;
+                }
                 if (key.KeyCode is KeyCode.CursorRight or KeyCode.Tab)
                 { RenderSelection(true); key.Handled = true; }
                 else if (key.KeyCode == KeyCode.CursorLeft) key.Handled = true;
@@ -239,6 +251,14 @@ public sealed partial class TuiApp
         ApplyTheme(frame); _overlay = frame; _window.Add(frame);
         if (wide && categoryId is null) navigation?.SetFocus();
         else categoryFocus?.SetFocus();
+    }
+
+    private static void CyclePreferenceCategory(ListView navigation, int delta)
+    {
+        var count = navigation.Source?.Count ?? 0;
+        if (count > 0)
+            navigation.SelectedItem = ((navigation.SelectedItem ?? 0) + delta + count) % count;
+        navigation.SetFocus();
     }
 
     private View? RenderPreferenceCategory(FrameView frame, LocalizedPreferenceCategory selected, bool wide)
@@ -311,6 +331,28 @@ public sealed partial class TuiApp
                     Y = y, Text = Pref("animations_open") };
                 animationsOpen.Accepted += (_, _) => { CloseOverlay(); ShowAnimationSettings(); _preferencesReturnToCategory = true; };
                 Add(sidebarOpen); Add(animationsOpen);
+                y += 2;
+                var actions = new View { Id = "preferences-category-actions", X = MenuIndent.Level1, Y = y,
+                    Width = Dim.Fill(3), Height = 2, CanFocus = true, Visible = !wide };
+                _preferencesReload = new Button { Id = "preferences-reload", X = 0, Y = 0,
+                    Width = 12, Text = Pref("reload"), Enabled = false };
+                _preferencesReload.Accepted += (_, _) => ReloadPreferenceLocale(frame);
+                var cancel = new Button { Id = "preferences-cancel", X = 15, Y = 0,
+                    Width = 12, Text = Pref("cancel") };
+                cancel.Accepted += (_, _) =>
+                {
+                    CancelPreferenceLocaleDraft();
+                    CloseOverlay(); ShowPreferences(_preferencesCategory);
+                    FindPreferenceView(_overlay, "preferences-categories")?.SetFocus();
+                };
+                var save = new Button { Id = "preferences-save", X = 30, Y = 0,
+                    Width = 12, Text = Pref("save") };
+                save.Accepted += (_, _) => SavePreferenceLocale();
+                actions.Add(_preferencesReload, cancel, save);
+                contentPanel.Add(actions);
+                if (wide)
+                    contentPanel.HasFocusChanged += (_, _) => actions.Visible = contentPanel.HasFocus;
+                y += 2;
                 break;
             case "accounts_connections":
                 if (_preferencesProvider is { } providerTarget)
@@ -442,21 +484,7 @@ public sealed partial class TuiApp
             if (selected.Id == "general") CancelPreferenceLocaleDraft();
             CloseOverlay(); ShowPreferences(_preferencesCategory);
         };
-        if (selected.Id == "general")
-        {
-            var cancel = new Button { Id = "preferences-cancel", X = Pos.AnchorEnd(37), Y = Pos.AnchorEnd(2),
-                Width = 12, Text = Pref("cancel") };
-            cancel.Accepted += (_, _) => ClosePreferenceCenter();
-            var save = new Button { Id = "preferences-save", X = Pos.AnchorEnd(22), Y = Pos.AnchorEnd(2),
-                Width = 12, Text = Pref("save") };
-            save.Accepted += (_, _) => SavePreferenceLocale();
-            _preferencesReload = new Button { Id = "preferences-reload", X = Pos.AnchorEnd(52), Y = Pos.AnchorEnd(2),
-                Width = 12, Text = Pref("reload"), Enabled = false };
-            _preferencesReload.Accepted += (_, _) => ReloadPreferenceLocale(frame);
-            frame.Add(contentPanel, back, cancel, save, _preferencesReload, new Label { Id = "preferences-help", X = 2, Y = Pos.AnchorEnd(3),
-                Width = Dim.Fill(3), Height = 1, Text = Pref(wide ? "help_integrated" : "help_detail") });
-        }
-        else frame.Add(contentPanel, back, new Label { Id = "preferences-help", X = 2, Y = Pos.AnchorEnd(3),
+        frame.Add(contentPanel, back, new Label { Id = "preferences-help", X = 2, Y = Pos.AnchorEnd(3),
             Width = Dim.Fill(3), Height = 1, Text = Pref(wide ? "help_integrated" : "help_detail") });
         // The saved language is not keyboard focus. Highlight it only while editing the list.
         foreach (var preview in DescendantViews(contentPanel).OfType<ListView>().Where(view => view.Id == "preferences-locale"))

@@ -1,5 +1,6 @@
 using OmniCore.Client;
 using OmniCore.Host;
+using OmniCore.Protocol;
 using Terminal.Gui.Drivers;
 using Terminal.Gui.Input;
 using Terminal.Gui.Views;
@@ -8,6 +9,78 @@ namespace OmniCore.Tests;
 
 public sealed partial class TuiWiringTests
 {
+    [Theory]
+    [InlineData(80, 25)]
+    [InlineData(120, 35)]
+    public void Preferences_category_arrows_wrap_at_both_ends_without_entering_content_or_footer(int width, int height) => RunTuiTest(fx =>
+    {
+        fx.StartTui(initialColumns: width, initialRows: height);
+        KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "preferences open");
+        var navigation = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-categories");
+        var count = navigation.Source!.Count;
+        Assert.True(navigation.HasFocus);
+        // Visit every edge twice, including Up from first and Down from last.
+        foreach (var delta in new[] { -1, 1 })
+        for (var step = 0; step < count * 2; step++)
+        {
+            var expected = (navigation.SelectedItem!.Value + delta + count) % count;
+            KeyWithEffect(fx, delta < 0 ? KeyCode.CursorUp : KeyCode.CursorDown,
+                () => navigation.SelectedItem == expected && navigation.HasFocus, "category arrows wrap and retain menu focus");
+            Assert.DoesNotContain(Descendants(fx.App.Overlay!), view => view.Id != "preferences-categories"
+                && view.CanFocus && !view.SubViews.Any() && view.HasFocus);
+            Assert.DoesNotContain(fx.App.Overlay!.SubViews,
+                view => view.Id is "preferences-save" or "preferences-reload" or "preferences-cancel");
+        }
+        Assert.Equal(0, navigation.SelectedItem);
+        if (width >= 100)
+        {
+            var actions = Descendants(fx.App.Overlay!).Single(view => view.Id == "preferences-category-actions");
+            Assert.False(actions.Visible);
+            ExportPreferenceFrame(fx, width, height, "category-cycle-preview", "General y apariencia");
+        }
+        KeyWithEffect(fx, KeyCode.CursorRight,
+            () => Descendants(fx.App.Overlay!).Any(view => view.Id == "preferences-locale" && view.HasFocus), "explicit entry opens General controls");
+        var panel = Descendants(fx.App.Overlay!).Single(view => view.Id == "preferences-panel");
+        var categoryActions = Descendants(panel).Single(view => view.Id == "preferences-category-actions");
+        Assert.True(categoryActions.Visible);
+        Assert.Equal(3, Descendants(categoryActions).OfType<Button>().Count());
+        var save = Descendants(categoryActions).OfType<Button>().Single(view => view.Id == "preferences-save");
+        fx.Invoke(() => save.SetFocus());
+        fx.Wait(() => save.HasFocus && panel.Viewport.Top <= categoryActions.Frame.Top
+            && panel.Viewport.Bottom >= categoryActions.Frame.Bottom, "category actions scroll into view when focused");
+        ClickThroughApplication(fx, "preferences-save");
+        Assert.Equal("es", fx.App.PreferencesLocaleSnapshot!.Locale);
+        Assert.True(fx.App.PreferencesLocaleSnapshot.IsConfigured);
+        ExportPreferenceFrame(fx, width, height, "category-cycle-editing", "Español");
+        if (width >= 100)
+        {
+            KeyWithEffect(fx, KeyCode.CursorLeft, () => navigation.HasFocus, "left exits category editing");
+            Assert.False(categoryActions.Visible);
+            KeyWithEffect(fx, KeyCode.CursorUp, () => navigation.SelectedItem == count - 1 && navigation.HasFocus, "Up still wraps after leaving editing");
+        }
+    }, noColor: false);
+
+    [Theory]
+    [InlineData(80)]
+    [InlineData(120)]
+    public void Preferences_category_cancel_discards_locale_draft_and_keeps_preferences_open(int width) => RunTuiTest(fx =>
+    {
+        fx.StartTui(initialColumns: width, initialRows: 35);
+        var before = UiLocalePreferencesProtocol.Decode(fx.Server.Query(UiLocalePreferencesProtocol.QueryName, default)!.Json)!;
+        KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "preferences open");
+        ChoosePreferenceCategory(fx, "general");
+        KeyWithEffect(fx, KeyCode.CursorDown, () => fx.App.PreferencesLocale == "en", "preview another language");
+        fx.Invoke(() => Descendants(fx.App.Overlay!).Single(view => view.Id == "preferences-cancel").SetFocus());
+        ClickThroughApplication(fx, "preferences-cancel");
+        fx.Wait(() => fx.App.PreferencesLocale == "es" && fx.App.Overlay is not null
+            && Descendants(fx.App.Overlay).Any(view => view.Id == "preferences-categories" && view.HasFocus), "Cancel returns to the menu without closing preferences");
+        Assert.Equal("es", fx.App.PreferencesDraftLocale);
+        var after = UiLocalePreferencesProtocol.Decode(fx.Server.Query(UiLocalePreferencesProtocol.QueryName, default)!.Json)!;
+        Assert.Equal(before.Revision, after.Revision);
+        Assert.Equal(before.Locale, after.Locale);
+        Assert.Equal(before.IsConfigured, after.IsConfigured);
+    });
+
     [Theory]
     [InlineData(KeyCode.CursorRight)]
     [InlineData(KeyCode.Enter)]
