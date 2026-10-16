@@ -84,8 +84,12 @@ public static class StdioProtocolHost
 
                 try
                 {
-                    var result = Dispatch(client, request, bootstrapKey, actionNonce, conversation, eventStream);
-                    WriteFrame(output, WireEnvelope.Response(request.MessageId, result).ToJson());
+                    var result = Dispatch(client, request, bootstrapKey, actionNonce, conversation,
+                        runPersistedConversation is not null, eventStream);
+                    var responseJson = WireEnvelope.Response(request.MessageId, result).ToJson();
+                    if (Encoding.UTF8.GetByteCount(responseJson) > StdioProtocol.MaximumFrameBytes)
+                        WriteFrame(output, Error(request.MessageId, "frame_too_large", "The query response exceeds the negotiated frame limit.").ToJson());
+                    else WriteFrame(output, responseJson);
                     eventStream.StartIfConfigured();
                 }
                 catch (ReplayFrameTooLargeException)
@@ -117,7 +121,7 @@ public static class StdioProtocolHost
     }
 
     private static string Dispatch(IOmniClient client, WireEnvelope request, byte[]? bootstrapKey, string? actionNonce,
-        ConversationExecution conversation, EventStreamPump eventStream)
+        ConversationExecution conversation, bool conversationExecutionAvailable, EventStreamPump eventStream)
     {
         using var document = JsonDocument.Parse(request.PayloadJson);
         var root = document.RootElement;
@@ -297,6 +301,10 @@ public static class StdioProtocolHost
                 var name = nameElement.GetString();
                 if (string.IsNullOrWhiteSpace(name) || !StdioProtocol.IsSupportedQuery(name))
                     throw new InvalidDataException();
+                if (StdioProtocol.TryGetQuery(name, out var descriptor)
+                    && !NegotiatedCapabilities(client, bootstrapKey, actionNonce, conversationExecutionAvailable)
+                        .Contains(descriptor.Capability, StringComparer.Ordinal))
+                    throw new NotSupportedException();
                 if (name == "humanActionScope")
                 {
                     if (bootstrapKey is null || actionNonce is null || client is not OmniServer trustedServer
@@ -305,8 +313,17 @@ public static class StdioProtocolHost
                     return "{\"name\":\"humanActionScope\",\"json\":"
                         + Quote(trustedServer.TrustedActionScopeJson()) + "}";
                 }
-                var result = client.Query(name, CancellationToken.None);
-                return "{\"name\":" + Quote(result?.Name ?? name) + ",\"json\":"
+                if (name == "native.catalog")
+                {
+                    var capabilities = NegotiatedCapabilities(client, bootstrapKey, actionNonce, conversationExecutionAvailable);
+                    return "{\"name\":\"native.catalog\",\"json\":"
+                        + Quote(StdioProtocol.EncodeNativeCatalog(capabilities)) + "}";
+                }
+                var dispatchName = StdioProtocol.TryGetQuery(name, out var queryDescriptor)
+                    ? queryDescriptor.DispatchName(name) : name;
+                var result = client.Query(dispatchName, CancellationToken.None);
+                return "{\"name\":" + Quote(result?.Name ?? (StdioProtocol.TryGetQuery(name, out queryDescriptor)
+                    ? queryDescriptor.ResultName : name)) + ",\"json\":"
                     + (result is null ? "null" : Quote(result.Json)) + "}";
             }
             case StdioProtocol.SubscribeOperation:
@@ -781,21 +798,38 @@ public static class StdioProtocolHost
             response = Error(request.MessageId, "incompatible_protocol", "No common protocol version.");
             return false;
         }
-        var supported = StdioProtocol.SupportedCapabilities.AsEnumerable();
-        if (client is not OmniServer { ReceiptStore: not null })
-            supported = supported.Where(capability => capability is not ("command.result.lookup" or "events.replay.page" or "events.stream.v1"
-                or "conversation.result.lookup"));
-        var trustedAvailable = bootstrapKey is { Length: 32 } && actionNonce is not null
-            && client is OmniServer { ReceiptStore: not null } && TryGetWorkspaceHash(out _);
-        if (trustedAvailable)
-            supported = supported.Concat(StdioProtocol.TrustedUserActionCapabilities.Where(capability =>
-                capability != "command.conversation.start.user" || conversationExecutionAvailable));
+        var supported = NegotiatedCapabilities(client, bootstrapKey, actionNonce, conversationExecutionAvailable);
+        var trustedAvailable = supported.Contains("query.humanActionScope", StringComparer.Ordinal);
         var capabilities = "[" + string.Join(",", supported.Select(Quote)) + "]";
         response = WireEnvelope.Response(request.MessageId,
             "{\"protocolVersion\":\"1.0\",\"capabilities\":" + capabilities
             + (trustedAvailable ? ",\"trustedActionNonce\":" + Quote(actionNonce!) : "") + "}");
         accepted = true;
         return true;
+    }
+
+    private static string[] NegotiatedCapabilities(IOmniClient client, byte[]? bootstrapKey,
+        string? actionNonce, bool conversationExecutionAvailable)
+    {
+        IEnumerable<string> supported = StdioProtocol.SupportedCapabilities;
+        if (client is not OmniServer)
+        {
+            var hostOnlyQueries = new HashSet<string>(["query.toolCatalog", "query.extensionCatalog", "query.mcpConfiguration",
+                "query.hookCatalog", "query.skillCatalog", "query.sessionMemory", "query.modePreferences",
+                "query.reasoningPreferences", "query.workspaceStatus", "query.turnContext", "query.openRouterStatus", "query.uiPreferences",
+                "query.commandOutcome"],
+                StringComparer.Ordinal);
+            supported = supported.Where(capability => !hostOnlyQueries.Contains(capability));
+        }
+        if (client is not OmniServer { ReceiptStore: not null })
+            supported = supported.Where(capability => capability is not ("command.result.lookup" or "events.replay.page"
+                or "events.stream.v1" or "conversation.result.lookup"));
+        var trustedAvailable = bootstrapKey is { Length: 32 } && actionNonce is not null
+            && client is OmniServer { ReceiptStore: not null } && TryGetWorkspaceHash(out _);
+        if (trustedAvailable)
+            supported = supported.Concat(StdioProtocol.TrustedUserActionCapabilities.Where(capability =>
+                capability != "command.conversation.start.user" || conversationExecutionAvailable));
+        return supported.Distinct(StringComparer.Ordinal).ToArray();
     }
 
     private static WireEnvelope ParseEnvelope(string json)

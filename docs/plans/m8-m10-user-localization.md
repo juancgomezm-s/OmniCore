@@ -21,6 +21,21 @@ Bloque cerrado en su alcance local. No cierra M9 ni la memoria completa M10. Alc
 [su plan](external-agent-discovery.md) y [acta](../validation/m9-block-g-20261015.md). OR5 M8 y
 aceptaciones live/manual de F/F2 siguen pendientes por separado.
 
+**M9-J construido y cableado localmente en Core y OmniCoder (2026-10-15):** contrato nativo
+versionado sobre stdio 1.0, con catálogo derivado del mismo conjunto negociado que `hello`, 28
+queries explícitas, 11 commands y capabilities por implementación efectiva. El SDK valida el
+catálogo y devuelve DTOs tipados para la vista de tools/skills/contexto; las queries genéricas
+conservan `data: unknown`. El adapter de producción lo consume y reutiliza callbacks de autorización,
+receipts durables, proof HMAC efímera, streaming/replay y artifacts existentes. El alcance
+local y la evidencia están en [ADR-0055](../adr/0055-contrato-nativo-omnicoder.md) y
+[acta M9-J](../validation/m9-block-j-20261015.md). No equivale a acceso funcional completo ni cierra
+M9. El siguiente bloque nativo debe construir Sessions create/open/rename/compact; modelos y rutas
+reales; `InteractionRequest`/Questionnaire; `command.invoke`, activación de skills y acciones de
+memoria; y controladores tipados de plan/lanes/worktrees. No se anuncian como disponibles funciones
+no construidas (incluido ConPTY, pendiente de M9, y futuras funciones de M10). La seguridad durable
+por conversación aprobada en §11.M sigue
+OPEN y no se oculta ni sustituye el grant de conexión existente.
+
 **`P0-OMNI-UNIFICACION` cerrado globalmente (2026-10-14):** [acta consolidada](../validation/omni-family-homologation-closure-20261014.md), evidencias de los tres productos y aceptación del usuario de OmniCoder Electron, OmniCore CLI/TUI y OmniLlama React, con Svelte fuera de esta fase. El usuario confirma animación remota funcionando. Se levanta el bloqueo de homologación y se autoriza iniciar M9 con un solo worker Luna en alto; los criterios técnicos y de aceptación propios de M8–M10 continúan vigentes. OR5 autenticado sigue pendiente y no se declara M8 cerrado.
 
 **Alcance aclarado por el usuario (2026-10-14): conservar la experiencia y los menús actuales de OmniCore, considerados una buena referencia.** La [matriz U-C01–U-C12](../architecture/arquitectura.md#matriz-ejecutable-de-omnicore--u-c01-a-u-c12-2026-10-14) se usa para contraste puntual, no como doce trabajos ni como una campaña de rediseño. Sólo corregir discrepancias concretas de uso; reutilizar la evidencia existente y completar lo necesario para el cierre cruzado. Los cuatro idiomas de Core se conservan. U-C12 mantiene su alcance técnico M9 y no queda construido por homologar pantallas.
@@ -296,6 +311,33 @@ OmniCoder integrados; M9-H está integrado en main y M9-I completa el cableado `
 de fixture local. Aún faltan aceptación de inferencia visual real y F/F2 live, controles de procesos
 persistentes/interactivos, aceptación en cuatro idiomas y validación multiplataforma. Reusar Client/idioma
 y mantener DTOs canónicos/wire invariantes. M9-H/M9-I no cierran M9.
+
+#### M9-J: contrato nativo Core ↔ OmniCoder (2026-10-15)
+
+El Host conserva stdio 1.0 y negocia un catálogo explícito versionado: **28 queries, 11 comandos,
+32 capabilities regulares y 10 capabilities de acciones humanas**. `hello` y `native.catalog`
+comparten el conjunto filtrado por cliente/ejecución disponible. Se normaliza `ui.locale` a
+`uiLocaleSettings`; capability es soporte negociado, no grant. Queries de red con efectos, rutas
+arbitrarias y métodos no registrados siguen fuera de la fachada. Consultas con respuesta mayor a
+1 MiB fallan con error tipado sin truncamiento ni cierre del Host.
+
+OmniCoder añade `OmniCoreNativeApi` en main y lo usa en el adaptador de producción para conversación,
+stream/replay, receipts y artifacts. Los callbacks de cancelar, interrumpir y seleccionar modo llaman
+al SDK sólo después de confirmación nativa, grant vigente y revalidación de scope; el transporte
+calcula una proof HMAC efímera para la acción. Esa proof y los receipts durables son mecanismos
+distintos. Los uploads begin/chunk/finish usan staging en memoria por conexión y no tienen receipt ni
+recuperación durable. El panel expone consultas reales y acotadas de catálogo de tools,
+skills y contexto mediante IPC allowlisted y DTOs decodificados. La inspección de tools informa el
+estado del catálogo del Run; toda ejecución pasa por el runtime y `AuthorizeToolIntent` en Core.
+Inspección de skills/contexto no concede permisos; contexto presenta tokens/items conocidos sin
+exponer fingerprint interno.
+
+Esta slice no cierra la solicitud de acceso funcional completo. Trabajo siguiente coordinado con
+Core: crear/abrir/renombrar/compactar Session; modelos/rutas Core reales; respuestas
+`InteractionRequest`/Questionnaire; `command.invoke`, activación de skills y acciones de memoria;
+controladores tipados de plan/lanes/worktrees. La seguridad durable por conversación de §11.M sigue
+OPEN y no se sustituye con el grant de conexión ni con Plan/Act. ConPTY (pendiente de M9) y funciones
+futuras M10 no se anuncian como construidas.
 
 ## M10: v1, memoria completa y evaluación
 

@@ -60,6 +60,41 @@ public sealed class StdioTransportTests
                 && source.GetProperty("state").GetString() == "Discovered"
                 && source.GetProperty("path").GetString()!.Contains("stdio-guide", StringComparison.Ordinal));
             Assert.DoesNotContain("Body never leaves the source.", query.Json, StringComparison.Ordinal);
+
+            var catalog = Assert.IsType<SessionQueryResult>(client.Query("native.catalog", TestContext.Current.CancellationToken));
+            using var catalogJson = JsonDocument.Parse(catalog.Json);
+            var queryIds = catalogJson.RootElement.GetProperty("queries").EnumerateArray()
+                .Select(item => item.GetProperty("id").GetString()!).ToArray();
+            Assert.Equal(queryIds.Length, queryIds.Distinct(StringComparer.Ordinal).Count());
+            Assert.Contains(queryIds, id => id == "state");
+            Assert.Contains(queryIds, id => id == "ui.locale");
+            var locale = Assert.Single(catalogJson.RootElement.GetProperty("queries").EnumerateArray(),
+                item => item.GetProperty("id").GetString() == "ui.locale");
+            Assert.Equal("uiLocaleSettings", locale.GetProperty("wireName").GetString());
+            Assert.Equal("uiLocaleSettings", locale.GetProperty("resultName").GetString());
+            var uploadCommands = catalogJson.RootElement.GetProperty("commands").EnumerateArray()
+                .Where(item => item.GetProperty("id").GetString()!.StartsWith("attachment.upload.", StringComparison.Ordinal)).ToArray();
+            Assert.Equal(3, uploadCommands.Length);
+            Assert.All(uploadCommands, item => Assert.Equal("", item.GetProperty("receipt").GetString()));
+            Assert.Equal("sessionObservability:123", Assert.Single(StdioProtocol.NativeQueries,
+                queryDescriptor => queryDescriptor.Name == "sessionObservability").DispatchName("sessionObservability:123"));
+            Assert.Equal("uiLocaleSettings", Assert.Single(StdioProtocol.NativeQueries,
+                queryDescriptor => queryDescriptor.Name == "ui.locale").DispatchName("ui.locale"));
+            Assert.NotNull(client.Query("uiLocaleSettings", TestContext.Current.CancellationToken));
+            var localeAlias = Assert.IsType<SessionQueryResult>(client.Query("ui.locale", TestContext.Current.CancellationToken));
+            Assert.Equal("uiLocaleSettings", localeAlias.Name);
+            var tools = Assert.IsType<SessionQueryResult>(client.Query("tools", TestContext.Current.CancellationToken));
+            using var toolsJson = JsonDocument.Parse(tools.Json);
+            Assert.NotEmpty(toolsJson.RootElement.GetProperty("tools").EnumerateArray());
+            Assert.DoesNotContain("simulated", tools.Json, StringComparison.OrdinalIgnoreCase);
+            var skills = Assert.IsType<SessionQueryResult>(client.Query("skills", TestContext.Current.CancellationToken));
+            using var skillsJson = JsonDocument.Parse(skills.Json);
+            Assert.Contains(skillsJson.RootElement.GetProperty("skills").EnumerateArray(), item =>
+                item.GetProperty("id").GetString() == "stdio-guide");
+            var context = Assert.IsType<SessionQueryResult>(client.Query("context", TestContext.Current.CancellationToken));
+            using var contextJson = JsonDocument.Parse(context.Json);
+            Assert.True(contextJson.RootElement.TryGetProperty("snapshot", out _));
+            Assert.ThrowsAny<Exception>(() => client.Query("openrouter.credits", TestContext.Current.CancellationToken));
         }
         finally
         {
@@ -1141,7 +1176,15 @@ public sealed class StdioTransportTests
         using var negotiated = System.Text.Json.JsonDocument.Parse(frames[1]);
         var capabilities = negotiated.RootElement.GetProperty("payload").GetProperty("capabilities")
             .EnumerateArray().Select(value => value.GetString()).ToArray();
-        Assert.Equal(StdioProtocol.SupportedCapabilities, capabilities);
+        Assert.Contains("query.state", capabilities);
+        Assert.Contains("events.stream.v1", capabilities);
+        Assert.DoesNotContain("query.toolCatalog", capabilities);
+        Assert.DoesNotContain("query.nativeCatalog", capabilities);
+        Assert.Equal(capabilities.Length, capabilities.Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(StdioProtocol.NativeQueries.Count, StdioProtocol.NativeQueries.Select(query => query.Name).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(StdioProtocol.SupportedCapabilities.Length, StdioProtocol.SupportedCapabilities.Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(StdioProtocol.TrustedUserActionCapabilities.Length, StdioProtocol.TrustedUserActionCapabilities.Distinct(StringComparer.Ordinal).Count());
+        Assert.All(StdioProtocol.NativeCommands, command => Assert.True(StdioProtocol.IsSupportedCommand(command.Name)));
     }
 
     [Fact]
@@ -1163,6 +1206,30 @@ public sealed class StdioTransportTests
         Assert.Equal(MessageTypes.Response, hello.MessageType);
         Assert.Equal(MessageTypes.Error, replay.MessageType);
         Assert.Contains("unsupported_request", replay.PayloadJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Oversized_native_query_is_bounded_and_does_not_close_the_connection()
+    {
+        using var requests = new MemoryStream();
+        WireFrame.Write(requests, "{\"version\":\"1.0\",\"messageType\":\"hello\",\"messageId\":\"h1\",\"payload\":{\"supportedVersions\":[\"1.0\"]}}");
+        WireFrame.Write(requests, WireEnvelope.Command("q1", "{\"operation\":\"query\",\"name\":\"state\"}").ToJson());
+        WireFrame.Write(requests, WireEnvelope.Command("q2", "{\"operation\":\"query\",\"name\":\"state\"}").ToJson());
+        requests.Position = 0;
+        using var response = new MemoryStream();
+        using var diagnostics = new StringWriter();
+        var exitCode = StdioProtocolHost.Run(new OversizedQueryClient(), requests, response, diagnostics,
+            TestContext.Current.CancellationToken);
+        Assert.Equal(0, exitCode);
+        Assert.InRange(response.Length, 1, StdioProtocol.MaximumFrameBytes * 2L + 2);
+        response.Position = 0;
+        _ = WireEnvelope.FromJson(WireFrame.Read(response)!);
+        var oversized = WireEnvelope.FromJson(WireFrame.Read(response)!);
+        var recovered = WireEnvelope.FromJson(WireFrame.Read(response)!);
+        Assert.Equal(MessageTypes.Error, oversized.MessageType);
+        Assert.Contains("frame_too_large", oversized.PayloadJson, StringComparison.Ordinal);
+        Assert.Equal(MessageTypes.Response, recovered.MessageType);
+        Assert.Contains("ready", recovered.PayloadJson, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1569,6 +1636,17 @@ public sealed class StdioTransportTests
         public IReadOnlyList<WireEnvelope> SubscribeSince(long fromSequence) =>
             [WireEnvelope.Event("event-1", "{\"large\":\"" + new string('x', StdioProtocol.MaximumFrameBytes) + "\"}")];
         public SessionQueryResult? Query(string name, CancellationToken cancellationToken) => null;
+    }
+
+    private sealed class OversizedQueryClient : IOmniClient
+    {
+        private int _queries;
+        public CommandAck Send(WireEnvelope command, CancellationToken cancellationToken) => CommandAck.Ok(command.MessageId);
+        public IReadOnlyList<WireEnvelope> SubscribeSince(long fromSequence) => [];
+        public SessionQueryResult? Query(string name, CancellationToken cancellationToken) =>
+            Interlocked.Increment(ref _queries) == 1
+                ? new SessionQueryResult(name, "{\"value\":\"" + new string('x', StdioProtocol.MaximumFrameBytes) + "\"}")
+                : new SessionQueryResult(name, "{\"ready\":true}");
     }
 
     private sealed class RecordingClient : IOmniClient
