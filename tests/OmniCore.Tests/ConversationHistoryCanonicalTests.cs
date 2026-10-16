@@ -105,6 +105,24 @@ public sealed class ConversationHistoryCanonicalTests
     }
 
     [Fact]
+    public void Externalizing_tool_text_keeps_native_images_in_tool_result()
+    {
+        var image = new ImageBlock("image/png", new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 });
+        var result = new ToolResultBlock(ToolCallId.New(), new ContentBlock[] { new TextBlock("image summary"), image }, false);
+        var original = new ModelMessage(MessageRole.Tool, [result]);
+        var item = new ContextItem("tool-result", ContextItemKind.ToolResult,
+            "externalized tool summary", 20, ContextPriority.Normal, RetentionPolicy.ConversationWindow,
+            new ContextProvenance("session-conversation", ContributionCategory.Conversation,
+                "engine", ScopeLevel.Session, false, ["artifact=sha256:" + new string('a', 64)]));
+
+        var projected = ExplorerTurn.ProjectConversationMessage(original, item, ContextDecision.Externalized, 100);
+
+        var projectedResult = Assert.IsType<ToolResultBlock>(Assert.Single(projected.Content));
+        Assert.Contains(projectedResult.Content, block => block is TextBlock { Text: "externalized tool summary" });
+        Assert.Contains(projectedResult.Content, block => block is ImageBlock { MediaType: "image/png" });
+    }
+
+    [Fact]
     public void Equal_text_in_distinct_turns_is_not_deduplicated_as_one_answer()
     {
         using var fixture = new Fixture();

@@ -383,13 +383,13 @@ public sealed class OmniHost
         ModelCapabilityBoundary? boundary, IReadOnlyDictionary<string, string>? projectRestrictions,
         RunId? runId = null, AgentProfile? agentProfile = null,
         Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null,
-        IReadOnlyList<IToolIntentBoundary>? additionalBoundaries = null)
+        IReadOnlyList<IToolIntentBoundary>? additionalBoundaries = null, IArtifactStore? artifacts = null)
     {
         var policy = CreateGrantAwarePolicy(OmniCore.Domain.RunMode.Plan, projectRestrictions, workspaceRoot, runId);
         IPermissionPolicy effectivePolicy = agentProfile is null ? policy
             : new AgentProfilePermissionPolicy(policy, agentProfile, new PathBoundaryValidator(), workspaceRoot);
-        return ScriptedToolExecutor.WithWorkspace(catalog, effectivePolicy, workspaceRoot, boundary, receiveMailbox,
-            additionalBoundaries);
+        return new ScriptedToolExecutor(catalog, effectivePolicy, workspaceRoot, boundary, null, null, false,
+            artifacts: artifacts, receiveMailbox: receiveMailbox, additionalBoundaries: additionalBoundaries);
     }
 
     public static ScriptedPermissionPolicy CreateProjectRestrictionPolicy(OmniCore.Domain.RunMode mode,

@@ -116,7 +116,7 @@ root revisó sin repetir campañas. `completion.gate` permanece pendiente para e
 cableado final H. La validación real del launcher, arquitectura/build y suite
 integral no se acreditan por estos fixtures. M8 sigue abierto por E/F/H y OR5 real.
 
-El usuario incorpora las recomendaciones de la comparación y una lectura para modelos con visión al alcance M8–M10. Esta tabla distingue antecedentes de requisitos nuevos. Los nombres nuevos son contratos propuestos, pendientes de implementación y revisión; incluirlos en el roadmap no acredita un backend ni una herramienta visible al modelo.
+El usuario incorpora las recomendaciones de la comparación y una lectura para modelos con visión al alcance M8–M10. Esta tabla distingue antecedentes de requisitos nuevos. Los nombres nuevos son contratos propuestos; incluirlos en el roadmap no acredita un backend ni una herramienta visible al modelo. `media.read` se implementa y audita en M9-I, con aceptación de wiring fixture explícitamente separada de la inferencia visual real pendiente.
 
 | Hito | Herramienta / mejora | Antecedente | Alcance y aceptación añadidos |
 |---|---|---|---|
@@ -241,9 +241,10 @@ Decisión: [ADR-0051](../adr/0051-conversation-inference-from-persisted-input.md
 [stdio 1.0](../protocol/stdio/1.0/README.md#m9-e-conversation-execution-extension); evidencia en
 [acta M9-E](../validation/m9-block-e-20261014.md). Este bloque no cierra M9.
 
-Pendientes explícitos para cerrar M9: `media.read` consumido por proveedor con visión, controles de
-procesos persistentes/ConPTY, validación Linux/macOS/filesystems, paridad restante del cliente Core
-(gestión de sesiones e interacciones), aceptación nativa es/en/fr/it y procedencia `Native/Imported`. No hay garantía
+Pendientes explícitos para cerrar M9: aceptación de inferencia visual real y de generación live/manual
+F/F2, controles de procesos persistentes/ConPTY, validación Linux/macOS/filesystems, paridad restante
+del cliente Core (gestión de sesiones e interacciones), aceptación nativa es/en/fr/it y procedencia
+`Native/Imported`. No hay garantía
 exactly-once general y OR5 autenticado M8 sigue pendiente.
 
 | Resto de M9 tras M9-B | Construcción | Presentación y aceptación |
@@ -271,10 +272,30 @@ el protocolo stdio 1.0 y [acta M9-H](../validation/m9-block-h-20261015.md). El b
 canónicos durables mientras el Run sigue activo; no hace streaming de tokens del proveedor ni inventa
 TTFT, usage o coste. Sus pruebas de producto usan Electron real, Host .NET y provider fixture local.
 
+#### M9-I: lectura visual `media.read` (2026-10-15)
+
+Se completa la herramienta ya registrada, reutilizando materialización CAS, `ToolResult` tipado y los
+serializadores de OpenAI, Anthropic y compatible. PNG/JPEG pasan decodificación completa en Host;
+WebP se limita a firma/contenedor y dimensiones, sin afirmar decodificación completa. La ruta autorizada
+se lee con límite de bytes; una referencia hash requiere pertenecer al journal de la Session fijada para
+el Run e incluye también imágenes assistant persistidas. No se reabre una ruta durante replay. La
+frontera efectiva requiere entrada de imagen y formato nativo de tools; `media.read` se clasifica como
+`WorkspaceRead` y conserva el techo de permisos vigente. La referencia opcional `toolcall.succeeded`
+expone sólo ID/hash/algoritmo/MIME/tamaño, sin ruta ni bytes. Externalización de texto conserva bloques
+de imagen y la serialización compatible agrupa tool results antes del mensaje multimodal siguiente.
+
+Evidencia local Windows: prueba focal Core 38 PASS / 0 FAIL / 1 SKIP explícito porque el host no permite
+crear symlinks; path fuera del workspace y `.env` sí se ejecutan. Build de solución 0 warnings/0 errors;
+arquitectura 62/62. La prueba Electron→Host usa una fixture HTTP determinista: primera petición solicita
+`media.read`, la segunda verifica bytes PNG nativos y hash. Prueba cableado únicamente; no prueba
+comprensión visual ni inferencia pagada. WebP completo, live F/F2, aceptación de proveedor real y los
+pendientes enumerados arriba siguen abiertos. Ver [acta M9-I](../validation/m9-block-i-20261015.md).
+
 **Salida M9:** transporte/lease/reconexión/net8, stream durable/backpressure y chat/inferencia desde
-OmniCoder construidos en sus ramas de bloque; aún faltan `media.read` consumido por proveedor visual,
-controles de procesos persistentes/interactivos, aceptación en cuatro idiomas y validación
-multiplataforma. Reusar Client/idioma y mantener DTOs canónicos/wire invariantes. M9-H no cierra M9.
+OmniCoder integrados; M9-H está integrado en main y M9-I completa el cableado `media.read` con evidencia
+de fixture local. Aún faltan aceptación de inferencia visual real y F/F2 live, controles de procesos
+persistentes/interactivos, aceptación en cuatro idiomas y validación multiplataforma. Reusar Client/idioma
+y mantener DTOs canónicos/wire invariantes. M9-H/M9-I no cierran M9.
 
 ## M10: v1, memoria completa y evaluación
 

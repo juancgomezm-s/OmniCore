@@ -240,6 +240,36 @@ public sealed class ProtocolMapperTests
     }
 
     [Fact]
+    public void Tool_success_exposes_only_bounded_image_reference_metadata()
+    {
+        var (store, session, _, stream) = Journal();
+        var image = new ArtifactRef(ArtifactId.New(), ContentHash.Sha256(new string('a', 64)), 128,
+            "image/png", ArtifactKind.ToolOutput, Sensitivity.Sensitive);
+        var call = ToolCallId.New();
+        stream.AppendBatch(new DomainEventPayload[]
+        {
+            new ToolCallRequested(call, "fixture", "media.read", "{}"),
+            new ToolCallPrepared(call, "{}"),
+            new ToolCallAuthorized(call),
+            new ToolCallStarted(call, EffectClass.None, null),
+            new ToolCallSucceeded(call, "{}") { ResultArtifact = image },
+        }, DurabilityClass.Standard);
+
+        var wire = Assert.Single(new ProtocolMapper(Codecs).Map(store.ReadFrom(session, 1)), item =>
+            JsonObj.Parse(item.PayloadJson)["type"] == "toolcall.succeeded");
+        var fields = JsonObj.Parse(wire.PayloadJson);
+        var reference = JsonObj.Parse(fields["resultArtifact"]!);
+        Assert.Equal(image.Id.ToString(), reference["artifactId"]);
+        Assert.Equal(image.Hash.Value, reference["hash"]);
+        Assert.Equal("sha256", reference["hashAlgorithm"]);
+        Assert.Equal("image/png", reference["mediaType"]);
+        Assert.Equal("128", reference["size"]);
+        Assert.DoesNotContain("bytes", fields.Keys);
+        Assert.DoesNotContain("path", reference.Keys);
+        Assert.DoesNotContain("base64", wire.PayloadJson, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void The_server_subscription_returns_the_mapped_journal_of_the_current_session()
     {
         var server = OmniHost.CreateInMemoryServer();

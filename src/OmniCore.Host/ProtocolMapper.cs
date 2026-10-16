@@ -231,7 +231,7 @@ public sealed class ProtocolMapper
         TurnInterrupted e => new() { ["turnId"] = e.TurnId.ToString() },
         TurnAbandoned e => new() { ["turnId"] = e.TurnId.ToString(), ["reason"] = _redaction.Redact(e.Reason) },
         ToolCallRequested e => ToolRequestedFields(e),
-        ToolCallSucceeded e => new() { ["toolCallId"] = e.ToolCallId.ToString() },
+        ToolCallSucceeded e => ToolSucceededFields(e),
         ToolCallFailed e => new()
         {
             ["toolCallId"] = e.ToolCallId.ToString(), ["cause"] = _redaction.Redact(e.Cause),
@@ -342,6 +342,26 @@ public sealed class ProtocolMapper
             + "\"outputIndex\":" + part.OutputIndex.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}")) + "]";
 
     private static string Mode(RunMode mode) => mode.ToString().ToLowerInvariant();
+
+    private static Dictionary<string, string> ToolSucceededFields(ToolCallSucceeded succeeded)
+    {
+        var fields = new Dictionary<string, string> { ["toolCallId"] = succeeded.ToolCallId.ToString() };
+        // La metadata opcional permite consultar el resultado visual de media.read. No se expone
+        // el contenido ni una ruta; la identidad canónica sigue siendo el hash del CAS.
+        if (succeeded.ResultArtifact is { } artifact
+            && artifact.MediaType is "image/png" or "image/jpeg" or "image/webp"
+            && artifact.Hash.Algorithm == "sha256" && artifact.Hash.Value.Length == 64
+            && artifact.Size is > 0 and <= 16 * 1024 * 1024)
+        {
+            fields["resultArtifact"] = "{" + JsonObj.Field("artifactId", artifact.Id.ToString()) + ","
+                + JsonObj.Field("hash", artifact.Hash.Value) + ","
+                + JsonObj.Field("hashAlgorithm", artifact.Hash.Algorithm) + ","
+                + JsonObj.Field("mediaType", artifact.MediaType) + ","
+                + "\"size\":" + artifact.Size.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}";
+        }
+
+        return fields;
+    }
 
     /// <summary>Texto de las partes del input (array JSON de strings, o un string suelto).</summary>
     private static string InputText(string partsJson)

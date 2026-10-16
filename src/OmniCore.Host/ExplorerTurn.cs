@@ -3627,7 +3627,8 @@ public sealed class ExplorerTurn
         if (externalized)
         {
             var blocks = original.Content.Select(block => block is ToolResultBlock result
-                ? (ContentBlock)(result with { Content = new ContentBlock[] { new TextBlock(item.Content) } })
+                ? (ContentBlock)(result with { Content = new ContentBlock[] { new TextBlock(item.Content) }
+                    .Concat(result.Content.Where(child => child is ImageBlock)).ToArray() })
                 : block is TextBlock ? new TextBlock(item.Content) : block).ToArray();
             return new ModelMessage(original.Role, blocks);
         }

@@ -52,6 +52,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         new Dictionary<string, ModelToolCapability>
         {
             { "filesystem.read", ModelToolCapability.WorkspaceRead },
+            { "media.read", ModelToolCapability.WorkspaceRead },
             { "filesystem.list", ModelToolCapability.WorkspaceRead },
             { "artifact.read", ModelToolCapability.WorkspaceRead },
             { "filesystem.search", ModelToolCapability.Search },

@@ -1,7 +1,9 @@
 using OmniCore.Host;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
+using OmniCore.Execution;
 using OmniCore.Infrastructure;
+using OmniCore.Security;
 using OmniCore.Tools;
 
 namespace OmniCore.Tests;
@@ -30,6 +32,28 @@ public sealed class ModelPolicyProfileControlsTests
             Assert.DoesNotContain("filesystem.search", patchVisible);
 
             var observe = ModelPolicyPresets.ObserveOnly();
+            var mediaTools = OmniHost.CreateExplorerTools(mediaReadTool: new MediaReadTool(
+                _ => false, _ => null, new PathBoundaryValidator()));
+            var mediaDefinitions = mediaTools.Catalog().Definitions();
+            var observeBoundary = new ModelCapabilityBoundary(new EffectiveModelPolicy(
+                ModelPolicyKey.For("fixture", "media-observer"), 1, observe.Category,
+                observe.ToolPolicy, observe.MutationPolicy, false));
+            var visible = observeBoundary.VisibleTools(mediaDefinitions).Select(tool => tool.Name).ToArray();
+            Assert.Equal(ModelToolCapability.WorkspaceRead, ModelCapabilityBoundary.CoreTools["media.read"]);
+            Assert.Contains("media.read", visible);
+            var mediaIntent = new ToolIntent(ToolCallId.New(), new ToolId("media.read"),
+                "{\"path\":\"image.png\"}", EffectClass.None,
+                new ResourceClaims(["image.png"], [], [], null, []), ToolRisk.Low, null);
+            Assert.True(observeBoundary.Evaluate(mediaIntent).Allowed);
+
+            var deniedReadPolicy = new ModelToolPolicy(ToolMode.Direct, 6, false,
+                new HashSet<ModelToolCapability> { ModelToolCapability.Search });
+            var deniedBoundary = new ModelCapabilityBoundary(new EffectiveModelPolicy(
+                ModelPolicyKey.For("fixture", "media-no-read"), 1, ModelPolicyCategory.Custom,
+                deniedReadPolicy, observe.MutationPolicy, false));
+            Assert.False(deniedBoundary.IsToolVisible("media.read"));
+            Assert.False(deniedBoundary.Evaluate(mediaIntent).Allowed);
+
             var observePolicy = new EffectiveModelPolicy(ModelPolicyKey.For("fixture", "observer"), 1,
                 observe.Category, observe.ToolPolicy, observe.MutationPolicy, false);
             var observeVisible = new ModelCapabilityBoundary(observePolicy).VisibleTools(definitions)

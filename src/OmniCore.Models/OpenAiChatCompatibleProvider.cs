@@ -276,8 +276,23 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
         if (!string.IsNullOrEmpty(request.Instructions))
             messages.Add(new ChatRequestMessage { Role = "system", Content = JsonSerializer.SerializeToElement(request.Instructions, OpenAiJsonContext.Default.String) });
         var serverIds = CollectServerCallIds(request.Messages);
-        foreach (var message in request.Messages)
+        for (var index = 0; index < request.Messages.Count; index++)
+        {
+            var message = request.Messages[index];
+            if (message.Role == MessageRole.Tool)
+            {
+                // ExplorerTurn stores each tool result as its own ModelMessage. Coalesce
+                // the contiguous response batch before mapping so all tool outputs precede
+                // the image-bearing user message, even when several tools returned images.
+                var batch = new List<ContentBlock>();
+                while (index < request.Messages.Count && request.Messages[index].Role == MessageRole.Tool)
+                    batch.AddRange(request.Messages[index++].Content);
+                index--;
+                messages.AddRange(MapMessage(new ModelMessage(MessageRole.Tool, batch), serverIds));
+                continue;
+            }
             messages.AddRange(MapMessage(message, serverIds));
+        }
 
         // ProviderState is the existing durable opaque-continuation carrier: this adapter stores
         // ProviderOpaque message fields here because artifact payload creation belongs to the runtime.
@@ -353,7 +368,8 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
                 }).ToList(),
             };
         }
-        foreach (var result in message.Content.OfType<ToolResultBlock>())
+        var toolResults = message.Content.OfType<ToolResultBlock>().ToArray();
+        foreach (var result in toolResults)
         {
             var textContent = result.Content.Where(static block => block is TextBlock or DocumentBlock).ToArray();
             yield return new ChatRequestMessage
@@ -363,13 +379,20 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
                     ? new ContentBlock[] { new TextBlock("Tool returned image content; image follows in a separate user content block.") }
                     : textContent),
             };
-            var images = result.Content.OfType<ImageBlock>().Cast<ContentBlock>().ToArray();
-            if (images.Length > 0)
+        }
+        // Keep every native tool response adjacent to its assistant tool-call message.
+        // Chat-compatible APIs expect the complete tool batch before the next user turn;
+        // place all returned images in one following user message instead of interleaving
+        // user content between pending tool results.
+        var imageContent = toolResults.SelectMany(result => result.Content.OfType<ImageBlock>()
+            .Select(image => (ResultId: result.Id, Image: image))).ToArray();
+        if (imageContent.Length > 0)
+        {
+            var labelled = imageContent.SelectMany(item => new ContentBlock[]
             {
-                var labelled = new ContentBlock[] { new TextBlock($"Image content returned by tool call {result.Id} follows.") }
-                    .Concat(images).ToArray();
-                yield return new ChatRequestMessage { Role = "user", Content = EncodeContent(labelled) };
-            }
+                new TextBlock($"Image content returned by tool call {item.ResultId} follows."), item.Image,
+            }).ToArray();
+            yield return new ChatRequestMessage { Role = "user", Content = EncodeContent(labelled) };
         }
         // Opaque artifact loading still belongs to ArtifactStore. Do not turn
         // ReasoningBlock or ProviderOpaqueBlock into visible conversation text.

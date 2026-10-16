@@ -1908,8 +1908,8 @@ public sealed class OmniCliRuntime : IDisposable
             if (delegation is null)
                 _usageContext = (sessionId, route.ProviderId, provider, loaded.Pricing(model), connectUrl, artifacts);
             var artifactReadTool = CreateArtifactReadTool(server, artifacts);
-            var mediaReadTool = effectiveProfile.InputModalities.Contains("image", StringComparer.Ordinal)
-                ? CreateMediaReadTool(server, artifacts) : null;
+            var imageToolRoute = MediaReadAvailability.CanExpose(providerDescription, effectiveProfile, harness);
+            var mediaReadTool = imageToolRoute ? CreateMediaReadTool(server, artifacts, sessionId) : null;
             var receiveMailbox = delegation is null ? null
                 : (Func<ToolCallId, CancellationToken, Task<string?>>)((toolCallId, token) =>
                     server.ReceiveMailboxMessageAsync(sessionId, runId, route,
@@ -2029,7 +2029,7 @@ public sealed class OmniCliRuntime : IDisposable
                     audit, interactionResponder, interactive, artifacts, agentProfile, receiveMailbox,
                     extensionBoundaries)
                 : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
-                    agentProfile, receiveMailbox, extensionBoundaries);
+                    agentProfile, receiveMailbox, extensionBoundaries, artifacts);
             var skillLimits = SkillSelectionLimits.FromHarness(harness,
                 (int)Math.Clamp(usableContext / 8, 1, 16_384));
             var skillSourceCatalog = new SkillSourceCatalog();
@@ -2360,7 +2360,7 @@ public sealed class OmniCliRuntime : IDisposable
                             restrictions, work.Run, audit, interactionResponder, interactive, artifacts,
                             work.Profile, receiveMailbox)
                         : OmniHost.CreateExplorerExecutor(childTools.Catalog(), laneRoot, childBoundary,
-                            restrictions, work.Run, work.Profile, receiveMailbox);
+                            restrictions, work.Run, work.Profile, receiveMailbox, artifacts: artifacts);
                     var childMaterializer = new ContextMaterializer(tokenCounter,
                         [new WorkingStateContributor(childWorkingState)]);
                     var childTurn = BuildTurn(productReasoning, reasoningResolution, childExecutor,
@@ -4056,27 +4056,19 @@ public sealed class OmniCliRuntime : IDisposable
         return new ArtifactReadTool(artifacts, authorization.IsReferenced);
     }
 
-    private static MediaReadTool CreateMediaReadTool(OmniServer server, IArtifactStore artifacts)
+    private static MediaReadTool CreateMediaReadTool(OmniServer server, IArtifactStore artifacts, SessionId sessionId)
     {
         var store = server.AcquireStore();
         var codecs = EventCodecs.Create();
-        var authorization = new SessionArtifactReadAuthorization(store, server.LastSessionId, artifacts);
-        ArtifactRef? Resolve(string hash)
-        {
-            if (server.LastSessionId() is not { } session) return null;
-            foreach (var evt in store.ReadFrom(session, 1))
+        SessionId? CurrentSession() => sessionId;
+        var authorization = new SessionArtifactReadAuthorization(store, CurrentSession, artifacts);
+        ArtifactRef? Resolve(string hash) => SessionMediaArtifactResolver.Resolve(store, CurrentSession, codecs, hash);
+        return new MediaReadTool(authorization.IsReferenced, Resolve, new PathBoundaryValidator(),
+            (mediaType, bytes) =>
             {
-                var reference = codecs.Decode(evt) switch
-                {
-                    UserInputReceived input => input.Attachments?.FirstOrDefault(item => item.Hash.Value == hash),
-                    ToolCallSucceeded success => success.ResultArtifact?.Hash.Value == hash ? success.ResultArtifact : null,
-                    _ => null,
-                };
-                if (reference is not null) return reference;
-            }
-            return null;
-        }
-        return new MediaReadTool(authorization.IsReferenced, Resolve, new PathBoundaryValidator());
+                var decoded = GeneratedImageValidator.Decode(mediaType, bytes);
+                return (decoded.Width, decoded.Height);
+            });
     }
 
     private OmniServer Server() => Server(OmniHost.WorkspaceDataDirectory(
