@@ -2,6 +2,12 @@
 
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 
+**M9-I integrado y cerrado en su alcance local (2026-10-15):** `media.read` queda clasificado como
+WorkspaceRead y conectado al CAS del executor Explorer, al siguiente request visual nativo y a los
+clientes existentes. Focales 38 PASS/1 SKIP explícito, arquitectura 62/62 y E2E Electron→Host→HTTP
+fixture 1 PASS; no acreditan comprensión visual de un modelo real. PNG/JPEG se decodifican; WebP sólo
+comprueba firma/cabeceras/dimensiones. M9 y M8 OR5 siguen abiertos. Acta: `docs/validation/m9-block-i-20261015.md`.
+
 - Especificación: `docs/spec/OmniCore-v1.md` (v0.5)
 - Decisiones: `docs/adr/` — **prevalecen sobre la spec**. Léelas antes de cambiar cualquier cosa que toquen.
 - Arquitectura (diagramas, clasificación de abstracciones, preguntas abiertas, roadmap): `docs/architecture/arquitectura.md`

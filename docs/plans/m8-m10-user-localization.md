@@ -276,7 +276,7 @@ TTFT, usage o coste. Sus pruebas de producto usan Electron real, Host .NET y pro
 
 Se completa la herramienta ya registrada, reutilizando materialización CAS, `ToolResult` tipado y los
 serializadores de OpenAI, Anthropic y compatible. PNG/JPEG pasan decodificación completa en Host;
-WebP se limita a firma/contenedor y dimensiones, sin afirmar decodificación completa. La ruta autorizada
+WebP se limita a firma, cabeceras VP8/VP8X y dimensiones; no valida el RIFF/chunks completos ni decodifica el flujo. La ruta autorizada
 se lee con límite de bytes; una referencia hash requiere pertenecer al journal de la Session fijada para
 el Run e incluye también imágenes assistant persistidas. No se reabre una ruta durante replay. La
 frontera efectiva requiere entrada de imagen y formato nativo de tools; `media.read` se clasifica como
