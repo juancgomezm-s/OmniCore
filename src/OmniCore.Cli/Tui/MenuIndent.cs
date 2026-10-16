@@ -18,6 +18,6 @@ internal static class MenuIndent
     /// <summary>Section heading drawn in the accent color, one level above its content.</summary>
     public static Label Heading(string text, int y, int level = 0) => new()
     {
-        Id = "omni-section", X = Of(level), Y = y, Width = Dim.Fill(2), Height = 1, Text = "▸ " + text,
+        Id = "omni-section", X = Of(level), Y = y, Width = Dim.Fill(2), Height = 1, Text = "│ " + text,
     };
 }

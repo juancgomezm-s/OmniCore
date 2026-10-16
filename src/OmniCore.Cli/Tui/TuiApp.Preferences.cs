@@ -320,7 +320,7 @@ public sealed partial class TuiApp
                         + " · " + (_preferencesLocaleSnapshot?.Locale ?? _locale) });
                 // Heading and its two actions share one row so General fits an 80x25 terminal.
                 var interfaceHeading = new Label { Id = "omni-section", X = MenuIndent.Level0, Y = y,
-                    Width = Pref("section_interface").Length + 2, Height = 1, Text = "▸ " + Pref("section_interface") };
+                    Width = Pref("section_interface").Length + 2, Height = 1, Text = "│ " + Pref("section_interface") };
                 contentPanel.Add(interfaceHeading);
                 if (wide) y++;
                 var sidebarOpen = new Button { Id = "preferences-sidebar-open", X = wide ? MenuIndent.Level1 : Pos.Right(interfaceHeading) + 2,
@@ -360,7 +360,7 @@ public sealed partial class TuiApp
                     y = RenderProviderPreferences(contentPanel, controls, providerTarget);
                     break;
                 }
-                Add(new Label { Id = "preferences-account-heading", X = MenuIndent.Level0, Y = y++, Width = Dim.Fill(4), Height = 1, Text = "▸ " + Pref("account_title") });
+                Add(new Label { Id = "preferences-account-heading", X = MenuIndent.Level0, Y = y++, Width = Dim.Fill(4), Height = 1, Text = "│ " + Pref("account_title") });
                 try
                 {
                     _account ??= _accountOverride ?? new TuiAccountHost();

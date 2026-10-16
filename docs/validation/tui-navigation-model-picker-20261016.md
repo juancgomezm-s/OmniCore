@@ -97,3 +97,17 @@ advertencias (`tui-category-cycle-build.log`) y la publicación Release con cód
 ausente al explorar categorías y dentro del contenido al editar. Los registros
 y capturas usan el mismo directorio externo indicado arriba. Esta validación es
 local en Windows; no acredita un nuevo resultado remoto de CI ni una prueba Linux.
+
+## Subtítulos sin indicador de selección
+
+Se sustituye `▸` por `│` en el encabezado compartido de secciones y en los dos
+encabezados específicos de Interfaz y Cuentas. Se conserva la sangría, el color
+y el carácter informativo de las etiquetas; el marcador deja de parecer una
+opción enfocada. No se modifica el comportamiento de navegación ni selección.
+
+Compilación sin errores ni advertencias y publicación Release con salida 0.
+El recorrido existente de todas las categorías pasó en sus 8/8 casos, sin
+omisiones, para cuatro idiomas y dos tamaños. Se revisó además una captura del
+driver del submenú Modelos. Evidencia externa: `tui-heading-bar-build.log`,
+`tui-heading-bar-test.log`, `tui-heading-bar-publish.log` y
+`tui-heading-bar-captures`, en el directorio de validación indicado arriba.
