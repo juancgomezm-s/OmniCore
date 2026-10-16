@@ -326,6 +326,7 @@ public sealed class OmniCliRuntime : IDisposable
         })
         + (conversationOnly ? " This is a conversational input; answer directly when no work is required." : "")
         + " Answer in the conversation. For examples, demonstrations, or rendering tests, include the requested code, Markdown tables, and explanation directly in your final response."
+        + " For Markdown demonstrations, present the formatted examples directly rather than wrapping the whole example in a Markdown code fence. If the user asks for literal Markdown source, use a text code fence to keep its syntax literal."
         + " Do not create or modify workspace files unless the user explicitly requests file changes. Do not replace a requested inline answer with links to generated files."
         + " A conversational example does not require filesystem tools or a new plan. Preserve explicit user requests to edit files and all approval and completion requirements.";
 

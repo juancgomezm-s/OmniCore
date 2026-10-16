@@ -460,6 +460,12 @@ desde JSON con Python 3 es opcional y no usa dependencias externas.
 
 ### Conversaciones y contexto
 
+La conversación muestra encabezados, énfasis, listas y tablas Markdown con
+formato. Los ejemplos completos dentro de bloques `md` o `markdown` también se
+previsualizan, aunque el modelo no repita el resultado fuera del bloque.
+`/fuente` alterna con el original; el historial conserva el texto recibido.
+Los bloques de otros lenguajes y los mensajes del usuario siguen siendo literales.
+
 Una conversación admite una ventana de escritura a la vez. Si otra ventana la
 tiene abierta, la TUI explica cómo continuar y conserva el mensaje en el editor.
 Aceptar el aviso vuelve al chat. Tras cerrar la ventana anterior puedes reenviar
