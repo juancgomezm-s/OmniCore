@@ -2,6 +2,14 @@
 
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 
+**M9-J integrado en ambos main (2026-10-15):** contrato nativo versionado y SDK especializado para
+OmniCoder sobre el Host/stdio existente, con consultas reales de herramientas, skills y contexto,
+acciones humanas y flujos de conversación/eventos/artefactos conectados. Core conserva la autoridad.
+ADR-0055 y `docs/validation/m9-block-j-20261015.md` registran evidencia y límites. El bloque no cierra
+el acceso funcional completo: sesiones, modelos/rutas, interacciones y otros mutadores requieren
+sus contratos y consumidores. Seguridad durable por conversación y ConPTY siguen pendientes de M9;
+M8 OR5 y aceptación live/manual permanecen abiertos. Un solo worker Luna en alto; no reabrir UI sana.
+
 **M9-I integrado y cerrado en su alcance local (2026-10-15):** `media.read` queda clasificado como
 WorkspaceRead y conectado al CAS del executor Explorer, al siguiente request visual nativo y a los
 clientes existentes. Focales 38 PASS/1 SKIP explícito, arquitectura 62/62 y E2E Electron→Host→HTTP
