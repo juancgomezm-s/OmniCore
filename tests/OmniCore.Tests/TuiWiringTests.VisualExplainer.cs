@@ -19,8 +19,12 @@ public sealed partial class TuiWiringTests
         string State()
         {
             using var query = JsonDocument.Parse(fx.Server.Query("skills", CancellationToken.None)!.Json);
-            return query.RootElement.GetProperty("skills").EnumerateArray()
-                .Single(row => row.GetProperty("id").GetString() == "visual-explainer").GetProperty("state").GetString()!;
+            Assert.False(query.RootElement.GetProperty("workspaceTrusted").GetBoolean());
+            var skill = query.RootElement.GetProperty("skills").EnumerateArray()
+                .Single(row => row.GetProperty("id").GetString() == "visual-explainer");
+            Assert.Equal("BuiltIn", skill.GetProperty("scope").GetString());
+            Assert.Equal("Core", skill.GetProperty("trust").GetString());
+            return skill.GetProperty("state").GetString()!;
         }
         Assert.Equal("Discovered", State());
         fx.StartTui(initialColumns: width, initialRows: height);
@@ -35,7 +39,9 @@ public sealed partial class TuiWiringTests
                 .FindIndex(row => row.ToString()!.Contains("visual-explainer", StringComparison.Ordinal));
             Assert.True(index >= 0); list.SelectedItem = index;
         });
-        ExportPreferenceFrame(fx, width, height, "visual-skill-menu", "visual-explainer");
+        Assert.Contains("Confianza: Confiable · integrada de OmniCore", OverlayText(fx.App.Overlay!));
+        Assert.DoesNotContain("Confianza del espacio", OverlayText(fx.App.Overlay!));
+        ExportPreferenceFrame(fx, width, height, "visual-skill-menu", "Confiable · integrada");
         ClickId(fx, "session-preferences-action");
         Assert.Equal("session-preferences-confirm", fx.App.Overlay!.Id);
         ClickId(fx, "session-preferences-confirm-yes");

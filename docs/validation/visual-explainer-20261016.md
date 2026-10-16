@@ -34,6 +34,19 @@ exigencia de confianza. Otra prueba dibuja una respuesta ilustrativa con diagram
 y tabla usando el journal, CAS y driver de Terminal.Gui reales. En 80×25 también
 recorre la respuesta para comprobar el contenido que requiere desplazamiento.
 
+La etiqueta de confianza de las habilidades integradas muestra **Confiable ·
+integrada de OmniCore** y aparece antes que sus identificadores técnicos. El
+aviso de confianza del espacio sólo aparece al inspeccionar una habilidad Project.
+Las pruebas del menú comprueban que el Host mantiene `BuiltIn/Core` antes y
+después de activar/liberar, sin cambiar la confianza del espacio. Esta etiqueta
+identifica la clasificación de confianza existente; no es una firma digital ni
+una certificación externa del código.
+
+La corrección de esa presentación se validó con 83 pruebas de habilidades,
+preferencias y auditoría del menú, todas aprobadas y ninguna omitida. Evidencia:
+`visual-skill-trust-tests.log` y `visual-skill-trust-captures/` en el directorio
+local de validación indicado más abajo.
+
 `ConversationHyperlinkTests` verifica reconocimiento de informes HTML, límites
 del espacio de trabajo, archivos existentes y rechazo de ejecutables, rutas UNC,
 controles y consultas locales. El lanzador de OAuth sigue rechazando HTML.

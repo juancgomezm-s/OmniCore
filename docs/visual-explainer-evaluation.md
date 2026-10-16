@@ -65,6 +65,10 @@ para esa sesión y no concede permisos de archivos, procesos ni red. No tiene
 reglas de activación automática por ruta, lenguaje o framework. El modelo puede
 cargarla mediante `skill.load` cuando sea pertinente a una explicación solicitada.
 
+El paquete incluido tiene confianza `Core`; el menú lo identifica como
+**Confiable · integrada de OmniCore**. La confianza del espacio de trabajo se
+muestra para habilidades Project y no cambia la confianza de las integradas.
+
 Las rutas de recursos se resuelven a partir del directorio del paquete incluido
 en el contexto activo. La habilidad exige comprobar datos y distinguir estado
 desconocido de cero. Su activación no transforma todas las respuestas posteriores

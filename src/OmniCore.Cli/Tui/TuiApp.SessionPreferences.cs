@@ -218,7 +218,10 @@ public sealed partial class TuiApp
             if (data.SessionId is { Length: > 0 } session) lines.Add(SessionPref("session") + ": " + session);
             else lines.Add(SessionPref("no_session"));
         }
-        if (data.WorkspaceTrusted is { } trusted)
+        var selectedSkill = index >= 0 && index < _sessionPreferencesRows.Count
+            ? _sessionPreferencesRows[index].Value as SkillPresentation : null;
+        if (data.WorkspaceTrusted is { } trusted
+            && (data.QueryName != "skills" || selectedSkill?.Scope == "Project"))
             lines.Add(SessionPref("trust") + ": " + SessionPref(trusted ? "trusted" : "untrusted"));
         if (index < 0 || index >= _sessionPreferencesRows.Count)
             lines.Add(SessionPref(_sessionPreferencesRows.Count == 0 ? "empty" : "select"));
@@ -287,9 +290,11 @@ public sealed partial class TuiApp
     }
 
     private string SkillDetails(SkillPresentation skill) => string.Join(Environment.NewLine,
-        Safe(skill.DisplayName), SessionPref("id") + ": " + Safe(skill.Id), SessionPref("skill.version") + ": " + Safe(skill.Version ?? SessionPref("unknown")),
+        Safe(skill.DisplayName),
+        SessionPref("trust_level") + ": " + (skill.Scope == "BuiltIn" && skill.Trust == "Core"
+            ? SessionPref("skill.trusted_builtin") : EnumLabel("trust", skill.Trust)),
+        SessionPref("id") + ": " + Safe(skill.Id), SessionPref("skill.version") + ": " + Safe(skill.Version ?? SessionPref("unknown")),
         SessionPref("skill.state") + ": " + EnumLabel("skill.state", skill.State), SessionPref("scope") + ": " + EnumLabel("scope", skill.Scope),
-        SessionPref("trust_level") + ": " + EnumLabel("trust", skill.Trust),
         SessionPref("skill.tools") + ": " + (skill.Tools.Count == 0 ? SessionPref("unknown") : Safe(string.Join(", ", skill.Tools), 512)),
         SessionPref("skill.model_invocable") + ": " + Bool(skill.ModelInvocable),
         SessionPref("skill.sealed") + ": " + Bool(skill.Sealed), SessionPref("manifest_hash") + " " + Safe(skill.ManifestSha256, 128));

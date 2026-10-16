@@ -110,6 +110,7 @@ public sealed partial class TuiWiringTests
             Assert.True(index >= 0); list.SelectedItem = index;
         });
         Assert.Contains("fixture.inspect", OverlayText(fx.App.Overlay!));
+        Assert.Contains("Confianza del espacio: Confiable", OverlayText(fx.App.Overlay!));
         string FixtureState() => JsonDocument.Parse(fx.Server.Query("skills", CancellationToken.None)!.Json)
             .RootElement.GetProperty("skills").EnumerateArray().Single(row => row.GetProperty("id").GetString() == "fixture.skill").GetProperty("state").GetString()!;
         Assert.Equal("Discovered", FixtureState());
