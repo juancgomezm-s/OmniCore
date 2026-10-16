@@ -405,6 +405,18 @@ los controles. OpenCode toma sus colores base del
 [tema público de OpenCode](https://github.com/anomalyco/opencode/blob/dev/packages/tui/src/theme/assets/opencode.json);
 Claude y Codex son paletas inspiradas en sus experiencias visuales.
 
+En **F4 → General y apariencia → Animaciones de carga…** hay 31 efectos y una
+elección independiente para espera, razonamiento reportado, respuesta y herramientas.
+Al entrar en una fase se abre la lista con búsqueda y vista previa; recorrerla no
+guarda cambios. **Elegir** o Enter confirma la animación y Cancelar conserva la anterior.
+Los pulsos sobre texto resaltan tres caracteres y sustituyen temporalmente el central:
+estrella, símbolos cambiantes o recorrido de ida y vuelta. El texto original se
+restaura al avanzar y se conserva como etiqueta accesible de la actividad real.
+También hay fuego, lluvia Matrix, plasma, estrellas, figuras y ondas, con variantes
+de tres y cinco líneas que reservan espacio bajo el compositor mientras están activas.
+Movimiento reducido mantiene el estado sin animación; ASCII ofrece símbolos básicos.
+Los efectos, velocidad y preferencias se conservan para próximos inicios.
+
 En el selector puedes elegir con Enter un modelo ya registrado aunque falle la
 consulta del catálogo. **Actualizar modelos** permite reintentar sin cerrar el
 selector. La búsqueda y la fila señalada se conservan al actualizar; seleccionar

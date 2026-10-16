@@ -1505,7 +1505,12 @@ public sealed partial class TuiWiringTests
         var preview = fx.App.Overlay!.SubViews.Single(v => v.Id == "animation-preview");
         Assert.Equal("✦", preview.SubViews.First().Text);
         Click(fx, "Razonamiento reportado");
+        fx.Wait(() => fx.App.Overlay?.Id == "animation-picker", "selector de animación visible");
+        var animationList = Descendants(fx.App.Overlay!).OfType<ListView>().Single();
+        fx.Invoke(() => animationList.SelectedItem = AnimationCatalog.Names.ToList().IndexOf("block-wave"));
+        ClickId(fx, "animation-choose");
         Assert.Equal("block-wave", new AnimationSettingsStore(Path.Combine(fx.Root, "tui-animations.json")).Load().Reasoning);
+        preview = fx.App.Overlay!.SubViews.Single(v => v.Id == "animation-preview");
         Click(fx, "Movimiento reducido");
         Assert.True(new AnimationSettingsStore(Path.Combine(fx.Root, "tui-animations.json")).Load().ReducedMotion);
         var frozen = preview.SubViews.Select(v => (v.Text, v.GetScheme().Normal)).ToArray();

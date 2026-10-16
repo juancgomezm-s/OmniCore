@@ -10,7 +10,8 @@ public sealed partial class TuiApp
 {
     private void RenderAnimationPreview() => _animationPreview?.Render(_previewEffect, _activityPhase,
         _animationPreferences.Enabled && !_animationPreferences.ReducedMotion,
-        Environment.GetEnvironmentVariable("NO_COLOR") is not null, ascii: _animationPreferences.Ascii);
+        Environment.GetEnvironmentVariable("NO_COLOR") is not null, ascii: _animationPreferences.Ascii,
+        label: AnimationCatalog.IsText(_previewEffect) ? _localization.Resolve("animation.sample") : null);
 
     private bool SaveAnimationPreferences(AnimationPreferences preferences)
     {
@@ -64,10 +65,10 @@ public sealed partial class TuiApp
             ShowMessage(_localization.Resolve("shell.could_not_save_animation_preferences"));
     }
 
-    private void ShowAnimationSettings()
+    private void ShowAnimationSettings(string? previewEffect = null)
     {
         if (_window is null || _overlay is not null) return;
-        _previewEffect = _animationPreferences.Waiting;
+        _previewEffect = previewEffect ?? _animationPreferences.Waiting;
         if (_window.Frame.Height < 18)
         {
             ShowMessage(_localization.Resolve("shell.enlarge_the_terminal_for_the_preview_n_animation_on_off_reduced_full_f"));
@@ -85,18 +86,8 @@ public sealed partial class TuiApp
             var button = new Button { Id = id, X = 2, Y = y, Width = Dim.Fill(2), TextAlignment = Alignment.Start };
             button.Accepted += (_, _) =>
             {
-                var current = _animationPreferences.Effect(phase);
-                var next = AnimationCatalog.Names[(Array.IndexOf(AnimationCatalog.Names.ToArray(), current) + 1) % AnimationCatalog.Names.Count];
-                var preferences = phase switch
-                {
-                    ChatActivityPhase.WaitingForResponse => _animationPreferences with { Waiting = next },
-                    ChatActivityPhase.Reasoning => _animationPreferences with { Reasoning = next },
-                    ChatActivityPhase.AnswerText => _animationPreferences with { Answer = next },
-                    _ => _animationPreferences with { Tools = next },
-                };
-                Save(preferences);
-                _previewEffect = _animationPreferences.Effect(phase);
-                Update();
+                var returnToCategory = _preferencesReturnToCategory;
+                CloseOverlay(); ShowAnimationPicker(phase, returnToCategory);
             };
             effects.Add((button, phase, label));
             frame.Add(button);
@@ -119,12 +110,12 @@ public sealed partial class TuiApp
         }
         void Update()
         {
-            foreach (var item in effects) item.Button.Text = item.Label + " · " + _animationPreferences.Effect(item.Phase);
+            foreach (var item in effects) item.Button.Text = item.Label + " · " + AnimationName(_animationPreferences.Effect(item.Phase)) + "…";
             enabled.Text = _localization.Resolve("shell.animations") + " · " + _localization.Resolve(_animationPreferences.Enabled ? "shell.state.on" : "shell.state.off");
             reduced.Text = _localization.Resolve("shell.reduced_motion") + " · " + _localization.Resolve(_animationPreferences.ReducedMotion ? "shell.state.on" : "shell.state.off");
             speed.Text = _localization.Resolve("shell.interval") + " · " + _animationPreferences.IntervalMilliseconds + " ms";
             ascii.Text = _localization.Resolve("shell.characters") + " · " + (_animationPreferences.Ascii ? "ASCII *" : "Unicode ✦");
-            description.Text = _previewEffect + _localization.Resolve("shell.preview");
+            description.Text = AnimationName(_previewEffect) + _localization.Resolve("shell.preview");
             RenderAnimationPreview();
         }
         var help = new Label { Id = "omni-help", X = 2, Y = 13, Width = Dim.Fill(2), Height = 2,

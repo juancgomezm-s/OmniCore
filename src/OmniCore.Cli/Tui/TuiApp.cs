@@ -90,8 +90,9 @@ public sealed partial class TuiApp
     private string? _pendingEscalationResume;
     private string? _pendingQuotaResume;
     private ActivityView? _activity;
-    private Label? _activityLabel;
-    private int _activityPhase;
+    private ActivityView? _activityLabel;
+    private long _activityPhase;
+    private int _activityExtraRows;
     private int _activityTicks;
     private readonly AnimationSettingsStore _animationStore;
     private AnimationPreferences _animationPreferences;
@@ -273,7 +274,7 @@ public sealed partial class TuiApp
             && ++_activityTicks >= _animationPreferences.IntervalMilliseconds / 100)
         {
             _activityTicks = 0;
-            _activityPhase = (_activityPhase + 1) % 120;
+            _activityPhase = _activityPhase == long.MaxValue ? 0 : _activityPhase + 1;
         }
         RenderActivity();
         RenderAnimationPreview();
@@ -290,15 +291,28 @@ public sealed partial class TuiApp
             roots.Length == 1 ? roots[0].LaneId : null, _observability.Activity,
             _turnBusy && (_localActivitySession is null || _localActivitySession == _cursorSession), pendingChildren);
         _activity.Visible = presentation.Visible && (_window?.Frame.Width ?? 80) - _mainColumnInset >= 30;
+        var effect = _animationPreferences.Effect(presentation.Phase);
+        var rows = _activity.Visible && _animationPreferences.Enabled && !_animationPreferences.ReducedMotion
+            && presentation.Moving && (_window?.Frame.Height ?? 25) >= 22 ? AnimationCatalog.Rows(effect) : 1;
+        if (_activityExtraRows != rows - 1)
+        {
+            _activityExtraRows = rows - 1; _activity.Height = rows; _activity.Y = Pos.AnchorEnd(rows + 2);
+            if (_activityLabel is not null) _activityLabel.Y = Pos.AnchorEnd(rows + 2);
+            UpdateComposerHeight();
+        }
         if (_activityLabel is not null) _activityLabel.Visible = _activity.Visible;
         if (_completion is not null) _completion.Visible = !_activity.Visible;
         if (!_activity.Visible) return;
         if (_activityLabel is not null)
         {
-            _activityLabel.Text = presentation.Label(_locale);
             _activityLabel.Width = Dim.Fill(_mainColumnInset + 2);
+            _activityLabel.Render(effect, _activityPhase,
+                presentation.Moving && _animationPreferences.Enabled && !_animationPreferences.ReducedMotion,
+                Environment.GetEnvironmentVariable("NO_COLOR") is not null,
+                presentation.Phase == ChatActivityPhase.WaitingForApproval, _animationPreferences.Ascii,
+                presentation.Label(_locale));
         }
-        _activity.Render(_animationPreferences.Effect(presentation.Phase), _activityPhase,
+        _activity.Render(effect, _activityPhase,
             presentation.Moving && _animationPreferences.Enabled && !_animationPreferences.ReducedMotion,
             Environment.GetEnvironmentVariable("NO_COLOR") is not null,
             presentation.Phase == ChatActivityPhase.WaitingForApproval, _animationPreferences.Ascii);
@@ -331,6 +345,8 @@ public sealed partial class TuiApp
     {
         switch (_overlay?.Id)
         {
+            case "animation-picker":
+                ReturnFromAnimationPicker(); return true;
             case "about-screen":
                 ShowHelp(); return true;
             case "policy-preferences":
@@ -428,7 +444,7 @@ public sealed partial class TuiApp
         _window.Add(_help, _sidebar);
         _activity = new ActivityView { Id = "omni-activity", X = 2, Y = Pos.AnchorEnd(3), Width = 12, Height = 1,
             CanFocus = false, Visible = false };
-        _activityLabel = new Label { Id = "omni-activity-label", X = 16, Y = Pos.AnchorEnd(3), Width = 14, Height = 1,
+        _activityLabel = new ActivityView { Id = "omni-activity-label", X = 16, Y = Pos.AnchorEnd(3), Width = 14, Height = 1,
             Text = _localization.Resolve("shell.processing"), CanFocus = false, Visible = false };
         _window.Add(_activity, _activityLabel);
         ApplyTheme(_window);
@@ -491,8 +507,8 @@ public sealed partial class TuiApp
         var attachmentRows = _pendingAttachments.Count == 0 ? 0 : 1;
         _composer.Height = _composerRows;
         _composerFrame.Height = _composerRows + 2 + attachmentRows;
-        _composerFrame.Y = Pos.AnchorEnd(_composerRows + 5 + attachmentRows);
-        if (_conversationFrame is not null) _conversationFrame.Height = Dim.Fill(_composerRows + 6 + attachmentRows);
+        _composerFrame.Y = Pos.AnchorEnd(_composerRows + 5 + attachmentRows + _activityExtraRows);
+        if (_conversationFrame is not null) _conversationFrame.Height = Dim.Fill(_composerRows + 6 + attachmentRows + _activityExtraRows);
         if (_commandHelper is not null) _commandHelper.Y = Pos.Top(_composerFrame) - _commandHelper.Frame.Height;
     }
 
@@ -1848,6 +1864,7 @@ public sealed partial class TuiApp
             HotNormal = _theme.Map(accent), HotFocus = _theme.Map(view is Button or ListView ? focus : accent) });
         if (view is StyledTextPresenter styled) styled.Theme = _theme;
         if (view is SidebarView sidebar) sidebar.Theme = _theme;
+        if (view is ActivityView activity) activity.Theme = _theme;
         foreach (var child in view.SubViews) ApplyTheme(child, surface, dimmed, preferences);
     }
 
