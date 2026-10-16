@@ -181,6 +181,8 @@ public sealed partial class TuiApp
                 { if (focusContent) categoryFocus?.SetFocus(); return; }
                 selected = matches[at];
                 _preferencesCategory = selected.Id;
+                ClearProviderApiKey(); CancelProviderConnectionOperation();
+                _preferencesProvider = null;
                 foreach (var view in frame.SubViews.Where(view => !navigationViews.Contains(view)).ToArray())
                 { frame.Remove(view); view.Dispose(); }
                 categoryFocus = RenderPreferenceCategory(frame, selected, wide);
@@ -294,6 +296,11 @@ public sealed partial class TuiApp
                 Add(sidebarOpen); Add(animationsOpen);
                 break;
             case "accounts_connections":
+                if (_preferencesProvider is { } providerTarget)
+                {
+                    y = RenderProviderPreferences(contentPanel, controls, providerTarget);
+                    break;
+                }
                 Add(new Label { Id = "preferences-account-heading", X = MenuIndent.Level0, Y = y++, Width = Dim.Fill(4), Height = 1, Text = "▸ " + Pref("account_title") });
                 try
                 {
@@ -325,6 +332,27 @@ public sealed partial class TuiApp
                 Add(new Label { Id = "preferences-claude-status", X = MenuIndent.Level1, Y = y++, Width = Dim.Fill(4), Height = 1, Text = claudeSummary });
                 y++;
                 Section("api_title", y++);
+                IReadOnlyList<ProviderConnectionMenuRow> providerRows;
+                try { providerRows = _providerConnectionHost.List(CancellationToken.None); }
+                catch (Exception)
+                {
+                    providerRows = [];
+                    Add(new Label { X = MenuIndent.Level1, Y = y++, Width = Dim.Fill(3), Text = AccountUi("error.readApi") });
+                }
+                var openRouterButtonAdded = false;
+                foreach (var provider in providerRows
+                    .Where(row => row.Method == ProviderConnectionMethod.ApiKey
+                        && (row.CanConnect || row.CanTest || row.CanDisconnect || row.CanDiscoverModels)))
+                {
+                    var captured = provider;
+                    var providerButton = new Button { Id = provider.Backend == "openrouter" && !openRouterButtonAdded
+                            ? "preferences-openrouter-open" : "preferences-provider-open-" + provider.ProviderId,
+                        X = MenuIndent.Level1, Y = y++, Width = Dim.Fill(3), TextAlignment = Alignment.Start,
+                        Text = ProviderDisplayName(provider) + "…" };
+                    providerButton.Accepted += (_, _) => ShowProviderPreferences(captured);
+                    openRouterButtonAdded |= provider.Backend == "openrouter";
+                    Add(providerButton);
+                }
                 AddAction("preferences-api-open", "api_open", y++, () => { CloseOverlay(); ShowProviderConnections(); });
                 Add(new Label { Id = "preferences-api-status", X = MenuIndent.Level1, Y = y, Width = Dim.Fill(4), Height = 1,
                     Text = AccountUi("help.providerState") });
@@ -379,7 +407,8 @@ public sealed partial class TuiApp
                 AddAction("preferences-memory-open", "memory_open", y, () => RunPreferenceAction(ClientActionIds.MemorySession));
                 break;
         }
-        if (wide && selected.Id != "local_engines") ConfigurePreferenceScroll(contentPanel, y + 3);
+        if ((wide && selected.Id != "local_engines") || selected.Id == "accounts_connections" && _preferencesProvider is not null)
+            ConfigurePreferenceScroll(contentPanel, y + 3);
         frame.Add(_preferencesNotice);
         var back = new Button { Id = "preferences-back", X = 2, Y = Pos.AnchorEnd(2), Text = Pref(wide ? "close" : "back") };
         back.Accepted += (_, _) =>
@@ -426,12 +455,14 @@ public sealed partial class TuiApp
             .Where(view => !string.IsNullOrEmpty(view.Id))
             .ToDictionary(view => view.Id!, view => (view.SelectedItem, view.Viewport.Y), StringComparer.Ordinal);
         var categoryPage = _preferencesCategoryPage;
+        var providerDraft = _preferencesProvider is not null ? _providerApiKeyField?.Text?.ToString() : null;
         _preferencesLastLayoutWidth = width;
         _preferencesLastLayoutHeight = height;
         CloseOverlay();
         ShowPreferences(_preferencesCategory, categoryPage);
 
         if (_overlay is null) return;
+        if (providerDraft is not null && _providerApiKeyField is { } providerField) providerField.Text = providerDraft;
         foreach (var state in listStates)
         {
             if (FindPreferenceView(_overlay, state.Key) is not ListView list) continue;
@@ -953,6 +984,7 @@ public sealed partial class TuiApp
 
     private void ClosePreferenceCenter()
     {
+        _preferencesProvider = null;
         CancelPreferenceLocaleDraft();
         _preferencesOriginalLocale = "";
         CloseOverlay();
@@ -960,6 +992,12 @@ public sealed partial class TuiApp
 
     private void HandlePreferencesEscape()
     {
+        if (_preferencesProvider is not null)
+        {
+            _preferencesProvider = null;
+            CloseOverlay(); ShowPreferences("accounts_connections", categoryPage: true);
+            return;
+        }
         if (_window is not null && PreferencesPresentation.IsWideLayout(_window.Frame.Width))
         { ClosePreferenceCenter(); return; }
         if (_preferencesCategoryPage)

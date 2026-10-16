@@ -1,5 +1,7 @@
 using System.Globalization;
 using OmniCore.Host;
+using OmniCore.Client;
+using OmniCore.Protocol;
 using Terminal.Gui.Drawing;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
@@ -17,9 +19,11 @@ public sealed partial class TuiApp
 
     internal Task? ProviderConnectionTask => _providerConnectionTask;
 
-    private void ShowProviderConnections(string? activity = null, string? selectedProviderId = null)
+    private void ShowProviderConnections(string? activity = null, string? selectedProviderId = null, bool preferOpenRouter = false)
     {
         if (_window is null || _overlay is not null) return;
+        if (_preferencesProvider is { } chosen && chosen.ProviderId == selectedProviderId)
+        { ShowPreferences("accounts_connections", categoryPage: true); return; }
 
         ProviderConnectionMenuRow[] rows;
         try
@@ -32,8 +36,12 @@ public sealed partial class TuiApp
             return;
         }
 
+        if (preferOpenRouter && !rows.Any(row => row.Backend == "openrouter"))
+        { ShowMessage(_localization.Resolve("openrouter.status.empty")); return; }
+
         var frameHeight = Math.Clamp(_window.Frame.Height - 4, 18, 30);
         var frame = OverlayFrame(AccountUi("title.api"), frameHeight);
+        frame.Id = "provider-connections";
         frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Height = 2,
             Text = AccountUi("help.providerState") });
         var actionY = frameHeight - 6;
@@ -43,7 +51,7 @@ public sealed partial class TuiApp
         list.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(rows.Select(ProviderConnectionRowText)));
         if (rows.Length > 0)
         {
-            var selectedIndex = selectedProviderId is null ? -1
+            var selectedIndex = selectedProviderId is null ? preferOpenRouter ? Array.FindIndex(rows, row => row.Backend == "openrouter") : -1
                 : Array.FindIndex(rows, row => row.ProviderId == selectedProviderId);
             list.SelectedItem = selectedIndex >= 0 ? selectedIndex : 0;
         }
@@ -59,6 +67,8 @@ public sealed partial class TuiApp
             Text = AccountUi("action.discover") };
         var disconnect = new Button { Id = "provider-disconnect", X = Pos.Right(discover) + 1, Y = actionY + 1,
             Width = Dim.Percent(46), Text = AccountUi("action.disconnect") };
+        var credits = new Button { Id = "provider-credits", X = 2, Y = actionY + 2, Width = Dim.Percent(46),
+            Text = _localization.Resolve("openrouter.credits.action") };
         var back = new Button { Id = "provider-back", X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2),
             Text = AccountUi("action.back") };
         back.Accepted += (_, _) =>
@@ -77,6 +87,8 @@ public sealed partial class TuiApp
             test.Enabled = selected?.CanTest == true;
             discover.Enabled = selected?.CanDiscoverModels == true;
             disconnect.Enabled = selected?.CanDisconnect == true;
+            credits.Enabled = selected?.Backend == "openrouter" && selected.CanTest
+                && _providerConnectionHost is ITuiOpenRouterCatalogHost;
             if (selected is not null && activity is null)
                 status.Text = selected.NoticeWire is { } notice
                     ? _localization.ResolveWire(notice)
@@ -119,13 +131,116 @@ public sealed partial class TuiApp
                 ShowProviderDisconnectConfirmation(selected);
         };
 
-        frame.Add(list, status, connect, test, discover, disconnect, back);
+        credits.Accepted += (_, _) =>
+        {
+            if (SelectedRow() is { Backend: "openrouter", CanTest: true } selected
+                && _providerConnectionHost is ITuiOpenRouterCatalogHost catalog)
+            { CloseOverlay(); ShowOpenRouterCredits(selected.ProviderId, catalog); }
+        };
+
+        frame.Add(list, status, connect, test, discover, disconnect, credits, back);
         ApplyTheme(frame);
         _overlay = frame;
         _window.Add(frame);
         _preferencesReturnToCategory = true;
         RefreshActions();
         if (rows.Length > 0) list.SetFocus(); else back.SetFocus();
+    }
+
+    private void ShowOpenRouterCredits(string providerId, ITuiOpenRouterCatalogHost host)
+    {
+        if (_window is null || _overlay is not null) return;
+        var frame = OverlayFrame(_localization.Resolve("openrouter.credits.title"), 17);
+        frame.Id = "openrouter-credits";
+        var detail = new Label { Id = "openrouter-credits-detail", X = 2, Y = 2,
+            Width = Dim.Fill(4), Height = 9, Text = "" };
+        var status = new Label { Id = "openrouter-credits-status", X = 2, Y = 11,
+            Width = Dim.Fill(4), Height = 1, Text = "" };
+        var refresh = new Button { Id = "openrouter-credits-refresh", X = 2, Y = Pos.AnchorEnd(2),
+            Text = _localization.Resolve("openrouter.catalog.refresh") };
+        var back = new Button { Id = "openrouter-credits-back", X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2),
+            Text = AccountUi("action.back") };
+        back.Accepted += (_, _) => { CloseOverlay(); ShowProviderConnections(selectedProviderId: providerId); };
+        OpenRouterCreditSnapshot? displayedSnapshot = null;
+        void Refresh()
+        {
+            if (_providerConnectionCancellation is not null) return;
+            var cancellation = new CancellationTokenSource();
+            var token = cancellation.Token;
+            _providerConnectionCancellation = cancellation;
+            refresh.Enabled = false;
+            status.Text = _localization.Resolve("openrouter.credits.loading");
+            _providerConnectionTask = Task.Run(async () =>
+            {
+                try
+                {
+                    var snapshot = await host.ReadOpenRouterCreditsAsync(providerId, token).ConfigureAwait(false);
+                    _uiActions.Enqueue(() =>
+                    {
+                        if (token.IsCancellationRequested || !ReferenceEquals(_overlay, frame)
+                            || !ReferenceEquals(_providerConnectionCancellation, cancellation)) return;
+                        _providerConnectionCancellation = null;
+                        displayedSnapshot = snapshot;
+                        detail.Text = OpenRouterCreditsText(providerId, snapshot);
+                        status.Text = snapshot.AccountBalanceAvailability == MetricAvailability.NotSupported
+                            ? _localization.Resolve("openrouter.credits.balanceUnavailable") : "";
+                        refresh.Enabled = true;
+                    });
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+                catch (Exception)
+                {
+                    _uiActions.Enqueue(() =>
+                    {
+                        if (token.IsCancellationRequested || !ReferenceEquals(_overlay, frame)
+                            || !ReferenceEquals(_providerConnectionCancellation, cancellation)) return;
+                        _providerConnectionCancellation = null;
+                        if (displayedSnapshot is { } previous)
+                            detail.Text = OpenRouterCreditsText(providerId, previous with
+                            {
+                                KeyAvailability = previous.KeyAvailability == MetricAvailability.Reported
+                                    ? MetricAvailability.Stale : previous.KeyAvailability,
+                                AccountBalanceAvailability = previous.AccountBalanceAvailability == MetricAvailability.Reported
+                                    ? MetricAvailability.Stale : previous.AccountBalanceAvailability,
+                            });
+                        status.Text = _localization.Resolve("openrouter.credits.failed");
+                        refresh.Enabled = true;
+                    });
+                }
+                finally { cancellation.Dispose(); }
+            });
+        }
+        refresh.Accepted += (_, _) => Refresh();
+        frame.Add(detail, status, refresh, back);
+        ApplyTheme(frame); _overlay = frame; _window.Add(frame);
+        _preferencesReturnToCategory = true;
+        back.SetFocus();
+        // Entering this page is the user's explicit credit query; listing connections never queries.
+        Refresh();
+    }
+
+    private string OpenRouterCreditsText(string providerId, OpenRouterCreditSnapshot snapshot)
+    {
+        string Amount(decimal? value) => value?.ToString("0.############################",
+            PreferenceInput.Culture(_locale)) ?? "—";
+        var keyKnown = snapshot.KeyAvailability is MetricAvailability.Reported or MetricAvailability.Stale;
+        var balanceKnown = snapshot.AccountBalanceAvailability is MetricAvailability.Reported or MetricAvailability.Stale;
+        var balance = balanceKnown ? snapshot.Measurements.FirstOrDefault(value => value.Scope == CreditScope.AccountBalance)
+            ?.Amount.Value : null;
+        var staleKey = snapshot.KeyAvailability == MetricAvailability.Stale
+            ? _localization.Resolve("openrouter.credits.stale") : "";
+        var staleBalance = snapshot.AccountBalanceAvailability == MetricAvailability.Stale
+            ? _localization.Resolve("openrouter.credits.stale") : "";
+        return string.Join("\n", new[]
+        {
+            _localization.Resolve("openrouter.credits.provider") + ": " + providerId,
+            _localization.Resolve("openrouter.credits.keyLimit") + staleKey + ": " + Amount(keyKnown ? snapshot.Key.Limit : null),
+            _localization.Resolve("openrouter.credits.remaining") + staleKey + ": " + Amount(keyKnown ? snapshot.Key.LimitRemaining : null),
+            _localization.Resolve("openrouter.credits.usage") + staleKey + ": " + Amount(keyKnown ? snapshot.Key.Usage : null),
+            _localization.Resolve("openrouter.credits.accountBalance") + staleBalance + ": " + Amount(balance),
+            _localization.Resolve("openrouter.credits.asOf") + ": " + (snapshot.AsOf == DateTimeOffset.MinValue ? "—"
+                : FormatProviderTimestamp(snapshot.AsOf)),
+        });
     }
 
     private void ShowProviderDisconnectConfirmation(ProviderConnectionMenuRow row)

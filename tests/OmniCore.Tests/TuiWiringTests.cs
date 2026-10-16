@@ -59,9 +59,9 @@ public sealed partial class TuiWiringTests
         fx.Invoke(() => rows = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-command-helper")
             .SubViews.OfType<ListView>().Single().Source!.ToList().Cast<object>()
             .Select(item => item.ToString() ?? "").ToArray());
-        Assert.Contains(rows, row => row.Contains("orq-auth", StringComparison.Ordinal)
+        Assert.Contains(rows, row => row.Contains("autorizar-orq", StringComparison.Ordinal)
             && row.Contains("Deshabilitado", StringComparison.Ordinal)
-            && row.Contains("Orchestrate", StringComparison.Ordinal));
+            && row.Contains("orquestación", StringComparison.Ordinal));
     });
 
     [Fact]
@@ -967,9 +967,9 @@ public sealed partial class TuiWiringTests
                 }
                 else if (scene == "commands")
                 {
-                    Assert.Contains("/help", text);
-                    Assert.Contains("/mode", text);
-                    Assert.Contains("/models", text);
+                    Assert.Contains("/ayuda", text);
+                    Assert.Contains("/modo", text);
+                    Assert.Contains("/modelos", text);
                     Assert.Contains("Seleccionar modelo", text);
                     Assert.Contains("Tab completar", text);
                     Assert.True(fx.App.Composer!.HasFocus);
@@ -1979,7 +1979,7 @@ public sealed partial class TuiWiringTests
         Assert.DoesNotContain(fx.App.MainWindow.SubViews, view => view.Id == "omni-command-helper");
         fx.Invoke(() => fx.App.Composer.Text = "/model");
         fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "filtra prefijo");
-        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer.Text.ToString() == "/models ", "Enter completa prefijo sin ejecutarlo");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer.Text.ToString() == "/modelos ", "Enter completa el nombre localizado sin ejecutarlo");
         Assert.Null(fx.App.Overlay);
         fx.Invoke(() => fx.App.Composer.Text = "/modelos");
         fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "alias localizado exacto");

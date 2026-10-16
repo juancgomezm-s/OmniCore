@@ -296,12 +296,16 @@ subcomando explícito, como `omni sim --json`.
 
 ### Configurar OpenRouter
 
-En la TUI abre Preferencias, la categoría de cuentas y conexiones y
-**Conexiones API…**. Selecciona OpenRouter y **Conectar…** para guardar la clave
-en el almacén de credenciales del usuario. **Probar** consulta su validez;
+En la TUI abre **F4 → Cuentas y conexiones → OpenRouter…**. El formulario
+muestra directamente el campo de clave; **Guardar** la almacena en las credenciales
+protegidas del usuario. **Probar** consulta su validez;
 **Descubrir modelos** abre el catálogo, cuyo refresh se solicita explícitamente.
 Registra sólo los modelos elegidos y luego selecciónalos mediante el selector
-de modelos habitual.
+de modelos habitual. **Consultar créditos…** muestra los límites de clave y el saldo
+disponible, con actualización explícita. Cada proveedor API abre su formulario dentro
+de Preferencias, sin volver a seleccionarlo. `/openrouter`, `/login` y sus variantes
+no se ofrecen en los comandos de la TUI. La lista muestra una sola grafía en el idioma de la interfaz;
+Los identificadores canónicos se conservan para la CLI de automatización.
 
 También puedes configurar la conexión por CLI:
 

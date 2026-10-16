@@ -43,13 +43,20 @@ public sealed partial class TuiWiringTests
         public string? LastProviderId { get; private set; }
         public int CatalogBrowseCalls { get; private set; }
         public int CatalogRefreshCalls { get; private set; }
+        public int CreditCalls { get; private set; }
+        public bool FailCreditRead { get; set; }
+        public bool FailConnect { get; set; }
         public IReadOnlyList<string> RegisteredModels { get; private set; } = [];
         public IReadOnlyList<ProviderConnectionMenuRow> List(CancellationToken cancellationToken)
         { cancellationToken.ThrowIfCancellationRequested(); ListCalls++; return Rows; }
         public Task<ProviderConnectionMenuResult> ConnectAsync(string apiKey, bool validate, CancellationToken cancellationToken)
         { OperationCalls++; return Task.FromResult(new ProviderConnectionMenuResult(ProviderConnectionState.Unknown, null, null)); }
         public Task<ProviderConnectionMenuResult> ConnectAsync(string providerId, string apiKey, bool validate, CancellationToken cancellationToken)
-        { OperationCalls++; return Task.FromResult(new ProviderConnectionMenuResult(ProviderConnectionState.Unknown, null, null)); }
+        {
+            OperationCalls++; LastProviderId = providerId;
+            if (FailConnect) throw new IOException("Invalid fixture connection");
+            return Task.FromResult(new ProviderConnectionMenuResult(ProviderConnectionState.Unknown, null, null));
+        }
         public Task<ProviderConnectionMenuResult> TestAsync(string providerId, CancellationToken cancellationToken)
         { OperationCalls++; return Task.FromResult(new ProviderConnectionMenuResult(ProviderConnectionState.Unknown, null, null)); }
         public Task<ProviderConnectionMenuResult> DiscoverAsync(string providerId, CancellationToken cancellationToken)
@@ -76,8 +83,15 @@ public sealed partial class TuiWiringTests
         public int RegisterOpenRouterModels(string providerId, IReadOnlyList<string> modelIds,
             CancellationToken cancellationToken)
         { RegisteredModels = modelIds; return modelIds.Count; }
-        public Task<OpenRouterCreditSnapshot> ReadOpenRouterCreditsAsync(string providerId, CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
+        public Task<OpenRouterCreditSnapshot> ReadOpenRouterCreditsAsync(string providerId, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            CreditCalls++; LastProviderId = providerId;
+            if (FailCreditRead) throw new IOException("Credit fixture unavailable");
+            var at = new DateTimeOffset(2026, 10, 16, 10, 0, 0, TimeSpan.Zero);
+            return Task.FromResult(new OpenRouterCreditSnapshot([], OmniCore.Protocol.MetricAvailability.NotSupported,
+                null, at, at, new(10m, 7m, 3m, null, null, false, at)) { ProviderId = providerId });
+        }
     }
 
     private sealed class LocalEngineSupervisorFixture : ITuiLocalEngineSupervisor
@@ -197,7 +211,7 @@ public sealed partial class TuiWiringTests
         ChoosePreferenceCategory(fx, "accounts_connections");
         ClickId(fx, "preferences-api-open");
         fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-connection-list"), "lista API visible");
-        Assert.Equal(1, providers.ListCalls);
+        Assert.Equal(2, providers.ListCalls); // Account choices and the explicit overview both read metadata only.
         Assert.Equal(0, providers.OperationCalls);
         var overlay = fx.App.Overlay!;
         var list = Descendants(overlay).OfType<ListView>().Single(view => view.Id == "provider-connection-list");

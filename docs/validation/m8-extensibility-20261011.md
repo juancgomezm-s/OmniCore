@@ -1,5 +1,7 @@
 # M8 Extensibility — baseline and delivery sequence
 
+**Revisión manual 2026-10-16:** OR4 se reabre por usabilidad: acceso por proveedor, formulario de clave dentro de Preferencias, eliminación de atajos redundantes y entrada de mouse/teclado en la terminal real. La corrección se prepara en `codex/tui-openrouter-usability`; OR5 autenticado continúa pendiente. [Alcance actualizado](../plans/openrouter-closure.md). Los estados inferiores conservan su evidencia histórica.
+
 **Estado vigente, 2026-10-14:** las cinco brechas de la auditoría sobre `084d5a8` están corregidas en `75a5a67`: discovery MCP, latch de validación, hook terminal tras aceptación, memoria olvidada y techo `permissions` de skills. La verificación integral detectó además una ruta durable alterada por la redacción de secretos; `09ad2ba` la resuelve mediante identidad física hasheada y binding del workspace, sin quitar la redacción. Focales de esa corrección: 5/5 correctos, incluida reapertura y rechazo de otro checkout. **Verificación integral aprobada: build sin advertencias/errores; 4,505 pruebas correctas, 0 fallos y 11 omisiones explícitas, incluida arquitectura.** OR5 autenticado requiere configurar la cuenta del usuario. **M8 permanece abierto por esa aceptación; los checkpoints históricos no sustituyen la evidencia vigente.**
 
 Plataforma de aceptación: Windows. Los checkpoints inferiores conservan el estado y evidencia de su fecha; sus frases «pendiente», «sin commit» o «no integrado» no sustituyen este estado vigente. M7 está cerrado en Windows.

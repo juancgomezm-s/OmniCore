@@ -180,6 +180,10 @@ public sealed partial class TuiApp
         var app = new TuiApp(client, locale, turnHost: turnHost, localeSelection: localeSelection,
             localeChanged: localeChanged, claudeAccounts: claudeAccounts, localEngineSupervisor: localEngineSupervisor);
         using var application = Application.Create();
+        // Native Windows input avoids VT escape-sequence mouse/keyboard ambiguity.
+        // Preserve explicit driver configuration and the platform default on Unix.
+        if (OperatingSystem.IsWindows() && string.IsNullOrWhiteSpace(application.ForceDriver))
+            application.ForceDriver = DriverRegistry.Names.WINDOWS;
         application.Init();
         return app.RunWith(application);
     }
@@ -502,16 +506,18 @@ public sealed partial class TuiApp
         _disabledCommandReasons = ReadDisabledCommandReasons(commandCatalogJson);
         var names = ReadStringArray(commandCatalogJson, "commands")
             .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode", "reasoning",
-                "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente", "agents", "delegate", "agent", "join", "fanout", "animation", "images" })
-            .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name));
+                "cancel", "interrupt", "preferences", "models", "sidebar", "fuente", "agents", "delegate", "agent", "join", "fanout", "animation", "images" })
+            .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name))
+            .Where(name => HumanCommandAliases.CanonicalName(name) is not ("login" or "logout" or "openrouter"));
         var suggestions = ComposerAutocomplete.Complete(draft,
         new UserCommandAliases((_policyPreferencesOverride ?? PolicyPreferencesHost.Create(Environment.CurrentDirectory))
-            .Read().CommandAliases).CompletionNames(HumanCommandAliases.CompletionNames(names, _locale)),
-            ReadStringArray(_client.Query("complete:" + draft[1..], CancellationToken.None)?.Json, "paths"));
-        // Keep common entry points visible. For typed prefixes, exact names win and
-        // canonical spellings keep their established order ahead of translated aliases.
+            .Read().CommandAliases).CompletionNames(names),
+            ReadStringArray(_client.Query("complete:" + draft[1..], CancellationToken.None)?.Json, "paths"),
+            name => HumanCommandAliases.DisplayName(name, _locale));
+        // Show one spelling in the effective UI language. Canonical commands remain accepted
+        // when typed explicitly, without duplicating the localized browsing surface.
         if (draft == "/") suggestions = suggestions.DistinctBy(suggestion => suggestion.Value)
-            .OrderBy(suggestion => suggestion.Value switch { "/help" => 0, "/act" => 1, "/mode" => 2, "/models" => 3, "/agents" => 4, _ => 5 }).ToArray();
+            .OrderBy(suggestion => HumanCommandAliases.NormalizeSlashHead(suggestion.Value) switch { "/help" => 0, "/act" => 1, "/mode" => 2, "/models" => 3, "/agents" => 4, _ => 5 }).ToArray();
         else if (draft[0] == '/') suggestions = suggestions
             .OrderBy(suggestion => suggestion.Value == draft ? 0
                 : HumanCommandAliases.NormalizeSlashHead(suggestion.Value) == suggestion.Value ? 1 : 2).ToArray();
@@ -567,7 +573,7 @@ public sealed partial class TuiApp
         "/interrupt" => _localization.Resolve("shell.interrupt_active_turn"),
         var head when ClientCommandRegistry.Default.Commands.FirstOrDefault(c => "/" + c.Name == head) is { } client =>
             _localization.Resolve(client.DescriptionKey),
-        _ when command.StartsWith('/') && _disabledCommandReasons.TryGetValue(command[1..], out var reason) =>
+        var head when head.StartsWith('/') && _disabledCommandReasons.TryGetValue(head[1..], out var reason) =>
             _localization.Resolve("shell.disabled") + DescribeDisabledCommand(reason),
         _ => _localization.Resolve("shell.workspace_command")
     };
@@ -843,6 +849,7 @@ public sealed partial class TuiApp
             _composer.Text = ""; PollEvents(); return;
         }
         if (input == "/preferences") { ShowPreferences(); _composer.Text = ""; return; }
+        if (input == "/openrouter") { ShowPreferences("accounts_connections", categoryPage: true); _composer.Text = ""; return; }
         if (input == "/login") { ShowAccount(fromPreferences: false); _composer.Text = ""; return; }
         if (input == "/models") { ShowModelPicker(); _composer.Text = ""; return; }
         if (input == "/sidebar") { ToggleSidebar(); _composer.Text = ""; return; }
@@ -1809,7 +1816,7 @@ public sealed partial class TuiApp
                 || view.Id?.StartsWith("model-catalog-", StringComparison.Ordinal) == true
                 || view.Id is "policy-preferences" or "security-preferences" or "security-preferences-confirm"
                     or "diagnostics-preferences" or "diagnostics-confirm" or "command-preferences")) surface = PreferencesSurface;
-        else if (view.Id == "omni-panel") surface = "#202C3B";
+        else if (view.Id is "omni-panel" or "provider-connections" or "openrouter-credits") surface = "#202C3B";
         else if (view.Id == "omni-menu-title") surface = MenuSurface;
         else if (view.Id is "omni-model-list" or "tools-list" or "session-preferences-list" or "model-catalog-list"
             or "commands-list" or "security-rules" or "security-grants" or "diagnostics-configuration") surface = "#142636";
