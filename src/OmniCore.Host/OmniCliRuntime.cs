@@ -2149,7 +2149,9 @@ public sealed class OmniCliRuntime : IDisposable
                         throw new InvalidOperationException("ChildQuotaConsentRequired; no consent is borrowed from a principal invocation.");
                     return null;
                 }
-                return IncludedQuotaAdmission.Check(server, s, r, l, t, i, providerDescription.Id, model!);
+                // A low reported percentage is information, not a locally imposed spending cap.
+                // The provider still enforces its real subscription limits on the request.
+                return null;
             }
             bool QuotaAllowsMeta()
             {
@@ -2218,6 +2220,7 @@ public sealed class OmniCliRuntime : IDisposable
                     maxGenerationSeconds: effectivePolicy.MaxGenerationSeconds,
                     enforceSessionSpendCap: hasSessionSpendCap,
                     enforceDailySpendCap: hasDailySpendCap,
+                    billingMode: providerDescription?.BillingMode,
                     toolPreferences: loaded.Settings?.ToolPreferences,
                     lifecycleHooks: lifecycleHooks,
                     sessionMemoryPolicy: sessionMemoryPolicy,

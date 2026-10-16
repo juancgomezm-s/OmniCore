@@ -2256,6 +2256,10 @@ public sealed partial class TuiWiringTests
         fx.StartTui(turnHost: host);
 
         fx.Wait(() => fx.App.Overlay is not null, "el consentimiento de ruta debe abrir el overlay real");
+        Assert.Contains("Cambiar de proveedor", OverlayText(fx.App.Overlay!));
+        Assert.Contains("cobra por uso", OverlayText(fx.App.Overlay!));
+        Assert.DoesNotContain("MeteredCurrency", OverlayText(fx.App.Overlay!));
+        ExportPreferenceFrame(fx, fx.App.MainWindow!.Frame.Width, fx.App.MainWindow.Frame.Height, "provider-switch", "Cambiar de proveedor");
         Assert.Equal(InteractionKind.ModelRouteConsent,
             Assert.Single(fx.Decoded<InteractionRequested>(), item => item.InteractionId == interaction).Kind);
         var buttons = fx.App.Overlay!.SubViews.OfType<Button>().ToArray();
@@ -2276,7 +2280,7 @@ public sealed partial class TuiWiringTests
         Assert.True(SessionRoutingAuthorization.Read(fx.Server.AcquireStore().ReadFrom(fx.Server.LastSessionId()!, 1),
             fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!)!.Allows(route, BillingMode.MeteredCurrency));
         _ = revised;
-    });
+    }, noColor: false);
 
     [Fact]
     public void Model_route_consent_deny_never_resumes() => RunTuiTest(fx =>

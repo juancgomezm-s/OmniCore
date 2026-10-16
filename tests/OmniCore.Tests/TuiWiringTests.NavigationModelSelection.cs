@@ -9,6 +9,44 @@ namespace OmniCore.Tests;
 
 public sealed partial class TuiWiringTests
 {
+    [Fact]
+    public void Explicit_model_choice_survives_clearing_and_old_journal_replay_until_a_new_invocation_starts() => RunTuiTest(fx =>
+    {
+        var stream = new OmniCore.Engine.EventStream(fx.Server.AcquireStore(), fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!);
+        stream.Append(new OmniCore.Domain.ModelStepStarted(OmniCore.Domain.TurnId.New(), 0, "local/old-model", 8192, "Direct", null, null, null));
+        var policies = ModelPolicyHost.Create(Path.Combine(fx.Root, "switch-model-policy"));
+        policies.RegisterChatGptModel("chosen-subscription", 8192, 2048);
+        var host = new RouteResumeTurnHost();
+        fx.StartTui(policies, new TestAccount { Current = new(true, "***1234", null, false), FailCatalog = true }, turnHost: host);
+        fx.Wait(() => fx.App.Header!.Text.Contains("local/old-model"), "historical model visible before choosing");
+        KeyWithEffect(fx, KeyCode.F3, () => fx.App.Overlay is not null, "model picker");
+        var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
+        fx.Invoke(() =>
+        {
+            list.SelectedItem = list.Source!.ToList().Cast<object>().Select(item => item.ToString()!).ToList()
+                .FindIndex(item => item.Contains("chosen-subscription", StringComparison.Ordinal));
+            list.SetFocus();
+        });
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is null, "choose subscription");
+        fx.Wait(() => fx.App.Header!.Text.Contains("chosen-subscription"), "explicit choice in header");
+        var session = fx.Server.LastSessionId()!;
+        var sequence = fx.Server.AcquireStore().CurrentSequence(session);
+        Type(fx, "/limpiar");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.ProjectionState.Conversation.Blocks.Count == 0, "clear view only");
+        Assert.Equal(session, fx.Server.LastSessionId());
+        Assert.Equal(sequence, fx.Server.AcquireStore().CurrentSequence(session));
+        Type(fx, "/retomar " + session);
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.ProjectionState.Conversation.Blocks.Count > 0, "replay the same conversation");
+        Assert.Contains("chosen-subscription", fx.App.Header!.Text);
+        Type(fx, "muestra ejemplos de markdown");
+        KeyWithEffect(fx, KeyCode.Enter, () => host.ExecuteCount == 1, "ordinary question");
+        fx.Wait(() => fx.App.Status!.Text.Contains("Listo"), "turn refresh replays journal");
+        Assert.Contains("chosen-subscription", fx.App.Header!.Text);
+        Assert.DoesNotContain("local/old-model", fx.App.Header.Text);
+        stream.Append(new OmniCore.Domain.ModelStepStarted(OmniCore.Domain.TurnId.New(), 1, "chatgpt/new-effective-model", 8192, "Direct", null, null, null));
+        fx.Wait(() => fx.App.Header.Text.Contains("chatgpt/new-effective-model"), "fresh runtime observation replaces pending selection");
+    });
+
     [Theory]
     [InlineData(80, 25)]
     [InlineData(120, 35)]

@@ -458,6 +458,28 @@ Los nombres visibles siguen el idioma de la interfaz. En inglés son `/new`,
 `/resume-session`, `/clear` y `/compact`. La CLI también admite `omni nuevo`,
 `omni sesiones`, `omni retomar <id>` y `omni compactar`.
 
+Cambiar de modelo conserva la conversación, su plan y las reglas de seguridad.
+El encabezado muestra la elección nueva hasta que exista una invocación posterior
+que informe el modelo utilizado; releer el historial no recupera como actual un
+modelo anterior. La ventana de contexto, las herramientas, las credenciales y
+el razonamiento se resuelven y validan para el modelo y proveedor de destino.
+Una petición de razonamiento incompatible no se transmite al proveedor.
+
+Los modelos **locales** y las **suscripciones** no quedan bloqueados por topes
+monetarios en USD, incluso si una conversación antigua conserva esos valores.
+El porcentaje de cuota restante es informativo para las preguntas del usuario:
+no se pide confirmar cada llamada por estar debajo del 10 %. Los límites reales
+del proveedor siguen aplicándose; una cuota baja puede omitir tareas auxiliares
+opcionales que consumirían más modelo.
+
+Los controles de gasto para proveedores que cobran por uso o créditos son
+opcionales. Los campos vacíos de la configuración actual no activan límites
+predeterminados de 5/20 USD. Los límites monetarios guardados en una sesión se
+conservan para rutas con facturación monetaria. Cambiar a un proveedor distinto
+puede pedir una autorización para esa conversación, con su nombre y forma de
+facturación. Las mediciones que el proveedor no informa permanecen desconocidas;
+no se convierten en consumo cero.
+
 La compactación automática revisa el contexto **antes de cada solicitud al
 modelo** y se activa al alcanzar el **95 % del presupuesto de entrada efectivo**.
 Ese presupuesto respeta la ventana declarada y reserva los tokens de salida;

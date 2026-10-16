@@ -76,6 +76,8 @@ public sealed partial class TuiApp
     private string WorkspaceSelectionId => ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory);
     private string? _selectedModel;
     private string? _observedModel;
+    private string? _selectionObservationSession;
+    private long _selectionObservationAfterSequence;
     private bool _showMarkdownExamples;
     private readonly List<View> _retiredOverlays = new();
     private readonly List<View> _overlaysReadyForDisposal = new();
@@ -150,6 +152,7 @@ public sealed partial class TuiApp
         RefreshSidebarPreferences();
         _selectedModel = _policies.CurrentSelection(WorkspaceSelectionId, CancellationToken.None)?.ModelId;
         _state = RefreshState();
+        if (_selectedModel is not null) MarkExplicitModelSelection();
     }
 
     public static string RenderNonInteractive(IOmniClient client, string locale = "es")
@@ -1403,7 +1406,12 @@ public sealed partial class TuiApp
         if (fields.GetValueOrDefault("conversationScope") is not ("child" or "ambiguous")
             && fields.GetValueOrDefault("type") == "model_step.started"
             && fields.GetValueOrDefault("modelId") is { Length: > 0 } model)
+        {
+            if (_selectionObservationSession == _cursorSession
+                && long.TryParse(fields.GetValueOrDefault("seq"), out var sequence)
+                && sequence <= _selectionObservationAfterSequence) return;
             _observedModel = model;
+        }
     }
 
     private void RenderState()
@@ -1689,9 +1697,10 @@ public sealed partial class TuiApp
 
     private void ShowChoiceInteraction(InteractionOverlayModel interaction)
     {
-        var overlay = OverlayFrame(interaction.Title, 7 + interaction.Options.Count);
+        var bodyHeight = interaction.Kind == "ModelRouteConsent" ? 4 : 2;
+        var overlay = OverlayFrame(interaction.Title, 5 + bodyHeight + interaction.Options.Count);
         _activeInteraction = interaction;
-        overlay.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Height = 2,
+        overlay.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Height = bodyHeight,
             Text = interaction.Subject.Length == 0 ? interaction.Kind : interaction.Subject });
         Button? defaultButton = null;
         for (var index = 0; index < interaction.Options.Count; index++)
@@ -1701,12 +1710,12 @@ public sealed partial class TuiApp
             // cualquier otro botón del contenedor (Enter sobre «Permitir una vez» dispararía
             // «Denegar»), lo que traiciona la intención visible del foco. La opción segura llega
             // por el foco inicial y por Esc (OnApplicationKeyDown → RespondDefault), no por flag.
-            var button = new Button { X = 2, Y = 4 + index, Text = interaction.Options[index] };
+            var button = new Button { X = 2, Y = 2 + bodyHeight + index, Text = interaction.Options[index] };
             button.Accepted += (_, _) => RespondChoice(interaction, optionId);
             overlay.Add(button);
             if (optionId == interaction.DefaultOptionId) defaultButton = button;
         }
-        overlay.Add(new Label { Id = "omni-help", X = 2, Y = 5 + interaction.Options.Count, Text = _localization.Resolve("shell.escape_deny") });
+        overlay.Add(new Label { Id = "omni-help", X = 2, Y = 3 + bodyHeight + interaction.Options.Count, Text = _localization.Resolve("shell.escape_deny") });
         _overlay = overlay;
         ApplyTheme(overlay);
         _window!.Add(overlay);
@@ -2099,7 +2108,7 @@ public sealed partial class TuiApp
                 var safe = _policies.Get(key, CancellationToken.None) is null;
                 _policies.Select(WorkspaceSelectionId, key, model.Id, safe, CancellationToken.None);
                 _turnStatus = safe ? _localization.Resolve("shell.safe_mode_observeonly") : null;
-                RefreshSelectedModel(); CloseOverlay();
+                RefreshSelectedModel(); MarkExplicitModelSelection(); CloseOverlay(); RenderState();
             }
             catch (Exception) { feedback.Text = _localization.Resolve("shell.could_not_select_model"); }
         };
@@ -2530,10 +2539,17 @@ public sealed partial class TuiApp
     private void RefreshSelectedModel()
     {
         var selection = _policies.CurrentSelection(WorkspaceSelectionId, CancellationToken.None)?.ModelId;
-        if (selection != _selectedModel) _observedModel = null;
+        if (selection != _selectedModel) MarkExplicitModelSelection();
         _selectedModel = selection;
         if (_header is not null) _header.Text = HeaderText();
         if (_status is not null) _status.Text = StatusText();
+    }
+
+    private void MarkExplicitModelSelection()
+    {
+        _observedModel = null;
+        _selectionObservationSession = _cursorSession;
+        _selectionObservationAfterSequence = _lastSequence;
     }
 
     /// <summary>Renders JSON as indented "label: value" lines with strings decoded (no \u escapes).</summary>

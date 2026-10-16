@@ -287,6 +287,7 @@ public sealed class ExplorerTurn
     private readonly decimal _sessionCapUsd;
 
     private readonly decimal _dailyCapUsd;
+    private readonly bool _monetaryBilling;
 
     private readonly QuestionnaireInteractionService? _questionnaires;
 
@@ -336,7 +337,8 @@ public sealed class ExplorerTurn
         IReadOnlyList<IHook>? lifecycleHooks = null,
         SessionMemoryPolicy? sessionMemoryPolicy = null,
         Func<IReadOnlyList<string>, Func<string, SkillValidationReadResult?>, string?,
-            CancellationToken, IReadOnlyList<ExternalCompletionGateResult>>? resolveLifecycleValidations = null)
+            CancellationToken, IReadOnlyList<ExternalCompletionGateResult>>? resolveLifecycleValidations = null,
+        BillingMode? billingMode = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -372,8 +374,12 @@ public sealed class ExplorerTurn
         _harness = harness;
         _boundary = boundary;
         _pricing = pricing;
-        _enforceSessionSpendCap = enforceSessionSpendCap ?? enforceDefaultSpendCaps;
-        _enforceDailySpendCap = enforceDailySpendCap ?? enforceDefaultSpendCaps;
+        // Local execution and included subscription usage have no per-invocation USD charge.
+        // Old Session snapshots may still carry a monetary limit; it cannot block these routes.
+        // Undeclared billing retains conservative monetary admission for explicitly capped work.
+        _monetaryBilling = billingMode is not (BillingMode.Local or BillingMode.IncludedQuota);
+        _enforceSessionSpendCap = _monetaryBilling && (enforceSessionSpendCap ?? enforceDefaultSpendCaps);
+        _enforceDailySpendCap = _monetaryBilling && (enforceDailySpendCap ?? enforceDefaultSpendCaps);
         _enforceDefaultSpendCaps = _enforceSessionSpendCap || _enforceDailySpendCap;
         _quotaAdmission = quotaAdmission;
         _quotaAllowsMeta = quotaAllowsMeta;
@@ -833,6 +839,7 @@ public sealed class ExplorerTurn
         var forcedToolName = isResume || dedicatedImageRoute ? null : _forcedInitialToolName;
         var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         var budget = ReadRunBudget(stream, runId);
+        if (!_monetaryBilling) budget = budget with { MaxCostUsd = null };
         // Primary usage for this Ask remains in SpendGuard. Meta usage is reread in full
         // at each boundary, avoiding a gap/overlap between a historical scan and a sequence delta.
         // Known monetary totals must remain representable even without a cap. Only an
