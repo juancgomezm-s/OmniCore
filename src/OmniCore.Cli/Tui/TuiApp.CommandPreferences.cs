@@ -1,5 +1,7 @@
 using System.Collections.ObjectModel;
 using OmniCore.Client;
+using OmniCore.Host;
+using OmniCore.Protocol;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 
@@ -11,8 +13,9 @@ public sealed partial class TuiApp
     {
         if (_window is null) return;
         CloseOverlay();
+        var aliases = new UserCommandAliases((_policyPreferencesOverride ?? PolicyPreferencesHost.Create(Environment.CurrentDirectory)).Read().CommandAliases);
         var rows = CommandCatalogPresentation.Read(_client.Query("commands", CancellationToken.None)?.Json, _localization)
-            .Where(row => row.Name is not ("openrouter" or "login" or "logout")).ToArray();
+            .Where(row => !TuiMenuCommands.IsMenuOwned(row.Name, aliases)).ToArray();
         var frame = OverlayFrame(_localization.Resolve("catalog.title"), Math.Max(16, _window.Frame.Height - 3));
         frame.Id = "command-preferences"; frame.Width = Dim.Percent(94); frame.Height = Dim.Fill(2);
         var search = new TextField { Id = "commands-filter", X = 2, Y = 2, Width = Dim.Fill(4), Height = 1 };

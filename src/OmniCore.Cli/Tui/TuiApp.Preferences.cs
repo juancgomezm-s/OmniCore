@@ -240,12 +240,13 @@ public sealed partial class TuiApp
         var controls = new List<View>();
         void Add(View view) { controls.Add(view); contentPanel.Add(view); }
         void Section(string key, int at) => contentPanel.Add(MenuIndent.Heading(Pref(key), at));
-        void AddAction(string id, string key, int y, Action action)
+        void AddNamedAction(string id, string text, int y, Action action)
         {
             var button = new Button { Id = id, X = MenuIndent.Level1, Y = y, Width = Dim.Fill(3),
-                TextAlignment = Alignment.Start, Text = Pref(key) };
+                TextAlignment = Alignment.Start, Text = text };
             button.Accepted += (_, _) => action(); Add(button);
         }
+        void AddAction(string id, string key, int y, Action action) => AddNamedAction(id, Pref(key), y, action);
         var y = 3;
         switch (selected.Id)
         {
@@ -288,11 +289,11 @@ public sealed partial class TuiApp
                 if (wide) y++;
                 var sidebarOpen = new Button { Id = "preferences-sidebar-open", X = wide ? MenuIndent.Level1 : Pos.Right(interfaceHeading) + 2,
                     Y = y, Text = Pref("sidebar_open") };
-                sidebarOpen.Accepted += (_, _) => { CloseOverlay(); ShowSidebarSettings(); };
+                sidebarOpen.Accepted += (_, _) => { CloseOverlay(); ShowSidebarSettings(); _preferencesReturnToCategory = true; };
                 if (wide) y += 2;
                 var animationsOpen = new Button { Id = "preferences-animations-open", X = wide ? MenuIndent.Level1 : Pos.Right(sidebarOpen) + 2,
                     Y = y, Text = Pref("animations_open") };
-                animationsOpen.Accepted += (_, _) => { CloseOverlay(); ShowAnimationSettings(); };
+                animationsOpen.Accepted += (_, _) => { CloseOverlay(); ShowAnimationSettings(); _preferencesReturnToCategory = true; };
                 Add(sidebarOpen); Add(animationsOpen);
                 break;
             case "accounts_connections":
@@ -340,9 +341,7 @@ public sealed partial class TuiApp
                     Add(new Label { X = MenuIndent.Level1, Y = y++, Width = Dim.Fill(3), Text = AccountUi("error.readApi") });
                 }
                 var openRouterButtonAdded = false;
-                foreach (var provider in providerRows
-                    .Where(row => row.Method == ProviderConnectionMethod.ApiKey
-                        && (row.CanConnect || row.CanTest || row.CanDisconnect || row.CanDiscoverModels)))
+                foreach (var provider in providerRows.Where(row => row.Method == ProviderConnectionMethod.ApiKey))
                 {
                     var captured = provider;
                     var providerButton = new Button { Id = provider.Backend == "openrouter" && !openRouterButtonAdded
@@ -353,7 +352,6 @@ public sealed partial class TuiApp
                     openRouterButtonAdded |= provider.Backend == "openrouter";
                     Add(providerButton);
                 }
-                AddAction("preferences-api-open", "api_open", y++, () => { CloseOverlay(); ShowProviderConnections(); });
                 Add(new Label { Id = "preferences-api-status", X = MenuIndent.Level1, Y = y, Width = Dim.Fill(4), Height = 1,
                     Text = AccountUi("help.providerState") });
                 break;
@@ -362,6 +360,8 @@ public sealed partial class TuiApp
                 break;
             case "models_execution":
                 Section("section_models", y++);
+                AddNamedAction("preferences-model-select", _localization.Resolve("shell.select_model"), y++, () =>
+                { CloseOverlay(); ShowModelPicker(refreshCatalog: false); _preferencesReturnToCategory = true; });
                 AddAction("preferences-models-open", "models_open", y, () => { CloseOverlay(); ShowPolicyPreferences("models_execution"); });
                 var catalogButton = new Button { Id = "preferences-model-catalog-open", X = MenuIndent.Level1, Y = y + 2,
                     Width = Dim.Fill(3), TextAlignment = Alignment.Start, Text = _localization.Resolve("modelCatalogPreferences.open") };
@@ -370,7 +370,10 @@ public sealed partial class TuiApp
                 break;
             case "tools_security":
                 Section("section_tools", y++);
-                AddAction("preferences-tools-open", "tools_open", y, () => RunPreferenceAction(ClientActionIds.ToolsInspect)); y += 2;
+                AddAction("preferences-tools-open", "tools_open", y++, () => RunPreferenceAction(ClientActionIds.ToolsInspect));
+                AddNamedAction("preferences-tool-mappings-open", PolicyPref("section_tool_preferences"), y++, () =>
+                { CloseOverlay(); ShowMappingPreferences("tools_security"); });
+                y++;
                 Section("section_permissions", y++);
                 AddAction("preferences-permissions-open", "permissions_open", y++, () => { CloseOverlay(); ShowSecurityPreferences("tools_security"); });
                 Add(new Label { X = MenuIndent.Level1, Y = y, Width = Dim.Fill(4), Height = 2, Text = Pref("permissions_hint") });
@@ -380,6 +383,10 @@ public sealed partial class TuiApp
                 Add(new Label { X = MenuIndent.Level1, Y = y, Width = Dim.Fill(4), Height = 2, Text = Pref("extensions_hint") }); y += 2;
                 AddAction("preferences-extensions-open", "extensions_open", y++, () => RunPreferenceAction(ClientActionIds.ExtensionsInspect));
                 AddAction("preferences-skills-open", "skills_open", y++, () => RunPreferenceAction(ClientActionIds.SkillsInspect));
+                AddNamedAction("preferences-hooks-open", PolicyPref("service.hooks"), y++, () => ShowServiceInspection("hooks"));
+                AddNamedAction("preferences-mcp-open", Pref("mcp_open"), y++, () => ShowServiceInspection("mcp"));
+                AddNamedAction("preferences-aliases-open", PolicyPref("section_command_aliases"), y++, () =>
+                { CloseOverlay(); ShowMappingPreferences("extensions_skills"); });
                 var commandsButton = new Button { Id = "preferences-commands-open", X = MenuIndent.Level1, Y = y,
                     Width = Dim.Fill(4), TextAlignment = Alignment.Start, Text = _localization.Resolve("catalog.title") };
                 commandsButton.Accepted += (_, _) => ShowCommandPreferences();
@@ -387,7 +394,9 @@ public sealed partial class TuiApp
                 break;
             case "diagnostics_data":
                 Section("section_diagnostics", y++);
-                AddAction("preferences-diagnostics-open", "diagnostics_open", y, () => { CloseOverlay(); ShowDiagnosticsPreferences("diagnostics_data"); });
+                AddAction("preferences-diagnostics-open", "diagnostics_open", y++, () => { CloseOverlay(); ShowDiagnosticsPreferences("diagnostics_data"); });
+                AddNamedAction("preferences-help-open", _localization.Resolve("shell.help_title"), y, () =>
+                    ShowPreferenceText(_localization.Resolve("shell.help_title"), TuiHelpSection()));
                 break;
             case "context_sessions":
                 Section("section_context", y++);
@@ -407,7 +416,7 @@ public sealed partial class TuiApp
                 AddAction("preferences-memory-open", "memory_open", y, () => RunPreferenceAction(ClientActionIds.MemorySession));
                 break;
         }
-        if ((wide && selected.Id != "local_engines") || selected.Id == "accounts_connections" && _preferencesProvider is not null)
+        if (selected.Id != "local_engines")
             ConfigurePreferenceScroll(contentPanel, y + 3);
         frame.Add(_preferencesNotice);
         var back = new Button { Id = "preferences-back", X = 2, Y = Pos.AnchorEnd(2), Text = Pref(wide ? "close" : "back") };
@@ -496,9 +505,13 @@ public sealed partial class TuiApp
         switch (actionId)
         {
             case ClientActionIds.ToolsInspect:
-                var tools = _client.Query("tools", CancellationToken.None)?.Json;
-                var inspection = tools is null ? null : ToolsInspectionJson.Decode(tools);
-                if (inspection is null) ShowMessage(Pref("unavailable")); else ShowTools(inspection);
+                try
+                {
+                    var tools = _client.Query("tools", CancellationToken.None)?.Json;
+                    var inspection = tools is null ? null : ToolsInspectionJson.Decode(tools);
+                    if (inspection is null) ShowPreferenceText(Pref("tools_open"), Pref("unavailable")); else ShowTools(inspection);
+                }
+                catch (Exception) { ShowPreferenceText(Pref("tools_open"), Pref("unavailable")); }
                 return;
             case ClientActionIds.ContextInspect: CloseOverlay(); ShowSessionPreferences("context"); return;
             case ClientActionIds.ExtensionsInspect: CloseOverlay(); ShowSessionPreferences("extensions"); return;
@@ -620,13 +633,24 @@ public sealed partial class TuiApp
         "trust" => Pref("trust"), "status" or "state" => Pref("state"), "diagnostic" => Pref("diagnostic"),
         "kind" => Pref("kind"), "source" => Pref("source"), "importance" => Pref("importance"),
         "confidence" => Pref("confidence"), "createdAt" => Pref("created"), "tags" => Pref("tags"),
-        _ => key,
+        _ => PolicyPreferencesResources.Keys.Contains("policyPreferences.service." + key, StringComparer.Ordinal)
+            ? PolicyPref("service." + key) : key,
     };
 
     private string InspectionScalar(string key, System.Text.Json.JsonElement value)
     {
+        if (value.ValueKind is System.Text.Json.JsonValueKind.True or System.Text.Json.JsonValueKind.False)
+            return PolicyPref(value.ValueKind == System.Text.Json.JsonValueKind.True ? "service.yes" : "service.no");
         if (value.ValueKind != System.Text.Json.JsonValueKind.String) return Scalar(value);
         var text = value.GetString() ?? "";
+        if (key is "state" or "status")
+        {
+            var stateKey = "cli.diagnostic.hook.state." + text.ToLowerInvariant();
+            var translated = _localization.Resolve(stateKey);
+            if (translated != stateKey) return translated;
+            var serviceState = "policyPreferences.service.state." + text;
+            if (PolicyPreferencesResources.Keys.Contains(serviceState, StringComparer.Ordinal)) return _localization.Resolve(serviceState);
+        }
         if (key == "scope") return Pref("scope_" + text.ToLowerInvariant()) is { } translated && translated != "preferences.ui.scope_" + text.ToLowerInvariant() ? translated : text;
         if (key is "trust" or "workspaceTrusted") return text.ToLowerInvariant() switch
         {

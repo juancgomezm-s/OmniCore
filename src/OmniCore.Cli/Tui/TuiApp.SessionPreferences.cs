@@ -41,9 +41,13 @@ public sealed partial class TuiApp
         if (_window is null || _overlay is not null
             || queryName is not ("context" or "extensions" or "skills" or "memory.session")) return;
         _sessionPreferencesQuery = queryName;
-        var json = _client.Query(queryName, CancellationToken.None)?.Json;
-        _sessionPreferencesData = json is null ? SessionPreferencesData.Unavailable(queryName)
-            : SessionPreferencesPresentation.Decode(queryName, json);
+        try
+        {
+            var json = _client.Query(queryName, CancellationToken.None)?.Json;
+            _sessionPreferencesData = json is null ? SessionPreferencesData.Unavailable(queryName)
+                : SessionPreferencesPresentation.Decode(queryName, json);
+        }
+        catch (Exception) { _sessionPreferencesData = SessionPreferencesData.Unavailable(queryName); }
         BuildSessionPreferenceRows();
         RenderSessionPreferences();
     }

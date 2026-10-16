@@ -209,28 +209,24 @@ public sealed partial class TuiWiringTests
         fx.StartTui(providerConnections: providers, initialColumns: 80, initialRows: 25);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "centro visible");
         ChoosePreferenceCategory(fx, "accounts_connections");
-        ClickId(fx, "preferences-api-open");
-        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-connection-list"), "lista API visible");
-        Assert.Equal(2, providers.ListCalls); // Account choices and the explicit overview both read metadata only.
+        Assert.Equal(1, providers.ListCalls);
         Assert.Equal(0, providers.OperationCalls);
+        Assert.DoesNotContain(Descendants(fx.App.Overlay!), view => view.Id == "preferences-api-open");
+        ClickId(fx, "preferences-provider-open-openai-custom");
+        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-key-save"), "direct unsupported provider view");
         var overlay = fx.App.Overlay!;
-        var list = Descendants(overlay).OfType<ListView>().Single(view => view.Id == "provider-connection-list");
-        var connect = Descendants(overlay).OfType<Button>().Single(view => view.Id == "provider-connect");
-        var test = Descendants(overlay).OfType<Button>().Single(view => view.Id == "provider-test");
-        var discover = Descendants(overlay).OfType<Button>().Single(view => view.Id == "provider-discover");
-        var disconnect = Descendants(overlay).OfType<Button>().Single(view => view.Id == "provider-disconnect");
-        fx.Invoke(() => list.SelectedItem = 0);
-        fx.Wait(() => !connect.Enabled && !test.Enabled && !discover.Enabled && !disconnect.Enabled,
-            "provider no soportado no hereda acciones de Anthropic");
+        Assert.All(Descendants(overlay).OfType<Button>().Where(view => view.Id is "provider-key-save" or "provider-test" or "provider-discover" or "provider-disconnect"),
+            view => Assert.False(view.Enabled));
         Assert.True(AccountsPreferencesResources.TryTranslate("es", "accounts.ui.help.noProviderAction", out var unavailableMessage));
         Assert.Contains(unavailableMessage, OverlayText(overlay));
-        fx.Invoke(() => list.SelectedItem = 1);
-        fx.Wait(() => connect.Enabled, "Anthropic conserva sólo capacidad declarada");
-        Assert.False(test.Enabled);
-        Assert.False(discover.Enabled);
-        Assert.False(disconnect.Enabled);
+        ClickId(fx, "provider-key-cancel");
+        ClickId(fx, "preferences-provider-open-anthropic");
+        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-key-save"), "direct Anthropic form");
+        Assert.True(Descendants(fx.App.Overlay!).OfType<Button>().Single(view => view.Id == "provider-key-save").Enabled);
+        foreach (var id in new[] { "provider-test", "provider-discover", "provider-disconnect" })
+            Assert.False(Descendants(fx.App.Overlay!).OfType<Button>().Single(view => view.Id == id).Enabled);
         Assert.Equal(0, providers.OperationCalls);
-        ExportPreferenceFrame(fx, 80, 25, "accounts-api", "anthropic");
+        ExportPreferenceFrame(fx, 80, 25, "accounts-api", "Anthropic");
     });
 
     [Fact]
@@ -244,8 +240,8 @@ public sealed partial class TuiWiringTests
         fx.StartTui(providerConnections: providers, initialColumns: 90, initialRows: 27);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "preferences opened");
         ChoosePreferenceCategory(fx, "accounts_connections");
-        ClickId(fx, "preferences-api-open");
-        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-connection-list"), "provider list visible");
+        ClickId(fx, "preferences-openrouter-open");
+        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-discover"), "direct provider form visible");
         ClickId(fx, "provider-discover");
         fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "openrouter-catalog-models"), "catalog view visible");
         Assert.Equal(0, providers.CatalogRefreshCalls);
@@ -261,8 +257,8 @@ public sealed partial class TuiWiringTests
         ClickId(fx, "openrouter-catalog-register");
         fx.Wait(() => providers.RegisteredModels.Count > 0, "selected catalog model reaches Host registration");
         Assert.Equal(["openai/fixture-model"], providers.RegisteredModels);
-        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-connection-list"),
-            "catalog registration returns to provider connections");
+        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-api-key"),
+            "catalog registration returns to the selected provider form");
     });
 
     [Fact]
@@ -276,18 +272,18 @@ public sealed partial class TuiWiringTests
         fx.StartTui(providerConnections: providers, initialColumns: 80, initialRows: 25);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "centro visible");
         ChoosePreferenceCategory(fx, "accounts_connections");
-        ClickId(fx, "preferences-api-open");
-        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-connection-list"), "API visible");
+        ClickId(fx, "preferences-provider-open-anthropic-team");
+        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-disconnect"), "direct provider form visible");
         ClickId(fx, "provider-disconnect");
         fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-disconnect-confirm"), "confirmación visible");
         Assert.Equal(0, providers.OperationCalls);
         ClickId(fx, "provider-disconnect-cancel");
-        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-connection-list"), "cancelación devuelve a la conexión");
+        fx.Wait(() => Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-api-key"), "cancelación devuelve a la conexión");
         Assert.Equal(0, providers.OperationCalls);
         ClickId(fx, "provider-disconnect");
         ClickId(fx, "provider-disconnect-confirm");
         fx.Wait(() => providers.OperationCalls == 1
-            && Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-connection-list"), "desconexión explícita completa");
+            && Descendants(fx.App.Overlay!).Any(view => view.Id == "provider-api-key"), "desconexión explícita completa");
         Assert.Equal("anthropic-team", providers.LastProviderId);
     });
 

@@ -82,34 +82,23 @@ public sealed partial class TuiWiringTests
         fx.StartTui(providerConnections: host);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
         ChoosePreferenceCategory(fx, "accounts_connections");
-        Click(fx, "Conexiones API");
-        fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Conexiones API") == true,
-            "conexiones API visibles");
-
-        ListView list = null!;
-        string[] rows = [];
-        fx.Invoke(() =>
-        {
-            list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
-            rows = list.Source!.ToList().Cast<object>().Select(item => item.ToString() ?? "").ToArray();
-        });
-        Assert.Contains(rows, row => row.Contains("anthropic", StringComparison.Ordinal)
-            && row.Contains("Sin configurar", StringComparison.Ordinal));
-        Assert.Contains(rows, row => row.Contains("custom", StringComparison.Ordinal)
-            && row.Contains("Conectado", StringComparison.Ordinal)
-            && row.Contains("verificada 2026-10-01 10:30 UTC", StringComparison.Ordinal)
-            && row.Contains("modelos 2026-10-02 11:45 UTC", StringComparison.Ordinal));
-        Assert.DoesNotContain(rows, row => row.Contains("quota", StringComparison.OrdinalIgnoreCase)
-            || row.Contains("cuota", StringComparison.OrdinalIgnoreCase));
-        Assert.True(fx.App.Overlay!.SubViews.OfType<Button>().Single(button => button.Id == "provider-connect").Enabled);
-        Assert.False(fx.App.Overlay.SubViews.OfType<Button>().Single(button => button.Id == "provider-test").Enabled);
-
-        fx.Invoke(() => list.SelectedItem = 1);
-        fx.Wait(() => fx.App.Overlay!.SubViews.OfType<Button>().Single(button => button.Id == "provider-test").Enabled,
-            "acciones del provider seleccionado actualizadas");
-        Assert.False(fx.App.Overlay!.SubViews.OfType<Button>().Single(button => button.Id == "provider-connect").Enabled);
-        Assert.True(fx.App.Overlay.SubViews.OfType<Button>().Single(button => button.Id == "provider-disconnect").Enabled);
-        Assert.True(fx.App.Overlay.SubViews.OfType<Button>().Single(button => button.Id == "provider-discover").Enabled);
+        ClickId(fx, "preferences-provider-open-anthropic");
+        Assert.True(Descendants(fx.App.Overlay!).OfType<Button>().Single(button => button.Id == "provider-key-save").Enabled);
+        Assert.False(Descendants(fx.App.Overlay!).OfType<Button>().Single(button => button.Id == "provider-test").Enabled);
+        Assert.Contains("Sin configurar", OverlayText(fx.App.Overlay!));
+        ClickId(fx, "provider-key-cancel");
+        ClickId(fx, "preferences-provider-open-custom");
+        var detail = OverlayText(fx.App.Overlay!);
+        Assert.Contains("custom", detail);
+        Assert.Contains("Conectado", detail);
+        Assert.Contains("verificada 2026-10-01 10:30 UTC", detail);
+        Assert.Contains("modelos 2026-10-02 11:45 UTC", detail);
+        Assert.DoesNotContain("quota", detail, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("cuota", detail, StringComparison.OrdinalIgnoreCase);
+        Assert.False(Descendants(fx.App.Overlay!).OfType<Button>().Single(button => button.Id == "provider-key-save").Enabled);
+        Assert.True(Descendants(fx.App.Overlay!).OfType<Button>().Single(button => button.Id == "provider-test").Enabled);
+        Assert.True(Descendants(fx.App.Overlay!).OfType<Button>().Single(button => button.Id == "provider-disconnect").Enabled);
+        Assert.True(Descendants(fx.App.Overlay!).OfType<Button>().Single(button => button.Id == "provider-discover").Enabled);
 
         Click(fx, "Descubrir modelos");
         fx.Wait(() => fx.App.Overlay is { } overlay
@@ -131,21 +120,12 @@ public sealed partial class TuiWiringTests
         fx.StartTui(providerConnections: host);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
         ChoosePreferenceCategory(fx, "accounts_connections");
-        Click(fx, "Conexiones API");
-        fx.Invoke(() =>
-        {
-            var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
-            var items = list.Source!.ToList().Cast<object>().Select(item => item.ToString() ?? "").ToArray();
-            var anthropic = Array.FindIndex(items, item => item.StartsWith("anthropic", StringComparison.Ordinal));
-            Assert.True(anthropic >= 0, "la fila Anthropic del Host debe estar disponible");
-            list.SelectedItem = anthropic;
-        });
-        Click(fx, "Conectar");
+        ClickId(fx, "preferences-provider-open-anthropic");
         var secret = "test-key-never-sent-over-network";
         TextField key = null!;
         fx.Invoke(() =>
         {
-            key = fx.App.Overlay!.SubViews.OfType<TextField>().Single(field => field.Id == "provider-api-key");
+            key = Descendants(fx.App.Overlay!).OfType<TextField>().Single(field => field.Id == "provider-api-key");
             Assert.True(key.Secret);
             key.Text = secret;
         });
@@ -176,9 +156,8 @@ public sealed partial class TuiWiringTests
         fx.StartTui(providerConnections: host);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
         ChoosePreferenceCategory(fx, "accounts_connections");
-        Click(fx, "Conexiones API");
-        Click(fx, "Conectar");
-        fx.Invoke(() => fx.App.Overlay!.SubViews.OfType<TextField>()
+        ClickId(fx, "preferences-provider-open-anthropic");
+        fx.Invoke(() => Descendants(fx.App.Overlay!).OfType<TextField>()
             .Single(field => field.Id == "provider-api-key").Text = "fixture-cancelled-key-12345");
         Click(fx, "Guardar");
         fx.Wait(() => host.ReceivedApiKey is not null, "operación de Host en espera");
@@ -186,7 +165,7 @@ public sealed partial class TuiWiringTests
 
         fx.InjectKey(new Key(KeyCode.Esc));
         fx.Wait(() => fx.App.Overlay is { } overlay
-            && Descendants(overlay).Any(view => view.Id == "preferences-back"),
+            && !Descendants(overlay).Any(view => view.Id == "provider-api-key"),
             "Esc cancela el formulario y vuelve a la categoría de preferencias");
         fx.Wait(() => host.ConnectCancellationObserved.Task.IsCompleted, "token del Host cancelado al cerrar");
         host.ConnectGate!.TrySetResult(new ProviderConnectionMenuResult(ProviderConnectionState.Connected, null, null));
@@ -222,17 +201,8 @@ public sealed partial class TuiWiringTests
         fx.StartTui(providerConnections: host);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
         ChoosePreferenceCategory(fx, "accounts_connections");
-        Click(fx, "Conexiones API");
-        fx.Invoke(() =>
-        {
-            var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
-            var items = list.Source!.ToList().Cast<object>().Select(item => item.ToString() ?? "").ToArray();
-            var anthropicB = Array.FindIndex(items, item => item.StartsWith("anthropic-b", StringComparison.Ordinal));
-            Assert.True(anthropicB >= 0, "el provider Anthropic seleccionado debe estar disponible");
-            list.SelectedItem = anthropicB;
-        });
-        Click(fx, "Conectar");
-        fx.Invoke(() => fx.App.Overlay!.SubViews.OfType<TextField>()
+        ClickId(fx, "preferences-provider-open-anthropic-b");
+        fx.Invoke(() => Descendants(fx.App.Overlay!).OfType<TextField>()
             .Single(field => field.Id == "provider-api-key").Text = apiKey);
         Click(fx, "Guardar");
         fx.Wait(() => fx.App.Overlay is { } overlay && OverlayText(overlay).Contains("Estado: Desconocido"),
@@ -245,8 +215,7 @@ public sealed partial class TuiWiringTests
         Click(fx, "Probar");
         fx.Wait(() => fx.App.Overlay is { } overlay && OverlayText(overlay).Contains("Estado: Conectado"),
             "test de conexión real contra handler aislado");
-        Assert.Contains(PickerItems(fx), row => row.StartsWith("anthropic-b", StringComparison.Ordinal)
-            && row.Contains("verificada 2026-10-08 12:00 UTC", StringComparison.Ordinal));
+        Assert.Contains("verificada 2026-10-08 12:00 UTC", Descendants(fx.App.Overlay!).Single(view => view.Id == "provider-metadata").Text.ToString());
 
         Click(fx, "Descubrir modelos");
         fx.Wait(() => fx.App.Overlay is { } overlay
@@ -255,8 +224,7 @@ public sealed partial class TuiWiringTests
             "discovery real registra catálogo y la única ventana reportada");
         Assert.Contains("claude-ui-test:", File.ReadAllText(Path.Combine(paths.ConfigDirectory, "models.yaml")),
             StringComparison.Ordinal);
-        Assert.Contains(PickerItems(fx), row => row.StartsWith("anthropic-b", StringComparison.Ordinal)
-            && row.Contains("modelos 2026-10-08 12:00 UTC", StringComparison.Ordinal));
+        Assert.Contains("modelos 2026-10-08 12:00 UTC", Descendants(fx.App.Overlay!).Single(view => view.Id == "provider-metadata").Text.ToString());
 
         Click(fx, "Desconectar");
         fx.Wait(() => fx.App.Overlay is { } confirm
@@ -268,8 +236,8 @@ public sealed partial class TuiWiringTests
             "disconnect vuelve al listado");
         Assert.Null(store.Load("credentials/anthropic-b", TestContext.Current.CancellationToken));
         Assert.Null(store.Load("credentials/anthropic-a", TestContext.Current.CancellationToken));
-        Assert.Contains(PickerItems(fx), row => row.StartsWith("anthropic-b", StringComparison.Ordinal)
-            && row.Contains("Sin configurar", StringComparison.Ordinal));
+        Assert.Contains("anthropic-b", OverlayText(fx.App.Overlay!));
+        Assert.Contains("Sin configurar", OverlayText(fx.App.Overlay!));
         Assert.Equal(2, handler.Requests.Count);
         Assert.All(handler.Requests, request =>
         {
@@ -967,10 +935,12 @@ public sealed partial class TuiWiringTests
                 }
                 else if (scene == "commands")
                 {
-                    Assert.Contains("/ayuda", text);
+                    Assert.Contains("/actuar", text);
+                    Assert.DoesNotContain("/ayuda", text);
                     Assert.Contains("/modo", text);
-                    Assert.Contains("/modelos", text);
-                    Assert.Contains("Seleccionar modelo", text);
+                    Assert.Contains("/agentes", text);
+                    Assert.DoesNotContain("/modelos", text);
+                    Assert.Contains(new Localization("es").Resolve("shell.set_the_next_run_s_default_mode"), text);
                     Assert.Contains("Tab completar", text);
                     Assert.True(fx.App.Composer!.HasFocus);
                     var helper = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-command-helper");
@@ -1977,13 +1947,13 @@ public sealed partial class TuiWiringTests
         KeyWithEffect(fx, KeyCode.Tab, () => fx.App.Composer.Text.ToString() == expected + " ", "Tab completa sin ejecutar");
         Assert.Null(fx.App.Overlay);
         Assert.DoesNotContain(fx.App.MainWindow.SubViews, view => view.Id == "omni-command-helper");
-        fx.Invoke(() => fx.App.Composer.Text = "/model");
+        fx.Invoke(() => fx.App.Composer.Text = "/deleg");
         fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "filtra prefijo");
-        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer.Text.ToString() == "/modelos ", "Enter completa el nombre localizado sin ejecutarlo");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer.Text.ToString() == "/delegar ", "Enter completa el nombre localizado sin ejecutarlo");
         Assert.Null(fx.App.Overlay);
-        fx.Invoke(() => fx.App.Composer.Text = "/modelos");
+        fx.Invoke(() => fx.App.Composer.Text = "/delegar");
         fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "alias localizado exacto");
-        KeyWithEffect(fx, KeyCode.Tab, () => fx.App.Composer.Text.ToString() == "/modelos ", "conserva alias localizado sin ejecutarlo");
+        KeyWithEffect(fx, KeyCode.Tab, () => fx.App.Composer.Text.ToString() == "/delegar ", "conserva alias localizado sin ejecutarlo");
         Assert.Null(fx.App.Overlay);
         fx.Invoke(() => fx.App.Composer.Text = "/pl");
         fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "helper reabierto");
@@ -2010,8 +1980,8 @@ public sealed partial class TuiWiringTests
         Assert.Contains("Consulta: no ejecuta ni activa/desactiva", OverlayText(fx.App.Overlay));
         var detail = fx.App.Overlay.SubViews.OfType<StyledTextPresenter>().Single();
         Assert.Contains("Te pide información", detail.Text);
-        Assert.Contains("permissions.yaml", detail.Text);
-        Assert.Contains("/permissions lista autorizaciones", detail.Text);
+        Assert.Contains("F4", detail.Text);
+        Assert.Contains("Permisos y confianza", detail.Text);
         Assert.True(list.HasFocus);
         var search = fx.App.Overlay.SubViews.OfType<TextField>().Single();
         KeyWithEffect(fx, KeyCode.F | KeyCode.CtrlMask, () => search.HasFocus, "filtro por descripción");
@@ -2189,8 +2159,9 @@ public sealed partial class TuiWiringTests
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "el Enter de /help no abre el overlay");
         var help = OverlayText(fx.App.Overlay!);
         Assert.Contains("Comandos disponibles", help);
-        Assert.Contains("/permissions", help);
-        Assert.Contains("/exit", help);
+        Assert.DoesNotContain("/permissions", help);
+        Assert.Contains("F4", help);
+        Assert.Contains("/salir", help);
         Assert.DoesNotContain("prompt_not_found", help);
         KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "Esc no cierra la ayuda");
         fx.Wait(() => fx.App.Composer!.HasFocus, "el foco vuelve al composer tras la ayuda");
@@ -2882,7 +2853,7 @@ public sealed partial class TuiWiringTests
     {
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
         ChoosePreferenceCategory(fx, "models_execution");
-        Click(fx, "Modelos y políticas");
+        Click(fx, "Rutas y límites de gasto");
         ClickId(fx, "policy-preferences-model-policies");
         fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Modelos") == true, "mantenimiento de modelos visible");
     }

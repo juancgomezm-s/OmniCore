@@ -183,10 +183,10 @@ public sealed partial class TuiWiringTests
         ChoosePreferenceCategory(fx, "models_execution", locale);
         var action = locale switch
         {
-            "en" => "Models and policies…",
-            "fr" => "Modèles et politiques…",
-            "it" => "Modelli e criteri…",
-            _ => "Modelos y políticas…",
+            "en" => "Routing and spending limits…",
+            "fr" => "Routage et limites de dépenses…",
+            "it" => "Instradamento e limiti di spesa…",
+            _ => "Rutas y límites de gasto…",
         };
         Click(fx, action);
         fx.Wait(() => fx.App.Overlay?.Id == "policy-preferences", "model execution settings visible");

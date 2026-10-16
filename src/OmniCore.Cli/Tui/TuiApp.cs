@@ -504,14 +504,15 @@ public sealed partial class TuiApp
         if (draft.Length == 0 || draft[0] is not ('/' or '@')) { _completion.Text = ""; HideCommandHelper(); return; }
         var commandCatalogJson = _client.Query("commands", CancellationToken.None)?.Json;
         _disabledCommandReasons = ReadDisabledCommandReasons(commandCatalogJson);
+        var aliases = new UserCommandAliases((_policyPreferencesOverride ?? PolicyPreferencesHost.Create(Environment.CurrentDirectory))
+            .Read().CommandAliases);
         var names = ReadStringArray(commandCatalogJson, "commands")
             .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode", "reasoning",
-                "cancel", "interrupt", "preferences", "models", "sidebar", "fuente", "agents", "delegate", "agent", "join", "fanout", "animation", "images" })
+                "cancel", "interrupt", "preferences", "models", "sidebar", "agents", "delegate", "agent", "join", "fanout", "animation", "images" })
             .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name))
-            .Where(name => HumanCommandAliases.CanonicalName(name) is not ("login" or "logout" or "openrouter"));
+            .Where(name => !TuiMenuCommands.IsMenuOwned(name, aliases));
         var suggestions = ComposerAutocomplete.Complete(draft,
-        new UserCommandAliases((_policyPreferencesOverride ?? PolicyPreferencesHost.Create(Environment.CurrentDirectory))
-            .Read().CommandAliases).CompletionNames(names),
+        aliases.CompletionNames(names).Where(name => !TuiMenuCommands.IsMenuOwned(name, aliases)),
             ReadStringArray(_client.Query("complete:" + draft[1..], CancellationToken.None)?.Json, "paths"),
             name => HumanCommandAliases.DisplayName(name, _locale));
         // Show one spelling in the effective UI language. Canonical commands remain accepted
@@ -1593,8 +1594,8 @@ public sealed partial class TuiApp
         var heading = MenuIndent.Heading(_localization.Resolve("shell.widget_list_heading"), 4);
         var list = new ListView { Id = "omni-model-list", X = MenuIndent.Level1, Y = 5, Width = Dim.Fill(2), Height = Dim.Fill(10) };
         var description = new Label { Id = "omni-detail", X = MenuIndent.Level1, Y = Pos.AnchorEnd(9), Width = Dim.Fill(2), Height = 2 };
-        var help = new Label { Id = "omni-help", X = MenuIndent.Level1, Y = Pos.AnchorEnd(4), Width = Dim.Fill(2), Height = 2 };
-        var notice = new Label { Id = "omni-help", X = MenuIndent.Level0, Y = Pos.AnchorEnd(2), Width = Dim.Fill(2), Height = 1 };
+        var help = new Label { Id = "omni-help", X = MenuIndent.Level1, Y = Pos.AnchorEnd(5), Width = Dim.Fill(2), Height = 2 };
+        var notice = new Label { Id = "omni-help", X = MenuIndent.Level0, Y = Pos.AnchorEnd(3), Width = Dim.Fill(2), Height = 1 };
         var widgets = _sidebarWidgets.ToArray();
         var ids = widgets.Select(w => w.Id).ToArray();
         string DescriptionOf(string id) => _localization.Resolve(ShellUiResources.ContainsKey("shell.widget_desc." + id)
@@ -1651,7 +1652,9 @@ public sealed partial class TuiApp
         var down = new Button { X = Pos.Right(up) + 1, Y = Pos.AnchorEnd(6), Text = _localization.Resolve("shell.priority_67") };
         void Priority(int delta) { if (Selected() is { } id) Save("widgets." + id + ".priority", Math.Clamp((_sidebarSettings.Preferences.Widgets?.GetValueOrDefault(id)?.Priority ?? _sidebarWidgets.First(w => w.Id == id).DefaultPriority) + delta, -1000, 1000).ToString(System.Globalization.CultureInfo.InvariantCulture)); }
         up.Accepted += (_, _) => Priority(10); down.Accepted += (_, _) => Priority(-10);
-        frame.Add(scopeButton, mode, heading, list, description, visible, expand, reset, up, down, help, notice);
+        var back = new Button { Id = "sidebar-settings-back", X = Pos.AnchorEnd(14), Y = Pos.AnchorEnd(2), Text = Pref("back") };
+        back.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("general", categoryPage: true); };
+        frame.Add(scopeButton, mode, heading, list, description, visible, expand, reset, up, down, help, notice, back);
         Update(); ApplyTheme(frame); _overlay = frame; _window.Add(frame); list.SetFocus();
     }
 
@@ -1815,7 +1818,7 @@ public sealed partial class TuiApp
             && (view.Id?.StartsWith("session-preferences", StringComparison.Ordinal) == true
                 || view.Id?.StartsWith("model-catalog-", StringComparison.Ordinal) == true
                 || view.Id is "policy-preferences" or "security-preferences" or "security-preferences-confirm"
-                    or "diagnostics-preferences" or "diagnostics-confirm" or "command-preferences")) surface = PreferencesSurface;
+                    or "diagnostics-preferences" or "diagnostics-confirm" or "command-preferences" or "mapping-preferences")) surface = PreferencesSurface;
         else if (view.Id is "omni-panel" or "provider-connections" or "openrouter-credits") surface = "#202C3B";
         else if (view.Id == "omni-menu-title") surface = MenuSurface;
         else if (view.Id is "omni-model-list" or "tools-list" or "session-preferences-list" or "model-catalog-list"
@@ -1909,7 +1912,7 @@ public sealed partial class TuiApp
                 ? status.AccountIdMasked + (status.Expired ? " · " + AccountUi("status.expired") : " · " + AccountUi("status.connected"))
                 : AccountUi("status.disconnected") });
             frame.Add(new Label { X = 2, Y = 3, Width = Dim.Fill(2), Text = AccountUi("account.noApiKey") });
-            var browser = new Button { X = 2, Y = 5, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = AccountUi("action.browserLogin") };
+            var browser = new Button { Id = "account-browser-login", X = 2, Y = 5, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = AccountUi("action.browserLogin") };
             browser.Accepted += (_, _) => StartLogin(false);
             var device = new Button { X = 2, Y = 7, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = AccountUi("action.deviceLogin") };
             device.Accepted += (_, _) => StartLogin(true);
@@ -1926,7 +1929,11 @@ public sealed partial class TuiApp
             _returnToChatGptAccount = false;
             (status.LoggedIn ? (status.Expired ? browser : back) : browser).SetFocus();
         }
-        catch (Exception) { ShowMessage(AccountUi("error.readAccount")); }
+        catch (Exception)
+        {
+            if (_accountFromPreferences) ShowPreferenceText(AccountUi("title.chatgpt"), AccountUi("error.readAccount"));
+            else ShowMessage(AccountUi("error.readAccount"));
+        }
     }
 
     private void ConfirmLogout()
@@ -2716,9 +2723,7 @@ public sealed partial class TuiApp
         }
         if (action.ActionId == ClientActionIds.HelpShow)
         {
-            var context = new ClientContext(_client, _localization, CliApp.PermissionsListing);
-            var help = new ClientActionHandler().ExecuteAsync(action, context, CancellationToken.None).AsTask().GetAwaiter().GetResult();
-            _viewFromChat = true; ShowPreferenceText(_localization.Resolve("shell.help_title"), help.Text + "\n\n" + TuiHelpSection());
+            _viewFromChat = true; ShowPreferenceText(_localization.Resolve("shell.help_title"), TuiHelpSection());
             return true;
         }
         if (action.ActionId == ClientActionIds.PermissionsList)
@@ -2745,10 +2750,15 @@ public sealed partial class TuiApp
 
     private string TuiHelpSection()
     {
-        var lines = new List<string> { _localization.Resolve("shell.help_tui_section") };
-        foreach (var name in new[] { "/act", "/mode", "/runmode", "/ultracode", "/reasoning", "/models", "/preferences",
-            "/login", "/sidebar", "/animation", "/agents", "/delegate", "/agent", "/join", "/fanout" })
-            lines.Add("  " + name + " — " + CommandDescription(name));
+        var lines = new List<string> { _localization.Resolve("client.help.title"), "", _localization.Resolve("shell.help_tui_section") };
+        var aliases = new UserCommandAliases((_policyPreferencesOverride ?? PolicyPreferencesHost.Create(Environment.CurrentDirectory)).Read().CommandAliases);
+        var rows = CommandCatalogPresentation.Read(_client.Query("commands", CancellationToken.None)?.Json, _localization)
+            .Where(row => !TuiMenuCommands.IsMenuOwned(row.Name, aliases));
+        var shown = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows)
+            if (shown.Add(row.Name)) lines.Add("  /" + row.DisplayName + " — " + row.Description);
+        foreach (var name in new[] { "act", "mode", "runmode", "ultracode", "reasoning", "agents", "delegate", "agent", "join", "fanout" })
+            if (shown.Add(name)) lines.Add("  /" + HumanCommandAliases.DisplayName(name, _locale) + " — " + CommandDescription("/" + name));
         lines.Add(_localization.Resolve("shell.help_keys"));
         return string.Join("\n", lines);
     }

@@ -36,6 +36,11 @@ compilación y pasaron 72/72 pruebas de presentación. La ventana de aceptación
 «OmniCore - Preferencias API» usa la versión publicada de esta revisión; los
 resultados locales no acreditan todavía CI remoto, Linux ni la conexión real.
 
+La auditoría posterior abarca las ocho categorías, elimina los comandos de
+funciones que ya pertenecen al menú, retira el segundo selector API y comprueba
+el retorno al proveedor exacto con sus fechas y avisos. [Inventario, cambios y
+validación de la revisión](../validation/tui-menu-audit-20261016.md).
+
 ## Base y alcance
 
 Reusar `OpenAiChatCompatibleProvider`, configuración User, almacén protegido de

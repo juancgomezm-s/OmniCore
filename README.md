@@ -194,7 +194,7 @@ La evidencia de cierre M5 documenta **2995 casos: 2991 correctos, 0 fallos y 4 o
 | **Local / llama.cpp** | Chat compatible, configuración y supervisión de host local | Quick real de Qwen en la configuración documentada; no cualifica automáticamente cualquier modelo local. |
 | **OpenAI Responses API** | Adapter nativo | Fixtures; aceptación con API de pago no acreditada en el cierre M5. |
 | **Anthropic Messages** | Adapter nativo y semántica del proveedor | Fixtures; aceptación autenticada de API pendiente. |
-| **OpenRouter** | Conexiones User, catálogo/registro de modelos, adapter compatible y créditos en CLI/TUI | OR1–OR4 integrados en `3273026`, con 21/21 pruebas focales offline. Aceptación autenticada OR5 pendiente según [el plan](docs/plans/openrouter-closure.md); M8 sigue abierto. |
+| **OpenRouter** | Conexiones User, catálogo/registro de modelos, adapter compatible y créditos en CLI/TUI | Base integrada en `3273026`; OR4 reabierto por aceptación de interfaz y OR5 autenticado pendiente. [Plan](docs/plans/openrouter-closure.md) y [auditoría del menú](docs/validation/tui-menu-audit-20261016.md); M8 sigue abierto. |
 
 Disponibilidad y cuotas dependen de la cuenta y del proveedor en el momento de la consulta. No hay una lista universal de modelos garantizados para todos los usuarios.
 
@@ -336,7 +336,7 @@ dotnet run --project src/OmniCore.Cli -- tui --sim
 
 Configure proveedores y modelos en el directorio **del usuario**, tomando [docs/examples](docs/examples) como referencia. No almacene credenciales en el repositorio. Las reglas de conexión y almacenamiento se documentan en [los ADR](docs/adr/README.md), especialmente en ADR-0011.
 
-En la TUI, **F4 → Conexiones API de proveedores** permite guardar la clave de API de Anthropic, probar la conexión, descubrir modelos y desconectar. El Host conserva la credencial en su almacén protegido; si se guarda sin verificar, el estado se muestra como desconocido. Las fechas anteriores se identifican como históricas cuando la conexión actual no está validada. El acceso a la cuenta ChatGPT también se administra desde el menú de configuración.
+En la TUI, **F4 → Cuentas y conexiones → Anthropic…** abre directamente su formulario para guardar la clave, probar la conexión, descubrir modelos y desconectar. El Host conserva la credencial en su almacén protegido; si se guarda sin verificar, el estado se muestra como desconocido. Las fechas anteriores se identifican como históricas cuando la conexión actual no está validada. El acceso a la cuenta ChatGPT también se administra desde el menú de configuración.
 
 Los enlaces web de las respuestas se abren en el navegador predeterminado con un clic.
 También puede enfocar la conversación, situar el cursor sobre el enlace con las flechas
@@ -362,7 +362,19 @@ dotnet run --project src/OmniCore.Cli -- tui
 | `/` | Ayuda de comandos |
 | `F2` / `F3` / `F4` | Panel lateral / elegir modelo / ajustes |
 | `↑` / `↓` en el selector | Navegación vertical y circular |
-| `Esc` en un menú | Cerrar el overlay |
+| `Esc` en un menú | Volver al nivel anterior; desde la raíz, cerrar Preferencias |
+
+Las opciones disponibles en **F4** se administran desde su menú y no se repiten
+como comandos en el autocompletado, el catálogo o la ayuda de la TUI. Los comandos
+visibles se reservan para el trabajo de la conversación. Los nombres antiguos
+siguen siendo compatibles con la CLI y con automatizaciones existentes.
+
+En **Herramientas y seguridad** se encuentran la inspección de herramientas, sus
+preferencias de sustitución y los permisos/confianza. En **Extensiones y habilidades**
+están las extensiones, habilidades, automatizaciones, servidores MCP, alias y el
+catálogo de comandos. Los alias y las sustituciones se editan por filas; guardar
+aplica cambios y volver descarta el borrador. Modelos conserva selección, rutas,
+límites de gasto, catálogo y políticas propias de modelos.
 
 ### Pruebas focales
 

@@ -70,9 +70,10 @@ public sealed partial class TuiWiringTests
         fx.Invoke(() => names = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-command-helper")
             .SubViews.OfType<ListView>().Single().Source!.ToList().Cast<object>()
             .Select(row => row.ToString()!.Split(' ', StringSplitOptions.RemoveEmptyEntries)[0]).ToArray());
-        Assert.Contains("/" + HumanCommandAliases.DisplayName("commands", locale), names);
-        Assert.Contains("/" + HumanCommandAliases.DisplayName("context", locale), names);
-        Assert.Contains("/" + HumanCommandAliases.DisplayName("skills", locale), names);
+        Assert.Contains("/" + HumanCommandAliases.DisplayName("plan", locale), names);
+        Assert.Contains("/" + HumanCommandAliases.DisplayName("delegate", locale), names);
+        Assert.Contains("/" + HumanCommandAliases.DisplayName("cancel", locale), names);
+        Assert.DoesNotContain(names, name => OmniCore.Cli.TuiMenuCommands.IsMenuOwned(name[1..]));
         Assert.Equal(names.Length, names.Select(HumanCommandAliases.NormalizeSlashHead).Distinct().Count());
         Assert.DoesNotContain(names, name => HumanCommandAliases.NormalizeSlashHead(name) is "/login" or "/logout" or "/openrouter");
         if (locale == "es")

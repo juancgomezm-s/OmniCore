@@ -23,7 +23,18 @@ public sealed partial class TuiApp
     {
         if (_window is null || _overlay is not null) return;
         if (_preferencesProvider is { } chosen && chosen.ProviderId == selectedProviderId)
-        { ShowPreferences("accounts_connections", categoryPage: true); return; }
+        {
+            try
+            {
+                _preferencesProvider = _providerConnectionHost.List(CancellationToken.None)
+                    .FirstOrDefault(row => row.ProviderId == chosen.ProviderId && row.Backend == chosen.Backend) ?? chosen;
+            }
+            catch (Exception) { activity = AccountUi("error.readApi"); }
+            ShowPreferences("accounts_connections", categoryPage: true);
+            if (activity is not null && FindPreferenceView(_overlay, "provider-key-status") is Label inlineStatus)
+                inlineStatus.Text = activity;
+            return;
+        }
 
         ProviderConnectionMenuRow[] rows;
         try

@@ -14,7 +14,9 @@ public sealed partial class TuiApp
     {
         if (_window is null || _overlay is not null || queryName != "diagnostics_data") return;
         var host = _diagnosticsPreferencesOverride ?? DiagnosticsPreferencesHost.Create(Environment.CurrentDirectory);
-        var snapshot = host.Read();
+        DiagnosticsPreferencesSnapshot snapshot;
+        try { snapshot = host.Read(); }
+        catch (Exception) { ShowPreferenceText(DiagnosticsPref("title"), DiagnosticsPref("operation_failed")); return; }
         var frame = OverlayFrame(DiagnosticsPref("title"), _window.Frame.Height - 3);
         frame.Id = "diagnostics-preferences"; frame.Width = Dim.Percent(92); frame.Height = Dim.Fill(2);
         var panel = new View { Id = "diagnostics-content", X = 2, Y = 2, Width = Dim.Fill(4), Height = Dim.Fill(9),

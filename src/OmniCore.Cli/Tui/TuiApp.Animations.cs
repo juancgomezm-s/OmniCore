@@ -73,7 +73,7 @@ public sealed partial class TuiApp
             ShowMessage(_localization.Resolve("shell.enlarge_the_terminal_for_the_preview_n_animation_on_off_reduced_full_f"));
             return;
         }
-        var frame = OverlayFrame(_localization.Resolve("shell.activity_and_animations"), 14);
+        var frame = OverlayFrame(_localization.Resolve("shell.activity_and_animations"), Math.Min(19, _window.Frame.Height - 2));
         var notice = new Label { Id = "animation-notice", X = 2, Y = 1, Width = Dim.Fill(2), Height = 1 };
         if (_animationStore.Notice is not null)
             notice.Text = _localization.Resolve("shell.invalid_settings_using_safe_defaults");
@@ -127,13 +127,20 @@ public sealed partial class TuiApp
             description.Text = _previewEffect + _localization.Resolve("shell.preview");
             RenderAnimationPreview();
         }
-        var help = new Label { Id = "omni-help", X = 2, Y = 13, Width = Dim.Fill(2), Height = 1,
+        var help = new Label { Id = "omni-help", X = 2, Y = 13, Width = Dim.Fill(2), Height = 2,
             Text = _localization.Resolve("shell.enter_changes_off_keeps_status_without_motion") };
-        var close = new Button { X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = _localization.Resolve("shell.close") };
+        var close = new Button { Id = "animation-back", X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = Pref("back") };
         close.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("general", categoryPage: true); };
         ApplyTheme(_window, dimmed: true);
         if (_conversation is not null) { _conversation.Dimmed = true; _conversation.SetNeedsDraw(); }
         frame.Add(notice, _animationPreview, description, enabled, reduced, speed, ascii, help, close);
+        if (_window.Frame.Height < 21)
+        {
+            var panel = new View { X = 0, Y = 1, Width = Dim.Fill(), Height = Dim.Fill(3), CanFocus = true };
+            foreach (var view in frame.SubViews.Where(view => view != close && view.Id != "omni-menu-title").ToArray())
+            { frame.Remove(view); panel.Add(view); }
+            ConfigurePreferenceScroll(panel, 15); frame.Add(panel);
+        }
         ApplyTheme(frame);
         _overlay = frame;
         _window.Add(frame);
