@@ -75,7 +75,7 @@ public sealed partial class TuiApp
             catch (Exception) { note.Text = PolicyPref("save_failed"); }
         };
         back.Accepted += (_, _) => { CloseOverlay(); ShowPreferences(category, categoryPage: true); };
-        frame.Add(new Label { X = 2, Y = 1, Width = Dim.Fill(4), Height = 2, Text = PolicyPref("mapping_help") }, list,
+        frame.Add(MenuIndent.Help(PolicyPref("mapping_help"), 1, 2, "mapping-help"), list,
             new Label { X = 2, Y = Pos.AnchorEnd(10), Width = Dim.Percent(44), Text = PolicyPref("mapping_alias") }, source,
             new Label { X = Pos.Percent(50), Y = Pos.AnchorEnd(10), Width = Dim.Fill(3), Text = PolicyPref("mapping_target") }, target,
             apply, remove, note, save, back);

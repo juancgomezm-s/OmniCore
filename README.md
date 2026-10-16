@@ -62,10 +62,13 @@ son datos deterministas de prueba; los estados sin medición se muestran explíc
 | **Archivos y efectos** | Cambios registrados por la sesión y su atribución. El diff usa preimagen/postimagen conservadas, para no mezclar cambios posteriores de otra persona o proceso. |
 | **Diagnóstico** | Información disponible para detectar errores, recuperación y datos incompletos. |
 
-`F2` muestra u oculta el panel. En **General → Panel lateral y widgets** o
-`/sidebar settings` se configuran visibilidad, tamaño y prioridad. El layout se adapta
-al ancho mediante paneles apilados, pestañas u overlay; las preferencias indican su
-alcance y origen. El foco y la selección se conservan durante cambios de tamaño.
+`F2` muestra u oculta el panel. Cada categoría presenta un resumen con **Más…**
+para desplegar sus detalles y **Menos** para contraerlos de forma independiente.
+Los enlaces funcionan con clic y con Enter al enfocarlos. Las categorías se
+recorren en el mismo panel desplazable, también en ventanas estrechas.
+En **General → Panel lateral y widgets** se configuran visibilidad, tamaño y
+prioridad; las preferencias indican su alcance y origen. El foco y la selección
+se conservan durante cambios de tamaño.
 
 El panel se amplía conforme se conectan funciones del núcleo: los futuros controles de
 memoria entre sesiones, búsqueda e integraciones tendrán acciones sobre los mismos
@@ -386,6 +389,12 @@ dotnet run --project src/OmniCore.Cli -- tui
 En **General y apariencia**, Recargar, Cancelar y Guardar pertenecen al contenido
 de esa categoría. En la vista integrada aparecen al entrar a editarla; Cancelar
 descarta el borrador de idioma y vuelve a las categorías sin cerrar Preferencias.
+Las flechas recorren las opciones dentro del submenú y vuelven a su inicio al
+llegar al final. Para regresar a categorías usa izquierda o el control de volver.
+En la lista de idiomas, las flechas sólo señalan una fila: clic o Enter elige el
+idioma pendiente y **Guardar** lo aplica. Pasar por una fila no cambia el idioma.
+Los textos informativos llevan más sangría, tono secundario y separación respecto
+de los controles.
 
 En el selector puedes elegir con Enter un modelo ya registrado aunque falle la
 consulta del catálogo. **Actualizar modelos** permite reintentar sin cerrar el

@@ -102,6 +102,7 @@ public sealed partial class TuiWiringTests
                 ChoosePreferenceCategory(fx, "accounts_connections");
                 Assert.Contains(Descendants(fx.App.Overlay!).OfType<Button>(), button => button.Id == "preferences-openrouter-open"
                     && button.Text.Contains("OpenRouter", StringComparison.Ordinal));
+                fx.Invoke(() => Descendants(fx.App.Overlay!).Single(view => view.Id == "preferences-openrouter-open").SetFocus());
                 ExportPreferenceFrame(fx, columns, rows, "openrouter-entry", "OpenRouter");
                 ClickId(fx, "preferences-openrouter-open");
                 fx.Wait(() => fx.App.Overlay?.Id == "preferences-center"

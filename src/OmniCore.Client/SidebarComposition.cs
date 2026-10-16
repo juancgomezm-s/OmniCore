@@ -8,7 +8,8 @@ public sealed record SidebarComposition(IReadOnlyList<(ISidebarWidget Widget, Wi
     IReadOnlyList<string> AttentionIds)
 {
     public static SidebarComposition Build(IEnumerable<ISidebarWidget> widgets, ClientState state,
-        SidebarPreferences preferences, TuiLayoutMode mode, int height, string? selectedId, bool expandAll = false)
+        SidebarPreferences preferences, TuiLayoutMode mode, int height, string? selectedId, bool expandAll = false,
+        bool summaryLinks = false, string locale = "es")
     {
         WidgetPreferences Setting(ISidebarWidget widget) => preferences.Widgets?.GetValueOrDefault(widget.Id) ?? new();
         var all = widgets.Select((widget, index) => (widget, index, relevance: widget.Evaluate(state))).ToArray();
@@ -21,7 +22,7 @@ public sealed record SidebarComposition(IReadOnlyList<(ISidebarWidget Widget, Wi
             : navigation.FirstOrDefault(w => visible.Any(i => i.widget.Id == w.Id))?.Id;
         var pinned = visible.Where(i => i.widget.Id == "core.session")
             .Select(i => (i.widget, i.widget.Build(state, WidgetSize.Compact))).ToArray();
-        var candidates = mode == TuiLayoutMode.Tabbed
+        var candidates = mode == TuiLayoutMode.Tabbed && !summaryLinks
             ? all.Where(i => i.widget.Id == selectedId).ToArray()
             : all.Where(i => i.widget.Id != "core.session" && (visible.Contains(i) || i.widget.Id == selectedId))
                 .OrderByDescending(i => i.relevance == WidgetRelevance.Attention)
@@ -32,10 +33,17 @@ public sealed record SidebarComposition(IReadOnlyList<(ISidebarWidget Widget, Wi
         {
             var expanded = expandAll || Setting(item.widget).Expanded;
             var model = item.widget.Build(state, expanded ? WidgetSize.Expanded : WidgetSize.Normal);
+            if (summaryLinks && model is ListWidgetModel section)
+            {
+                var rows = expanded ? section.Rows : section.Rows.Where((row, index) => index < 2 || row.Role is ThemeRole.Attention or ThemeRole.Error).ToArray();
+                model = section with { Rows = rows.Concat(new[] { new WidgetRowModel(new Localization(locale).Resolve(expanded ? "shell.sidebar_less" : "shell.sidebar_more"),
+                    ThemeRole.Info, "sidebar.expand", item.widget.Id) }).ToArray() };
+                if (!expanded && rows.Count < section.Rows.Count) collapsed++;
+            }
             body.Add((item.widget, model));
         }
         var total = body.Sum(b => b.Model is ListWidgetModel list ? list.Rows.Count + 2 : 2);
-        for (var index = body.Count - 1; index >= 0 && mode != TuiLayoutMode.Tabbed && total > height; index--)
+        for (var index = body.Count - 1; index >= 0 && !summaryLinks && mode != TuiLayoutMode.Tabbed && total > height; index--)
         {
             var item = body[index];
             if (expandAll || Setting(item.Widget).Expanded) continue;

@@ -31,11 +31,12 @@ public sealed partial class TuiApp
 
         var frameHeight = Math.Clamp(_window.Frame.Height - 4, 18, 30);
         var frame = OverlayFrame(AccountUi("title.claude"), frameHeight);
+        frame.Id = "claude-account-preferences";
         var listHeight = Math.Max(4, frameHeight - 16);
         var detailY = 5 + listHeight;
         var statusY = detailY + 4;
         var actionsY = frameHeight - 5;
-        frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(3), Height = 1,
+        frame.Add(new Label { Id = "claude-account-source-description", X = MenuIndent.Information, Y = 2, Width = Dim.Fill(3), Height = 1,
             Text = AccountUi("account.configSource") });
         var list = new ListView { Id = "claude-account-list", X = 2, Y = 4,
             Width = Dim.Fill(4), Height = listHeight, CanFocus = rows.Count > 0, ShowMarks = false };
@@ -101,7 +102,8 @@ public sealed partial class TuiApp
         var token = cancellation.Token;
         _claudeLoginCancellation = cancellation;
         var frame = OverlayFrame(AccountUi("title.claude"), Math.Clamp(_window.Frame.Height - 4, 18, 30));
-        frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(3), Height = 2, Text = AccountUi("help.loginProgress") });
+        frame.Id = "claude-login-preferences";
+        frame.Add(MenuIndent.Help(AccountUi("help.loginProgress"), 2, 2, "claude-login-help"));
 #pragma warning disable CS0618 // Pinned Terminal.Gui TextView remains the existing scrollable read-only presenter.
         var progress = new TextView { Id = "claude-account-progress", X = 2, Y = 5,
             Width = Dim.Fill(4), Height = Dim.Fill(4), ReadOnly = true, WordWrap = true,
@@ -172,7 +174,8 @@ public sealed partial class TuiApp
         if (_window is null || _overlay is null) return;
         CloseOverlay();
         var frame = OverlayFrame(AccountUi("title.claude"), 9);
-        frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(3), Height = 2, Text = AccountUi("claude.logoutConfirm") });
+        frame.Id = "claude-logout-preferences";
+        frame.Add(MenuIndent.Help(AccountUi("claude.logoutConfirm"), 2, 2, "claude-logout-help"));
         var confirm = new Button { Id = "claude-logout-confirm", X = 2, Y = 5, Text = AccountUi("action.confirmLogout") };
         var cancel = new Button { Id = "claude-logout-cancel", X = Pos.Right(confirm) + 2, Y = 5, Text = AccountUi("action.cancel") };
         confirm.Accepted += (_, _) =>

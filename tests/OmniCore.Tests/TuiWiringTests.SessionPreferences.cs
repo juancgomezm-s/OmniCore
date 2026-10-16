@@ -102,22 +102,29 @@ public sealed partial class TuiWiringTests
         ChoosePreferenceCategory(fx, "extensions_skills");
         ClickId(fx, "preferences-skills-open");
         fx.Wait(() => fx.App.Overlay?.Id == "session-preferences", "skills preferences screen opened");
+        fx.Invoke(() =>
+        {
+            var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
+            var index = list.Source!.ToList().Cast<object>().Select(row => row.ToString()!).ToList()
+                .FindIndex(row => row.Contains("Fixture skill", StringComparison.Ordinal));
+            Assert.True(index >= 0); list.SelectedItem = index;
+        });
         Assert.Contains("fixture.inspect", OverlayText(fx.App.Overlay!));
-        Assert.Equal("Discovered", JsonDocument.Parse(fx.Server.Query("skills", CancellationToken.None)!.Json)
-            .RootElement.GetProperty("skills")[0].GetProperty("state").GetString());
+        string FixtureState() => JsonDocument.Parse(fx.Server.Query("skills", CancellationToken.None)!.Json)
+            .RootElement.GetProperty("skills").EnumerateArray().Single(row => row.GetProperty("id").GetString() == "fixture.skill").GetProperty("state").GetString()!;
+        Assert.Equal("Discovered", FixtureState());
 
         ClickId(fx, "session-preferences-action");
         Assert.Equal("session-preferences-confirm", fx.App.Overlay!.Id);
         ClickId(fx, "session-preferences-confirm-yes");
-        fx.Wait(() => JsonDocument.Parse(fx.Server.Query("skills", CancellationToken.None)!.Json)
-            .RootElement.GetProperty("skills")[0].GetProperty("state").GetString() == "Activated",
+        fx.Wait(() => FixtureState() == "Activated",
             "confirmed activation stores the session-scoped selection");
+        Assert.Contains("fixture.inspect", OverlayText(fx.App.Overlay!));
 
         ClickId(fx, "session-preferences-action");
         Assert.Equal("session-preferences-confirm", fx.App.Overlay!.Id);
         ClickId(fx, "session-preferences-confirm-yes");
-        fx.Wait(() => JsonDocument.Parse(fx.Server.Query("skills", CancellationToken.None)!.Json)
-            .RootElement.GetProperty("skills")[0].GetProperty("state").GetString() == "Discovered",
+        fx.Wait(() => FixtureState() == "Discovered",
             "confirmed release removes the session-scoped activation");
     });
 

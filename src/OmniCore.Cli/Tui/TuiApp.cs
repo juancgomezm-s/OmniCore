@@ -28,7 +28,6 @@ public sealed partial class TuiApp
     private DateTimeOffset _sidebarSettingsPolledAt;
     private string? _sidebarSelection;
     private SidebarView? _sidebarSession;
-    private Label? _sidebarNavigation;
     private Label? _sidebarAttention;
     private ISidebarWidget[] _sidebarWidgets = [];
     private SidebarComposition? _sidebarComposition;
@@ -53,8 +52,6 @@ public sealed partial class TuiApp
     private Label? _status;
     private FrameView? _sidebar;
     private SidebarView? _sidebarContent;
-    private Button? _sidebarDetails;
-    private bool _sidebarExpanded;
     private Label? _completion;
     private FrameView? _commandHelper;
     private ListView? _commandList;
@@ -375,25 +372,23 @@ public sealed partial class TuiApp
         ApplyTheme(_conversation);
         conversationFrame.Add(_conversation);
         _sidebar = new FrameView { Id = "omni-panel", X = Pos.AnchorEnd(31), Y = 0, Width = 31, Height = Dim.Fill(), Title = _localization.Resolve("shell.workspace_heading"), BorderStyle = LineStyle.None };
-        _sidebarContent = new SidebarView { X = 2, Y = 11, Width = Dim.Fill(1), Height = Dim.Fill(1) };
-        _sidebarContent.RowActivated += row => { if (row.Action == "diff.open" && row.Target is { } id) ShowFileDiff(id); };
-        _sidebarSession = new SidebarView { X = 2, Y = 3, Width = Dim.Fill(1), Height = 5, CanFocus = false, ScrollBars = false };
-        _sidebarDetails = new Button { Id = "sidebar-details", X = 2, Y = 1, Text = _localization.Resolve("shell.more_detail") };
-        _sidebarDetails.Accepted += (_, _) =>
+        _sidebarContent = new SidebarView { X = 2, Y = 10, Width = Dim.Fill(1), Height = Dim.Fill(1) };
+        _sidebarContent.RowActivated += row =>
         {
-            _sidebarExpanded = !_sidebarExpanded;
-            _sidebarDetails.Text = _sidebarExpanded ? _localization.Resolve("shell.less_detail") : _localization.Resolve("shell.more_detail");
-            RenderSidebar();
+            if (row.Action == "diff.open" && row.Target is { } file) ShowFileDiff(file);
+            else if (row.Action == "sidebar.expand" && row.Target is { } widget)
+            {
+                var expanded = _sidebarSettings.Preferences.Widgets?.GetValueOrDefault(widget)?.Expanded == true;
+                if (SaveSidebarSetting("Workspace", "widgets." + widget + ".expanded", expanded ? "false" : "true", true))
+                    _sidebarContent.SelectWidget(widget);
+            }
         };
+        _sidebarSession = new SidebarView { X = 2, Y = 3, Width = Dim.Fill(1), Height = 5, CanFocus = false, ScrollBars = false };
         var settings = new Button { Id = "sidebar-settings", X = Pos.AnchorEnd(9), Y = 1, Text = _localization.Resolve("shell.settings") };
         settings.Accepted += (_, _) => ShowSidebarSettings();
-        var previous = new Button { Id = "sidebar-prev", X = 1, Y = 8, Text = "‹" };
-        var next = new Button { Id = "sidebar-next", X = Pos.AnchorEnd(3), Y = 8, Text = "›" };
-        previous.Accepted += (_, _) => NavigateSidebar(-1); next.Accepted += (_, _) => NavigateSidebar(1);
-        _sidebarNavigation = new Label { Id = "omni-heading", X = 5, Y = 8, Width = Dim.Fill(5), Height = 1 };
-        _sidebarAttention = new Label { Id = "omni-help", X = 2, Y = 9, Width = Dim.Fill(1), Height = 1 };
-        _sidebar.Add(new Label { Id = "omni-heading", X = 2, Y = 0, Text = _localization.Resolve("shell.workspace_heading") }, _sidebarDetails, settings,
-            _sidebarSession, previous, next, _sidebarNavigation, _sidebarAttention, _sidebarContent);
+        _sidebarAttention = new Label { Id = "omni-help", X = 2, Y = 8, Width = Dim.Fill(1), Height = 1 };
+        _sidebar.Add(new Label { Id = "omni-heading", X = 2, Y = 0, Text = _localization.Resolve("shell.workspace_heading") }, settings,
+            _sidebarSession, _sidebarAttention, _sidebarContent);
         var composerFrame = _composerFrame = new FrameView { Id = "omni-composer", X = 1, Y = Pos.AnchorEnd(6), Width = Dim.Fill(1), Height = 3, BorderStyle = LineStyle.None };
         composerFrame.Add(new View { Id = "omni-composer-accent", X = 0, Y = 0, Width = 1, Height = Dim.Fill() });
         _attachmentChips = new Label { Id = "omni-attachments", X = 4, Y = 0, Width = Dim.Fill(2), Height = 1, Text = "", Visible = false };
@@ -1523,42 +1518,21 @@ public sealed partial class TuiApp
             heading.Text = _sidebar.Title = _localization.Resolve("shell.workspace_heading");
         var widgets = SessionSidebarPresentation.Build(_sidebarProjection.Snapshot, _observability.Snapshot,
             _observedModel ?? _selectedModel ?? _localization.Resolve("shell.automatic_no_turn"),
-            _state.StatusLine.Mode, _locale, _sidebarExpanded).ToList();
-        if (!_sidebarExpanded && _sidebarSettings.Preferences.Widgets?.Any(p => p.Value.Expanded) == true)
-        {
-            var expanded = SessionSidebarPresentation.Build(_sidebarProjection.Snapshot, _observability.Snapshot,
-                _observedModel ?? _selectedModel ?? _localization.Resolve("shell.automatic_no_turn"), _state.StatusLine.Mode, _locale, true);
-            for (var index = 0; index < widgets.Count; index++)
-                if (_sidebarSettings.Preferences.Widgets.GetValueOrDefault(widgets[index].Id)?.Expanded == true)
-                    widgets[index] = expanded.First(w => w.Id == widgets[index].Id);
-        }
-        var agentWidget = AgentPresentation.Build(_agents.Snapshot, _locale, _sidebarExpanded
-            || _sidebarSettings.Preferences.Widgets?.GetValueOrDefault("core.agents")?.Expanded == true);
+            _state.StatusLine.Mode, _locale, true).ToList();
+        var agentWidget = AgentPresentation.Build(_agents.Snapshot, _locale, true);
         _sidebarWidgets = widgets.Concat(new[] { agentWidget, _files.Widget(_locale) }).ToArray();
         var layout = TuiLayoutModel.ForWidth(_window?.Frame.Width ?? 80, _sidebarOpen, _sidebarSettings.Preferences);
         _sidebarComposition = OmniCore.Client.SidebarComposition.Build(_sidebarWidgets, _state, _sidebarSettings.Preferences,
-            layout.Mode, Math.Max(1, (_window?.Frame.Height ?? 25) - 12), _sidebarSelection, _sidebarExpanded);
+            layout.Mode, Math.Max(1, (_window?.Frame.Height ?? 25) - 11), _sidebarSelection, summaryLinks: true, locale: _locale);
         _sidebarSelection = _sidebarComposition.SelectedId;
         var pinned = _sidebarComposition.Pinned.Select(item => (item.Widget, item.Model is ListWidgetModel list
             ? (WidgetModel)(list with { Rows = list.Rows.Select(row => row with
                 { Text = FitText(row.Text, Math.Max(1, layout.SidebarWidth - 6)) }).ToArray() }) : item.Model)).ToArray();
         _sidebarSession?.Render(pinned);
         _sidebarContent.Render(_sidebarComposition.Body);
-        if (_sidebarNavigation is not null) _sidebarNavigation.Text = (_sidebarComposition.Navigation.FirstOrDefault(w => w.Id == _sidebarSelection)?.Title ?? "")
-            + (layout.Mode == TuiLayoutMode.Tabbed ? " · tab" : "");
         if (_sidebarAttention is not null) _sidebarAttention.Text = _sidebarSettings.Diagnostics.Count > 0 ? _localization.Resolve("shell.invalid_settings")
             : _sidebarComposition.AttentionIds.Count > 0 ? "! " + string.Join(" · ", _sidebarComposition.AttentionIds.Select(id => id.Replace("core.", "")))
             : _sidebarComposition.Collapsed > 0 ? _localization.Resolve("shell.details_collapsed_inspect") : "";
-    }
-
-    private void NavigateSidebar(int delta)
-    {
-        var navigation = _sidebarComposition?.Navigation;
-        if (navigation is null || navigation.Count == 0) return;
-        var index = navigation.ToList().FindIndex(w => w.Id == _sidebarSelection);
-        _sidebarSelection = navigation[(index + delta + navigation.Count) % navigation.Count].Id;
-        // Navigation is an explicit inspection request, including widgets hidden by configuration.
-        RenderSidebar(); _sidebarContent?.SelectWidget(_sidebarSelection);
     }
 
     private void RefreshSidebarPreferences()
@@ -1585,6 +1559,7 @@ public sealed partial class TuiApp
         if (_window is null) return;
         CloseOverlay(); RefreshSidebarPreferences();
         var frame = OverlayFrame(_localization.Resolve("shell.sidebar_settings"), 22);
+        frame.Id = "sidebar-preferences";
         var scope = "Workspace";
         string ScopeLabel() => _localization.Resolve("shell.sidebar_scope") + UiCompletionResources.EnumLabel("scope", scope, _locale);
         string LayoutLabel() => _localization.Resolve("shell.sidebar_mode") + _localization.Resolve("shell." + _sidebarSettings.Preferences.Mode);
@@ -1805,13 +1780,23 @@ public sealed partial class TuiApp
     private const string MenuSurface = "#182A38";
     private const string PreferencesSurface = "#13222E";
 
-    private static void ApplyTheme(View view, string surface = "#061822", bool dimmed = false)
+    private static void ApplyTheme(View view, string surface = "#061822", bool dimmed = false, bool preferences = false)
     {
+        preferences |= view is FrameView && view.Id is { } preferenceId
+            && (preferenceId.Contains("preferences", StringComparison.Ordinal) || preferenceId.StartsWith("model-catalog-", StringComparison.Ordinal)
+                || preferenceId.StartsWith("claude-account", StringComparison.Ordinal));
+        var information = preferences && view is Label && (view is MenuInformationLabel || view.Id is "omni-detail"
+            || view.Id is { } labelId && new[] { "-help", "-hint", "-notice", "-status", "-summary", "-intro", "-details", "-metadata", "-note", "-description", "-modes" }
+                .Any(suffix => labelId.EndsWith(suffix, StringComparison.Ordinal)));
+        if (information) { view.X = MenuIndent.Information; view.CanFocus = false; }
+        if (view is FrameView && preferences)
+            PreferenceNavigation.Attach(view.SubViews.FirstOrDefault(child => child.Id == "preferences-panel") ?? view);
         // Framework defaults invert whole titles and edit fields. Keep a quiet surface;
         // focus remains visible through the cursor and cyan hotkeys, never color alone.
         var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
         if (view.Id == "omni-composer") surface = "#293648";
         else if (view.Id == "omni-composer-accent") surface = "#B47CE7";
+        else if (preferences && view is FrameView) surface = PreferencesSurface;
         else if (view.Id == "preferences-center" || view is FrameView
             && (view.Id?.StartsWith("session-preferences", StringComparison.Ordinal) == true
                 || view.Id?.StartsWith("model-catalog-", StringComparison.Ordinal) == true
@@ -1830,7 +1815,7 @@ public sealed partial class TuiApp
         else if (view.Id == "omni-menu-action") surface = "#293E51";
         else if (view.Id == "omni-model-palette" || view.Id == "omni-palette-search" || view.Id == "omni-palette-action") surface = "#061822";
         var background = noColor ? Color.None : new Color(surface);
-        var foreground = view.Id == "omni-help" ? "#B9CBDF"
+        var foreground = information || view is MenuInformationLabel || view.Id == "omni-help" ? "#B9CBDF"
             : view.Id is "omni-heading" or "omni-activity-label" or "omni-section" or "preferences-account-heading" or "preferences-locale-label" ? "#85E6DF"
             : view.Id == "omni-detail" ? "#D6E2EE" : "#F4F7FB";
         if (dimmed) foreground = "#405666";
@@ -1850,7 +1835,7 @@ public sealed partial class TuiApp
         }
         view.SetScheme(new Scheme { Normal = primary, Focus = focus, Editable = primary,
             HotNormal = accent, HotFocus = view is Button or ListView ? focus : accent });
-        foreach (var child in view.SubViews) ApplyTheme(child, surface, dimmed);
+        foreach (var child in view.SubViews) ApplyTheme(child, surface, dimmed, preferences);
     }
 
     private void RespondDefault(InteractionOverlayModel interaction)
@@ -1906,6 +1891,7 @@ public sealed partial class TuiApp
             _account ??= _accountOverride ?? new TuiAccountHost();
             var status = _account.Status();
             var frame = OverlayFrame(AccountUi("title.chatgpt"), 14);
+            frame.Id = "account-preferences";
             frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Text = status.LoggedIn
                 ? status.AccountIdMasked + (status.Expired ? " · " + AccountUi("status.expired") : " · " + AccountUi("status.connected"))
                 : AccountUi("status.disconnected") });

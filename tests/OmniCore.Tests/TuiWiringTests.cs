@@ -441,8 +441,8 @@ public sealed partial class TuiWiringTests
         Type(fx, "/sidebar focus core.files");
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.SidebarComposition?.SelectedId == "core.files", "tab de archivos");
         fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("M file.txt +1 -1"), "efecto visible");
-        fx.Invoke(() => { fx.App.SidebarContent!.InsertionPoint = new Point(0, 1); fx.App.SidebarContent.SetFocus(); });
-        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "DiffPreview abierto por Enter");
+        ActivateSidebarAction(fx, "core.files", "diff.open");
+        fx.Wait(() => fx.App.Overlay is not null, "DiffPreview abierto por Enter");
         var diffText = fx.App.Overlay!.SubViews.OfType<OmniCore.Cli.SidebarView>().Single().Text.ToString();
         Assert.Contains("- anterior ñ", diffText); Assert.Contains("+ nuevo ñ", diffText);
         Assert.Contains("no incluye ediciones posteriores", OverlayText(fx.App.Overlay));
@@ -460,10 +460,12 @@ public sealed partial class TuiWiringTests
                 stream.Append(new ToolCallSucceeded(later, "{}") { AfterStateRef = OmniCore.Tools.FilesystemPreimage.CaptureAfter(fx.Artifacts, after) });
             }
         }
-        fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("último.txt"), "varias rutas con wrapping");
+        ActivateSidebarAction(fx, "core.files", "sidebar.expand");
+        fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("último.txt"), "Más muestra varias rutas con wrapping");
         fx.Invoke(() => { fx.App.SidebarContent!.MoveEnd(); fx.App.SidebarContent.SetFocus(); });
         Assert.True(fx.App.SidebarContent!.InsertionPoint.Y > 3); // preceding long path occupies several screen rows
-        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "diff correcto tras ruta envuelta");
+        ActivateSidebarAction(fx, "core.files", "diff.open", rowText: "último.txt");
+        fx.Wait(() => fx.App.Overlay is not null, "diff correcto tras ruta envuelta");
         Assert.Contains("Diff · último.txt", OverlayText(fx.App.Overlay!));
     });
 
@@ -476,7 +478,8 @@ public sealed partial class TuiWiringTests
         Assert.Null(fx.App.Overlay);
         Type(fx, "/sidebar focus core.context");
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.SidebarComposition?.SelectedId == "core.context", "widget oculto inspeccionable");
-        Assert.Equal("core.context", Assert.Single(fx.App.SidebarComposition!.Body).Widget.Id);
+        Assert.Contains(fx.App.SidebarComposition!.Body, section => section.Widget.Id == "core.context");
+        Assert.True(fx.App.SidebarComposition.Body.Count > 1);
         Assert.Equal("core.session", Assert.Single(fx.App.SidebarComposition.Pinned).Widget.Id);
         fx.Invoke(() => fx.App.Composer!.SetFocus());
         fx.Invoke(() => fx.Application.Driver!.SetScreenSize(120, 22));
@@ -524,14 +527,20 @@ public sealed partial class TuiWiringTests
         Assert.Contains("semilla de prueba", text);
         Assert.Contains("fixture/sidebar-model", text);
         Assert.Contains("Tokens: 100", text); Assert.Contains("Tokens sesión: 120", text);
-        Assert.Contains("Capacidad: ≈16,000", text); Assert.Contains("Presupuesto: ≈8,192", text);
+        Assert.Contains("Capacidad: ≈16,000", text);
+        ActivateSidebarAction(fx, "core.context", "sidebar.expand");
+        fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("Presupuesto: ≈8,192"), "Más muestra el presupuesto del contexto");
+        text = fx.App.SidebarSession!.Text.ToString() + "\n" + fx.App.SidebarContent!.Text.ToString();
+        Assert.Contains("Presupuesto: ≈8,192", text);
         Assert.Contains("Ocupación: ≈0.6%", text); Assert.DoesNotContain("Sin plan activo", text);
         Assert.DoesNotContain("Sin archivos modificados", text);
+        fx.Invoke(() => { fx.App.Composer!.SetFocus(); fx.App.SidebarContent!.ScrollTo(Point.Empty); });
         var frame = CaptureConversationFrame(fx, 120, 40, "PLAN 1/2");
         if (!noColor) Assert.Contains(frame.Cast<Terminal.Gui.Drawing.Cell>(), cell => cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#F1D58A"));
         else Assert.All(frame.Cast<Terminal.Gui.Drawing.Cell>().Where(cell => cell.Grapheme == "◐"), cell => Assert.Equal(Terminal.Gui.Drawing.Color.None, cell.Attribute?.Foreground));
-        fx.Invoke(() => fx.App.Sidebar!.SubViews.OfType<Button>().Single(b => b.Id == "sidebar-details").InvokeCommand(Command.Accept));
+        ActivateSidebarAction(fx, "core.consumption", "sidebar.expand");
         fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("Lectura de caché: 30"), "detalle de consumo desplegable");
+        ActivateSidebarAction(fx, "core.diagnostics", "sidebar.expand");
         Assert.Contains("Invocaciones: 1", fx.App.SidebarContent.Text.ToString());
         Assert.Contains(run.ToString(), fx.App.SidebarContent.Text.ToString());
         Assert.Contains("fixture/sidebar-model", fx.App.SidebarSession!.Text.ToString());
@@ -796,6 +805,11 @@ public sealed partial class TuiWiringTests
                         fx.Invoke(() => localList.SelectedItem = localIndex);
                         ClickId(fx, "local-engine-edit");
                     }
+                    else
+                    {
+                        fx.Wait(() => Descendants(fx.App.Overlay!).Single(view => view.Id == "local-engine-add").Frame.Height > 0, "local actions laid out");
+                        fx.Invoke(() => Descendants(fx.App.Overlay!).Single(view => view.Id == "local-engine-add").SetFocus());
+                    }
                 }
                 else if (scene.StartsWith("settings-", StringComparison.Ordinal))
                 {
@@ -803,7 +817,18 @@ public sealed partial class TuiWiringTests
                     if (scene == "settings-fr" || scene == "settings-it")
                     {
                         var language = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
-                        fx.Invoke(() => language.SelectedItem = scene == "settings-fr" ? 2 : 3);
+                        ChooseLocaleDraft(fx, scene == "settings-fr" ? 2 : 3);
+                        ClickId(fx, "preferences-save");
+                    }
+                    if (scene == "settings-override")
+                    {
+                        fx.Invoke(() =>
+                        {
+                            var language = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
+                            language.SelectedItem = 3; language.SetFocus();
+                        });
+                        KeyWithEffect(fx, KeyCode.CursorDown, () => Descendants(fx.App.Overlay!).Single(view => view.Id == "preferences-sidebar-open").HasFocus,
+                            "scrolling past languages reveals the effective source without choosing a language");
                     }
                 }
                 else
@@ -1533,19 +1558,19 @@ public sealed partial class TuiWiringTests
         ChoosePreferenceCategory(fx, "general");
         AssertPreferencesGeneralLayoutFit(fx);
         var language = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
-        fx.Invoke(() => language.SelectedItem = 2);
-        fx.Wait(() => fx.App.PreferencesLocale == "fr", "vista previa francesa activa");
+        ChooseLocaleDraft(fx, 2);
+        Assert.Equal("es", fx.App.PreferencesLocale);
         Assert.True(Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale").HasFocus);
         Assert.Equal("keep this draft", fx.App.Composer!.Text?.ToString());
         Assert.Same(conversation, fx.App.Conversation);
         Assert.Equal(transcript, conversation.Text?.ToString());
-        Assert.Equal("fr", changed.Last());
+        Assert.Empty(changed);
 
         fx.InjectKey(new Key(KeyCode.Esc));
         fx.Wait(() => fx.App.PreferencesLocale == "es"
             && fx.App.Overlay?.SubViews.Any(view => view.Id == "preferences-categories") == true,
             "volver cancela el idioma no guardado");
-        Assert.Equal("es", changed.Last());
+        Assert.Empty(changed);
         ChoosePreferenceCategory(fx, "accounts_connections");
         fx.InjectKey(new Key(KeyCode.Esc));
         fx.Wait(() => fx.App.Overlay?.SubViews.Any(view => view.Id == "preferences-categories") == true,
@@ -1568,8 +1593,8 @@ public sealed partial class TuiWiringTests
             KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "Preferences abre");
             ChoosePreferenceCategory(fx, "general");
             var language = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
-            fx.Invoke(() => language.SelectedItem = 3);
-            fx.Wait(() => fx.App.PreferencesLocale == "it", "previsualización italiana");
+            ChooseLocaleDraft(fx, 3);
+            Assert.Equal("es", fx.App.PreferencesLocale);
 
             var snapshot = UiLocalePreferencesProtocol.Decode(fx.Server.Query(
                 UiLocalePreferencesProtocol.QueryName, CancellationToken.None)!.Json)!;
@@ -1612,7 +1637,7 @@ public sealed partial class TuiWiringTests
             KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "Preferences opens in the process locale");
             ChoosePreferenceCategory(fx, "general");
             var language = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
-            fx.Invoke(() => language.SelectedItem = 2);
+            ChooseLocaleDraft(fx, 2);
             Assert.Equal("en", fx.App.PreferencesLocale);
             Assert.Empty(changed);
             Assert.Contains("Command line", OverlayText(fx.App.Overlay!));

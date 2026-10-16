@@ -60,7 +60,7 @@ public sealed partial class TuiApp
             CloseOverlay(); _composer.Text = "/" + row.DisplayName + " "; _composer.MoveEnd(); _composer.SetFocus();
         };
         back.Accepted += (_, _) => { if (!ReturnToChatIfOpenedFromChat()) { CloseOverlay(); ShowPreferences("extensions_skills", categoryPage: true); } };
-        frame.Add(new Label { X = 2, Y = 1, Width = Dim.Fill(4), Height = 1, Text = _localization.Resolve("catalog.purpose") }, search, list, detail, prepare, back);
+        frame.Add(MenuIndent.Help(_localization.Resolve("catalog.purpose"), 1, 1, "command-help"), search, list, detail, prepare, back);
         ApplyTheme(frame); _overlay = frame; _window.Add(frame); _preferencesReturnToCategory = true;
         Filter(); search.SetFocus();
     }

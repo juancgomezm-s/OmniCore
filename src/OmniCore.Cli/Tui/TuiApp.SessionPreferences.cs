@@ -459,6 +459,9 @@ public sealed partial class TuiApp
 
     private void SendSessionPreferencePayload(SessionPreferencesData data, string payload)
     {
+        var selectedIndex = CurrentSessionPreferenceIndex();
+        var selectedIdentity = selectedIndex >= 0 && selectedIndex < _sessionPreferencesRows.Count
+            ? PreferenceRowIdentity(_sessionPreferencesRows[selectedIndex]) : null;
         if (_client is not ITrustedUserActionClient trusted)
         {
             RenderSessionPreferences(CurrentSessionPreferenceIndex(), SessionPref("error.trusted_action_required"));
@@ -472,10 +475,20 @@ public sealed partial class TuiApp
             _sessionPreferencesData = query is null ? SessionPreferencesData.Unavailable(data.QueryName)
                 : SessionPreferencesPresentation.Decode(data.QueryName, query);
             BuildSessionPreferenceRows();
-            RenderSessionPreferences(0, notice);
+            var restored = _sessionPreferencesRows.FindIndex(row => PreferenceRowIdentity(row) == selectedIdentity);
+            RenderSessionPreferences(restored >= 0 ? restored : Math.Clamp(selectedIndex, 0, Math.Max(0, _sessionPreferencesRows.Count - 1)), notice);
         }
         else RenderSessionPreferences(CurrentSessionPreferenceIndex(), notice);
     }
+
+    private static string PreferenceRowIdentity(SessionPreferenceRow row) => row.Value switch
+    {
+        SkillPresentation skill => "skill:" + skill.Scope + ":" + skill.Id,
+        ExtensionPresentation extension => "extension:" + extension.Scope + ":" + extension.Id,
+        MemoryPresentation memory => "memory:" + memory.Id,
+        MemoryCandidatePresentation candidate => "candidate:" + candidate.Id,
+        _ => row.Label,
+    };
 
     private string SessionPreferenceError(string? error)
     {

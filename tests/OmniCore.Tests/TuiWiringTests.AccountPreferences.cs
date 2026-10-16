@@ -424,22 +424,22 @@ public sealed partial class TuiWiringTests
         fx.Invoke(() => wideSearch.Text = "");
         ChoosePreferenceCategory(fx, "general");
         var locales = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
-        fx.Invoke(() => locales.SelectedItem = 2);
-        fx.Wait(() => fx.App.PreferencesLocale == "fr", "vista previa del idioma francés");
+        ChooseLocaleDraft(fx, 2);
+        Assert.Equal("es", fx.App.PreferencesLocale);
         var previewFrame = fx.App.Overlay!;
         fx.Invoke(() => fx.Application.Driver!.SetScreenSize(80, 25));
         fx.Wait(() => fx.App.Overlay is not null && !ReferenceEquals(previewFrame, fx.App.Overlay)
             && Descendants(fx.App.Overlay).Any(view => view.Id == "preferences-locale" && view.HasFocus),
             "reflow al ancho estrecho conserva el foco de idioma");
         Assert.Equal("fr", fx.App.PreferencesDraftLocale);
-        Assert.Equal("fr", fx.App.PreferencesLocale);
+        Assert.Equal("es", fx.App.PreferencesLocale);
         Assert.True(Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale").HasFocus);
         ExportPreferenceFrame(fx, 80, 25, "general-fr", "Français");
-        Assert.Contains("fr", changed);
+        Assert.Empty(changed);
         KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is not null
             && fx.App.Overlay.Title?.Contains("Preferencias") == true, "Esc cancela la vista previa y vuelve a categorías");
         Assert.Equal("es", fx.App.PreferencesLocale);
-        Assert.Contains("es", changed);
+        Assert.Empty(changed);
     });
 
     private static void AssertClaudePageFits(View overlay)

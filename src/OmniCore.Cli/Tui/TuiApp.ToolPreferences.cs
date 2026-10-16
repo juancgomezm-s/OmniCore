@@ -27,13 +27,13 @@ public sealed partial class TuiApp
         var describeTarget = false;
         var frame = OverlayFrame(PolicyPref("section_tool_preferences"), _window.Frame.Height - 3);
         frame.Id = "mapping-preferences"; frame.Width = Dim.Percent(92); frame.Height = Dim.Fill(2);
-        var saved = new ListView { Id = "mapping-list", X = 2, Y = 4, Width = Dim.Fill(4), Height = 3, ShowMarks = false };
-        var source = new ListView { Id = "mapping-source", X = 2, Y = 9, Width = Dim.Percent(46),
+        var saved = new ListView { Id = "mapping-list", X = MenuIndent.Level1, Y = 4, Width = Dim.Fill(4), Height = 3, ShowMarks = false };
+        var source = new ListView { Id = "mapping-source", X = MenuIndent.Level1, Y = 9, Width = Dim.Percent(44),
             Height = Dim.Func(_ => Math.Clamp((frame.Viewport.Height - 19) / 2, 2, 8)), ShowMarks = false,
             Visible = sources.Length > 0, Enabled = snapshot.Available };
-        var target = new ListView { Id = "mapping-target", X = Pos.Percent(50), Y = 9, Width = Dim.Fill(3),
+        var target = new ListView { Id = "mapping-target", X = Pos.Percent(50) + 2, Y = 9, Width = Dim.Fill(3),
             Height = source.Height, ShowMarks = false, Visible = sources.Length > 0, Enabled = snapshot.Available };
-        var detail = new StyledTextPresenter { Id = "mapping-detail", X = 2, Y = sources.Length > 0 ? Pos.Bottom(source) + 1 : 8,
+        var detail = new StyledTextPresenter { Id = "mapping-detail", X = MenuIndent.Information, Y = sources.Length > 0 ? Pos.Bottom(source) + 1 : 8,
             Width = Dim.Fill(4), Height = sources.Length > 0 ? 3 : 4, CanFocus = true };
         var apply = new Button { Id = "mapping-apply", X = 2, Y = Pos.Bottom(detail),
             Text = PolicyPref("tool_choice_add"), Enabled = snapshot.Available && sources.Length > 0, Visible = sources.Length > 0 };
@@ -106,10 +106,10 @@ public sealed partial class TuiApp
             catch (Exception) { notice.Text = PolicyPref("save_failed"); }
         };
         back.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("tools_security", categoryPage: true); };
-        frame.Add(new Label { X = 2, Y = 1, Width = Dim.Fill(4), Height = 2, Text = PolicyPref("tool_choice_purpose") },
-            new Label { X = 2, Y = 3, Width = Dim.Fill(4), Height = 1, Text = PolicyPref("tool_choice_saved") }, saved,
-            new Label { X = 2, Y = 8, Width = Dim.Percent(46), Height = 1, Text = PolicyPref("tool_choice_source"), Visible = sources.Length > 0 }, source,
-            new Label { X = Pos.Percent(50), Y = 8, Width = Dim.Fill(3), Height = 1, Text = PolicyPref("tool_choice_target"), Visible = sources.Length > 0 }, target,
+        frame.Add(MenuIndent.Help(PolicyPref("tool_choice_purpose"), 1, 2, "mapping-intro"),
+            MenuIndent.Heading(PolicyPref("tool_choice_saved"), 3), saved,
+            new Label { Id = "omni-section", X = 2, Y = 8, Width = Dim.Percent(46), Height = 1, Text = "│ " + PolicyPref("tool_choice_source"), Visible = sources.Length > 0 }, source,
+            new Label { Id = "omni-section", X = Pos.Percent(50), Y = 8, Width = Dim.Fill(3), Height = 1, Text = "│ " + PolicyPref("tool_choice_target"), Visible = sources.Length > 0 }, target,
             detail, apply, remove, notice, save, back);
         source.SetSource(new ObservableCollection<string>(sources.Select(tool => ToolDisplayText(tool.VisibleName))));
         source.CanFocus = sources.Length > 0;

@@ -31,17 +31,17 @@ public sealed partial class TuiApp
             Width = Dim.Fill(3), Secret = true, CanFocus = target.CanConnect, Enabled = target.CanConnect };
         var validate = new CheckBox { Id = "provider-validate-key", X = 3, Y = 4,
             Width = Dim.Fill(3), Text = AccountUi("action.validate"), Enabled = target.CanConnect };
-        var status = new Label { Id = "provider-key-status", X = 3, Y = 5, Width = Dim.Fill(3), Height = 2,
+        var status = new Label { Id = "provider-key-status", X = 3, Y = 6, Width = Dim.Fill(3), Height = 2,
             Text = target.CanConnect || target.CanTest || target.CanDisconnect || target.CanDiscoverModels
                 ? AccountUi("help.apiKey") : AccountUi("help.noProviderAction") };
-        var save = new Button { Id = "provider-key-save", X = 3, Y = 7, Width = Dim.Percent(43), Text = AccountUi("action.save") };
-        var test = new Button { Id = "provider-test", X = Pos.Right(save) + 1, Y = 7, Width = Dim.Fill(3), Text = AccountUi("action.test") };
-        var catalog = new Button { Id = "provider-discover", X = 3, Y = 9, Width = Dim.Percent(43), Text = AccountUi("action.discover") };
-        var credits = new Button { Id = "provider-credits", X = Pos.Right(catalog) + 1, Y = 9, Width = Dim.Fill(3),
+        var save = new Button { Id = "provider-key-save", X = 3, Y = 9, Width = Dim.Percent(43), Text = AccountUi("action.save") };
+        var test = new Button { Id = "provider-test", X = Pos.Right(save) + 1, Y = 9, Width = Dim.Fill(3), Text = AccountUi("action.test") };
+        var catalog = new Button { Id = "provider-discover", X = 3, Y = 11, Width = Dim.Percent(43), Text = AccountUi("action.discover") };
+        var credits = new Button { Id = "provider-credits", X = Pos.Right(catalog) + 1, Y = 11, Width = Dim.Fill(3),
             Text = _localization.Resolve("openrouter.credits.action"), Visible = target.Backend == "openrouter" };
-        var disconnect = new Button { Id = "provider-disconnect", X = 3, Y = 11, Width = Dim.Percent(43), Text = AccountUi("action.disconnect") };
-        var back = new Button { Id = "provider-key-cancel", X = Pos.Right(disconnect) + 1, Y = 11, Width = Dim.Fill(3), Text = AccountUi("action.back") };
-        var metadata = new Label { Id = "provider-metadata", X = 3, Y = 13, Width = Dim.Fill(3), Height = 3,
+        var disconnect = new Button { Id = "provider-disconnect", X = 3, Y = 13, Width = Dim.Percent(43), Text = AccountUi("action.disconnect") };
+        var back = new Button { Id = "provider-key-cancel", X = Pos.Right(disconnect) + 1, Y = 13, Width = Dim.Fill(3), Text = AccountUi("action.back") };
+        var metadata = new Label { Id = "provider-metadata", X = 3, Y = 16, Width = Dim.Fill(3), Height = 3,
             Text = ProviderConnectionRowText(target) };
 
         void RefreshActions()
@@ -141,6 +141,6 @@ public sealed partial class TuiApp
         { _preferencesProvider = null; CloseOverlay(); ShowPreferences("accounts_connections", categoryPage: true); };
         foreach (var view in new View[] { key, validate, status, save, test, catalog, credits, disconnect, back, metadata }) Add(view);
         RefreshActions();
-        return 16;
+        return 19;
     }
 }

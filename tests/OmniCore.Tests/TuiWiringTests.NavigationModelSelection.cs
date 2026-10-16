@@ -69,7 +69,8 @@ public sealed partial class TuiWiringTests
         var before = UiLocalePreferencesProtocol.Decode(fx.Server.Query(UiLocalePreferencesProtocol.QueryName, default)!.Json)!;
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "preferences open");
         ChoosePreferenceCategory(fx, "general");
-        KeyWithEffect(fx, KeyCode.CursorDown, () => fx.App.PreferencesLocale == "en", "preview another language");
+        ChooseLocaleDraft(fx, 1);
+        Assert.Equal("es", fx.App.PreferencesLocale);
         fx.Invoke(() => Descendants(fx.App.Overlay!).Single(view => view.Id == "preferences-cancel").SetFocus());
         ClickThroughApplication(fx, "preferences-cancel");
         fx.Wait(() => fx.App.PreferencesLocale == "es" && fx.App.Overlay is not null
@@ -107,16 +108,19 @@ public sealed partial class TuiWiringTests
         Assert.False(SearchFocused());
         var activeCells = CaptureConversationFrame(fx, 120, 40, "Español");
         Assert.NotEqual(Language().GetScheme().Normal.Background, activeCells[origin.Y, origin.X + 1].Attribute?.Background);
-        KeyWithEffect(fx, KeyCode.CursorDown, () => fx.App.PreferencesLocale == "en", "choose English after entering");
+        KeyWithEffect(fx, KeyCode.CursorDown, () => Language().SelectedItem == 1, "browse English after entering");
+        Assert.Equal("es", fx.App.PreferencesDraftLocale); Assert.Equal("es", fx.App.PreferencesLocale);
         Assert.True(Language().HasFocus); Assert.False(SearchFocused());
-        KeyWithEffect(fx, KeyCode.CursorDown, () => fx.App.PreferencesLocale == "fr", "locale rebuild preserves input focus");
+        KeyWithEffect(fx, KeyCode.CursorDown, () => Language().SelectedItem == 2, "browse French without applying it");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.PreferencesDraftLocale == "fr", "Enter chooses the draft explicitly");
+        Assert.Equal("es", fx.App.PreferencesLocale);
         Assert.True(Language().HasFocus); Assert.False(SearchFocused());
         KeyWithEffect(fx, KeyCode.CursorLeft, () => Navigation().HasFocus, "left returns to the category menu");
         Assert.False(SearchFocused());
         KeyWithEffect(fx, KeyCode.CursorDown, () => Navigation().SelectedItem == 1, "category changes keep menu focus");
         Assert.True(Navigation().HasFocus); Assert.False(SearchFocused());
         KeyWithEffect(fx, KeyCode.F | KeyCode.CtrlMask, SearchFocused, "search is entered explicitly");
-        ExportPreferenceFrame(fx, 120, 40, "navigation-blue", "Préférences");
+        ExportPreferenceFrame(fx, 120, 40, "navigation-blue", "Preferencias");
     }, noColor: false);
 
     [Theory]
