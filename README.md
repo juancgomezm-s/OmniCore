@@ -397,13 +397,23 @@ idioma pendiente y **Guardar** lo aplica. Pasar por una fila no cambia el idioma
 Los textos informativos llevan más sangría, tono secundario y separación respecto
 de los controles.
 
-En **F4 → General y apariencia → Tema de colores…** puedes elegir **OmniCore**,
-**OpenCode**, **Claude** o **Codex**. Clic o Enter elige el tema; Guardar lo aplica
-y conserva la elección para próximos inicios. Los temas cambian colores de la
-conversación, panel lateral, menús, campos y foco, manteniendo la distribución y
-los controles. OpenCode toma sus colores base del
+En **F4 → General y apariencia → Tema de colores…** hay **16 temas**:
+OmniCore, OpenCode, Claude Light, Claude Dark, Codex, OmniLlama, OmniLlama Light,
+Nord, Dracula, Catppuccin Mocha, Catppuccin Latte, Tokyo Night, Gruvbox,
+Solarized Dark, Solarized Light y Rosé Pine. Recorrer la lista con flechas o hacer
+clic previsualiza los colores inmediatamente en la TUI y en una muestra de texto,
+código y herramientas. **Guardar** conserva la elección para próximos inicios;
+**Cancelar**, **Esc** o **F4** restauran el tema anterior. La vista previa no escribe
+la preferencia ni altera la conversación o el borrador.
+
+Los temas cambian colores de la conversación, panel lateral, menús, campos y foco,
+manteniendo la distribución y los controles. Los temas claros también adaptan el
+resaltado de código, estados y texto de selección. `NO_COLOR` conserva la interfaz
+sin colores. OpenCode toma sus colores base del
 [tema público de OpenCode](https://github.com/anomalyco/opencode/blob/dev/packages/tui/src/theme/assets/opencode.json);
-Claude y Codex son paletas inspiradas en sus experiencias visuales.
+Claude y Codex son paletas inspiradas en sus experiencias visuales. Las dos paletas
+OmniLlama adaptan los colores de nuestro [omni_llama](https://github.com/juancgomezm-s/omni_llama),
+sin incorporar su frontend ni dependencias web.
 
 En **F4 → General y apariencia → Animaciones de carga…** hay 31 efectos y una
 elección independiente para espera, razonamiento reportado, respuesta y herramientas.

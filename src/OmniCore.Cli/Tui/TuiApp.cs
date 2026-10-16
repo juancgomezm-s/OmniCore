@@ -327,7 +327,12 @@ public sealed partial class TuiApp
         var code = key.KeyCode.ToString();
         if (code == "F2") { ToggleSidebar(); key.Handled = true; }
         else if (code == "F3") { ShowModelPicker(); key.Handled = true; }
-        else if (code == "F4") { ShowPreferences(); key.Handled = true; }
+        else if (code == "F4")
+        {
+            if (_overlay?.Id == "theme-preferences") ReturnFromPreferencesSubpage();
+            else ShowPreferences();
+            key.Handled = true;
+        }
         else if (code == "F6") { ShowConversations(); key.Handled = true; }
         else if (key.KeyCode == (KeyCode.Tab | KeyCode.ShiftMask) && _overlay is null && _activeInteraction is null)
         { CycleMode(); key.Handled = true; }
@@ -1860,8 +1865,14 @@ public sealed partial class TuiApp
             button.NoDecorations = true;
             button.ShadowStyle = ShadowStyles.None;
         }
-        view.SetScheme(new Scheme { Normal = _theme.Map(primary), Focus = _theme.Map(focus), Editable = _theme.Map(primary),
-            HotNormal = _theme.Map(accent), HotFocus = _theme.Map(view is Button or ListView ? focus : accent) });
+        var mappedFocus = _theme.Map(focus);
+        if (!noColor && view is Button or ListView or TextField)
+        {
+            var fill = view.Id is "omni-model-list" or "tools-list" or "preferences-categories" ? _theme.Accent : _theme.Selection;
+            mappedFocus = new Terminal.Gui.Drawing.Attribute(TuiTheme.On(fill), new Color(fill), focus.Style);
+        }
+        view.SetScheme(new Scheme { Normal = _theme.Map(primary), Focus = mappedFocus, Editable = _theme.Map(primary),
+            HotNormal = _theme.Map(accent), HotFocus = view is Button or ListView ? mappedFocus : _theme.Map(accent) });
         if (view is StyledTextPresenter styled) styled.Theme = _theme;
         if (view is SidebarView sidebar) sidebar.Theme = _theme;
         if (view is ActivityView activity) activity.Theme = _theme;
@@ -2605,6 +2616,7 @@ public sealed partial class TuiApp
     private void CloseOverlay()
     {
         if (_overlay is null || _window is null) return;
+        if (_themeBeforePreview is { } originalTheme) { _theme = originalTheme; _themeBeforePreview = null; }
         if (_suspendedSecurityForm is { } securityDraft)
         {
             _retiredOverlays.Add(securityDraft); _suspendedSecurityForm = null; _cancelSecurityConfirmation = null;
