@@ -321,6 +321,21 @@ Consultar conexión, catálogo y créditos no genera respuestas de modelos. El
 límite/uso de una clave y el saldo de cuenta se muestran por separado; un dato
 no disponible no se convierte en cero.
 
+### Elegir herramientas alternativas
+
+**F4 → Herramientas y seguridad → Herramientas alternativas…** permite preferir
+una herramienta aportada por una extensión. Es opcional: sin preferencias se usan las
+herramientas habituales. La pantalla ofrece las opciones del catálogo y describe
+la herramienta de la lista que estás recorriendo.
+
+Elige la herramienta que quieres sustituir, elige qué usar en su lugar y pulsa
+**Añadir preferencia**. **Guardar cambios** aplica las preferencias; **Volver**
+descarta las modificaciones pendientes. **Quitar preferencia** recupera el
+comportamiento habitual al guardar. Si el catálogo no contiene alternativas
+compatibles, la pantalla lo explica y puedes volver sin configurar nada.
+Las preferencias se aplican cuando ambas herramientas están disponibles en el
+turno, con los permisos y confirmaciones habituales.
+
 ### Explorar sin credenciales ni llamadas al modelo
 
 ```powershell

@@ -12,13 +12,13 @@ public sealed partial class TuiApp
     private void ShowMappingPreferences(string category)
     {
         if (_window is null || _overlay is not null) return;
-        var tools = category == "tools_security";
+        if (category == "tools_security") { ShowToolPreferences(); return; }
         var host = _policyPreferencesOverride ?? PolicyPreferencesHost.Create(Environment.CurrentDirectory);
         PolicyPreferencesSnapshot snapshot;
         try { snapshot = host.Read(); }
         catch (Exception) { ShowPreferenceText(PolicyPref("title"), PolicyPref("unavailable")); return; }
-        var draft = new Dictionary<string, string>(tools ? snapshot.ToolPreferences : snapshot.CommandAliases, StringComparer.Ordinal);
-        var frame = OverlayFrame(PolicyPref(tools ? "section_tool_preferences" : "section_command_aliases"), _window.Frame.Height - 3);
+        var draft = new Dictionary<string, string>(snapshot.CommandAliases, StringComparer.Ordinal);
+        var frame = OverlayFrame(PolicyPref("section_command_aliases"), _window.Frame.Height - 3);
         frame.Id = "mapping-preferences"; frame.Width = Dim.Percent(92); frame.Height = Dim.Fill(2);
         var list = new ListView { Id = "mapping-list", X = 2, Y = 3, Width = Dim.Fill(4), Height = Dim.Fill(13), ShowMarks = false };
         var source = new TextField { Id = "mapping-source", X = 2, Y = Pos.AnchorEnd(9), Width = Dim.Percent(44), Enabled = snapshot.Available };
@@ -48,15 +48,10 @@ public sealed partial class TuiApp
             try
             {
                 if (string.IsNullOrWhiteSpace(from) || string.IsNullOrWhiteSpace(to)) throw new ArgumentException();
-                if (tools)
-                {
-                    if (new[] { from, to }.Any(value => value.Any(ch => char.IsWhiteSpace(ch) || ch is ',' or '='))) throw new ArgumentException();
-                    ParseToolPreferences(from + "=" + to);
-                }
-                else OmniCore.Protocol.UserCommandAliases.ValidatePair(from, to);
+                OmniCore.Protocol.UserCommandAliases.ValidatePair(from, to);
                 draft[from] = to; Refresh(); note.Text = PolicyPref("mapping_pending"); return true;
             }
-            catch (ArgumentException) { note.Text = PolicyPref(tools ? "invalid_tool_preferences" : "invalid_command_aliases"); return false; }
+            catch (ArgumentException) { note.Text = PolicyPref("invalid_command_aliases"); return false; }
         }
         list.ValueChanged += (_, _) => Select();
         apply.Accepted += (_, _) => ApplyRow();
@@ -72,16 +67,16 @@ public sealed partial class TuiApp
             if ((!string.IsNullOrWhiteSpace(source.Text.ToString()) || !string.IsNullOrWhiteSpace(target.Text.ToString())) && !ApplyRow()) return;
             try
             {
-                snapshot = tools ? host.SaveToolPreferences(snapshot.Revision, draft) : host.SaveCommandAliases(snapshot.Revision, draft);
+                snapshot = host.SaveCommandAliases(snapshot.Revision, draft);
                 note.Text = PolicyPref(snapshot.Available ? "saved" : "saved_but_invalid");
             }
             catch (InvalidOperationException exception) when (exception.Message == "policyPreferences.error.stale") { note.Text = PolicyPref("stale"); }
-            catch (ArgumentException) { note.Text = PolicyPref(tools ? "invalid_tool_preferences" : "invalid_command_aliases"); }
+            catch (ArgumentException) { note.Text = PolicyPref("invalid_command_aliases"); }
             catch (Exception) { note.Text = PolicyPref("save_failed"); }
         };
         back.Accepted += (_, _) => { CloseOverlay(); ShowPreferences(category, categoryPage: true); };
         frame.Add(new Label { X = 2, Y = 1, Width = Dim.Fill(4), Height = 2, Text = PolicyPref("mapping_help") }, list,
-            new Label { X = 2, Y = Pos.AnchorEnd(10), Width = Dim.Percent(44), Text = PolicyPref(tools ? "mapping_source" : "mapping_alias") }, source,
+            new Label { X = 2, Y = Pos.AnchorEnd(10), Width = Dim.Percent(44), Text = PolicyPref("mapping_alias") }, source,
             new Label { X = Pos.Percent(50), Y = Pos.AnchorEnd(10), Width = Dim.Fill(3), Text = PolicyPref("mapping_target") }, target,
             apply, remove, note, save, back);
         ApplyTheme(frame); _overlay = frame; _window.Add(frame); _preferencesReturnToCategory = true;

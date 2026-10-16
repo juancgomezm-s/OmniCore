@@ -169,23 +169,27 @@ public sealed partial class TuiWiringTests
     {
         var host = PolicyPreferencesHost.Create(fx.Root, Path.Combine(fx.Root, "audit-data"), Path.Combine(fx.Root, "audit-config"));
         host.SaveCommandAliases(host.Read().Revision, new Dictionary<string, string> { ["breve"] = "plan" });
-        fx.StartTui(policyPreferences: host, initialColumns: 80, initialRows: 25);
+        var client = new ToolQueryClient(fx.Server, ToolPreferenceFixtureCatalog());
+        fx.StartTui(policyPreferences: host, client: client, initialColumns: 80, initialRows: 25);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "preferences open");
         ChoosePreferenceCategory(fx, "tools_security"); ClickId(fx, "preferences-tool-mappings-open");
-        fx.Invoke(() =>
-        {
-            Descendants(fx.App.Overlay!).OfType<TextField>().Single(view => view.Id == "mapping-source").Text = "filesystem.write";
-            Descendants(fx.App.Overlay!).OfType<TextField>().Single(view => view.Id == "mapping-target").Text = "filesystem.write";
-        });
+        Assert.DoesNotContain(Descendants(fx.App.Overlay!), view => view is TextField);
+        ChooseToolPreference(fx, "filesystem.write", "ext.fixture.write");
         var revision = host.Read().Revision;
+        Assert.False(Descendants(fx.App.Overlay!).Single(view => view.Id == "mapping-save").Enabled);
         ClickId(fx, "mapping-save");
         Assert.Equal("mapping-preferences", fx.App.Overlay!.Id); Assert.Equal(revision, host.Read().Revision);
-        fx.Invoke(() => Descendants(fx.App.Overlay!).OfType<TextField>().Single(view => view.Id == "mapping-target").Text = "ext.fixture.write");
+        var options = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "mapping-target").Source!.ToList();
+        Assert.DoesNotContain(options.Cast<object>(), row => row.ToString()!.Contains("incompatible", StringComparison.Ordinal));
+        Assert.DoesNotContain(options.Cast<object>(), row => row.ToString() == "filesystem.write");
+        ClickThroughApplication(fx, "mapping-apply");
+        Assert.Equal(revision, host.Read().Revision);
         ClickId(fx, "mapping-save");
         Assert.Equal("ext.fixture.write", host.Read().ToolPreferences["filesystem.write"]);
         Assert.Equal("plan", host.Read().CommandAliases["breve"]);
         ClickId(fx, "mapping-back");
         Assert.Contains(Descendants(fx.App.Overlay!), view => view.Id == "preferences-tool-mappings-open");
+        Assert.Equal(0, client.Commands);
     });
 
     [Theory]

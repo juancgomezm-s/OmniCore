@@ -132,19 +132,6 @@ public sealed partial class TuiApp
 
     private string PolicyPref(string key) => _localization.Resolve("policyPreferences." + key);
     private static IReadOnlyList<string> ParseAliases(string text) => text.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-    private static IReadOnlyDictionary<string, string> ParseToolPreferences(string text)
-    {
-        var preferences = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var line in text.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
-        {
-            var separator = line.IndexOf('=');
-            if (separator <= 0 || separator == line.Length - 1) throw new ArgumentException("Invalid tool preference.");
-            var source = line[..separator].Trim();
-            var target = line[(separator + 1)..].Trim();
-            if (!preferences.TryAdd(source, target)) throw new ArgumentException("Duplicate tool preference.");
-        }
-        return preferences;
-    }
     private static bool TryBoolean(string text, out bool? value)
     {
         if (string.IsNullOrWhiteSpace(text)) { value = null; return true; }

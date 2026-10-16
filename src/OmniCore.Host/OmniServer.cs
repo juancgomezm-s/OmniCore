@@ -3153,6 +3153,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                         + ":" + descriptor.Source.Trust + ":" + descriptor.Source.Owner
                         + "@" + descriptor.Source.Version) + ","
                     + JsonObj.Field("effectClass", effect.ToString()) + ","
+                    + JsonObj.Field("risk", descriptor.Risk.ToString()) + ","
+                    + JsonObj.Field("protection", descriptor.Protection.ToString()) + ","
+                    + JsonObj.FieldRaw("tags", "[" + string.Join(",", descriptor.Tags.Select(tag => "\"" + JsonObj.Escape(tag) + "\"")) + "]") + ","
                     + JsonObj.Field("decision", decision) + ","
                     + JsonObj.FieldBool("visible", active && boundaryVisible && !modeRejected) + "}");
             }

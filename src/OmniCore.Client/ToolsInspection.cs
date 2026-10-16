@@ -9,6 +9,10 @@ public sealed record ToolInspectionRow(string VisibleName, string ToolId, string
     /// <summary>Original catalog text, not a prompt or execution permission. Older hosts may omit it.</summary>
     public string? Description { get; init; }
     public IReadOnlyDictionary<string, string>? UiDescriptions { get; init; }
+    // Optional diagnostic metadata; old hosts remain readable, without inventing compatibility.
+    public string? Risk { get; init; }
+    public string? Protection { get; init; }
+    public IReadOnlyList<string>? Tags { get; init; }
 }
 
 /// <summary>The complete tool catalog, independent of any terminal or desktop UI.</summary>
@@ -42,7 +46,8 @@ public static class ToolsInspectionJson
                     || !tool.TryGetProperty("visible", out var visible)
                     || visible.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return null;
                 rows.Add(new(name, id, source, effect, decision, visible.GetBoolean())
-                    { Description = Text(tool, "description"), UiDescriptions = ExternalUiResources.ReadDescriptions(tool, "uiDescriptions") });
+                    { Description = Text(tool, "description"), UiDescriptions = ExternalUiResources.ReadDescriptions(tool, "uiDescriptions"),
+                        Risk = Text(tool, "risk"), Protection = Text(tool, "protection"), Tags = Tags(tool) });
             }
             return new(mode, rows.AsReadOnly());
         }
@@ -52,6 +57,13 @@ public static class ToolsInspectionJson
     private static string? Text(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString() : null;
+
+    private static IReadOnlyList<string>? Tags(JsonElement tool)
+    {
+        if (!tool.TryGetProperty("tags", out var tags) || tags.ValueKind != JsonValueKind.Array
+            || tags.EnumerateArray().Any(tag => tag.ValueKind != JsonValueKind.String)) return null;
+        return tags.EnumerateArray().Select(tag => tag.GetString()!).ToArray();
+    }
 }
 
 /// <summary>Human explanations only; never changes model definitions or permission decisions.</summary>
