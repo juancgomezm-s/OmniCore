@@ -3986,7 +3986,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     }
 
     internal (bool Authorized, InteractionId? Interaction, CommandAck Ack, Exception? Failure) AuthorizeModelRoute(
-        SessionId session, RunId run, ModelRoute route, BillingMode mode, bool requireConsent = false)
+        SessionId session, RunId run, ModelRoute route, BillingMode mode, bool requireConsent = false,
+        RouteConsentTurn? continuation = null)
     {
         var commandId = CommandId.New();
         var messageId = commandId.ToString();
@@ -4028,8 +4029,12 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             }
             var interaction = InteractionId.New();
             using var command = CausationScope.Begin(new CommandCausation(commandId));
+            var subject = SessionRoutingAuthorization.Context(offer);
+            if (continuation is not null)
+                subject = subject[..^1] + ",\"continuation\":"
+                    + System.Text.Json.JsonSerializer.Serialize(continuation, RouteConsentJsonContext.Default.RouteConsentTurn) + "}";
             var requestEvent = new InteractionRequested(interaction, InteractionKind.ModelRouteConsent,
-                SessionRoutingAuthorization.Context(offer),
+                subject,
                 "[{\"id\":\"deny\",\"intent\":\"deny\"},{\"id\":\"allow_route\",\"intent\":\"allow\"}]",
                 "deny", null, null, null, null, 0, 1);
             var runProjection = RunProjection.Replay(session, run, _codecs, events);

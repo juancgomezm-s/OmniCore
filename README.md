@@ -432,6 +432,12 @@ consulta del catálogo. **Actualizar modelos** permite reintentar sin cerrar el
 selector. La búsqueda y la fila señalada se conservan al actualizar; seleccionar
 no ejecuta el modelo. [Revisión de navegación y selección](docs/validation/tui-navigation-model-picker-20261016.md).
 
+Si al enviar un mensaje el modelo elegido requiere autorización, **Usar en esta
+conversación** concede el permiso y continúa esa misma petición. Enter confirma
+una sola acción; se conservan el historial y el mensaje original. El permiso no
+se reutiliza para conexiones modificadas ni para repetir una petición ya atendida.
+[Validación del cambio de modelo](docs/validation/model-route-resume-20261016.md).
+
 Las opciones disponibles en **F4** se administran desde su menú y no se repiten
 como comandos en el autocompletado, el catálogo o la ayuda de la TUI. Los comandos
 visibles se reservan para el trabajo de la conversación. Los nombres antiguos

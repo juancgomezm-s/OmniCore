@@ -2246,12 +2246,14 @@ public sealed partial class TuiWiringTests
         _ = session;
     });
 
-    [Fact]
-    public void Model_route_consent_allow_resumes_once_without_submitting_a_new_turn() => RunTuiTest(fx =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Model_route_consent_allow_resumes_once_without_submitting_a_new_turn(bool escalation) => RunTuiTest(fx =>
     {
         var host = new RouteResumeTurnHost();
-        var (interaction, route) = PublishRouteConsent(fx);
-        host.EscalationInteractionId = interaction.ToString();
+        var (interaction, route) = PublishRouteConsent(fx, escalation);
+        host.EscalationInteractionId = escalation ? interaction.ToString() : null;
         var inputCount = fx.Decoded<UserInputReceived>().Count();
         fx.StartTui(turnHost: host);
 
@@ -2304,8 +2306,10 @@ public sealed partial class TuiWiringTests
         Assert.Equal(0, host.ExecuteCount);
     });
 
-    [Fact]
-    public void Model_route_consent_accepted_while_originating_invocation_finishes_is_not_lost() => RunTuiTest(fx =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Model_route_consent_accepted_while_originating_invocation_finishes_is_not_lost(bool escalation) => RunTuiTest(fx =>
     {
         var gate = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         var host = new RouteResumeTurnHost { InvocationGate = gate };
@@ -2314,11 +2318,13 @@ public sealed partial class TuiWiringTests
             fx.StartTui(turnHost: host);
             Type(fx, "solicitud que sigue terminando");
             KeyWithEffect(fx, KeyCode.Enter, () => host.ExecuteCount == 1, "invocación originaria aún activa");
-            var (interaction, _) = PublishRouteConsent(fx);
-            host.EscalationInteractionId = interaction.ToString();
+            var (interaction, _) = PublishRouteConsent(fx, escalation);
+            host.EscalationInteractionId = escalation ? interaction.ToString() : null;
             fx.Wait(() => fx.App.Overlay is not null, "el polling publica el permiso antes del return 3");
             var allow = fx.App.Overlay!.SubViews.OfType<Button>().Last();
-            fx.Invoke(() => allow.InvokeCommand(Command.Accept));
+            fx.Invoke(() => allow.SetFocus());
+            KeyWithEffect(fx, KeyCode.Enter,
+                () => fx.Decoded<InteractionResolved>().Any(item => item.InteractionId == interaction), "Enter acepta la ruta");
             fx.Wait(() => fx.Decoded<InteractionResolved>().Any(item => item.InteractionId == interaction), "respuesta persistida");
             Assert.Equal(0, host.ResumeCount);
             gate.SetResult(3);
@@ -2384,17 +2390,18 @@ public sealed partial class TuiWiringTests
         Assert.Equal("allow_quota", Assert.Single(fx.Decoded<InteractionResolved>()).OptionId);
     });
 
-    private static (InteractionId Interaction, ModelRoute Route) PublishRouteConsent(TuiFixture fixture)
+    private static (InteractionId Interaction, ModelRoute Route) PublishRouteConsent(TuiFixture fixture, bool escalation = true)
     {
         var session = fixture.Server.LastSessionId()!;
         var run = fixture.Server.LastRunId()!;
         Assert.Equal("ok", fixture.Server.EnsureSessionRoutingPolicy(session).Status);
         var route = ModelRoute.DefaultForModel("paid-model", "paid-provider", "https://paid.example/v1",
             ProviderFamily.OpenAiChatCompatible);
-        using (ExecutionScope.Begin(new ExecutionScopeState(RunId: run)))
-            new EventStream(fixture.Server.AcquireStore(), fixture.Server.AcquireCodecs(), session)
-                .Append(new ModelEscalationRequested(run, "local-worker", route.ProviderModelName,
-                    EscalationCause.ContextLimit));
+        if (escalation)
+            using (ExecutionScope.Begin(new ExecutionScopeState(RunId: run)))
+                new EventStream(fixture.Server.AcquireStore(), fixture.Server.AcquireCodecs(), session)
+                    .Append(new ModelEscalationRequested(run, "local-worker", route.ProviderModelName,
+                        EscalationCause.ContextLimit));
         var result = fixture.Server.AuthorizeModelRoute(session, run, route, BillingMode.MeteredCurrency,
             requireConsent: true);
         Assert.False(result.Authorized);

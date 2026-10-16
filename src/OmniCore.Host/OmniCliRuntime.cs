@@ -1049,7 +1049,8 @@ public sealed class OmniCliRuntime : IDisposable
     private sealed record RoutingResume(SessionId Session, RunId Run, InteractionId? Interaction, string Model,
         ModelRoute? Route = null, string Origin = "InteractionResponse(ModelRouteConsent)",
         TurnInstructionSnapshot? InstructionSnapshot = null, ReasoningResolution? ReasoningResolution = null,
-        ReasoningRequest? LegacyReasoningRequest = null, bool ContinueExistingTurn = false);
+        ReasoningRequest? LegacyReasoningRequest = null, bool ContinueExistingTurn = false,
+        long? PendingInputSequence = null);
 
     private sealed record OpenTurnContinuation(SessionId Session, RunId Run, LaneId Lane,
         TurnStarted Started, ModelStepStarted? LastStep, ReasoningRequest? LegacyReasoningRequest);
@@ -1215,7 +1216,7 @@ public sealed class OmniCliRuntime : IDisposable
 
     /// <summary>Resume only the exact durable, user-consented escalation. Never submits a new intent.</summary>
     internal async Task<int> ResumeEscalationAsync(InteractionId interaction, Action<string> writeLine,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, Action<Guid>? turnBoostConsumed = null)
     {
         var server = Server();
         if (server.LastSessionId() is not { } session || server.LastRunId() is not { } run
@@ -1251,7 +1252,7 @@ public sealed class OmniCliRuntime : IDisposable
                     InstructionSnapshot: originalTurn.InstructionSnapshot,
                     ReasoningResolution: originalTurn.ReasoningResolution,
                     LegacyReasoningRequest: LegacyReasoningForTurn(events, server.AcquireCodecs(), run, originalTurn.TurnId),
-                    ContinueExistingTurn: true))
+                    ContinueExistingTurn: true), turnBoostConsumed: turnBoostConsumed)
                 .ConfigureAwait(false);
             // Completed means the target was actually invoked, not merely approved or deferred.
             if (server.LastSessionId() == session && server.LastRunId() == run
@@ -1317,6 +1318,64 @@ public sealed class OmniCliRuntime : IDisposable
         }
         catch (Exception ex) when (ex is System.Text.Json.JsonException or KeyNotFoundException
             or InvalidOperationException or FormatException) { writeLine(Text(LocalizedText.Of("cli.runtime.resume.quota_invalid"))); return 1; }
+    }
+
+    internal Task<int> ResumeModelRouteAsync(InteractionId interaction, Action<string> writeLine,
+        CancellationToken cancellationToken, Action<Guid>? turnBoostConsumed = null)
+    {
+        if (HasEscalationForInteraction(interaction))
+            return ResumeEscalationAsync(interaction, writeLine, cancellationToken, turnBoostConsumed);
+        var server = Server();
+        if (server.LastSessionId() is not { } session || server.LastRunId() is not { } run
+            || server.LastLaneId() is not { } lane
+            || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(session) != run)
+            return System.Threading.Tasks.Task.FromResult(1);
+        var events = server.AcquireStore().ReadFrom(session, 1);
+        var codecs = server.AcquireCodecs();
+        var origin = events.LastOrDefault(evt => evt.RunId == run && evt.LaneId == lane
+            && codecs.Decode(evt) is InteractionRequested request
+            && request.InteractionId == interaction && request.Kind == InteractionKind.ModelRouteConsent);
+        if (origin is not null && codecs.Decode(origin) is InteractionRequested consent
+            && SessionRoutingAuthorization.Parse(consent) is { } offer
+            && events.Any(evt => evt.Sequence > origin.Sequence && evt.RunId == run
+                && codecs.Decode(evt) is InteractionResolved { Cause: InteractionCause.User, OptionId: "allow_route" } resolved
+                && resolved.InteractionId == interaction)
+            && events.Any(evt => evt.Sequence > origin.Sequence && evt.RunId == run
+                && codecs.Decode(evt) is SessionRoutingPolicyRevised revised && revised.InteractionId == interaction))
+        {
+            using var subject = System.Text.Json.JsonDocument.Parse(consent.SubjectJson);
+            // Older journals have no preflight snapshot. Never borrow an unrelated Turn's instructions.
+            if (subject.RootElement.TryGetProperty("continuation", out var json)
+                && json.Deserialize(RouteConsentJsonContext.Default.RouteConsentTurn) is { } continuation
+                && continuation.Lane == lane
+                && events.Any(evt => evt.Sequence == continuation.InputSequence && evt.RunId == run
+                    && evt.Sequence < origin.Sequence && codecs.Decode(evt) is UserInputReceived input
+                    && input.Origin?.StartsWith("InteractionResponse(", StringComparison.Ordinal) != true)
+                && !events.Any(evt => evt.RunId == run && evt.Sequence > continuation.InputSequence
+                    && codecs.Decode(evt) is TurnStarted or UserInputReceived or ModelEscalationRequested or FollowUpQueued)
+                && !events.Any(evt => evt.Sequence > origin.Sequence
+                    && codecs.Decode(evt) is InteractionExpired expired && expired.InteractionId == interaction))
+            {
+                var loaded = OmniHost.LoadUserConfiguration(OmniHost.CreatePlatformPaths());
+                foreach (var model in loaded.Registry.Models())
+                {
+                    var provider = loaded.Registry.Provider(model.ProviderId);
+                    var route = ModelRoutingHost.RouteFor(model, provider);
+                    var mode = provider?.BillingMode ?? BillingMode.Unknown;
+                    if (AuthorizedModelRoute.From(route, mode) != offer.Route
+                        || SessionRoutingAuthorization.Read(events, codecs, session)?.Allows(route, mode) != true) continue;
+                    return RunTurnAsync("", !continuation.InstructionSnapshot.ConversationOnly
+                            && server.CurrentRunMode() == RunMode.Act, writeLine, cancellationToken,
+                        conversationOnly: continuation.InstructionSnapshot.ConversationOnly,
+                        routingResume: new(session, run, null, model.Id, route,
+                            InstructionSnapshot: continuation.InstructionSnapshot,
+                            ReasoningResolution: continuation.ReasoningResolution, ContinueExistingTurn: true,
+                            PendingInputSequence: continuation.InputSequence), turnBoostConsumed: turnBoostConsumed);
+                }
+            }
+        }
+        writeLine(Text(LocalizedText.Of("cli.runtime.resume.no_consent")));
+        return System.Threading.Tasks.Task.FromResult(1);
     }
 
     private async Task<int> RunTurnAsync(string prompt, bool act, Action<string> writeLine,
@@ -1672,6 +1731,12 @@ public sealed class OmniCliRuntime : IDisposable
                 }
             }
             string workingState = "";
+            // Recheck under the invocation gate: simultaneous callbacks cannot consume the input twice.
+            if (routingResume?.PendingInputSequence is { } pendingInput
+                && server.AcquireStore().ReadFrom(routingResume.Session, pendingInput + 1)
+                    .Any(evt => evt.RunId == routingResume.Run
+                        && server.AcquireCodecs().Decode(evt) is TurnStarted or UserInputReceived or ModelEscalationRequested or FollowUpQueued))
+            { writeLine(Text(LocalizedText.Of("cli.runtime.resume.no_consent"))); return 1; }
             if (delegation is not null)
             {
                 // No root conversation input, working-state copy or new Run when dispatching a child.
@@ -1828,8 +1893,14 @@ public sealed class OmniCliRuntime : IDisposable
                 writeLine(Text(LocalizedText.Of("cli.runtime.route.child_deferred")));
                 return 1;
             }
+            var admittedInput = conversationOnly && routingResume is null && openTurn is null
+                ? server.AcquireStore().ReadFrom(sessionId, 1).LastOrDefault(evt => evt.RunId == runId
+                    && server.AcquireCodecs().Decode(evt) is UserInputReceived) : null;
+            var routeContinuation = admittedInput is null ? null : new RouteConsentTurn(admittedInput.Sequence,
+                laneId, new TurnInstructionSnapshot(true, TurnInstruction(server.CurrentRunMode(), true)), reasoningResolution);
             if (delegation is null && AuthorizeRouteForInvocation(server, sessionId, runId, route,
-                    providerDescription?.BillingMode ?? BillingMode.Unknown, writeLine, locale) is { } routeCode)
+                    providerDescription?.BillingMode ?? BillingMode.Unknown, writeLine, locale,
+                    continuation: routeContinuation) is { } routeCode)
                 return routeCode;
             var routingPolicy = SessionRoutingAuthorization.Read(server.AcquireStore().ReadFrom(sessionId, 1),
                 server.AcquireCodecs(), sessionId)!;
@@ -2611,7 +2682,8 @@ public sealed class OmniCliRuntime : IDisposable
 
             var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
                 token => turn.Ask(prompt, instruction, sessionId, runId, laneId, workingState, token,
-                    promptOrigin, instructionSnapshot, BoostStartObserver(turnBoostId, turnBoostConsumed)),
+                    promptOrigin, instructionSnapshot,
+                    BoostStartObserver(turnBoostId ?? reasoningResolution?.TurnBoostId, turnBoostConsumed)),
                 cancellationToken, readOnlyLane: true, delegationId: delegationId);
             if (askExecution.Failure is { } askFailure)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(askFailure);
@@ -3662,12 +3734,13 @@ public sealed class OmniCliRuntime : IDisposable
     }
 
     internal int? AuthorizeRouteForInvocation(OmniServer server, SessionId session, RunId run,
-        ModelRoute route, BillingMode mode, Action<string> writeLine, string locale, bool requireConsent = false)
+        ModelRoute route, BillingMode mode, Action<string> writeLine, string locale, bool requireConsent = false,
+        RouteConsentTurn? continuation = null)
     {
         var initialized = server.EnsureSessionRoutingPolicy(session);
         initialized.ThrowIfFailure();
         if (initialized.Status != "ok") { writeLine(CommandError(initialized.Error, "cli.runtime.routing.initialization_failed")); return 1; }
-        var authorization = server.AuthorizeModelRoute(session, run, route, mode, requireConsent);
+        var authorization = server.AuthorizeModelRoute(session, run, route, mode, requireConsent, continuation);
         if (authorization.Failure is { } authorizationFailure)
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(authorizationFailure);
         if (authorization.Ack.Status != "ok")

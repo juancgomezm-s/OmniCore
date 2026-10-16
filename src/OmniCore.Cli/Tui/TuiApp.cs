@@ -1244,7 +1244,7 @@ public sealed partial class TuiApp
                     diagnostic, cancellation.Token)
                     : delegationId is not null ? _turnHost.ExecuteDelegationAsync(delegationId, diagnostic, cancellation.Token)
                     : resumeQuota is not null ? _turnHost.ResumeQuotaAsync(resumeQuota, diagnostic, cancellation.Token)
-                    : resumeEscalation is not null ? _turnHost.ResumeEscalationAsync(resumeEscalation, diagnostic, cancellation.Token)
+                    : resumeEscalation is not null ? _turnHost.ResumeModelRouteAsync(resumeEscalation, diagnostic, cancellation.Token)
                     : act ? _turnHost.ExecuteActAsync(input, diagnostic, cancellation.Token)
                     : submittedAttachments.Length > 0
                         ? _turnHost.ExecuteAsync(input, submittedAttachments, diagnostic, cancellation.Token)
@@ -1721,7 +1721,7 @@ public sealed partial class TuiApp
             // «Denegar»), lo que traiciona la intención visible del foco. La opción segura llega
             // por el foco inicial y por Esc (OnApplicationKeyDown → RespondDefault), no por flag.
             var button = new Button { X = 2, Y = 2 + bodyHeight + index, Text = interaction.Options[index] };
-            button.Accepted += (_, _) => RespondChoice(interaction, optionId);
+            button.Accepted += (_, args) => { args.Handled = true; RespondChoice(interaction, optionId); };
             overlay.Add(button);
             if (optionId == interaction.DefaultOptionId) defaultButton = button;
         }
@@ -1917,8 +1917,7 @@ public sealed partial class TuiApp
             if (_turnBusy) _pendingQuotaResume = interaction.Id;
             else StartModelTurn("", resumeQuota: interaction.Id);
         }
-        if (interaction.Kind == "ModelRouteConsent" && optionId == "allow_route"
-            && _turnHost?.HasEscalationForInteraction(interaction.Id) == true)
+        if (interaction.Kind == "ModelRouteConsent" && optionId == "allow_route")
         {
             // The overlay can be drawn by polling just before the originating task returns 3.
             // Defer the callback until that owned invocation reaches its checkpoint.

@@ -50,6 +50,8 @@ public interface ITuiTurnHost
     Task<int> ResumeEscalationAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         System.Threading.Tasks.Task.FromResult(1);
     bool HasEscalationForInteraction(string interactionId) => false;
+    Task<int> ResumeModelRouteAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
+        ResumeEscalationAsync(interactionId, diagnostics, cancellationToken);
     Task<int> ResumeQuotaAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         System.Threading.Tasks.Task.FromResult(1);
     bool SetNextTurnReasoningBoost(string kind, int? budgetTokens) => false;
@@ -115,6 +117,16 @@ public sealed class TuiTurnHost : ITuiTurnHost
         _runtime.ResumeEscalationAsync(new OmniCore.Domain.InteractionId(Guid.Parse(interactionId)), diagnostics, cancellationToken);
     public bool HasEscalationForInteraction(string interactionId) =>
         _runtime.HasEscalationForInteraction(new OmniCore.Domain.InteractionId(Guid.Parse(interactionId)));
+    public async Task<int> ResumeModelRouteAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken)
+    {
+        var boost = await ReserveBoostAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await _runtime.ResumeModelRouteAsync(new OmniCore.Domain.InteractionId(Guid.Parse(interactionId)),
+                diagnostics, cancellationToken, boost is null ? null : CompleteBoost).ConfigureAwait(false);
+        }
+        finally { ReleaseBoostReservation(boost); }
+    }
     public Task<int> ResumeQuotaAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         _runtime.ResumeQuotaAsync(new OmniCore.Domain.InteractionId(Guid.Parse(interactionId)), diagnostics, cancellationToken);
 
