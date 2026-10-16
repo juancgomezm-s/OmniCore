@@ -83,7 +83,7 @@ public sealed class ContextPolicyFingerprintTests
         var hash = OmniCliRuntime_ComputeContextPolicyHash(policy, budget);
 
         // Assert - verify the canonical format includes version prefix
-        var expectedCanonical = $"ctx-policy-v1|{policy.ExternalizeAboveCharacters}|{policy.CompressBodyCharacters}|{policy.RecentTailItems}|{policy.CompactAfterItems}|{policy.MaxCheckpointCharacters}|{budget}";
+        var expectedCanonical = $"ctx-policy-v2-auto95|{policy.ExternalizeAboveCharacters}|{policy.CompressBodyCharacters}|{policy.RecentTailItems}|{policy.CompactAfterItems}|{policy.MaxCheckpointCharacters}|{budget}";
         var expectedHash = ComputeHash(expectedCanonical);
         Assert.Equal(expectedHash, hash);
     }
@@ -241,7 +241,7 @@ public sealed class ContextPolicyFingerprintTests
 
             var policy = new ContextManagementPolicy(-1, -2, -3, -4, -5);
             const long usableContext = -8192;
-            const string canonical = "ctx-policy-v1|-1|-2|-3|-4|-5|-8192";
+            const string canonical = "ctx-policy-v2-auto95|-1|-2|-3|-4|-5|-8192";
             var expectedHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
 
             Assert.Equal(expectedHash, OmniCliRuntime_ComputeContextPolicyHash(policy, usableContext));

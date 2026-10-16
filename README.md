@@ -379,6 +379,7 @@ dotnet run --project src/OmniCore.Cli -- tui
 | `Enter` / `Shift+Enter` | Enviar / salto de línea |
 | `/` | Ayuda de comandos |
 | `F2` / `F3` / `F4` | Panel lateral / elegir modelo / ajustes |
+| `F6` | Buscar y retomar conversaciones del espacio de trabajo |
 | `↑` / `↓` en el selector | Navegación vertical y circular |
 | `↑` / `↓` en categorías de Preferencias | Recorrer el menú en ciclo sin entrar a los campos |
 | `Enter` / `→` en categorías | Entrar al contenido seleccionado |
@@ -396,6 +397,14 @@ idioma pendiente y **Guardar** lo aplica. Pasar por una fila no cambia el idioma
 Los textos informativos llevan más sangría, tono secundario y separación respecto
 de los controles.
 
+En **F4 → General y apariencia → Tema de colores…** puedes elegir **OmniCore**,
+**OpenCode**, **Claude** o **Codex**. Clic o Enter elige el tema; Guardar lo aplica
+y conserva la elección para próximos inicios. Los temas cambian colores de la
+conversación, panel lateral, menús, campos y foco, manteniendo la distribución y
+los controles. OpenCode toma sus colores base del
+[tema público de OpenCode](https://github.com/anomalyco/opencode/blob/dev/packages/tui/src/theme/assets/opencode.json);
+Claude y Codex son paletas inspiradas en sus experiencias visuales.
+
 En el selector puedes elegir con Enter un modelo ya registrado aunque falle la
 consulta del catálogo. **Actualizar modelos** permite reintentar sin cerrar el
 selector. La búsqueda y la fila señalada se conservan al actualizar; seleccionar
@@ -412,6 +421,50 @@ están las extensiones, habilidades, automatizaciones, servidores MCP, alias y e
 catálogo de comandos. Los alias y las sustituciones se editan por filas; guardar
 aplica cambios y volver descarta el borrador. Modelos conserva selección, rutas,
 límites de gasto, catálogo y políticas propias de modelos.
+
+### Conversaciones y contexto
+
+| Comando de la TUI en español | Acción |
+| --- | --- |
+| `/nuevo` | Crear una conversación vacía y conservar la anterior. |
+| `/retomar` | Abrir el selector de conversaciones; también funciona con `F6`. Permite buscar y elegir con Enter o con el botón Retomar. |
+| `/retomar <id>` | Abrir directamente una conversación del mismo espacio de trabajo. |
+| `/limpiar` | Limpiar la vista sin borrar el historial ni cambiar el contexto del modelo. Retomar la conversación recupera la vista completa. |
+| `/compactar` | Guardar un resumen extractivo del historial antiguo para el próximo turno, conservando el primer mensaje y las conversaciones recientes. |
+
+Los nombres visibles siguen el idioma de la interfaz. En inglés son `/new`,
+`/resume-session`, `/clear` y `/compact`. La CLI también admite `omni nuevo`,
+`omni sesiones`, `omni retomar <id>` y `omni compactar`.
+
+La compactación automática revisa el contexto **antes de cada solicitud al
+modelo** y se activa al alcanzar el **95 % del presupuesto de entrada efectivo**.
+Ese presupuesto respeta la ventana declarada y reserva los tokens de salida;
+el contador mantiene su precisión exacta o estimada. La cadencia previa por
+cantidad de elementos sigue disponible como protección adicional del perfil:
+por defecto resume cada 24 elementos antiguos y conserva 12 recientes. Los
+elementos incluyen mensajes y resultados de herramientas, no sólo turnos completos.
+Si el contenido protegido no cabe, el turno se detiene con un desbordamiento
+explícito. El historial original permanece en el journal.
+
+El contexto reúne instrucciones, estado vigente del trabajo, contribuciones
+habilitadas, historial reciente y checkpoints. Las trazas de razonamiento
+visible no se convierten en prosa para los resúmenes. La continuidad nativa
+opaca conserva las restricciones de ruta, modelo y proveedor que exija el
+adaptador. Los contadores de la interfaz corresponden a las solicitudes
+efectivamente enviadas; compactar no inventa una medición nueva.
+
+Los resultados de herramientas de más de 4096 caracteres se guardan íntegros,
+redactados, en un artifact recuperable con `artifact.read`. Su vista acotada
+incluye el inicio, líneas de errores o verificaciones y el final; las líneas
+repetidas no ocupan varias veces esa vista. Los resultados cortos se conservan.
+Los resúmenes periódicos incorporan el checkpoint anterior y las novedades,
+priorizando instrucciones, decisiones, cambios, fallos, pruebas y pendientes.
+El resumen se envía una vez, sin repetir sus secciones como otro bloque.
+Un resumen es una representación limitada: el original permanece disponible;
+no se garantiza que todos sus detalles quepan en la siguiente solicitud.
+
+Al final de **Ayuda**, **Acerca de…** muestra el correo de contacto y el GitHub
+del proyecto. El enlace se abre sólo al activarlo.
 
 ### Pruebas focales
 

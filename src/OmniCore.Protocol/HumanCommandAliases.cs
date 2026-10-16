@@ -13,6 +13,11 @@ public static class HumanCommandAliases
     {
         new Entry("help", "ayuda", "aide", "aiuto"),
         new Entry("exit", "salir", "quitter", "esci"),
+        new Entry("new", "nuevo", "nouveau", "nuovo"),
+        new Entry("sessions", "sesiones", "conversations", "conversazioni"),
+        new Entry("resume-session", "retomar", "reprendre-session", "riprendi-sessione"),
+        new Entry("clear", "limpiar", "effacer", "pulisci"),
+        new Entry("compact", "compactar", "condenser", "compatta"),
         new Entry("preferences", "preferencias", "préférences", "preferenze"),
         new Entry("tools", "herramientas", "outils", "strumenti"),
         new Entry("models", "modelos", "modèles", "modelli"),

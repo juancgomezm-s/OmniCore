@@ -66,7 +66,7 @@ public sealed class MetaModelService
 
         var request = new ModelRequest(_selection,
             new ModelMessage[] { new(MessageRole.User, new ContentBlock[] { new TextBlock(
-                "Summarize the following older conversation into durable facts, decisions, constraints, failed attempts, and unresolved questions. Do not invent information.\n\n"
+                "Update a durable conversation summary from the previous checkpoint and new older history. Preserve the user's goals, constraints, decisions, corrections, pending work and uncertainty. Preserve tool evidence that affects the task: changed files, exact errors, failed attempts, commands, exit codes and test results. Merge repeated reads and progress chatter; do not repeat entire logs. Keep artifact references needed to recover details. Use labeled sections: Goals, Constraints, Decisions, Facts, Modified file, Failed attempt, Tests, Pending, Open question. Do not invent information or infer success from missing evidence.\n\n"
                 + safeInput) }) },
             "You are a deterministic context summarization service. Preserve uncertainty and redact secrets.",
             Array.Empty<ToolDefinition>(), ToolChoice.None(), null, _selection.Reasoning, null, null);
@@ -159,6 +159,13 @@ public sealed class MetaModelService
 /// <summary>Rutinas puras para poda/compresión y proyección del checkpoint.</summary>
 public static class ContextCompaction
 {
+    public const int AutoCompactAtPercent = 95;
+    public static long EffectiveInputBudget(long configuredInputBudget, long modelWindow, long? outputLimit) =>
+        modelWindow > 0 && outputLimit is > 0 ? Math.Min(configuredInputBudget, Math.Max(0, modelWindow - outputLimit.Value))
+            : configuredInputBudget;
+    public static bool ShouldCompactAtCapacity(long inputTokens, long effectiveInputBudget) =>
+        effectiveInputBudget > 0 && inputTokens >= (effectiveInputBudget / 100 * AutoCompactAtPercent
+            + (effectiveInputBudget % 100 * AutoCompactAtPercent + 99) / 100);
     public static bool ShouldCompact(int uncompactedOlderItems, ContextManagementPolicy policy) =>
         uncompactedOlderItems >= policy.CompactAfterItems;
 

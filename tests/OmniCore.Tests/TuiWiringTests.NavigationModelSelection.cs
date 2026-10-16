@@ -51,6 +51,8 @@ public sealed partial class TuiWiringTests
         ClickThroughApplication(fx, "preferences-save");
         Assert.Equal("es", fx.App.PreferencesLocaleSnapshot!.Locale);
         Assert.True(fx.App.PreferencesLocaleSnapshot.IsConfigured);
+        ExportPreferenceFrame(fx, width, height, "category-cycle-editing-actions", "Guardar");
+        fx.Invoke(() => Descendants(panel).Single(view => view.Id == "preferences-locale").SetFocus());
         ExportPreferenceFrame(fx, width, height, "category-cycle-editing", "Español");
         if (width >= 100)
         {

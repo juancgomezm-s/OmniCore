@@ -1760,6 +1760,8 @@ public sealed class OmniCliRuntime : IDisposable
                 return 1;
             }
             var selectedMaxOutputTokens = ModelRoutingHost.OutputTokenLimit(runtimeModel, providerDescription);
+            usableContext = ContextCompaction.EffectiveInputBudget(usableContext, runtimeModel.ContextWindow, selectedMaxOutputTokens);
+            if (usableContext <= 0) throw new InvalidOperationException("The model output reservation leaves no input context.");
             ReasoningResolution? reasoningResolution;
             ReasoningRequest? productReasoning;
             if (routingResume is { ContinueExistingTurn: true } || openTurn is not null)
@@ -4500,7 +4502,7 @@ public sealed class OmniCliRuntime : IDisposable
     private static string ComputeContextPolicyHash(ContextManagementPolicy policy, long usableContext)
     {
         var canonical = string.Join("|",
-            "ctx-policy-v1",
+            "ctx-policy-v2-auto95",
             policy.ExternalizeAboveCharacters.ToString(CultureInfo.InvariantCulture),
             policy.CompressBodyCharacters.ToString(CultureInfo.InvariantCulture),
             policy.RecentTailItems.ToString(CultureInfo.InvariantCulture),

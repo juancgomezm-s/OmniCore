@@ -310,7 +310,8 @@ public sealed partial class TuiApp
                 };
                 Add(language); y += 5;
                 Add(chosen); y += 2;
-                Add(MenuIndent.Help(Pref(_localeSelection?.HasProcessOverride == true ? "locale_override" : "locale_note"), y)); y += 3;
+                if (_localeSelection?.HasProcessOverride == true)
+                { Add(MenuIndent.Help(Pref("locale_override"), y)); y += 3; }
                 var sourceKey = _localeSelection?.HasProcessOverride == true ? _localeSelection.Source switch
                 {
                     LocaleSelectionSource.CommandLine => "source_cli",
@@ -330,6 +331,9 @@ public sealed partial class TuiApp
                     Y = y, Text = Pref("animations_open") };
                 animationsOpen.Accepted += (_, _) => { CloseOverlay(); ShowAnimationSettings(); _preferencesReturnToCategory = true; };
                 Add(sidebarOpen); Add(animationsOpen);
+                y += 2;
+                AddNamedAction("preferences-theme-open", _localization.Resolve("shell.theme.open"), y, () =>
+                { CloseOverlay(); ShowThemePreferences(); _preferencesReturnToCategory = true; });
                 y += 2;
                 var actions = new View { Id = "preferences-category-actions", X = MenuIndent.Level1, Y = y,
                     Width = Dim.Fill(3), Height = 2, CanFocus = true, Visible = !wide };
@@ -450,8 +454,7 @@ public sealed partial class TuiApp
             case "diagnostics_data":
                 Section("section_diagnostics", y++);
                 AddAction("preferences-diagnostics-open", "diagnostics_open", y, () => { CloseOverlay(); ShowDiagnosticsPreferences("diagnostics_data"); }); y += 2;
-                AddNamedAction("preferences-help-open", _localization.Resolve("shell.help_title"), y, () =>
-                    ShowPreferenceText(_localization.Resolve("shell.help_title"), TuiHelpSection())); y += 2;
+                AddNamedAction("preferences-help-open", _localization.Resolve("shell.help_title"), y, ShowHelp); y += 2;
                 break;
             case "context_sessions":
                 Section("section_context", y++);

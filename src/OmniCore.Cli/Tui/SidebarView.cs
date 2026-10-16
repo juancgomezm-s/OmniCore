@@ -15,6 +15,7 @@ internal sealed class SidebarView : TextView
     private System.Drawing.Point? _mouseDown;
     private bool _dragged;
     internal bool ShowRoleGlyphs { get; set; } = true;
+    internal TuiTheme Theme { get; set; } = TuiTheme.All[0];
     private readonly Dictionary<int, WidgetRowModel> _actions = new();
     private readonly Dictionary<string, int> _headings = new();
     internal event Action<WidgetRowModel>? RowActivated;
@@ -29,6 +30,9 @@ internal sealed class SidebarView : TextView
     {
         // Headings/actions use source rows; TextView.InsertionPoint uses wrapped screen rows.
         SetFocus();
+        // Setting the cursor to its existing position emits no cursor event. A
+        // stale source row after Load must not terminate the first probe at row 0.
+        _sourcePoint = System.Drawing.Point.Empty;
         for (var wrapped = 0; wrapped < Lines; wrapped++)
         {
             // TextView only refreshes its unwrapped cursor event during a pending
@@ -42,7 +46,7 @@ internal sealed class SidebarView : TextView
     public SidebarView()
     {
         ReadOnly = true; WordWrap = true; ScrollBars = true;
-        ConversationScrollBarStyle.Attach(VerticalScrollBar, () => false, "#202C3B");
+        ConversationScrollBarStyle.Attach(VerticalScrollBar, () => false, "#202C3B", () => Theme);
         UnwrappedCursorPositionChanged += (_, point) => _sourcePoint = point;
         KeyDown += (_, key) =>
         {
@@ -79,6 +83,7 @@ internal sealed class SidebarView : TextView
         }
         var signature = Viewport.Width + ":" + noColor + string.Join("\n", rows) + string.Join(";", actions.Select(a => a.Key + ":" + a.Value.Target));
         if (signature == _signature) return; // keep focus/selection/scroll on unchanged polls
+        var focusedAction = HasFocus ? FocusedAction : null;
         _signature = signature;
         _actions.Clear(); foreach (var action in actions) _actions[action.Key] = action.Value;
         var oldViewport = Viewport;
@@ -101,6 +106,14 @@ internal sealed class SidebarView : TextView
         }).ToList();
         InsertionPoint = System.Drawing.Point.Empty;
         Load(cells);
+        // A settings/status refresh can change line wrapping between focus and
+        // Enter. Keep the semantic link, not its obsolete wrapped coordinates.
+        if (focusedAction is not null)
+        {
+            var destination = _actions.FirstOrDefault(pair => pair.Value.Action == focusedAction.Action
+                && pair.Value.Target == focusedAction.Target && pair.Value.Text == focusedAction.Text);
+            if (destination.Value is not null) { FocusSourceRow(destination.Key); return; }
+        }
         InsertionPoint = new System.Drawing.Point(oldPoint.X, Math.Min(oldPoint.Y, GetAllLines().Count - 1));
         Viewport = new System.Drawing.Rectangle(oldViewport.Location, Viewport.Size);
         VerticalScrollBar.Value = oldScroll;
@@ -124,7 +137,7 @@ internal sealed class SidebarView : TextView
     }
     protected override void OnDrawReadOnlyColor(List<Cell> line, int idxCol, int idxRow)
     {
-        if (idxCol >= 0 && idxCol < line.Count && line[idxCol].Attribute is { } attribute) SetAttribute(attribute);
+        if (idxCol >= 0 && idxCol < line.Count && line[idxCol].Attribute is { } attribute) SetAttribute(Theme.Map(attribute));
         else base.OnDrawReadOnlyColor(line, idxCol, idxRow);
     }
 }

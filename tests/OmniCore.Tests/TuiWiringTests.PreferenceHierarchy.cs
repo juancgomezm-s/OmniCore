@@ -81,7 +81,8 @@ public sealed partial class TuiWiringTests
         }
     }, noColor: false);
 
-    private static void ActivateSidebarAction(TuiFixture fx, string widgetId, string action, bool mouse = false, string? rowText = null)
+    private static void ActivateSidebarAction(TuiFixture fx, string widgetId, string action, bool mouse = false, string? rowText = null,
+        Action? beforeActivate = null)
     {
         if (!fx.App.Sidebar!.Visible) KeyWithEffect(fx, KeyCode.F2, () => fx.App.Sidebar.Visible, "sidebar visible for activation");
         fx.Wait(() => fx.App.SidebarContent!.Viewport.Width > 0 && fx.App.SidebarContent.Lines > 0, "sidebar rows laid out");
@@ -94,17 +95,53 @@ public sealed partial class TuiWiringTests
             KeyWithEffect(fx, KeyCode.Tab, () => fx.App.SidebarContent.FocusedAction != before, "Tab focuses an actual sidebar link");
         }
         Assert.True(Matches(), "Requested sidebar action is reachable with Tab");
-        fx.Invoke(() =>
+        beforeActivate?.Invoke();
+        Assert.True(Matches(), "A sidebar refresh must preserve the focused link");
+        var activated = false;
+        void Observe(WidgetRowModel row) => activated |= row.Action == action && (action != "sidebar.expand" || row.Target == widgetId)
+            && (rowText is null || row.Text.Contains(rowText, StringComparison.Ordinal));
+        fx.Invoke(() => fx.App.SidebarContent!.RowActivated += Observe);
+        try
         {
-            var view = fx.App.SidebarContent!;
-            if (mouse)
+            if (mouse) fx.Invoke(() =>
             {
+                var view = fx.App.SidebarContent!;
                 var point = view.ViewportToScreen(new Point(1, view.InsertionPoint.Y - view.Viewport.Y));
                 fx.Application.Mouse.RaiseMouseEvent(new Mouse { ScreenPosition = point, Flags = MouseFlags.LeftButtonClicked });
+            });
+            // Retry only while no activation was delivered; expanding a section must
+            // never be toggled twice when the driver delays processing an injected key.
+            else
+            {
+                try { KeyWithEffect(fx, KeyCode.Enter, () => activated, "Enter activates the focused sidebar link"); }
+                catch (Exception error)
+                {
+                    throw new InvalidOperationException("Sidebar activation: focus=" + fx.App.SidebarContent!.HasFocus
+                        + "; cursor=" + fx.App.SidebarContent.InsertionPoint + "; row=" + fx.App.SidebarContent.FocusedAction
+                        + "; overlay=" + fx.App.Overlay?.Id, error);
+                }
             }
-        });
-        if (!mouse) fx.InjectKey(new Key(KeyCode.Enter));
+            fx.Wait(() => activated, "native sidebar action was delivered");
+        }
+        finally { fx.Invoke(() => fx.App.SidebarContent!.RowActivated -= Observe); }
     }
+
+    [Fact]
+    public void Sidebar_keeps_the_focused_link_when_a_refresh_inserts_wrapped_rows() => RunTuiTest(fx =>
+    {
+        fx.StartTui(initialColumns: 105, initialRows: 40);
+        if (!fx.App.Sidebar!.Visible) KeyWithEffect(fx, KeyCode.F2, () => fx.App.Sidebar.Visible, "sidebar open");
+        var widget = fx.App.SidebarComposition!.Body.First(section => section.Widget.Id != "core.files").Widget.Id;
+        ActivateSidebarAction(fx, widget, "sidebar.expand", beforeActivate: () => fx.Invoke(() =>
+        {
+            var body = fx.App.SidebarComposition!.Body.Select((section, index) => (section.Widget,
+                section.Model is ListWidgetModel model && index == 0 ? (WidgetModel)(model with
+                { Rows = new[] { new WidgetRowModel(new string('x', 200)) }.Concat(model.Rows).ToArray() }) : section.Model)).ToArray();
+            fx.App.SidebarContent!.Render(body);
+        }));
+        fx.Wait(() => ((ListWidgetModel)fx.App.SidebarComposition!.Body.Single(section => section.Widget.Id == widget).Model)
+            .Rows.Any(row => row.Text == "Menos"), "Enter expands the link after reflow");
+    }, noColor: false);
 
     [Fact]
     public void Sidebar_shows_all_category_summaries_with_independent_More_links() => RunTuiTest(fx =>

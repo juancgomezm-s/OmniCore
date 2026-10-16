@@ -25,7 +25,7 @@ public sealed partial class TuiWiringTests
                 Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme))));
             lastDrawn = drawn;
             if (!drawn.Contains(marker, StringComparison.Ordinal)
-                || !drawn.Contains(fx.App.Overlay!.Title!.Trim(), StringComparison.Ordinal)) return;
+                || fx.App.Overlay is { } overlay && !drawn.Contains(overlay.Title!.Trim(), StringComparison.Ordinal)) return;
             try
             {
                 // Serialize while the driver buffer is stable, not a shallow Cell array

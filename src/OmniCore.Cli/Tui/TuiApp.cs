@@ -143,6 +143,8 @@ public sealed partial class TuiApp
         _localEngines = localEngines ?? new TuiLocalEngineHost(supervisor: localEngineSupervisor);
         _claudeAccounts = claudeAccounts ?? TuiClaudeAccountHost.Create();
         _animationStore = new(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath());
+        _themeStore = new(Path.ChangeExtension(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath(), ".theme"));
+        _theme = _themeStore.Read();
         _animationPreferences = _animationStore.Load();
         RefreshSidebarPreferences();
         _selectedModel = _policies.CurrentSelection(WorkspaceSelectionId, CancellationToken.None)?.ModelId;
@@ -312,6 +314,7 @@ public sealed partial class TuiApp
         if (code == "F2") { ToggleSidebar(); key.Handled = true; }
         else if (code == "F3") { ShowModelPicker(); key.Handled = true; }
         else if (code == "F4") { ShowPreferences(); key.Handled = true; }
+        else if (code == "F6") { ShowConversations(); key.Handled = true; }
         else if (key.KeyCode == (KeyCode.Tab | KeyCode.ShiftMask) && _overlay is null && _activeInteraction is null)
         { CycleMode(); key.Handled = true; }
         else if (code == "Esc" && _activeInteraction is { } interaction) { RespondDefault(interaction); key.Handled = true; }
@@ -328,6 +331,8 @@ public sealed partial class TuiApp
     {
         switch (_overlay?.Id)
         {
+            case "about-screen":
+                ShowHelp(); return true;
             case "policy-preferences":
                 CloseOverlay(); ShowPreferences("models_execution", categoryPage: true); return true;
             case "security-preferences":
@@ -502,7 +507,8 @@ public sealed partial class TuiApp
             .Read().CommandAliases);
         var names = ReadStringArray(commandCatalogJson, "commands")
             .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode", "reasoning",
-                "cancel", "interrupt", "preferences", "models", "sidebar", "agents", "delegate", "agent", "join", "fanout", "animation", "images" })
+                "cancel", "interrupt", "preferences", "models", "sidebar", "agents", "delegate", "agent", "join", "fanout", "animation", "images",
+                "new", "sessions", "resume-session", "clear", "compact" })
             .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name))
             .Where(name => !TuiMenuCommands.IsMenuOwned(name, aliases));
         var suggestions = ComposerAutocomplete.Complete(draft,
@@ -545,6 +551,11 @@ public sealed partial class TuiApp
 
     private string CommandDescription(string command) => HumanCommandAliases.NormalizeSlashHead(command) switch
     {
+        "/new" => _localization.Resolve("shell.conversation.new"),
+        "/sessions" => _localization.Resolve("shell.conversation.title"),
+        "/resume-session" => _localization.Resolve("shell.conversation.resume"),
+        "/clear" => _localization.Resolve("shell.conversation.clear"),
+        "/compact" => _localization.Resolve("shell.conversation.compact"),
         "/agents" => _localization.Resolve("shell.inspect_run_agents_and_lanes"),
         "/delegate" => _localization.Resolve("shell.queue_bounded_read_only_work"),
         "/fanout" => _localization.Resolve("shell.group_queued_delegations_with_direct_or_aggregate_fan_in"),
@@ -634,6 +645,7 @@ public sealed partial class TuiApp
             .Read().CommandAliases);
         // Whitespace is grammar for commands, but remains literal in a conversation prompt.
         var input = HumanCommandAliases.NormalizeSlashSyntax(aliases.NormalizeSlashHead(rawInput.Trim()));
+        if (HandleConversationSlash(input)) return;
         if (input == "/attach" || input.StartsWith("/attach ", StringComparison.Ordinal))
         {
             if (input.Length == 7) PickAttachments();
@@ -1288,8 +1300,7 @@ public sealed partial class TuiApp
         {
             _cursorSession = session; _lastSequence = 0; _observedModel = null; _turnUsage = null;
             var empty = ClientState.Empty();
-            // Keep the visible transcript across fresh Runs; reset only session-local UI state.
-            _state = new ClientState(_state.Header, _state.Conversation, empty.Sidebar,
+            _state = new ClientState(_state.Header, empty.Conversation, empty.Sidebar,
                 _state.Composer, empty.StatusLine, empty.Overlays, empty.Connection);
         }
         foreach (var envelope in _client.SubscribeSince(_lastSequence + 1))
@@ -1780,7 +1791,7 @@ public sealed partial class TuiApp
     private const string MenuSurface = "#182A38";
     private const string PreferencesSurface = "#13222E";
 
-    private static void ApplyTheme(View view, string surface = "#061822", bool dimmed = false, bool preferences = false)
+    private void ApplyTheme(View view, string surface = "#061822", bool dimmed = false, bool preferences = false)
     {
         preferences |= view is FrameView && view.Id is { } preferenceId
             && (preferenceId.Contains("preferences", StringComparison.Ordinal) || preferenceId.StartsWith("model-catalog-", StringComparison.Ordinal)
@@ -1833,8 +1844,10 @@ public sealed partial class TuiApp
             button.NoDecorations = true;
             button.ShadowStyle = ShadowStyles.None;
         }
-        view.SetScheme(new Scheme { Normal = primary, Focus = focus, Editable = primary,
-            HotNormal = accent, HotFocus = view is Button or ListView ? focus : accent });
+        view.SetScheme(new Scheme { Normal = _theme.Map(primary), Focus = _theme.Map(focus), Editable = _theme.Map(primary),
+            HotNormal = _theme.Map(accent), HotFocus = _theme.Map(view is Button or ListView ? focus : accent) });
+        if (view is StyledTextPresenter styled) styled.Theme = _theme;
+        if (view is SidebarView sidebar) sidebar.Theme = _theme;
         foreach (var child in view.SubViews) ApplyTheme(child, surface, dimmed, preferences);
     }
 
@@ -2739,7 +2752,7 @@ public sealed partial class TuiApp
         }
         if (action.ActionId == ClientActionIds.HelpShow)
         {
-            _viewFromChat = true; ShowPreferenceText(_localization.Resolve("shell.help_title"), TuiHelpSection());
+            _viewFromChat = true; ShowHelp();
             return true;
         }
         if (action.ActionId == ClientActionIds.PermissionsList)
@@ -2773,9 +2786,10 @@ public sealed partial class TuiApp
         var shown = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var row in rows)
             if (shown.Add(row.Name)) lines.Add("  /" + row.DisplayName + " — " + row.Description);
-        foreach (var name in new[] { "act", "mode", "runmode", "ultracode", "reasoning", "agents", "delegate", "agent", "join", "fanout" })
+        foreach (var name in new[] { "new", "sessions", "resume-session", "clear", "compact", "act", "mode", "runmode", "ultracode", "reasoning", "agents", "delegate", "agent", "join", "fanout" })
             if (shown.Add(name)) lines.Add("  /" + HumanCommandAliases.DisplayName(name, _locale) + " — " + CommandDescription("/" + name));
         lines.Add(_localization.Resolve("shell.help_keys"));
+        lines.Add("F6 — " + _localization.Resolve("shell.conversation.title"));
         return string.Join("\n", lines);
     }
 

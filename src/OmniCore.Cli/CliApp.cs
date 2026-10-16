@@ -122,6 +122,7 @@ public sealed class CliApp
         var userAliasApplied = !ReferenceEquals(withUserAlias, args);
         args = HumanCommandAliases.NormalizeCli(withUserAlias);
         var command = args[0];
+        if (command is "new" or "sessions" or "resume-session" or "compact" or "clear") return RunConversationCommand(args);
         if (command.StartsWith("/", StringComparison.Ordinal)) return RunTypedCommand(args);
         if (command == "sim") return RunSim(args);
         if (command == "stdio") return RunStdioClientAsync(args);
@@ -559,6 +560,8 @@ public sealed class CliApp
             return Task.FromResult(2);
         }
         var invocation = parsed!;
+        if (invocation.Name is "new" or "sessions" or "resume-session" or "compact" or "clear")
+            return RunConversationCommand(new[] { invocation.Name }.Concat(invocation.Arguments).ToArray());
         if (invocation.Name == "openrouter")
             return RunOpenRouterCommandAsync(invocation.Arguments.ToArray(), CreateOpenRouterHost(),
                 ReadOpenRouterKeyAsync, CancellationToken.None);
@@ -953,6 +956,31 @@ public sealed class CliApp
         new PlainRenderer(Loc().Locale).Render(state);
         if (events.Count == 0) Console.WriteLine(Loc().Resolve("cli.sim.ok_no_events"));
         return Task.FromResult(exitCode);
+    }
+
+    private static Task<int> RunConversationCommand(string[] args)
+    {
+        if (args is ["clear"]) { if (!Console.IsOutputRedirected) Console.Clear(); return Task.FromResult(0); }
+        var client = Runtime.Connect(CancellationToken.None);
+        if (args is ["sessions"] or ["resume-session"])
+        {
+            var rows = ConversationJson.Decode(client.Query("conversations", CancellationToken.None)?.Json ?? "{}")?.Conversations ?? [];
+            foreach (var row in rows) Console.WriteLine((row.Current ? "* " : "  ") + row.Id + "  "
+                + row.UpdatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm") + "  " + row.Title);
+            return Task.FromResult(0);
+        }
+        if (args is not (["new"] or ["compact"] or ["resume-session", _]))
+        { Console.WriteLine(Loc().Resolve("shell.conversation.arguments")); return Task.FromResult(2); }
+        if (client is not ITrustedUserActionClient trusted)
+        { Console.WriteLine(Loc().Resolve("conversation.trusted_required")); return Task.FromResult(1); }
+        var name = args[0] switch { "new" => "conversation.new", "compact" => "conversation.compact", _ => "conversation.resume" };
+        var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", name)
+            + (args.Length == 2 ? "," + JsonObj.Field("sessionId", args[1]) : "") + "}"), CancellationToken.None);
+        if (ack.Status != "ok") { Console.WriteLine(Loc().ResolveWire(ack.Error ?? "conversation.failed")); return Task.FromResult(1); }
+        Console.WriteLine(args[0] == "compact" ? Loc().Resolve(ack.Outcome?.Kind == RuntimeCommandOutcomeKind.NoOp
+            ? "shell.conversation.nothing_to_compact" : "shell.conversation.compacted")
+            : client.Query("sessionIdentity", CancellationToken.None)?.Json);
+        return Task.FromResult(0);
     }
 
     private static Task<int> RunTui(string[] args)
