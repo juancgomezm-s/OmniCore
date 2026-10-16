@@ -11,7 +11,7 @@ public static class SessionPreferencesResources
             {
                 ["es"] = Map(
                     ("title.context", "Contexto de la sesión"), ("title.extensions", "Extensiones del proyecto"),
-                    ("title.skills", "Habilidades del proyecto"), ("title.hooks", "Hooks del proyecto"), ("title.memory", "Memoria de la sesión"),
+                    ("title.skills", "Habilidades"), ("title.hooks", "Hooks del proyecto"), ("title.memory", "Memoria de la sesión"),
                     ("back", "Volver"), ("close", "Cerrar"), ("select", "Selecciona un elemento para ver detalles."),
                     ("empty", "No hay elementos para mostrar."), ("unavailable", "No se pudo leer esta información."),
                     ("trust", "Confianza del espacio"), ("trusted", "Confiable"), ("untrusted", "No confiable"),
@@ -61,7 +61,7 @@ public static class SessionPreferencesResources
                     ("manifest_hash", "Hash del manifiesto"), ("package_hash", "Hash del paquete")),
                 ["en"] = Map(
                     ("title.context", "Session context"), ("title.extensions", "Project extensions"),
-                    ("title.skills", "Project skills"), ("title.hooks", "Project hooks"), ("title.memory", "Session memory"),
+                    ("title.skills", "Skills"), ("title.hooks", "Project hooks"), ("title.memory", "Session memory"),
                     ("back", "Back"), ("close", "Close"), ("select", "Select an item to inspect its details."),
                     ("empty", "There are no items to show."), ("unavailable", "This information could not be read."),
                     ("trust", "Workspace trust"), ("trusted", "Trusted"), ("untrusted", "Untrusted"),
@@ -111,7 +111,7 @@ public static class SessionPreferencesResources
                     ("manifest_hash", "Manifest hash"), ("package_hash", "Package hash")),
                 ["fr"] = Map(
                     ("title.context", "Contexte de la session"), ("title.extensions", "Extensions du projet"),
-                    ("title.skills", "Compétences du projet"), ("title.hooks", "Hooks du projet"), ("title.memory", "Mémoire de la session"),
+                    ("title.skills", "Compétences"), ("title.hooks", "Hooks du projet"), ("title.memory", "Mémoire de la session"),
                     ("back", "Retour"), ("close", "Fermer"), ("select", "Sélectionnez un élément pour voir ses détails."),
                     ("empty", "Aucun élément à afficher."), ("unavailable", "Impossible de lire ces informations."),
                     ("trust", "Confiance de l’espace"), ("trusted", "Fiable"), ("untrusted", "Non fiable"),
@@ -161,7 +161,7 @@ public static class SessionPreferencesResources
                     ("manifest_hash", "Empreinte du manifeste"), ("package_hash", "Empreinte du paquet")),
                 ["it"] = Map(
                     ("title.context", "Contesto della sessione"), ("title.extensions", "Estensioni del progetto"),
-                    ("title.skills", "Competenze del progetto"), ("title.hooks", "Hook del progetto"), ("title.memory", "Memoria della sessione"),
+                    ("title.skills", "Competenze"), ("title.hooks", "Hook del progetto"), ("title.memory", "Memoria della sessione"),
                     ("back", "Indietro"), ("close", "Chiudi"), ("select", "Seleziona un elemento per vederne i dettagli."),
                     ("empty", "Nessun elemento da mostrare."), ("unavailable", "Impossibile leggere queste informazioni."),
                     ("trust", "Attendibilità dell’area"), ("trusted", "Attendibile"), ("untrusted", "Non attendibile"),

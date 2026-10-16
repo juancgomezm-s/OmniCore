@@ -444,6 +444,20 @@ catálogo de comandos. Los alias y las sustituciones se editan por filas; guarda
 aplica cambios y volver descarta el borrador. Modelos conserva selección, rutas,
 límites de gasto, catálogo y políticas propias de modelos.
 
+### Explicaciones visuales
+
+**F4 → Extensiones y habilidades → Habilidades** incluye **Visual explainer**.
+Actívala para la conversación y pide, por ejemplo: «Explícame este flujo con un
+diagrama en la terminal» o «Revisa estos cambios y crea un informe HTML local».
+Se distribuye con la aplicación; instalar o actualizar OmniCore incluye el paquete.
+
+En la TUI utiliza sus tablas, texto y diagramas verticales sin cambiar la interfaz
+ni requerir Python. Los informes HTML se guardan dentro del espacio de trabajo y
+se abren en el navegador predeterminado al activar su enlace con clic o Enter.
+Activar la habilidad no abre el navegador ni publica contenido. La generación
+desde JSON con Python 3 es opcional y no usa dependencias externas.
+[Formatos, límites y ejemplo](docs/visual-explainer-evaluation.md).
+
 ### Conversaciones y contexto
 
 | Comando de la TUI en español | Acción |

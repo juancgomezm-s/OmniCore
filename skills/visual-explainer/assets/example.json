@@ -1,0 +1,12 @@
+{
+  "title": "Ejemplo de explicación visual",
+  "summary": "Datos ilustrativos para comprobar los formatos TUI y HTML.",
+  "sections": [
+    {"title": "Flujo de una pregunta", "flow": ["Petición del usuario", "Host y contexto", "Modelo elegido", "Respuesta en la TUI"]},
+    {"title": "Información y decisiones", "rows": [
+      {"label": "Conversación", "status": "info", "detail": "Se conserva al cambiar de modelo."},
+      {"label": "Capacidades", "status": "info", "detail": "Se resuelven para el modelo de destino."},
+      {"label": "Mediciones ausentes", "status": "unknown", "detail": "No se presentan como cero."}
+    ]}
+  ]
+}

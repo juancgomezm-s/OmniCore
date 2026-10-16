@@ -39,7 +39,7 @@ public sealed class SkillWorkflowCommandTests
 
             var sources = new SkillSourceCatalog();
             var discovered = Assert.Single(sources.Discover(workspace, userData, workspaceData, session,
-                workspaceTrusted: true));
+                workspaceTrusted: true), skill => skill.Manifest.Id == "workflow.fixture");
             var loaded = new SkillManifestLoader().Activate(discovered);
             var store = new SessionSkillActivationStore(workspaceData);
             store.Activate(session, ScopeLevel.Project, loaded.Skill.Manifest.Id!, loaded.Skill.ManifestSha256,

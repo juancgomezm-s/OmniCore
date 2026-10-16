@@ -15,16 +15,21 @@ namespace OmniCore.Infrastructure;
 public sealed class SystemBrowserLauncher : IBrowserLauncher
 {
     private readonly bool _allowHttp;
+    private readonly bool _allowLocalHtml;
     // OAuth callers retain HTTPS-only behavior; explicit web-link actions may use HTTP.
-    public SystemBrowserLauncher(bool allowHttp = false) => _allowHttp = allowHttp;
+    public SystemBrowserLauncher(bool allowHttp = false, bool allowLocalHtml = false)
+    { _allowHttp = allowHttp; _allowLocalHtml = allowLocalHtml; }
 
     public async Task<BrowserLaunchResult> LaunchAsync(Uri url, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(url);
 
         // OAuth stays HTTPS-only; explicit browser links may also use HTTP.
+        var localReport = _allowLocalHtml && url.IsAbsoluteUri && url.IsFile && !url.IsUnc
+            && url.Host.Length == 0 && url.Query.Length == 0 && !url.LocalPath.Any(char.IsControl)
+            && string.Equals(Path.GetExtension(url.LocalPath), ".html", StringComparison.OrdinalIgnoreCase);
         if (!url.IsAbsoluteUri || url.OriginalString.Any(char.IsControl) || url.UserInfo.Length != 0
-            || (url.Scheme != Uri.UriSchemeHttps && !(_allowHttp && url.Scheme == Uri.UriSchemeHttp)))
+            || (url.Scheme != Uri.UriSchemeHttps && !(_allowHttp && url.Scheme == Uri.UriSchemeHttp) && !localReport))
         {
             return BrowserLaunchResult.Failed(BrowserLaunchFailure.UnsupportedUrl);
         }

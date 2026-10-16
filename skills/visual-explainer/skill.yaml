@@ -1,0 +1,10 @@
+id: visual-explainer
+version: 1.0.0
+displayName: Visual explainer · diagramas TUI e informes HTML
+modelInvocable: true
+budgetTokens: 4096
+activation:
+  explicit: true
+contributions:
+  contributors: [SKILL.md]
+  knowledge: [references/tui.md, references/html.md]

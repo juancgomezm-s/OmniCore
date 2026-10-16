@@ -166,7 +166,10 @@ public sealed partial class TuiApp
                 {
                     action.Text = SessionPref("skill.release"); action.Visible = true; action.Enabled = data.SessionId is not null;
                 }
-                else if (data.WorkspaceTrusted == true && skill.State is "Discovered" or "Eligible" or "Released")
+                else if ((skill.Scope is "BuiltIn" or "User" or "Workspace" or "Session"
+                        || skill.Scope == "Project" && data.WorkspaceTrusted == true)
+                    && skill.Trust is not ("Untrusted" or "ThirdParty")
+                    && skill.State is "Discovered" or "Eligible" or "Released")
                 {
                     action.Text = SessionPref("skill.activate"); action.Visible = true; action.Enabled = data.SessionId is not null;
                 }
@@ -428,6 +431,7 @@ public sealed partial class TuiApp
     {
         var command = activate ? "skills.activate" : "skills.release";
         var payload = "{" + JsonObj.Field("cmd", command) + "," + JsonObj.Field("skillId", skill.Id)
+            + "," + JsonObj.Field("scope", skill.Scope)
             + "," + JsonObj.Field("expectedSessionId", data.SessionId ?? "")
             + "," + JsonObj.Field("expectedManifestSha256", skill.ManifestSha256) + "}";
         SendSessionPreferencePayload(data, payload);

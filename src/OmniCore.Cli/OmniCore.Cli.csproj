@@ -17,6 +17,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="..\..\skills\visual-explainer\**\*"
+             Exclude="..\..\skills\visual-explainer\**\__pycache__\**;..\..\skills\visual-explainer\**\*.pyc"
+             Link="skills\visual-explainer\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="YamlDotNet" />
     <PackageReference Include="Terminal.Gui" />
     <PackageReference Include="Markdig" />

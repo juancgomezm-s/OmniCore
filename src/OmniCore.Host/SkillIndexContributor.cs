@@ -30,7 +30,7 @@ public sealed class SkillIndexContributor(SessionId session, IReadOnlyList<Disco
         var lines = new List<string>();
         foreach (var item in visible)
         {
-            var description = (item.Description ?? "").Trim();
+            var description = (item.Description ?? item.Manifest.DisplayName ?? "").Trim();
             if (description.Length > 512) description = description[..512];
             if (redaction.Redact(description) != description) continue;
             var line = "- " + item.Manifest.Id + " (" + item.Scope + ", budget "
