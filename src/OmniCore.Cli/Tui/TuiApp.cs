@@ -69,7 +69,6 @@ public sealed partial class TuiApp
     private CancellationTokenSource? _loginCancellation;
     private CancellationTokenSource? _catalogCancellation;
     private string? _catalogNotice;
-    private bool _catalogFresh;
     private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _uiActions = new();
     private readonly ITuiLocalEngineHost _localEngines;
     private readonly ITuiLocalEngineSupervisor? _localEngineSupervisor;
@@ -1802,10 +1801,9 @@ public sealed partial class TuiApp
         return frame;
     }
 
-    // Menus (category lists and overlay title bars) use a violet slate so they never blend
-    // into the blue-slate panel surface they sit next to.
-    private const string MenuSurface = "#2E2647";
-    private const string PreferencesSurface = "#332B40";
+    // Blue surfaces remain distinct from the conversation (#061822) and sidebar (#202C3B).
+    private const string MenuSurface = "#182A38";
+    private const string PreferencesSurface = "#13222E";
 
     private static void ApplyTheme(View view, string surface = "#061822", bool dimmed = false)
     {
@@ -1983,11 +1981,10 @@ public sealed partial class TuiApp
         });
     }
 
-    private void ShowModelPicker(int page = 0, bool refreshCatalog = true, string query = "")
+    private void ShowModelPicker(int page = 0, bool refreshCatalog = true, string query = "", ModelPolicyKeyDto? highlighted = null)
     {
         if (_window is null || _overlay is not null) return;
         _policies.ReloadModels();
-        if (refreshCatalog) _catalogFresh = false;
         var available = _policies.Models.Where(m => _policies.IsVisibleInPicker(m.ProviderId, m.Id)).ToArray();
         var models = available;
         var frame = OverlayFrame(_localization.Resolve("shell.select_model"), Math.Clamp(available.Length + 9, 12, 20));
@@ -1995,7 +1992,7 @@ public sealed partial class TuiApp
         frame.Width = Dim.Percent(66);
         frame.ViewportSettings |= ViewportSettingsFlags.Transparent;
         frame.SubViews.Single(view => view.Id == "omni-menu-title").Width = Dim.Fill(10);
-        var feedback = new Label { X = 2, Y = 1, Width = Dim.Fill(4),
+        var feedback = new Label { Id = "omni-palette-feedback", X = 2, Y = 1, Width = Dim.Fill(4),
             Text = models.Length == 0 ? _localization.Resolve("shell.no_visible_models_check_f4_models")
                 : "" };
         frame.Add(feedback);
@@ -2069,33 +2066,42 @@ public sealed partial class TuiApp
             args.Handled = true;
             if (list.SelectedItem is not int index || index < 0 || index >= models.Length) return;
             var model = models[index];
-            if (!_catalogFresh && _policies.IsSubscriptionModel(model.Id)) return;
             var key = new ModelPolicyKeyDto(model.ProviderId, model.Id);
-            var safe = _policies.Get(key, CancellationToken.None) is null;
-            _policies.Select(WorkspaceSelectionId, key, model.Id, safe, CancellationToken.None);
-            _turnStatus = safe ? _localization.Resolve("shell.safe_mode_observeonly") : null;
-            RefreshSelectedModel(); CloseOverlay();
+            try
+            {
+                var safe = _policies.Get(key, CancellationToken.None) is null;
+                _policies.Select(WorkspaceSelectionId, key, model.Id, safe, CancellationToken.None);
+                _turnStatus = safe ? _localization.Resolve("shell.safe_mode_observeonly") : null;
+                RefreshSelectedModel(); CloseOverlay();
+            }
+            catch (Exception) { feedback.Text = _localization.Resolve("shell.could_not_select_model"); }
         };
+        ModelPolicyKeyDto? HighlightedModel() => list.SelectedItem is int at && at >= 0 && at < models.Length
+            ? new(models[at].ProviderId, models[at].Id) : null;
         FilterModels();
-        var initial = Array.FindIndex(models, model => model.Id == _selectedModel);
+        var initial = Array.FindIndex(models, model => highlighted is null ? model.Id == _selectedModel
+            : model.Id == highlighted.ModelId && model.ProviderId == highlighted.ProviderId);
+        if (initial < 0) initial = Array.FindIndex(models, model => model.Id == _selectedModel);
         if (models.Length > 0) list.SelectedItem = Math.Max(0, initial);
         UpdatePosition();
         var close = new Button { Id = "omni-palette-action", X = Pos.AnchorEnd(8), Y = 0, Width = 6, Text = "Esc" };
         close.Accepted += (_, _) => CloseOverlay();
         var manage = new Button { Id = "omni-palette-action", X = 2, Y = Pos.AnchorEnd(1), Text = _localization.Resolve("shell.manage_models_ctrl_m") };
         manage.Accepted += (_, _) => { CloseOverlay(); ShowModelPolicies(); };
+        var refresh = new Button { Id = "omni-palette-refresh", X = 2, Y = Pos.AnchorEnd(2),
+            Text = _localization.Resolve("shell.refresh_models"), Enabled = _policies.SupportsDiscovery };
+        refresh.Accepted += (_, _) => RefreshAccountModels(frame, feedback, page, picker: true, highlighted: HighlightedModel);
         ApplyTheme(_window, dimmed: true);
         if (_conversation is not null) _conversation.Dimmed = true;
-        frame.Add(searchLabel, search, searchHint, list, position, close, manage); ApplyTheme(frame); _overlay = frame; _window.Add(frame);
+        frame.Add(searchLabel, search, searchHint, list, position, close, manage, refresh); ApplyTheme(frame); _overlay = frame; _window.Add(frame);
         if (models.Length > 0) list.SetFocus(); else search.SetFocus();
-        if (refreshCatalog && _policies.SupportsDiscovery) RefreshAccountModels(frame, feedback, page, picker: true);
+        if (refreshCatalog && _policies.SupportsDiscovery) RefreshAccountModels(frame, feedback, page, picker: true, highlighted: HighlightedModel);
     }
 
     private void ShowModelPolicies(int page = 0, bool refreshCatalog = true, int focusIndex = -1, int focusColumn = 0)
     {
         if (_window is null || _overlay is not null) return;
         _policies.ReloadModels();
-        if (refreshCatalog) _catalogFresh = false;
         var frame = OverlayFrame(_localization.Resolve("shell.models_title"), 18);
         var pageSize = Math.Max(1, Math.Min(18, _window.Frame.Height - 2) - 7);
         var models = _policies.Models.ToArray();
@@ -2155,7 +2161,6 @@ public sealed partial class TuiApp
             var index = page + row - 2;
             var select = new Button { Id = "model-policy-" + descriptor.Id, X = 1, Y = row, Width = Dim.Fill(13), TextAlignment = Alignment.Start, Text = label };
             BindCell(select, index, 0);
-            if (!_catalogFresh && _policies.IsSubscriptionModel(descriptor.Id)) select.Enabled = false;
             select.Accepted += (_, _) =>
             {
                 CloseOverlay(); ShowModelPolicySetup(_policies.Draft(key, CancellationToken.None));
@@ -2400,8 +2405,9 @@ public sealed partial class TuiApp
         cancel.SetFocus();
     }
 
-    private void RefreshAccountModels(FrameView frame, Label feedback, int page, bool picker = false)
+    private void RefreshAccountModels(FrameView frame, Label feedback, int page, bool picker = false, Func<ModelPolicyKeyDto?>? highlighted = null)
     {
+        if (_catalogCancellation is not null) return;
         try
         {
             _account ??= _accountOverride ?? new TuiAccountHost();
@@ -2409,38 +2415,62 @@ public sealed partial class TuiApp
         }
         catch (Exception) { feedback.Text = _localization.Resolve("shell.could_not_read_the_chatgpt_session"); return; }
         feedback.Text = _localization.Resolve("shell.loading_available_models");
+        var retry = frame.SubViews.OfType<Button>().FirstOrDefault(view => view.Id == "omni-palette-refresh");
+        if (retry is not null) retry.Enabled = false;
         var cancellation = _catalogCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var token = cancellation.Token;
+        bool IsCurrent() => ReferenceEquals(_overlay, frame) && ReferenceEquals(_catalogCancellation, cancellation);
+        void Finish()
+        {
+            _catalogCancellation = null;
+            if (retry is not null) retry.Enabled = true;
+            cancellation.Dispose();
+        }
         _ = Task.Run(async () =>
         {
             try
             {
-                var catalog = await _account.ListModelsAsync(cancellation.Token).ConfigureAwait(false);
+                var catalog = await _account.ListModelsAsync(token).ConfigureAwait(false);
                 _uiActions.Enqueue(() =>
                 {
-                    if (cancellation.IsCancellationRequested || !ReferenceEquals(_overlay, frame)) return;
+                    if (!IsCurrent()) return;
                     try
                     {
-                        _catalogNotice = _policies.ApplyChatGptCatalog(catalog, WorkspaceSelectionId, cancellation.Token)
+                        var focusedModel = highlighted?.Invoke();
+                        var search = frame.SubViews.OfType<TextField>().FirstOrDefault(v => v.Id == "omni-palette-search");
+                        var query = search?.Text.ToString() ?? "";
+                        var editingSearch = search?.HasFocus == true;
+                        _catalogNotice = _policies.ApplyChatGptCatalog(catalog, WorkspaceSelectionId, token)
                             ?? _localization.Resolve("shell.catalog_refreshed");
-                        _catalogFresh = true;
-                        var query = frame.SubViews.OfType<TextField>().FirstOrDefault(v => v.Id == "omni-palette-search")?.Text.ToString() ?? "";
-                        RefreshSelectedModel(); CloseOverlay();
-                        if (picker) ShowModelPicker(page, false, query); else ShowModelPolicies(page, false);
+                        var fromPreferences = _preferencesReturnToCategory;
+                        Finish(); RefreshSelectedModel(); CloseOverlay();
+                        if (picker)
+                        {
+                            ShowModelPicker(page, false, query, focusedModel);
+                            if (editingSearch) FindPreferenceView(_overlay, "omni-palette-search")?.SetFocus();
+                        }
+                        else ShowModelPolicies(page, false);
+                        _preferencesReturnToCategory = fromPreferences;
                     }
-                    catch (Exception) { feedback.Text = _localization.Resolve("shell.could_not_save_catalog_selection_preserved"); }
+                    catch (Exception)
+                    {
+                        if (ReferenceEquals(_overlay, frame))
+                            feedback.Text = _localization.Resolve("shell.could_not_save_catalog_selection_preserved");
+                        if (IsCurrent()) Finish();
+                    }
                 });
             }
             catch (Exception)
             {
                 _uiActions.Enqueue(() =>
                 {
-                    if (!ReferenceEquals(_overlay, frame)) return;
+                    if (!IsCurrent()) return;
                     feedback.Text = picker
                         ? _localization.Resolve("shell.discovery_failed_selection_preserved_reopen_the_picker")
                         : _localization.Resolve("shell.discovery_failed_selection_preserved_retry_refresh");
+                    Finish();
                 });
             }
-            // The UI owns this CTS until it closes/replaces the panel.
         });
     }
 

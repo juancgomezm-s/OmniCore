@@ -78,7 +78,7 @@ public sealed partial class TuiWiringTests
                 Assert.DoesNotContain("policyPreferences.", OverlayText(fx.App.Overlay!));
                 if (page.Marker == "mapping-source")
                 {
-                    Assert.Equal(new Terminal.Gui.Drawing.Color("#332B40"), fx.App.Overlay!.GetScheme().Normal.Background);
+                    Assert.Equal(new Terminal.Gui.Drawing.Color("#13222E"), fx.App.Overlay!.GetScheme().Normal.Background);
                     ExportPreferenceFrame(fx, columns, height, "audit-" + page.Action + "-" + locale, fx.App.Overlay.Title!.Trim());
                 }
                 if (page.Marker == "animation-back")

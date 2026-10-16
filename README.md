@@ -362,7 +362,15 @@ dotnet run --project src/OmniCore.Cli -- tui
 | `/` | Ayuda de comandos |
 | `F2` / `F3` / `F4` | Panel lateral / elegir modelo / ajustes |
 | `↑` / `↓` en el selector | Navegación vertical y circular |
+| `Enter` / `→` en categorías | Entrar al contenido seleccionado |
+| `←` en listas y botones de Preferencias | Volver a las categorías |
+| `Ctrl+F` | Buscar en el menú actual |
 | `Esc` en un menú | Volver al nivel anterior; desde la raíz, cerrar Preferencias |
+
+En el selector puedes elegir con Enter un modelo ya registrado aunque falle la
+consulta del catálogo. **Actualizar modelos** permite reintentar sin cerrar el
+selector. La búsqueda y la fila señalada se conservan al actualizar; seleccionar
+no ejecuta el modelo. [Revisión de navegación y selección](docs/validation/tui-navigation-model-picker-20261016.md).
 
 Las opciones disponibles en **F4** se administran desde su menú y no se repiten
 como comandos en el autocompletado, el catálogo o la ayuda de la TUI. Los comandos

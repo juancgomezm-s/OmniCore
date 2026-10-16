@@ -96,7 +96,7 @@ public sealed partial class TuiApp
         {
             var searchLabel = new Label { X = 2, Y = 3, Width = 10, Height = 1, Text = Pref("search") };
             var search = new TextField { Id = "preferences-search", X = 12, Y = 3,
-                Width = Dim.Fill(4), Height = 1, Text = _preferencesQuery };
+                Width = Dim.Fill(4), Height = 1, Text = _preferencesQuery, TabStop = TabBehavior.NoStop };
             var categoryList = new ListView { Id = "preferences-categories", X = 2, Y = 5,
                 Width = Dim.Fill(4), Height = Dim.Fill(5), ShowMarks = false,
                 CanFocus = true, Visible = matches.Count > 0 };
@@ -124,6 +124,11 @@ public sealed partial class TuiApp
             }
             categoryList.ValueChanged += (_, _) => SyncPanel();
             categoryList.Accepted += (_, args) => { args.Handled = true; OpenCategory(); };
+            categoryList.KeyDown += (_, key) =>
+            {
+                if (key.KeyCode == KeyCode.CursorRight) { OpenCategory(); key.Handled = true; }
+                else if (key.KeyCode == KeyCode.CursorLeft) key.Handled = true;
+            };
             search.TextChanged += (_, _) =>
             {
                 _preferencesQuery = search.Text.ToString();
@@ -164,7 +169,8 @@ public sealed partial class TuiApp
         if (wide)
         {
             var searchLabel = new Label { X = 2, Y = 1, Width = 30, Height = 1, Text = Pref("search") };
-            var search = new TextField { Id = "preferences-search", X = 2, Y = 2, Width = 30, Height = 1, Text = _preferencesQuery };
+            var search = new TextField { Id = "preferences-search", X = 2, Y = 2, Width = 30, Height = 1, Text = _preferencesQuery,
+                TabStop = TabBehavior.NoStop };
             navigation = new ListView { Id = "preferences-categories", X = 2, Y = 4, Width = 30,
                 Height = Dim.Fill(5), ShowMarks = false, CanFocus = true, Visible = matches.Count > 0 };
             var empty = new Label { Id = "preferences-empty-search", X = 2, Y = 4, Width = 26,
@@ -190,9 +196,16 @@ public sealed partial class TuiApp
                 if (FindPreferenceView(frame, "omni-menu-title") is Label heading) heading.Text = frame.Title;
                 ApplyTheme(frame);
                 if (focusContent) categoryFocus?.SetFocus();
+                else navigation.SetFocus();
             }
             navigation.ValueChanged += (_, _) => { if (!filtering) RenderSelection(false); };
             navigation.Accepted += (_, args) => { args.Handled = true; RenderSelection(true); };
+            navigation.KeyDown += (_, key) =>
+            {
+                if (key.KeyCode is KeyCode.CursorRight or KeyCode.Tab)
+                { RenderSelection(true); key.Handled = true; }
+                else if (key.KeyCode == KeyCode.CursorLeft) key.Handled = true;
+            };
             search.TextChanged += (_, _) =>
             {
                 _preferencesQuery = search.Text.ToString();
@@ -217,6 +230,9 @@ public sealed partial class TuiApp
             frame.KeyDown += (_, key) =>
             {
                 if (key.KeyCode == (KeyCode.F | KeyCode.CtrlMask)) { search.SetFocus(); key.Handled = true; }
+                else if (key.KeyCode == KeyCode.CursorLeft && !search.HasFocus && !navigation.HasFocus
+                    && FindFocusedPreferenceView(frame) is not (TextField or TextView))
+                { navigation.SetFocus(); key.Handled = true; }
             };
         }
         categoryFocus = RenderPreferenceCategory(frame, selected, wide);
@@ -442,6 +458,13 @@ public sealed partial class TuiApp
         }
         else frame.Add(contentPanel, back, new Label { Id = "preferences-help", X = 2, Y = Pos.AnchorEnd(3),
             Width = Dim.Fill(3), Height = 1, Text = Pref(wide ? "help_integrated" : "help_detail") });
+        // The saved language is not keyboard focus. Highlight it only while editing the list.
+        foreach (var preview in DescendantViews(contentPanel).OfType<ListView>().Where(view => view.Id == "preferences-locale"))
+        {
+            preview.RowRender += (_, row) =>
+            { if (!preview.HasFocus) row.RowAttribute = preview.GetScheme().Normal; };
+            preview.HasFocusChanged += (_, _) => preview.SetNeedsDraw();
+        }
         View? focus = controls.OfType<View>().FirstOrDefault(view => view.CanFocus);
         if (selected.Id == "local_engines")
         {

@@ -22,14 +22,14 @@ public sealed partial class TuiWiringTests
         var preferences = fx.App.Overlay!;
         Assert.True(fx.App.Sidebar.Visible);
         Assert.Equal("preferences-center", preferences.Id);
-        var expected = noColor ? Color.None : new Color("#332B40");
+        var expected = noColor ? Color.None : new Color("#13222E");
         Assert.Equal(expected, preferences.GetScheme().Normal.Background);
         Assert.Equal(noColor ? Color.None : new Color("#202C3B"), fx.App.Sidebar.GetScheme().Normal.Background);
         if (!noColor)
         {
             Assert.NotEqual(fx.App.Sidebar.GetScheme().Normal.Background, expected);
             var foreground = ThemeLuminance("#F4F7FB");
-            var background = ThemeLuminance("#332B40");
+            var background = ThemeLuminance("#13222E");
             Assert.True((foreground + .05) / (background + .05) >= 4.5);
             ExportPreferenceFrame(fx, columns, rows, "surface-distinct", "Preferencias");
         }

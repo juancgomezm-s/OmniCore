@@ -877,7 +877,7 @@ public sealed partial class TuiWiringTests
                 else if (scene == "picker")
                 {
                     Assert.Contains("Seleccionar modelo", text);
-                    Assert.DoesNotContain("Actualizar modelos", text);
+                    Assert.Contains("Actualizar modelos", text);
                     Assert.DoesNotContain("ObserveOnly", text);
                     Assert.DoesNotContain("🗑", text);
                 }
