@@ -49,18 +49,22 @@ elegidas por el modelo.
 
 ## Consecuencias y estado
 
-El primer checkpoint Core (`7d69feb`, corrección de ruta redactada `725a3f1`) implementa dominio,
-journal, configuración revisionada, admisión de input, límites de ejecución, recuperación legacy y
-controles localizados en TUI. El SDK/IPC/UI de OmniCoder consume las consultas y cambios humanos de
-política; el envío de chat vuelve a comprobar el scope después de materializar adjuntos. El build
-multi-target del checkpoint Core `725a3f1` compiló sin advertencias ni errores; el foco de pruebas
-de seguridad sigue en curso. El contrato y sus criterios no están cerrados por ese build.
+El checkpoint Core `08a4a6f` pasó el build de solución con cero advertencias y cero errores; el foco
+de seguridad y lifecycle pasó 56/56. Los tests están en el commit `06af380`; comandos y logs se
+registran en [el acta M9-K](../validation/m9-block-k-20261017.md). Esos resultados solo validan ese
+checkpoint. El HEAD posterior incluye cambios de admisión y reanudación explícita de cuestionarios
+que todavía no se han compilado ni probado.
 
-Pendiente para cerrar K: validar la corrección bajo llamadas directas, legacy, TUI y stdio; corregir
-cualquier fallo focal; completar la admisión del executor del plan aprobado (`approve_execute`) en
-`OmniCliRuntime`; cablear lifecycle nativo de lista/crear/abrir/renombrar/compactar; y probar Host
-real más Electron→Host con revisión obsoleta y preservación de borrador. La propiedad de
-Sessions importadas requiere un importador Core real; hasta entonces no se anuncia ruta de import.
-L (rutas/modelos, interacciones, commands/skills/memoria y plan/lanes/worktrees) y M (ConPTY,
-procesos persistentes y lifecycle) siguen abiertos. La aceptación manual de M8 corresponde al
-usuario y no se atribuye a esta decisión.
+En OmniCoder, el build de app y 9 pruebas unitarias pasaron en el ciclo K2. El E2E encontró fallos de
+tipos, lectura durante transición de conexión y registro de la consulta `conversations`; se aplicaron
+correcciones y el E2E integrado está en reintento. No se declara verificado el recorrido final
+Core→stdio→SDK→Electron.
+
+K permanece abierto hasta que pase el E2E real, se validen los cambios Core posteriores al checkpoint
+verde y se comprueben todos los puntos de admisión. El lifecycle nativo de listar/crear/abrir/
+renombrar/compactar está implementado en el checkpoint K2 de código, sujeto a esa validación. La
+propiedad de Sessions importadas requiere un importador Core real; hasta entonces no se anuncia ruta
+de import. L tiene lógica Core para respuestas y reanudación explícitas de cuestionario, todavía sin
+consumidor SDK/UI ni validación. La paridad de los demás mutadores de runtime y M (ConPTY/procesos
+persistentes) siguen abiertos. La aceptación manual de M8 corresponde al usuario y permanece
+pendiente.
