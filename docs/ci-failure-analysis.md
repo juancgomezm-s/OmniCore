@@ -7,7 +7,7 @@ falló en siete casos de Core, con el mismo resultado en Windows y Ubuntu: dos
 variantes de publicación CAS del tokenizer, cuatro cuadros de animación y una
 prueba de reflow del centro de preferencias. Esta reparación modifica únicamente
 instrumentación y lecturas de pruebas; no cambia código de producto.
-El run independiente de OmniCoder [39004732300](https://github.com/juancgomezm-s/OmniCoder/actions/runs/39004732300)
+El run independiente de OmniCoder [39004732300](https://github.com/juancgomezm-s/OmniCode/actions/runs/39004732300)
 fue exitoso, pero no acredita Core.
 
 | Área | Causa confirmada | Ajuste y límite conservado |
@@ -29,6 +29,9 @@ Validación local focal, con salida stdout real conservada en `%LOCALAPPDATA%\Te
 Las siete variantes que fallaron en CI pasan en esta reparación focal. La
 validación local no acredita por sí sola Windows y Ubuntu del head corregido;
 la matriz de CI debe volver a ejecutarse después de integrar el commit.
+La construcción nueva de conversaciones nativas y seguridad por Session (M9-K)
+se pausó al detectar el fallo de main; el contrato tiene una propuesta revisada,
+pero su implementación y los criterios SEC-CONV siguen pendientes.
 
 ## Seguimiento: regresiones de Core tras M9-F/F2 — 2026-10-15
 
