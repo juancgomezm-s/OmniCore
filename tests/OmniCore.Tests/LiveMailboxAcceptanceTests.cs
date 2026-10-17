@@ -780,8 +780,17 @@ public sealed class LiveMailboxAcceptanceTests
             _store = new SqliteEventStore(Path.Combine(_data, "journal.sqlite"));
             Artifacts = new FileArtifactStore(_data);
             _reservations = new SqliteSpendReservationStore(Path.Combine(_data, "reservations.sqlite"));
+            var platformPaths = OmniHost.CreatePlatformPaths(Path.Combine(_data, "platform"));
+            var securityDefault = new SessionSecurityDefaultConfiguration(platformPaths);
+            var initialDefault = securityDefault.Read();
+            securityDefault.Set(initialDefault.Revision, ModelPolicyCategory.FullAgent, CancellationToken.None);
+            using (var policies = new SqliteModelPolicyStore(platformPaths.UserDatabasePath))
+            {
+                policies.Set(ModelPolicyKey.For(Route.ProviderId, Route.ProviderModelName), 0,
+                    ModelPolicyPresets.FullAgent(), CancellationToken.None);
+            }
             Server = new OmniServer(_store, Codecs, new InMemoryAuditSink(), _state, Artifacts,
-                platformPathsFactory: () => OmniHost.CreatePlatformPaths(Path.Combine(_data, "platform")));
+                platformPathsFactory: () => platformPaths);
             Server.ConfigureWorkspaceRoot(_root);
             Server.ConfigureAgentProfiles(new(new AgentProfileRegistry([_profile]), _profile));
             Server.ConfigureNewSessionRoutingPolicy(new SessionRoutingPolicy(1,
@@ -861,14 +870,6 @@ public sealed class LiveMailboxAcceptanceTests
         {
             var source = Journal.Last(item => Codecs.Decode(item) is ModelStepStarted);
             var step = (ModelStepStarted)Codecs.Decode(source);
-            // This fixture explicitly represents a user-configured FullAgent profile for the
-            // parent model. Delegation admission now requires that exact model-profile ceiling.
-            using (var policies = new SqliteModelPolicyStore(
-                OmniHost.CreatePlatformPaths(Path.Combine(_data, "platform")).UserDatabasePath))
-            {
-                policies.Set(ModelPolicyKey.For(Route.ProviderId, step.ModelId), 0,
-                    ModelPolicyPresets.FullAgent(), CancellationToken.None);
-            }
             using var context = JsonDocument.Parse(Artifacts.GetText(step.ContextSnapshotRef!.Hash)!);
             var userItemId = context.RootElement.GetProperty("items").EnumerateArray()
                 .Last(item => item.GetProperty("kind").GetString() == "UserMessage")

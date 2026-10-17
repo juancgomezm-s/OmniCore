@@ -15,38 +15,46 @@ public sealed class SessionInputInitialFailureTests
     public void First_input_tracks_attempt_identity_and_distinguishes_atomic_rejection_from_durable_admission(
         string failureType, bool sessionWasCommitted)
     {
+        var root = Path.Combine(Path.GetTempPath(), "omni-session-input-failure-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
         var store = new RejectEventStore(failureType);
         var codecs = EventCodecs.Create();
-        var server = new OmniServer(store, codecs, new InMemoryAuditSink());
-        var id = Ids.NewV7();
-        var ack = server.Send(WireEnvelope.Command(id, "{\"cmd\":\"session.input\",\"text\":\"hello\"}"),
-            CancellationToken.None);
+        try
+        {
+            var server = new OmniServer(store, codecs, new InMemoryAuditSink(),
+                platformPathsFactory: () => OmniHost.CreatePlatformPaths(root));
+            var id = Ids.NewV7();
+            var ack = server.Send(WireEnvelope.Command(id, "{\"cmd\":\"session.input\",\"text\":\"hello\"}"),
+                CancellationToken.None);
 
-        Assert.Equal(id, ack.CommandId);
-        Assert.Equal("error", ack.Status);
-        Assert.Equal(sessionWasCommitted ? RuntimeCommandOutcomeKind.Accepted : RuntimeCommandOutcomeKind.Rejected,
-            ack.Outcome?.Kind);
-        Assert.Null(server.LastRunId());
-        var session = Assert.IsType<SessionId>(store.AttemptedSession);
-        var events = store.ReadFrom(session, 1);
-        if (sessionWasCommitted)
-        {
-            Assert.Equal(session, server.LastSessionId());
-            Assert.Equal(3, events.Count);
-            Assert.IsType<SessionCreated>(codecs.Decode(events[0]));
-            Assert.IsType<SessionSecurityPolicySet>(codecs.Decode(events[1]));
-            Assert.IsType<SessionRoutingPolicySet>(codecs.Decode(events[2]));
-            Assert.Equal(1L, ack.FirstSeq);
-            Assert.Equal(3L, ack.LastSeq);
-            Assert.All(events, e => Assert.Equal(new CommandCausation(new CommandId(Guid.Parse(id))), e.Causation));
+            Assert.Equal(id, ack.CommandId);
+            Assert.Equal("error", ack.Status);
+            Assert.Equal(sessionWasCommitted ? RuntimeCommandOutcomeKind.Accepted : RuntimeCommandOutcomeKind.Rejected,
+                ack.Outcome?.Kind);
+            Assert.Null(server.LastRunId());
+            Assert.True(store.AttemptedSession is not null, "The admission fault should occur at the injected event append.");
+            var session = Assert.IsType<SessionId>(store.AttemptedSession);
+            var events = store.ReadFrom(session, 1);
+            if (sessionWasCommitted)
+            {
+                Assert.Equal(session, server.LastSessionId());
+                Assert.Equal(3, events.Count);
+                Assert.IsType<SessionCreated>(codecs.Decode(events[0]));
+                Assert.IsType<SessionSecurityPolicySet>(codecs.Decode(events[1]));
+                Assert.IsType<SessionRoutingPolicySet>(codecs.Decode(events[2]));
+                Assert.Equal(1L, ack.FirstSeq);
+                Assert.Equal(3L, ack.LastSeq);
+                Assert.All(events, e => Assert.Equal(new CommandCausation(new CommandId(Guid.Parse(id))), e.Causation));
+            }
+            else
+            {
+                Assert.Empty(events);
+                Assert.Null(server.LastSessionId());
+                Assert.Null(ack.FirstSeq);
+                Assert.Null(ack.LastSeq);
+            }
         }
-        else
-        {
-            Assert.Empty(events);
-            Assert.Null(server.LastSessionId());
-            Assert.Null(ack.FirstSeq);
-            Assert.Null(ack.LastSeq);
-        }
+        finally { Directory.Delete(root, recursive: true); }
     }
 
     private sealed class RejectEventStore(string failureType) : IEventStore

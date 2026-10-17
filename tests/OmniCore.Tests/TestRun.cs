@@ -29,6 +29,21 @@ internal static class TestRun
         return Open(stream, sessionId, objective, mode);
     }
 
+    /// <summary>Creates a native Session with an explicit initial security snapshot before its Run.</summary>
+    public static Opened OpenNativeInSession(IEventStore store, SessionId sessionId, string workspaceRoot,
+        string objective = "objetivo de test", RunMode mode = RunMode.Act,
+        ModelPolicyCategory category = ModelPolicyCategory.ObserveOnly)
+    {
+        var codecs = EventCodecs.Create();
+        var stream = new EventStream(store, codecs, sessionId);
+        var canonicalWorkspace = ProjectIdentity.CanonicalWorkspacePath(Path.GetFullPath(workspaceRoot));
+        stream.Append(new SessionCreated(sessionId, WorkspaceId.Of(canonicalWorkspace).ToString(), canonicalWorkspace,
+            ProfileId.New(), DateTimeOffset.UtcNow));
+        stream.Append(SessionSecurityPolicySet.FromPreset(sessionId, 1, category,
+            SessionSecurityProvenance.Native, SessionSecurityPolicySource.UserDefault, DateTimeOffset.UtcNow));
+        return Open(stream, sessionId, objective, mode);
+    }
+
     public static Opened Open(IEventStore store, SessionId sessionId, string objective = "objetivo de test",
         RunMode mode = RunMode.Act) =>
         Open(new EventStream(store, EventCodecs.Create(), sessionId), sessionId, objective, mode);
