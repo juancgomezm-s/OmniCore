@@ -316,7 +316,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         }
 
         var newBytes = FileVersion.Encode(content, decoded.Encoding);
-        return await Publish(path, full, newBytes, ledger, intent, context.WorkspaceRoot, created: false,
+        return await Publish(path, full, newBytes, ledger, intent, context, created: false,
             expectedVersion, deletedLines: deleted, insertedLines: inserted,
             summaryPrefix: "Archivo reemplazado: " + path + " (" + originalLines + "→"
                 + FileVersion.CountLines(content) + " líneas)", cancellationToken, originalLines).ConfigureAwait(false);
@@ -339,7 +339,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         }
 
         var newBytes = FileVersion.Encode(content, FileVersion.FileEncoding.Utf8NoBom);
-        return await Publish(path, full, newBytes, ledger, intent, context.WorkspaceRoot, created: true,
+        return await Publish(path, full, newBytes, ledger, intent, context, created: true,
             expectedVersion: null, deletedLines: 0, insertedLines: lines,
             summaryPrefix: "Archivo creado: " + path + " (" + lines + " líneas)", cancellationToken)
             .ConfigureAwait(false);
@@ -353,7 +353,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
     /// contabilidad del ledger SOLO se actualiza tras publicar con éxito.
     /// </summary>
     private async Task<ToolResult> Publish(string path, string full, byte[] newBytes, MutationLedger? ledger,
-        AuthorizedToolIntent intent, string workspaceRoot, bool created, string? expectedVersion,
+        AuthorizedToolIntent intent, ToolExecutionContext context, bool created, string? expectedVersion,
         int deletedLines, int insertedLines, string summaryPrefix, CancellationToken cancellationToken,
         int originalLines = 0)
     {
@@ -362,7 +362,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
             "." + Path.GetFileName(full) + ".tmp-" + Guid.NewGuid().ToString("N"));
         // Revalidar la frontera del TEMPORAL antes de escribirlo (el padre puede ser un
         // symlink/junction hacia fuera del workspace).
-        if (!_boundary.IsWithin(tempPath, workspaceRoot))
+        if (!_boundary.IsWithin(tempPath, context.WorkspaceRoot))
         {
             return ToolResult.Error(ToolErrorCode.InvalidArguments,
                 "Temporal fuera del workspace");
@@ -390,7 +390,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
             }
 
             // Revalidar la frontera de la ruta antes de publicar (criterio de aceptación 2).
-            if (!_boundary.IsWithin(full, workspaceRoot))
+            if (!_boundary.IsWithin(full, context.WorkspaceRoot))
             {
                 return ToolResult.Error(ToolErrorCode.InvalidArguments,
                     "Ruta fuera del workspace (revalidada antes de publicar)");
