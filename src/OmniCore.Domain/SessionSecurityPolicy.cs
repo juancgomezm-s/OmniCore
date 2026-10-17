@@ -65,7 +65,7 @@ public sealed record SessionSecurityPolicySet(
         if (!IsValidOriginPair(provenance, source))
             throw new ArgumentException("Session security provenance must be assigned by its matching Core origin.");
 
-        var preset = UserModelPolicy.For(category);
+        var preset = ModelPolicyPresets.For(category);
         var mutation = preset.MutationPolicy;
         return new SessionSecurityPolicySet(sessionId, revision, category, category.ToString(),
             preset.ToolPolicy.CapabilityCeiling.Order().ToArray(), preset.ToolPolicy.Mode,
