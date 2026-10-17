@@ -143,9 +143,9 @@ public sealed class FileReadRegistry
     /// resolved back to a path and is never used as filesystem authority.</summary>
     internal string MutationBudgetKey(string path)
     {
-        var key = Canonical(path);
-        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()) key = key.ToUpperInvariant();
-        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(key)));
+        // Preserve the MutationLedger's former ordinal identity. The digest changes storage
+        // representation only; it must not collapse Foo.cs and foo.cs on case-sensitive volumes.
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(Canonical(path))));
     }
 }
 
