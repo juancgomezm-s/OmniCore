@@ -438,6 +438,14 @@ una sola acción; se conservan el historial y el mensaje original. El permiso no
 se reutiliza para conexiones modificadas ni para repetir una petición ya atendida.
 [Validación del cambio de modelo](docs/validation/model-route-resume-20261016.md).
 
+La [prueba real Luna → DeepSeek v4 Flash](tests/OmniCore.Tests/TuiWiringTests.LiveFileHandoff.cs)
+comprueba la creación de un archivo, el cambio con `/modelo` y su edición mediante
+`filesystem.patch`: una línea modificada y otras 19 intactas, en la misma sesión y
+sin reenviar la petición. También verifica una clave que sólo figura en la conversación.
+Es una prueba opt-in (`OMNI_LIVE_FILE_HANDOFF=1`); requiere conexiones reales y consume
+la suscripción de Luna y créditos de OpenRouter. Sus datos y políticas se aíslan del uso normal.
+
+
 En **F4 → Modelos y perfiles → Activar modelos…** puedes buscar en la lista
 completa, incluidos los modelos del catálogo de OpenRouter, y encender o apagar
 cada uno con su interruptor: `[   █]` encendido, `[█   ]` apagado. Clic, Enter o

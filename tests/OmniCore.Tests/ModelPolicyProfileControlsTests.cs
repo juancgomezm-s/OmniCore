@@ -10,6 +10,32 @@ namespace OmniCore.Tests;
 
 public sealed class ModelPolicyProfileControlsTests
 {
+    [Theory]
+    [InlineData(ModelPolicyCategory.ScopedCoder, false)]
+    [InlineData(ModelPolicyCategory.ScopedCoder, true)]
+    [InlineData(ModelPolicyCategory.FullAgent, false)]
+    [InlineData(ModelPolicyCategory.FullAgent, true)]
+    public void Six_tool_direct_harness_keeps_authorized_file_creation_and_patch_visible(
+        ModelPolicyCategory category, bool includeMedia)
+    {
+        var preset = ModelPolicyPresets.For(category);
+        var key = ModelPolicyKey.For("fixture", "small-coder");
+        var stored = new StoredModelPolicy(key, 1, preset, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+        var harness = new HarnessPolicy(ToolCallFormat.Native, ToolMode.Direct, 6,
+            GuidanceLevel.DomainOnly, 1, PlanControl.RuntimeDriven, 4);
+        var effective = EffectiveModelPolicy.Resolve(key, stored, harness);
+        var tools = OmniHost.CreateActTools(mediaReadTool: includeMedia
+            ? new MediaReadTool(_ => false, _ => null, new PathBoundaryValidator()) : null).Catalog();
+        // ExplorerTurn excludes tool.search in Direct mode: hidden tools cannot be discovered.
+        var visible = new ModelCapabilityBoundary(effective).VisibleTools(
+            tools.Definitions().Where(tool => tool.Name != "tool.search")).Select(tool => tool.Name).ToArray();
+        Assert.Equal(new[] { "user.ask", "filesystem.list", "filesystem.read", "search.text",
+            "filesystem.patch", "filesystem.write" }, visible);
+        Assert.Equal(6, effective.ToolPolicy.MaxVisibleTools);
+        Assert.False(effective.ToolPolicy.AllowToolDiscovery);
+        Assert.Equal(preset.MutationPolicy, effective.MutationPolicy);
+    }
+
     [Fact]
     public void Preset_catalogs_keep_basic_read_search_and_user_ask_before_optional_tools()
     {

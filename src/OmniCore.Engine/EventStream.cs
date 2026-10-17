@@ -454,12 +454,13 @@ public sealed class EventStream
     {
         using var document = JsonDocument.Parse(json);
         using var output = new MemoryStream();
+        var changed = false;
         using (var writer = new Utf8JsonWriter(output))
-            WriteRedacted(writer, document.RootElement, new PiiRedactor());
+            WriteRedacted(writer, document.RootElement, new PiiRedactor(), ref changed);
         return Encoding.UTF8.GetString(output.ToArray());
     }
 
-    private static void WriteRedacted(Utf8JsonWriter writer, JsonElement element, PiiRedactor redactor)
+    private static void WriteRedacted(Utf8JsonWriter writer, JsonElement element, PiiRedactor redactor, ref bool changed)
     {
         switch (element.ValueKind)
         {
@@ -468,13 +469,13 @@ public sealed class EventStream
                 foreach (var property in element.EnumerateObject())
                 {
                     writer.WritePropertyName(property.Name);
-                    WriteRedacted(writer, property.Value, redactor);
+                    WriteRedacted(writer, property.Value, redactor, ref changed);
                 }
                 writer.WriteEndObject();
                 break;
             case JsonValueKind.Array:
                 writer.WriteStartArray();
-                foreach (var item in element.EnumerateArray()) WriteRedacted(writer, item, redactor);
+                foreach (var item in element.EnumerateArray()) WriteRedacted(writer, item, redactor, ref changed);
                 writer.WriteEndArray();
                 break;
             case JsonValueKind.String:
@@ -482,9 +483,16 @@ public sealed class EventStream
                 // Algunas propiedades contienen JSON serializado (p. ej. ArgumentsJson).
                 // Se redactan sus valores conservando el JSON interno válido para replay.
                 if ((value.StartsWith('{') || value.StartsWith('[')) && TryRedactNested(value, redactor, out var nested))
+                {
+                    changed |= nested != value;
                     writer.WriteStringValue(nested);
+                }
                 else
-                    writer.WriteStringValue(redactor.Redact(value));
+                {
+                    var redacted = redactor.Redact(value);
+                    changed |= redacted != value;
+                    writer.WriteStringValue(redacted);
+                }
                 break;
             default:
                 element.WriteTo(writer);
@@ -498,9 +506,13 @@ public sealed class EventStream
         {
             using var nested = JsonDocument.Parse(value);
             using var output = new MemoryStream();
+            var changed = false;
             using (var writer = new Utf8JsonWriter(output))
-                WriteRedacted(writer, nested.RootElement, redactor);
-            redacted = Encoding.UTF8.GetString(output.ToArray());
+                WriteRedacted(writer, nested.RootElement, redactor, ref changed);
+            // Tool receipts bind the exact argument bytes. Re-encoding harmless JSON changes
+            // whitespace, Unicode and escaping even when no secret was removed. Preserve
+            // those bytes; changed sensitive values still get redacted and fail closed.
+            redacted = changed ? Encoding.UTF8.GetString(output.ToArray()) : value;
             return true;
         }
         catch (JsonException)

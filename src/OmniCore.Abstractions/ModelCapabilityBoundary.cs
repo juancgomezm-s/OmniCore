@@ -263,8 +263,8 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
     public int MaxVisibleTools() => _policy.ToolPolicy.MaxVisibleTools;
 
     /// <summary>Discloses permitted tools in a stable, useful order before applying the visible
-    /// count. Basic workspace read/search and mailbox capabilities remain available ahead of
-    /// optional proposals and complex mutation/process capabilities when the list is small.</summary>
+    /// count. Basic workspace read/search and authorized file edits remain available ahead of
+    /// optional references, proposals and process capabilities when the list is small.</summary>
     public IReadOnlyList<ToolDefinition> VisibleTools(IEnumerable<ToolDefinition> definitions,
         IReadOnlyDictionary<string, int>? preferredOrder = null)
     {
@@ -284,16 +284,20 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         {
             ModelToolCapability.PlanProposal when toolName == "user.ask" => 0,
             ModelToolCapability.Search when toolName == "tool.search" => 1,
+            ModelToolCapability.WorkspaceRead when toolName == "artifact.read" => 3,
+            ModelToolCapability.WorkspaceRead when toolName == "media.read" => 2,
             ModelToolCapability.WorkspaceRead or ModelToolCapability.Search
-                or ModelToolCapability.ReferenceResolve or ModelToolCapability.AgentMailboxWait =>
-                    toolName == "artifact.read" ? 3 : 1,
-            ModelToolCapability.PatchExisting => 2,
+                or ModelToolCapability.AgentMailboxWait => 1,
+            // In Direct mode a six-tool harness cannot discover a hidden file creator.
+            // Keep read/list/search plus both permitted file operations ahead of optional
+            // references. IsToolVisible still filters the user's mutation ceiling first.
+            ModelToolCapability.PatchExisting or ModelToolCapability.CreateFile
+                or ModelToolCapability.ReplaceFile or ModelToolCapability.ReferenceResolve => 2,
             // An explicitly authorized PlanProposal ceiling should not hide the advisory
             // mode proposal behind the newer memory proposal when MaxVisibleTools is tight.
             ModelToolCapability.PlanProposal when toolName == "mode.propose" => 3,
             ModelToolCapability.PlanProposal => 4,
-            ModelToolCapability.CreateFile or ModelToolCapability.ReplaceFile
-                or ModelToolCapability.DeleteFile or ModelToolCapability.MoveOrRename => 5,
+            ModelToolCapability.DeleteFile or ModelToolCapability.MoveOrRename => 5,
             ModelToolCapability.ValidationProcess => 6,
             ModelToolCapability.GeneralProcess => 7,
             ModelToolCapability.Shell or ModelToolCapability.Network => 8,
