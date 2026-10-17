@@ -2,6 +2,14 @@
 
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 
+**Checkpoint M9-K/L (2026-10-17):** seguridad durable por Session, lifecycle nativo y respuesta de
+cuestionarios están construidos y probados en Core y OmniCoder. Se repararon pérdida de presupuesto
+al reanudar/reiniciar, formulario perdido y respuesta no cableada por guard legacy. Ver
+`docs/validation/m9-block-k-20261017.md` para evidencia y límites. M9 sigue abierto por SEC-CONV,
+otros mutadores/interacciones, procesos persistentes/ConPTY y aceptaciones pendientes; M8 queda
+abierto para pruebas manuales del usuario. Coordinación actual autorizada: un worker Luna alto
+construye y otro Luna bajo prueba; root revisa e integra, sin duplicar regresiones verdes.
+
 **M9-J integrado en ambos main (2026-10-15):** contrato nativo versionado y SDK especializado para
 OmniCoder sobre el Host/stdio existente, con consultas reales de herramientas, skills y contexto,
 acciones humanas y flujos de conversación/eventos/artefactos conectados. Core conserva la autoridad.

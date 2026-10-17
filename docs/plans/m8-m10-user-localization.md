@@ -339,6 +339,28 @@ controladores tipados de plan/lanes/worktrees. La seguridad durable por conversa
 OPEN y no se sustituye con el grant de conexión ni con Plan/Act. ConPTY (pendiente de M9) y funciones
 futuras M10 no se anuncian como construidas.
 
+#### Checkpoint M9-K/L del 2026-10-17
+
+La política durable por Session y el lifecycle nativo (listar, crear, abrir, renombrar con CAS y
+compactar) están construidos y probados. Se corrigió la recuperación de presupuesto de archivos y
+líneas del mismo Turn al responder cuestionarios o reiniciar; la contabilidad incierta bloquea nuevas
+mutaciones sin reconstruir autoridad de lectura. Core `47be76d` pasó build de solución sin advertencias
+ni errores, 117 casos únicos del foco (116 verdes más uno corregido y validado aislado); `6af3dcd`
+añade dos casos de consumo ausente/inválido y `571e266` un reinicio real de Host, todos aprobados.
+
+OmniCoder `9a5527d`, tests `f573517`, ya consume el cuestionario por SDK, Main y formulario real;
+se firma la respuesta exacta tras revalidar el scope, continúa el mismo Run/Turn y no crea otro prompt.
+Build correcto, cuatro nuevos casos dirigidos de navegación y contenido largo, E2E Electron→Host→HTTP
+local 1/1 (9 fuera del filtro), arquitectura 148/148/146 y `NO_ORPHANS`. Se repararon el guard legacy
+que bloqueaba la respuesta, pérdida de formulario, carrera antes del ACK y límites/truncamientos
+incompatibles. Evidencia y fallos históricos en [acta K](../validation/m9-block-k-20261017.md).
+
+Esto no cierra SEC-CONV-01–13: falta retirar el grant global/confirmaciones redundantes y completar
+sus guardas finales. Permisos/PlanApproval, modelos/rutas, commands/skills/memoria y otros mutadores
+nativos, procesos persistentes/ConPTY, paridad TUI restante y aceptaciones live/manual/plataformas
+siguen abiertos. Los textos del formulario tienen catálogos es/en/fr/it según navegador; todavía no
+acreditan preferencia efectiva ni cambio en caliente. M8 permanece abierto para pruebas del usuario.
+
 ## M10: v1, memoria completa y evaluación
 
 | Bloque restante | Construcción y base reutilizable | Presentación y aceptación |
