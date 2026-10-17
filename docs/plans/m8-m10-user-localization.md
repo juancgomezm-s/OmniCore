@@ -355,8 +355,14 @@ local 1/1 (9 fuera del filtro), arquitectura 148/148/146 y `NO_ORPHANS`. Se repa
 que bloqueaba la respuesta, pérdida de formulario, carrera antes del ACK y límites/truncamientos
 incompatibles. Evidencia y fallos históricos en [acta K](../validation/m9-block-k-20261017.md).
 
-Esto no cierra SEC-CONV-01–13: falta retirar el grant global/confirmaciones redundantes y completar
-sus guardas finales. Permisos/PlanApproval, modelos/rutas, commands/skills/memoria y otros mutadores
+OmniCoder `2b4c0d2` retira el grant global/confirmaciones redundantes, conserva consentimientos
+específicos y valida guardas finales, primer mensaje con cuestionario, replay vacío y estado tras
+cambio de modo. Adapter 12/12, VM 13/13, conservación de ACK 9/9 y siete E2E únicos en focos separados;
+scanner final 146/146/144 y `NO_ORPHANS`. Ver acta K para fallos detectados, correcciones y límites.
+La suite completa Core detectó 120 fallos comunes Windows/Linux más uno de ruta base en Linux;
+se repara por separado, sin extrapolar estos resultados focales.
+
+Esto no cierra SEC-CONV-01–13. Permisos/PlanApproval, modelos/rutas, commands/skills/memoria y otros mutadores
 nativos, procesos persistentes/ConPTY, paridad TUI restante y aceptaciones live/manual/plataformas
 siguen abiertos. Los textos del formulario tienen catálogos es/en/fr/it según navegador; todavía no
 acreditan preferencia efectiva ni cambio en caliente. M8 permanece abierto para pruebas del usuario.

@@ -908,7 +908,11 @@ El [acta K](../validation/m9-block-k-20261017.md) conserva resultados y límites
 tests `f573517`, conecta los cuestionarios en SDK/Main/UI: build correcto, cuatro casos nuevos de
 navegación/contenido largo aprobados y E2E Electron→Host→HTTP local 1/1, mismo Run, dos requests,
 un resultado de tool y chat listo al completar Turn. Arquitectura 148/148/146 y `NO_ORPHANS` verdes.
-K sigue abierto por SEC-CONV-01–13 y grants redundantes. Los demás mutadores/interacciones y M
+OmniCoder `2b4c0d2` retira los grants y confirmaciones redundantes, conservando consentimientos
+específicos y guardas finales. Siete E2E únicos, en focos separados, validan también el primer
+mensaje sin Session previa, los cambios de modo y el tratamiento del ACK; scanner 146/146/144 y
+`NO_ORPHANS`. El acta K registra los límites y la suite completa Core fallida que aún se repara.
+K sigue abierto por la aceptación completa SEC-CONV-01–13. Los demás mutadores/interacciones y M
 (procesos persistentes/ConPTY) siguen pendientes. El idioma del navegador no acredita selección
 efectiva ni cambio de idioma en caliente.
 M8 conserva la aceptación manual del usuario.

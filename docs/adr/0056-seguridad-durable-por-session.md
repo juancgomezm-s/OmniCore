@@ -58,8 +58,10 @@ presupuesto de mutación del Turn. Los grants de lectura/versionado no se restau
 El checkpoint publicado OmniCoder `c85a77c` incluye consumidor SDK/Main/UI para cuestionarios y
 lifecycle. Pasaron el E2E real Electron→Host→fixture HTTP de dos Sessions y el de respuesta de
 cuestionario en el mismo Run, además de las pruebas focales registradas. La matriz de CI de ese
-checkpoint pasó en Windows/Ubuntu y su package gate. Esto no acredita inferencia de un proveedor
-del usuario ni el bloque posterior que retira grants y confirmaciones redundantes.
+checkpoint pasó en Windows/Ubuntu y su package gate. El checkpoint posterior `2b4c0d2` retira grants
+y confirmaciones redundantes con siete E2E únicos en focos separados y conservación del ACK
+probada; el acta K recoge la evidencia y su CI pendiente. Esto no acredita inferencia de un
+proveedor del usuario ni cierra todos los escenarios SEC-CONV.
 
 La suite completa de Core sobre `5c315ba` detectó 121 fallos de 4860 casos en Ubuntu. El análisis y
 la reparación se siguen en [el informe de CI](../ci-failure-analysis.md). No se extrapolan los
