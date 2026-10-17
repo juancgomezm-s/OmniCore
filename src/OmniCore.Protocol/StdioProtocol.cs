@@ -24,6 +24,8 @@ public static class StdioProtocol
         "command.result.lookup",
         "query.state",
         "query.sessionIdentity",
+        "query.sessionSecurity",
+        "query.sessionSecurityDefault",
         "query.workingState",
         "query.commands",
         "query.sessionSidebar",
@@ -57,6 +59,8 @@ public static class StdioProtocol
     [
         "command.session.input.user",
         "command.conversation.start.user",
+        "command.session.security.set.user",
+        "command.session.security.default.set.user",
         "command.run.interrupt.user",
         "command.run.cancel.user",
         "command.run.mode.select.user",
@@ -73,6 +77,8 @@ public static class StdioProtocol
         new("commandOutcome", "query.commandOutcome", "Metadata about the latest prompt expansion or workflow request", "session", "session-read", true),
         new("state", "query.state", "Current runtime state", "session", "session-read", true),
         new("sessionIdentity", "query.sessionIdentity", "Current Session and Run identity", "session", "session-read", true),
+        new("sessionSecurity", "query.sessionSecurity", "Durable Session security ceiling and revision", "session", "session-read", true),
+        new("sessionSecurityDefault", "query.sessionSecurityDefault", "Configured default ceiling for new Sessions", "user", "configuration-read", true),
         new("workingState", "query.workingState", "Current plan and working state", "session", "session-read", true),
         new("commands", "query.commands", "Effective human command catalog", "session", "workspace-read", true),
         new("sessionSidebar", "query.sessionSidebar", "Session sidebar and persisted artifacts", "session", "session-read", true),
@@ -141,7 +147,7 @@ public static class StdioProtocol
     }
 
     public static bool IsSupportedCommand(string name) => name is "sim" or "sim.resume" or "session.input"
-        or "conversation.start" or "run.interrupt" or "run.cancel" or "run.mode.select"
+        or "conversation.start" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
         or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish"
         or "external.memory.consent";
 
@@ -151,6 +157,8 @@ public static class StdioProtocol
         new("sim.resume", "command.sim.resume", "generic", "command.result.lookup", "Resume a deterministic simulation"),
         new("session.input", "command.session.input", "generic", "command.result.lookup", "Persist literal user input without inference"),
         new("conversation.start", "command.conversation.start.user", "native-confirmation+hmac+session-scope", "conversation.result.lookup", "Persist input and invoke the Core conversation pipeline"),
+        new("session.security.set", "command.session.security.set.user", "native-confirmation+hmac+session-revision", "command.result.lookup", "Set a revision-checked Session capability ceiling"),
+        new("session.security.default.set", "command.session.security.default.set.user", "native-confirmation+hmac+user-revision", "", "Set the configured security ceiling for new Sessions"),
         new("run.interrupt", "command.run.interrupt.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Interrupt the active Run"),
         new("run.cancel", "command.run.cancel.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Cancel the active Run"),
         new("run.mode.select", "command.run.mode.select.user", "native-confirmation+hmac+session-scope", "command.result.lookup", "Select the active Run mode"),

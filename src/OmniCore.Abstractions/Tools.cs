@@ -270,6 +270,11 @@ public sealed class ToolExecutionContext
     /// <summary>Model capability filter for catalog discovery; it discloses no grants.</summary>
     public Func<string, bool>? IsModelToolVisible { get; }
 
+    /// <summary>Serializes the final capability recheck and durable ToolCallStarted Barrier
+    /// with Session security policy changes. It is held only through effect admission, never
+    /// while the tool performs the external effect.</summary>
+    public Func<IDisposable>? AcquireSessionSecurityAdmission { get; }
+
     /// <summary>Requires a human Ask for a protected tool substitution; it never grants permissions.</summary>
     public bool RequiresSubstitutionAsk { get; }
 
@@ -287,7 +292,8 @@ public sealed class ToolExecutionContext
         IWorkspaceWriteLeaseProvider? workspaceWriteLeases = null,
         Func<string, bool>? isModelToolVisible = null,
         bool requiresSubstitutionAsk = false,
-        ProtectedToolSubstitution? protectedSubstitution = null)
+        ProtectedToolSubstitution? protectedSubstitution = null,
+        Func<IDisposable>? acquireSessionSecurityAdmission = null)
     {
         WorkspaceRoot = workspaceRoot;
         ReadRegistry = readRegistry;
@@ -301,6 +307,7 @@ public sealed class ToolExecutionContext
         ReceiveMailbox = receiveMailbox;
         WorkspaceWriteLeases = workspaceWriteLeases;
         IsModelToolVisible = isModelToolVisible;
+        AcquireSessionSecurityAdmission = acquireSessionSecurityAdmission;
         ProtectedSubstitution = protectedSubstitution;
         RequiresSubstitutionAsk = requiresSubstitutionAsk || protectedSubstitution is not null;
     }

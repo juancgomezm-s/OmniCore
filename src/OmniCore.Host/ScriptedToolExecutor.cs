@@ -45,6 +45,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     private readonly IArtifactStore? _artifacts;
     private readonly Func<ToolCallId, CancellationToken, Task<string?>>? _receiveMailbox;
     private readonly IWorkspaceWriteLeaseProvider? _workspaceWriteLeases;
+    private readonly Func<IDisposable>? _acquireSessionSecurityAdmission;
 
     public ScriptedToolExecutor(FakeCatalog catalog, IPermissionPolicy policy)
     {
@@ -85,7 +86,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         WeakSandboxConsentState? weakSandboxConsent = null, IArtifactStore? artifacts = null,
         Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null,
         IWorkspaceWriteLeaseProvider? workspaceWriteLeases = null,
-        IReadOnlyList<IToolIntentBoundary>? additionalBoundaries = null)
+        IReadOnlyList<IToolIntentBoundary>? additionalBoundaries = null,
+        Func<IDisposable>? acquireSessionSecurityAdmission = null)
     {
         _catalog = catalog;
         _policy = policy;
@@ -100,6 +102,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         _artifacts = artifacts;
         _receiveMailbox = receiveMailbox;
         _workspaceWriteLeases = workspaceWriteLeases;
+        _acquireSessionSecurityAdmission = acquireSessionSecurityAdmission;
     }
 
     public static ScriptedToolExecutor Default() =>
@@ -370,7 +373,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             workspaceWriteLeases: _workspaceWriteLeases,
             isModelToolVisible: _boundary is null ? null : _boundary.IsToolVisible,
             requiresSubstitutionAsk: requiresSubstitutionAsk,
-            protectedSubstitution: protectedSubstitution);
+            protectedSubstitution: protectedSubstitution,
+            acquireSessionSecurityAdmission: _acquireSessionSecurityAdmission);
         var outcome = requestReceipt is null
             ? runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken)
             : runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken, requestReceipt);

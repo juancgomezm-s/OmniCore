@@ -305,6 +305,7 @@ public sealed class ExplorerTurn
     private readonly int _maxModelStepsPerTurn;
     private readonly int _maxToolCallsPerTurn;
     private readonly int _maxGenerationSeconds;
+    private readonly Func<SessionSecurityPolicySet?>? _sessionSecurityPolicy;
 
     // El watchdog y la directiva se evalúan en cada Turn: cada evento se decodifica una sola vez.
     private readonly MemoizedEventDecoder _stallDecoder;
@@ -338,7 +339,8 @@ public sealed class ExplorerTurn
         SessionMemoryPolicy? sessionMemoryPolicy = null,
         Func<IReadOnlyList<string>, Func<string, SkillValidationReadResult?>, string?,
             CancellationToken, IReadOnlyList<ExternalCompletionGateResult>>? resolveLifecycleValidations = null,
-        BillingMode? billingMode = null)
+        BillingMode? billingMode = null,
+        Func<SessionSecurityPolicySet?>? sessionSecurityPolicy = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -396,6 +398,7 @@ public sealed class ExplorerTurn
         _maxModelStepsPerTurn = maxModelStepsPerTurn;
         _maxToolCallsPerTurn = maxToolCallsPerTurn;
         _maxGenerationSeconds = maxGenerationSeconds;
+        _sessionSecurityPolicy = sessionSecurityPolicy;
         _stallDecoder = new MemoizedEventDecoder(codecs);
         _metaModelProvider = metaModelProvider;
         _modelContextCapacity = modelContextCapacity;
@@ -412,6 +415,24 @@ public sealed class ExplorerTurn
 
     /// <summary>Ledger de mutaciones del Run activo, compartido con las tools del boundary.</summary>
     internal MutationLedger? MutationLedger => _boundary?.ReadRegistry().Ledger;
+
+    private SessionSecurityPolicySet? CurrentSessionSecurityPolicy()
+    {
+        if (_sessionSecurityPolicy is null) return null;
+        var policy = _sessionSecurityPolicy()
+            ?? throw new InvalidDataException("Durable Session security policy is unavailable.");
+        policy.Validate();
+        return policy;
+    }
+
+    private int EffectiveMaxModelSteps() => Math.Min(_maxModelStepsPerTurn,
+        CurrentSessionSecurityPolicy()?.MaxModelStepsPerTurn ?? _maxModelStepsPerTurn);
+
+    private int EffectiveMaxToolCalls() => Math.Min(_maxToolCallsPerTurn,
+        CurrentSessionSecurityPolicy()?.MaxToolCallsPerTurn ?? _maxToolCallsPerTurn);
+
+    private int EffectiveMaxGenerationSeconds() => Math.Min(_maxGenerationSeconds,
+        CurrentSessionSecurityPolicy()?.MaxGenerationSeconds ?? _maxGenerationSeconds);
 
     /// <summary>
     /// Entrega las muestras de mutación observadas a su destino de evidencia. Es telemetría: un
@@ -820,7 +841,7 @@ public sealed class ExplorerTurn
             OmniCore.Models.OpenRouterImageGenerationProvider.ProfileName, StringComparison.Ordinal);
         IReadOnlyList<ToolDefinition> RequestTools() => dedicatedImageRoute
             ? Array.Empty<ToolDefinition>()
-            : ReadTurnToolCallCount(stream, turnId) >= _maxToolCallsPerTurn
+            : ReadTurnToolCallCount(stream, turnId) >= EffectiveMaxToolCalls()
             ? Array.Empty<ToolDefinition>() : VisibleTools(discoveredToolIds)
                 .Where(tool => !lifecycleDeniedToolIds.Contains(tool.Name)).ToArray();
         void RefreshStepFingerprint(IReadOnlyList<ToolDefinition> requestTools)
@@ -990,6 +1011,14 @@ public sealed class ExplorerTurn
             var addingTurn = newTurn && !turns.Contains(turnId) ? 1L : 0L;
             var addingTool = newToolCall is { } id
                 && !payloads.OfType<ToolCallRequested>().Any(item => item.ToolCallId == id) ? 1L : 0L;
+            if (CurrentSessionSecurityPolicy() is { } sessionSecurity)
+            {
+                var turnToolCalls = journal.Where(evt => evt.TurnId == turnId)
+                    .Select(evt => _codecs.Decode(evt)).OfType<ToolCallRequested>()
+                    .Select(item => item.ToolCallId).Distinct().LongCount();
+                if (checked(turnToolCalls + addingTool) > sessionSecurity.MaxToolCallsPerTurn)
+                    throw new BudgetExceededException("Session security tool-call limit for this Turn was reached.");
+            }
             if (runBudget.MaxTurns is { } maxTurns
                 && checked(turns.LongLength + allocations.Turns + addingTurn) > maxTurns)
                 throw new BudgetExceededException("límite de turnos del Run alcanzado");
@@ -1329,7 +1358,7 @@ public sealed class ExplorerTurn
                 ? ReadProviderContinuation(stream, runId, laneId, turnId) : null;
             // These ceilings are per durable Turn, not per user.ask/resume invocation. Replay
             // admissions already written for this Turn before allowing another model/tool step.
-            for (var step = nextModelStepIndex; !recoveredImageCompletion && step < _maxModelStepsPerTurn; step++)
+            for (var step = nextModelStepIndex; !recoveredImageCompletion && step < EffectiveMaxModelSteps(); step++)
             {
                 var modelHooks = step == nextModelStepIndex ? initialModelHooks : DispatchLifecycle(LifecyclePoint.BeforeModel);
                 if (modelHooks.Denied || lifecycleDeniedTurn || !ResolvePendingLifecycleValidations())
@@ -1442,7 +1471,29 @@ public sealed class ExplorerTurn
                     using var generationAttempts = GenerationRequestAttemptScope.Enter();
                     providerEntered = true;
                     using var generationDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                    generationDeadline.CancelAfter(TimeSpan.FromSeconds(_maxGenerationSeconds));
+                    var generationStartedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+                    var generationLimitSeconds = EffectiveMaxGenerationSeconds();
+                    generationDeadline.CancelAfter(TimeSpan.FromSeconds(generationLimitSeconds));
+                    void CancelGenerationDeadline()
+                    {
+                        try { generationDeadline.Cancel(); }
+                        catch (ObjectDisposedException) { }
+                    }
+                    using var sessionPolicyDeadline = _sessionSecurityPolicy is null ? null
+                        : new Timer(_ =>
+                        {
+                            try
+                            {
+                                var currentLimit = EffectiveMaxGenerationSeconds();
+                                var appliedLimit = Volatile.Read(ref generationLimitSeconds);
+                                if (currentLimit < appliedLimit)
+                                    Interlocked.Exchange(ref generationLimitSeconds, currentLimit);
+                                if (System.Diagnostics.Stopwatch.GetElapsedTime(generationStartedAt)
+                                    >= TimeSpan.FromSeconds(Volatile.Read(ref generationLimitSeconds)))
+                                    CancelGenerationDeadline();
+                            }
+                            catch (Exception) { CancelGenerationDeadline(); }
+                        }, null, TimeSpan.FromMilliseconds(200), TimeSpan.FromMilliseconds(200));
                     try
                     {
                         resolved = _complete(request, generationDeadline.Token);
@@ -1450,7 +1501,7 @@ public sealed class ExplorerTurn
                     catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested
                         && generationDeadline.IsCancellationRequested)
                     {
-                        throw new GenerationDeadlineExceededException(_maxGenerationSeconds);
+                        throw new GenerationDeadlineExceededException(Volatile.Read(ref generationLimitSeconds));
                     }
                     forcedToolName = null;
                     continuation = resolved.State;
@@ -1667,7 +1718,7 @@ public sealed class ExplorerTurn
 
                     var validated = new ValidatedToolCall(call.Id, new ToolId(call.ToolName),
                         call.ProviderCallId ?? call.Id.ToString(), call.ArgumentsJson);
-                    var exposed = ReadTurnToolCallCount(stream, turnId) < _maxToolCallsPerTurn
+                    var exposed = ReadTurnToolCallCount(stream, turnId) < EffectiveMaxToolCalls()
                         && !lifecycleDeniedToolIds.Contains(call.ToolName)
                         && VisibleTools(discoveredToolIds).Any(tool => tool.Name == call.ToolName);
                     var redactedArguments = SafeToolArguments(call.ToolName, call.ArgumentsJson);

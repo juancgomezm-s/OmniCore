@@ -187,7 +187,7 @@ public static class StdioProtocolHost
                     || !StdioProtocol.IsSupportedCommand(nameElement.GetString()!))
                     throw new InvalidDataException();
                 var commandName = nameElement.GetString()!;
-                var trustedOnly = commandName is "conversation.start" or "run.interrupt" or "run.cancel" or "run.mode.select"
+                var trustedOnly = commandName is "conversation.start" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
                     or "external.memory.consent"
                     or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish";
                 TrustedActionScope? trustedScope = null;
@@ -202,7 +202,7 @@ public static class StdioProtocolHost
                 if (trustedOnly && trustedScope is null)
                     return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_user_action_required",
                         RuntimeCommandOutcome.Rejected()));
-                if (trustedScope is not null && commandName is not ("session.input" or "conversation.start"
+                if (trustedScope is not null && commandName is not ("session.input" or "conversation.start" or "session.security.set" or "session.security.default.set"
                     or "run.interrupt" or "run.cancel" or "run.mode.select" or "external.memory.consent" or "attachment.upload.begin"
                     or "attachment.upload.chunk" or "attachment.upload.finish"))
                     return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_action_not_supported",
@@ -233,7 +233,7 @@ public static class StdioProtocolHost
                     // pinned Session/Run and verified pre-cancel revision authorize this one write.
                     trustedScope = trustedScope with { CheckRevision = false };
                 }
-                else if (conversation.IsRunning)
+                else if (conversation.IsRunning && commandName != "session.security.set")
                 {
                     var duplicate = FindReceiptResult(client, command);
                     if (duplicate is not null) return EncodeAck(duplicate);
@@ -449,7 +449,7 @@ public static class StdioProtocolHost
         using var payload = JsonDocument.Parse(command.PayloadJson);
         if (!payload.RootElement.TryGetProperty("cmd", out var cmd) || cmd.ValueKind != JsonValueKind.String) return false;
         var commandName = cmd.GetString();
-        if (commandName is not ("session.input" or "conversation.start" or "run.interrupt" or "run.cancel" or "run.mode.select"
+        if (commandName is not ("session.input" or "conversation.start" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
             or "external.memory.consent"
             or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish")) return false;
         if (commandName.StartsWith("attachment.upload.", StringComparison.Ordinal))
@@ -481,6 +481,38 @@ public static class StdioProtocolHost
                 inputRevision.ValueKind == JsonValueKind.Null ? null : inputRevision.GetInt64(),
                 CheckRevision: true, RequirePlanRun: mode.GetString() == "plan", RequestedMode: mode.GetString(),
                 RequireCurrentAct: mode.GetString() == "act");
+            return true;
+        }
+        else if (commandName == "session.security.set")
+        {
+            if (expectedSession.Value is null || properties.Length != 4
+                || properties.Except(["cmd", "sessionId", "category", "expectedRevision"], StringComparer.Ordinal).Any()
+                || !payload.RootElement.TryGetProperty("sessionId", out var sessionId)
+                || sessionId.ValueKind != JsonValueKind.String || sessionId.GetString() != expectedSession.Value
+                || !payload.RootElement.TryGetProperty("category", out var category)
+                || category.ValueKind != JsonValueKind.String
+                || !Enum.TryParse<OmniCore.Domain.ModelPolicyCategory>(category.GetString(), false, out var policyCategory)
+                || !Enum.IsDefined(policyCategory) || policyCategory == OmniCore.Domain.ModelPolicyCategory.Custom
+                || !payload.RootElement.TryGetProperty("expectedRevision", out var policyRevision)
+                || policyRevision.ValueKind != JsonValueKind.Number || !policyRevision.TryGetInt64(out var parsedPolicyRevision)
+                || parsedPolicyRevision < 1) return false;
+            scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
+                CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
+            return true;
+        }
+        else if (commandName == "session.security.default.set")
+        {
+            if (properties.Length != 3
+                || properties.Except(["cmd", "category", "expectedRevision"], StringComparer.Ordinal).Any()
+                || !payload.RootElement.TryGetProperty("category", out var category)
+                || category.ValueKind != JsonValueKind.String
+                || !Enum.TryParse<OmniCore.Domain.ModelPolicyCategory>(category.GetString(), false, out var policyCategory)
+                || !Enum.IsDefined(policyCategory) || policyCategory == OmniCore.Domain.ModelPolicyCategory.Custom
+                || !payload.RootElement.TryGetProperty("expectedRevision", out var policyRevision)
+                || policyRevision.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(policyRevision.GetString()))
+                return false;
+            scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
+                CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
             return true;
         }
         else if (commandName == "external.memory.consent")
@@ -817,6 +849,7 @@ public static class StdioProtocolHost
             var hostOnlyQueries = new HashSet<string>(["query.toolCatalog", "query.extensionCatalog", "query.mcpConfiguration",
                 "query.hookCatalog", "query.skillCatalog", "query.sessionMemory", "query.modePreferences",
                 "query.reasoningPreferences", "query.workspaceStatus", "query.turnContext", "query.openRouterStatus", "query.uiPreferences",
+                "query.sessionSecurity", "query.sessionSecurityDefault",
                 "query.commandOutcome"],
                 StringComparer.Ordinal);
             supported = supported.Where(capability => !hostOnlyQueries.Contains(capability));

@@ -521,17 +521,35 @@ public sealed class ToolRuntime
             return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
         }
 
-        execContext.BeforeEffect?.Invoke(intent);
-        if (reconciliation?.StartedEntityEvent is { } entityEvent) _emit(entityEvent);
         var durableReconciliation = reconciliation?.DurableMetadataJson
             ?? ReconciliationJsonFor(intent.Claims, reconciliation);
-        _emit(new ToolCallStarted(call.ToolCallId, intent.Effect, durableReconciliation)
+        // Serialize the last Session-ceiling read with a policy revision and the Started Barrier.
+        // Once Started is durable, a concurrent policy downgrade sees the open effect and defers.
+        using (intent.Effect != EffectClass.None || call.ToolId.ToString() == "core.agents.mailbox.receive"
+            ? execContext.AcquireSessionSecurityAdmission?.Invoke() : null)
         {
-            // Attribution is not proof of reversibility: pre/post hashes cannot restore bytes.
-            TargetRef = RelativeTargetRef(intent.Claims.Writes, execContext.WorkspaceRoot),
-            Reversibility = reconciliation?.Reversibility ?? Reversibility.Unknown,
-            BeforeStateRef = reconciliation?.BeforeStateRef,
-        });
+            foreach (var activeBoundary in ActiveBoundaries())
+            {
+                var boundaryDecision = activeBoundary.Evaluate(intent);
+                if (!boundaryDecision.Allowed)
+                {
+                    _emit(new ToolCallFailed(call.ToolCallId,
+                        "frontera de capacidad: " + boundaryDecision.Reason, EffectOutcome.None,
+                        ToolErrorCode.CapabilityRefused));
+                    return new Outcome(false, boundaryDecision.Reason, null, ToolCallState.Failed,
+                        EffectOutcome.None);
+                }
+            }
+            execContext.BeforeEffect?.Invoke(intent);
+            if (reconciliation?.StartedEntityEvent is { } entityEvent) _emit(entityEvent);
+            _emit(new ToolCallStarted(call.ToolCallId, intent.Effect, durableReconciliation)
+            {
+                // Attribution is not proof of reversibility: pre/post hashes cannot restore bytes.
+                TargetRef = RelativeTargetRef(intent.Claims.Writes, execContext.WorkspaceRoot),
+                Reversibility = reconciliation?.Reversibility ?? Reversibility.Unknown,
+                BeforeStateRef = reconciliation?.BeforeStateRef,
+            });
+        }
 
         ToolResult result;
         try

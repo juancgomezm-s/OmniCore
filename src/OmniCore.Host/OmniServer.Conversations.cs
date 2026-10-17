@@ -66,6 +66,7 @@ public sealed partial class OmniServer
                 {
                     attempted = _lastSessionId;
                     sequenceBefore = attempted is null ? 0 : _store.CurrentSequence(attempted);
+                    if (attempted is { } active) EnsureSessionSecurityPolicy(active);
                     return CompactConversation(command, token);
                 }
                 SessionId target;
@@ -85,6 +86,7 @@ public sealed partial class OmniServer
                 // First actual intent resolves the initial model route. A blank conversation
                 // does not inherit the previous conversation's route grants.
                 if (name == "conversation.new") StartSession(target, deferRouting: true);
+                EnsureSessionSecurityPolicy(target);
                 _lastSessionId = target; _lastRunId = run; _lastSnapshot = null; _lastWorkingStateText = "";
                 _writerOwnershipUnavailable = false;
                 _recoveryProblem = null;

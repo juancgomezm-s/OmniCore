@@ -92,6 +92,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
     /// Nunca es un estado global entre sesiones.
     /// </summary>
     private readonly FileReadRegistry _readRegistry;
+    private readonly Func<SessionSecurityPolicySet?>? _sessionSecurityPolicy;
 
     public ModelCapabilityBoundary(EffectiveModelPolicy policy)
         : this(policy, CoreTools)
@@ -106,13 +107,22 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
 
     public ModelCapabilityBoundary(EffectiveModelPolicy policy,
         IReadOnlyDictionary<string, ModelToolCapability> toolCapabilities, FileReadRegistry readRegistry)
+        : this(policy, toolCapabilities, readRegistry, null)
+    {
+    }
+
+    public ModelCapabilityBoundary(EffectiveModelPolicy policy,
+        IReadOnlyDictionary<string, ModelToolCapability> toolCapabilities, FileReadRegistry readRegistry,
+        Func<SessionSecurityPolicySet?>? sessionSecurityPolicy)
     {
         _policy = policy;
         _toolCapabilities = toolCapabilities;
         _readRegistry = readRegistry;
+        _sessionSecurityPolicy = sessionSecurityPolicy;
         // La contabilidad de mutaciones por Run (EPIC-021) viaja con el registro de lecturas:
         // ambos son el estado per-Run de la política del modelo.
-        _readRegistry.Ledger.Bind(policy.MutationPolicy);
+        if (_sessionSecurityPolicy is null) _readRegistry.Ledger.Bind(policy.MutationPolicy);
+        else _readRegistry.Ledger.BindProvider(IntersectedMutationPolicy);
     }
 
     /// <summary>Registro de lecturas efectivas de este Run (ADR-0044 §5).</summary>
@@ -138,6 +148,8 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
     public ModelCapabilityDecision Evaluate(ToolIntent intent)
     {
         var toolName = intent.ToolId.ToString();
+        var sessionDecision = EvaluateSessionSecurityCeiling(intent, toolName);
+        if (sessionDecision is { Allowed: false }) return sessionDecision;
 
         // 1. Tool inventada u oculta: sin clasificación no hay autorización posible.
         if (!_toolCapabilities.TryGetValue(toolName, out var capability))
@@ -236,8 +248,137 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             }
         }
 
-        return ModelCapabilityDecision.Allow();
+        return sessionDecision is { RequiresAsk: true } ? sessionDecision : ModelCapabilityDecision.Allow();
     }
+
+    private ModelCapabilityDecision? EvaluateSessionSecurityCeiling(ToolIntent intent, string toolName)
+    {
+        if (_sessionSecurityPolicy is null) return null;
+        var requiresAsk = false;
+        SessionSecurityPolicySet? ceiling;
+        try
+        {
+            ceiling = _sessionSecurityPolicy();
+            if (ceiling is null) return ModelCapabilityDecision.Reject("durable Session security policy is unavailable", null);
+            ceiling.Validate();
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException
+            or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return ModelCapabilityDecision.Reject("durable Session security policy could not be verified", null);
+        }
+
+        if (!_toolCapabilities.TryGetValue(toolName, out var capability))
+            return ModelCapabilityDecision.Reject("tool has no Session security classification: " + toolName, null);
+        if (toolName == "worktree.integrate")
+        {
+            var required = new[] { ModelToolCapability.CreateFile, ModelToolCapability.ReplaceFile,
+                ModelToolCapability.DeleteFile };
+            if (ceiling.FileMutationMode != FileMutationMode.Full
+                || required.Any(item => !ceiling.CapabilityCeiling.Contains(item)))
+                return ModelCapabilityDecision.Reject("worktree integration exceeds the Session security ceiling", capability);
+            if (ceiling.DeletePolicy == DestructiveActionPolicy.Deny)
+                return ModelCapabilityDecision.Reject("Session security policy denies destructive integration", capability);
+            if (ceiling.DeletePolicy == DestructiveActionPolicy.Ask)
+                requiresAsk = true;
+        }
+        if (capability == ModelToolCapability.ReplaceFile)
+        {
+            if (ceiling.FileMutationMode == FileMutationMode.PatchAndCreate)
+                capability = ModelToolCapability.CreateFile;
+            else if (ceiling.FileMutationMode != FileMutationMode.Full)
+                return ModelCapabilityDecision.Reject("Session security policy does not allow full-file writes", capability);
+        }
+        if (!ceiling.CapabilityCeiling.Contains(capability))
+            return ModelCapabilityDecision.Reject("capability is outside the current Session security ceiling: " + capability,
+                capability);
+        if (intent.Claims.Network.Count > 0
+            && !ceiling.CapabilityCeiling.Contains(ModelToolCapability.Network))
+            return ModelCapabilityDecision.Reject("network claims are outside the current Session security ceiling",
+                ModelToolCapability.Network);
+
+        var boundedValidation = capability == ModelToolCapability.ValidationProcess
+            && intent.Effect == EffectClass.NonIdempotent && intent.Risk == ToolRisk.High
+            && intent.Claims.Process is { NetworkRequired: false, EffectClass: "External",
+                WorkingDirectory: { Length: > 0 } cwd } && intent.Claims.Writes.Count == 1
+            && string.Equals(intent.Claims.Writes.Single(), cwd,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        if (intent.Claims.Writes.Count > 0 && !MutationAllowed(ceiling.FileMutationMode, capability)
+            && !boundedValidation)
+            return ModelCapabilityDecision.Reject("file mutation is outside the current Session security ceiling", capability);
+        if (capability is ModelToolCapability.DeleteFile or ModelToolCapability.MoveOrRename)
+        {
+            var rule = capability == ModelToolCapability.DeleteFile ? ceiling.DeletePolicy : ceiling.MoveOrRenamePolicy;
+            if (rule == DestructiveActionPolicy.Deny)
+                return ModelCapabilityDecision.Reject("destructive action is denied by Session security policy", capability);
+            if (rule == DestructiveActionPolicy.Ask)
+                requiresAsk = true;
+        }
+        return requiresAsk
+            ? ModelCapabilityDecision.Ask("action requires confirmation under Session security policy", capability)
+            : ModelCapabilityDecision.Allow();
+    }
+
+    private FileMutationPolicy? IntersectedMutationPolicy()
+    {
+        SessionSecurityPolicySet? ceiling;
+        try
+        {
+            ceiling = _sessionSecurityPolicy?.Invoke();
+            if (ceiling is null) return new FileMutationPolicy(FileMutationMode.None,
+                DestructiveActionPolicy.Deny, DestructiveActionPolicy.Deny, 0, 0, 0,
+                true, true, true, false);
+            ceiling.Validate();
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException
+            or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return new FileMutationPolicy(FileMutationMode.None,
+                DestructiveActionPolicy.Deny, DestructiveActionPolicy.Deny, 0, 0, 0,
+                true, true, true, false);
+        }
+
+        var current = _policy.MutationPolicy;
+        var candidateOperations = new[] { ModelToolCapability.PatchExisting, ModelToolCapability.CreateFile,
+            ModelToolCapability.ReplaceFile, ModelToolCapability.DeleteFile, ModelToolCapability.MoveOrRename };
+        var allowed = candidateOperations.Where(operation => MutationAllowed(current.Mode, operation)
+            && MutationAllowed(ceiling.FileMutationMode, operation)).ToHashSet();
+        var mode = Enum.GetValues<FileMutationMode>().Where(candidate => candidateOperations
+                .Where(operation => MutationAllowed(candidate, operation)).All(allowed.Contains))
+            .OrderByDescending(candidate => candidateOperations.Count(operation => MutationAllowed(candidate, operation)))
+            .First();
+        var maximumFiles = mode == FileMutationMode.None ? 0
+            : Math.Min(current.MaxFilesPerTurn, ceiling.MaxFilesPerTurn);
+        var maximumLines = mode == FileMutationMode.None ? 0
+            : Math.Min(current.MaxChangedLinesPerTurn, ceiling.MaxChangedLinesPerTurn);
+        static DestructiveActionPolicy Stricter(DestructiveActionPolicy first, DestructiveActionPolicy second) =>
+            Rank(first) <= Rank(second) ? first : second;
+        return new FileMutationPolicy(mode, Stricter(current.Delete, ceiling.DeletePolicy),
+            Stricter(current.MoveOrRename, ceiling.MoveOrRenamePolicy), maximumFiles, maximumLines,
+            Math.Min(current.MaxRewriteRatio, ceiling.MaxRewriteRatio),
+            current.RequirePriorRead || ceiling.RequirePriorRead,
+            current.RequireExpectedVersionToken || ceiling.RequireExpectedVersionToken,
+            current.RequirePostEditValidation || ceiling.RequirePostEditValidation,
+            current.AllowParallelMutations && ceiling.AllowParallelMutations);
+    }
+
+    private static bool MutationAllowed(FileMutationMode mode, ModelToolCapability capability) => mode switch
+    {
+        FileMutationMode.None => false,
+        FileMutationMode.PatchExisting => capability == ModelToolCapability.PatchExisting,
+        FileMutationMode.PatchAndCreate => capability is ModelToolCapability.PatchExisting or ModelToolCapability.CreateFile,
+        FileMutationMode.Full => capability is ModelToolCapability.PatchExisting or ModelToolCapability.CreateFile
+            or ModelToolCapability.ReplaceFile or ModelToolCapability.DeleteFile or ModelToolCapability.MoveOrRename,
+        _ => false,
+    };
+
+    private static int Rank(DestructiveActionPolicy policy) => policy switch
+    {
+        DestructiveActionPolicy.Deny => 2,
+        DestructiveActionPolicy.Ask => 1,
+        DestructiveActionPolicy.Allow => 0,
+        _ => -1,
+    };
 
     private bool IsBoundValidationProcess(ModelToolCapability capability, ToolIntent intent)
     {
@@ -246,7 +387,6 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         // responsibility of the registering Host tool; this does not grant filesystem tools or
         // arbitrary dynamic ids any mutation capability.
         if (capability != ModelToolCapability.ValidationProcess
-            || _policy.MutationPolicy.Mode != FileMutationMode.Full
             || intent.Effect != EffectClass.NonIdempotent || intent.Risk != ToolRisk.High
             || intent.Claims.Process is not { NetworkRequired: false, EffectClass: "External",
                 WorkingDirectory: { Length: > 0 } cwd }
@@ -260,7 +400,17 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
     /// ADR-0044 §4). Lo usa el ToolPlanner (<c>VisibleTools</c>) para no mostrar más tools de
     /// las que la política concede.
     /// </summary>
-    public int MaxVisibleTools() => _policy.ToolPolicy.MaxVisibleTools;
+    public int MaxVisibleTools()
+    {
+        if (_sessionSecurityPolicy is null) return _policy.ToolPolicy.MaxVisibleTools;
+        try
+        {
+            var session = _sessionSecurityPolicy();
+            return session is null ? 0 : Math.Min(_policy.ToolPolicy.MaxVisibleTools, session.MaxVisibleTools);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException
+            or UnauthorizedAccessException or InvalidOperationException) { return 0; }
+    }
 
     /// <summary>Discloses permitted tools in a stable, useful order before applying the visible
     /// count. Basic workspace read/search and mailbox capabilities remain available ahead of
@@ -332,6 +482,29 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             or ModelToolCapability.ReplaceFile or ModelToolCapability.DeleteFile
             or ModelToolCapability.MoveOrRename) && !MutationAllowed(capability))
             return false;
+
+        if (_sessionSecurityPolicy is not null)
+        {
+            SessionSecurityPolicySet? session;
+            try
+            {
+                session = _sessionSecurityPolicy();
+                if (session is null) return false;
+                session.Validate();
+            }
+            catch (Exception exception) when (exception is InvalidDataException or IOException
+                or UnauthorizedAccessException or InvalidOperationException) { return false; }
+            if (capability == ModelToolCapability.ReplaceFile)
+            {
+                if (session.FileMutationMode == FileMutationMode.PatchAndCreate)
+                    capability = ModelToolCapability.CreateFile;
+                else if (session.FileMutationMode != FileMutationMode.Full) return false;
+            }
+            if (!session.CapabilityCeiling.Contains(capability)) return false;
+            if ((capability is ModelToolCapability.PatchExisting or ModelToolCapability.CreateFile
+                or ModelToolCapability.ReplaceFile or ModelToolCapability.DeleteFile or ModelToolCapability.MoveOrRename)
+                && !MutationAllowed(session.FileMutationMode, capability)) return false;
+        }
 
         return _policy.ToolPolicy.Allows(capability);
     }

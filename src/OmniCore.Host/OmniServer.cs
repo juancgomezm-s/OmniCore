@@ -119,6 +119,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     private bool SourceModelAllowsOrchestration(SessionId session, IReadOnlyList<DomainEvent> journal,
         ModelStepStarted step)
     {
+        if (ReadSessionSecurityPolicy(session) is not { AllowOrchestration: true }) return false;
         if (step.RouteId is null) return false;
         var routing = journal.Where(evt => evt.SessionId == session)
             .OrderBy(evt => evt.Sequence).Select(_codecs.Decode)
@@ -316,6 +317,22 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     }
 
     internal SqliteEventStore? ReceiptStore => _store as SqliteEventStore;
+
+    internal IDisposable AcquireSessionSecurityAdmission()
+    {
+        Monitor.Enter(_modeAuthorityMutationGate);
+        return new MonitorLock(_modeAuthorityMutationGate);
+    }
+
+    private sealed class MonitorLock(object gate) : IDisposable
+    {
+        private object? _gate = gate;
+        public void Dispose()
+        {
+            var held = Interlocked.Exchange(ref _gate, null);
+            if (held is not null) Monitor.Exit(held);
+        }
+    }
 
     internal void ClosePersistentStore() => (_store as SqliteEventStore)?.Close();
 
@@ -699,6 +716,16 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         var commandName = fields.TryGetValue("cmd", out var c) ? c : null;
         if (commandName is "conversation.new" or "conversation.resume" or "conversation.compact")
             return HandleConversationCommand(command, fields, commandName, trustedUserAction, cancellationToken);
+        if (commandName == "session.security.set")
+            return trustedUserAction
+                ? SetSessionSecurityPolicy(command, fields)
+                : new CommandAck(command.MessageId, "error", "trusted_user_action_required",
+                    RuntimeCommandOutcome.Rejected());
+        if (commandName == "session.security.default.set")
+            return trustedUserAction
+                ? SetSessionSecurityDefault(command, fields, cancellationToken)
+                : new CommandAck(command.MessageId, "error", "trusted_user_action_required",
+                    RuntimeCommandOutcome.Rejected());
         if (commandName == UiLocalePreferencesProtocol.ConfigureCommand)
         {
             if (!trustedUserAction)
@@ -1959,6 +1986,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             // journal initialization is all-or-nothing; no incomplete Run becomes selectable.
             var durableIdentity = WorkspaceRootIdentity.Establish(workspacePath);
             var hookPaths = _platformPathsFactory();
+            var securityDefault = new SessionSecurityDefaultConfiguration(hookPaths).Read();
             var lifecycleHooks = ProjectExtensionHooks.Load(physicalWorkspaceRoot, hookPaths,
                 new WorkspaceTrustStore(hookPaths).IsTrusted(physicalWorkspaceRoot),
                 _lifecycleRpcInvokerFactory());
@@ -1969,6 +1997,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 new SessionCreated(sessionId,
                     WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(physicalWorkspaceRoot)).ToString(),
                     workspacePath, ProfileId.New(), now),
+                SessionSecurityPolicySet.FromPreset(sessionId, 1, securityDefault.Category,
+                    SessionSecurityProvenance.Native, SessionSecurityPolicySource.UserDefault, now),
                 new SessionRoutingPolicySet(sessionId, _newSessionRoutingPolicy),
                 new WorkspaceRootEstablished(sessionId, workspacePath, now, durableIdentity),
                 new RunCreated(runId, sessionId, objective, mode,
@@ -2105,6 +2135,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
         if (physicalRoot is null) return [];
         var paths = _platformPathsFactory();
+        var securityDefault = new SessionSecurityDefaultConfiguration(paths).Read();
         return ProjectExtensionHooks.Load(physicalRoot, paths,
             new WorkspaceTrustStore(paths).IsTrusted(physicalRoot), _lifecycleRpcInvokerFactory());
     }
@@ -3106,6 +3137,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         if (name == "sessionIdentity")
             return new SessionQueryResult("sessionIdentity", "{" + JsonObj.Field("sessionId", _lastSessionId?.ToString() ?? "") + "}");
 
+        if (name == "sessionSecurity")
+            return new SessionQueryResult(name, CurrentSessionSecurityJson());
+        if (name == "sessionSecurityDefault")
+            return new SessionQueryResult(name, CurrentSessionSecurityDefaultJson());
+
         if (name == "commandOutcome")
         {
             if (_lastPromptExpanded is { } prompt) return new SessionQueryResult("commandOutcome", "{\"outcome\":{"
@@ -3564,14 +3600,19 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                         outcomeSession = session; // keep the attempted identity even if initialization fails
                         StartSession(session);
                     }
-                    var mode = ReadModePreference().Mode;
-                    if (trustedUserAction && fields.TryGetValue("mode", out var requestedMode))
+                    bool startsRun;
+                    lock (_modeAuthorityMutationGate)
                     {
-                        if (!TryParseRunMode(requestedMode, out mode))
-                            throw new FormatException("mode de session.input inválido");
+                        EnsureSessionSecurityPolicy(session);
+                        var mode = ReadModePreference().Mode;
+                        if (trustedUserAction && fields.TryGetValue("mode", out var requestedMode))
+                        {
+                            if (!TryParseRunMode(requestedMode, out mode))
+                                throw new FormatException("mode de session.input inválido");
+                        }
+                        startsRun = control.ActiveRun(session) is null;
+                        _lastRunId = control.SendInput(session, text, mode, ConsumePromptOrigin(), attachments);
                     }
-                    var startsRun = control.ActiveRun(session) is null;
-                    _lastRunId = control.SendInput(session, text, mode, ConsumePromptOrigin(), attachments);
                     if (startsRun && _lastRunId is { } startedRun)
                         DispatchRunStartLifecycle(session, startedRun);
                     _lastSessionId = session;
@@ -4322,6 +4363,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         {
             new SessionCreated(session, WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(workspace)).ToString(),
                 workspace, ProfileId.New(), DateTimeOffset.UtcNow),
+            SessionSecurityPolicySet.FromPreset(session, 1, securityDefault.Category,
+                SessionSecurityProvenance.Native, SessionSecurityPolicySource.UserDefault, DateTimeOffset.UtcNow),
         };
         if (!deferRouting) creation.Add(new SessionRoutingPolicySet(session, _newSessionRoutingPolicy));
         if (_workspaceRoot is { Length: > 0 })

@@ -554,7 +554,7 @@ public sealed class OmniCliRuntime : IDisposable
 
     /// <summary>Boundary nuevo por Run; su registro de lecturas canoniza contra la raíz del workspace.</summary>
     internal static ModelCapabilityBoundary CreateBoundary(EffectiveModelPolicy policy, string workspaceRoot,
-        FakeCatalog? catalog = null)
+        FakeCatalog? catalog = null, Func<SessionSecurityPolicySet?>? sessionSecurityPolicy = null)
     {
         var capabilities = new Dictionary<string, ModelToolCapability>(ModelCapabilityBoundary.CoreTools,
             StringComparer.Ordinal);
@@ -580,7 +580,8 @@ public sealed class OmniCliRuntime : IDisposable
                         + tool.Descriptor.Id);
             }
         }
-        return new ModelCapabilityBoundary(policy, capabilities, new FileReadRegistry(workspaceRoot));
+        return new ModelCapabilityBoundary(policy, capabilities, new FileReadRegistry(workspaceRoot),
+            sessionSecurityPolicy);
     }
 
     private static EffectiveModelPolicy RestrictToWorkflowStage(EffectiveModelPolicy policy,
@@ -1953,7 +1954,8 @@ public sealed class OmniCliRuntime : IDisposable
                 : WorkflowStagePolicyFingerprint(effectivePolicy, workflowStage.Definition);
 
             // Un boundary (y su registro de lecturas) por Run, canonizado contra la raíz del workspace.
-            var boundary = CreateBoundary(effectivePolicy, workspaceRoot);
+            var boundary = CreateBoundary(effectivePolicy, workspaceRoot,
+                sessionSecurityPolicy: () => server.ReadSessionSecurityPolicy(sessionId));
             if (act && effectivePolicy.IsFallback)
                 writeLine(Text(LocalizedText.Of("coder.policy.observeOnly")));
             if (delegation is null && !act && OmniServer.RequirePlanApprovalInteraction(server.RequestPlanApprovalCommand()) is { } pendingApproval)
@@ -2090,7 +2092,8 @@ public sealed class OmniCliRuntime : IDisposable
                         workflowStage.VerifyExecutable!, JsonDocument.Parse(workflowStage.VerifyArgvJson!)
                             .RootElement.EnumerateArray().Select(value => value.GetString()!).ToArray(),
                         workflowStage.VerifyCwd!);
-                    boundary = CreateBoundary(effectivePolicy, workspaceRoot, hostTools.Catalog());
+                    boundary = CreateBoundary(effectivePolicy, workspaceRoot, hostTools.Catalog(),
+                        () => server.ReadSessionSecurityPolicy(sessionId));
                 }
                 catch (Exception failure) when (failure is ArgumentException or InvalidOperationException)
                 {
@@ -2109,9 +2112,10 @@ public sealed class OmniCliRuntime : IDisposable
             var executor = executingAct
                 ? OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
                     audit, interactionResponder, interactive, artifacts, agentProfile, receiveMailbox,
-                    extensionBoundaries)
+                    extensionBoundaries, server.AcquireSessionSecurityAdmission)
                 : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
-                    agentProfile, receiveMailbox, extensionBoundaries, artifacts);
+                    agentProfile, receiveMailbox, extensionBoundaries, artifacts,
+                    server.AcquireSessionSecurityAdmission);
             var skillLimits = SkillSelectionLimits.FromHarness(harness,
                 (int)Math.Clamp(usableContext / 8, 1, 16_384));
             var skillSourceCatalog = new SkillSourceCatalog();
@@ -2304,6 +2308,7 @@ public sealed class OmniCliRuntime : IDisposable
                     toolPreferences: loaded.Settings?.ToolPreferences,
                     lifecycleHooks: lifecycleHooks,
                     sessionMemoryPolicy: sessionMemoryPolicy,
+                    sessionSecurityPolicy: () => server.ReadSessionSecurityPolicy(sessionId),
                     resolveLifecycleValidations: delegation is null
                         ? (ids, read, context, token) =>
                         {
@@ -2425,7 +2430,8 @@ public sealed class OmniCliRuntime : IDisposable
                                 artifactReadTool, ProcessSandboxStrengthForTests)
                         : childRequiresActTools ? HostTools.DelegatedAgent(work.Profile, artifactReadTool)
                             : HostTools.DelegatedReaderWithMailbox(artifactReadTool);
-                    var childBoundary = CreateBoundary(effectivePolicy, laneRoot, childTools.Catalog());
+                    var childBoundary = CreateBoundary(effectivePolicy, laneRoot, childTools.Catalog(),
+                        () => server.ReadSessionSecurityPolicy(work.Session));
                     if (workflowStage?.Definition.Stage == WorkflowStage.Verify)
                     {
                         var verifyCwd = MapWorkflowCwdToLane(workspaceRoot, laneRoot, workflowStage.VerifyCwd!);
@@ -2438,7 +2444,8 @@ public sealed class OmniCliRuntime : IDisposable
                             workflowStage.VerifyExecutable!, JsonDocument.Parse(workflowStage.VerifyArgvJson!)
                                 .RootElement.EnumerateArray().Select(value => value.GetString()!).ToArray(),
                             workflowStage.VerifyCwd!, verifyCwd);
-                        childBoundary = CreateBoundary(effectivePolicy, laneRoot, childTools.Catalog());
+                        childBoundary = CreateBoundary(effectivePolicy, laneRoot, childTools.Catalog(),
+                            () => server.ReadSessionSecurityPolicy(work.Session));
                     }
                     var childExecutor = childRequiresActTools
                         ? OmniHost.CreateActExecutor(childTools.Catalog(), laneRoot, childBoundary,
@@ -2572,7 +2579,8 @@ public sealed class OmniCliRuntime : IDisposable
                                 var rootTools = OmniHost.CreateActTools(artifactReadTool: artifactReadTool,
                                     worktreeIntegrationCoordinator: OmniHost.CreateWorktreeIntegrationCoordinator(
                                         workspaceRoot, paths, artifacts));
-                                var rootBoundary = CreateBoundary(effectivePolicy, workspaceRoot, rootTools.Catalog());
+                                var rootBoundary = CreateBoundary(effectivePolicy, workspaceRoot, rootTools.Catalog(),
+                                    () => server.ReadSessionSecurityPolicy(sessionId));
                                 var rootExecutor = OmniHost.CreateActExecutor(rootTools.Catalog(), workspaceRoot,
                                     rootBoundary, restrictions, runId, audit, interactionResponder, interactive,
                                     artifacts, rootProfile, additionalBoundaries: extensionBoundaries);
@@ -4524,7 +4532,9 @@ public sealed class OmniCliRuntime : IDisposable
                 worktreeIntegrationCoordinator: OmniHost.CreateWorktreeIntegrationCoordinator(
                     _workspaceRoot, OmniHost.CreatePlatformPaths(), artifacts))
             : OmniHost.CreateExplorerTools(artifactReadTool)).Catalog();
-        server.ConfigureToolDiagnostics(catalog, CreateBoundary(effective, _workspaceRoot), mode);
+        var session = server.LastSessionId();
+        server.ConfigureToolDiagnostics(catalog, CreateBoundary(effective, _workspaceRoot, catalog,
+            session is { } current ? () => server.ReadSessionSecurityPolicy(current) : null), mode);
     }
 
     /// <summary>Ejecuta un comando tipado de permisos para el WorkspaceId del cliente actual.</summary>

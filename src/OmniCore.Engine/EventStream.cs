@@ -79,6 +79,7 @@ public sealed class EventStream
     {
         lock (WriterGate())
         {
+            ValidateSessionSecurityPayloadIdentity(payload);
             ValidateModeAuthorityBatch(new[] { payload }, null);
             CatchUp();
             _tracker.Clone().Apply(payload);
@@ -107,6 +108,24 @@ public sealed class EventStream
             admit(_store.ReadFrom(_sessionId, 1));
             Append(payload, durability);
             return _store.ReadFrom(_sessionId, 1).Last();
+        }
+    }
+
+    /// <summary>Append a durable initialization event once, sharing this store/session writer gate.
+    /// The journal is reread under the gate so concurrent legacy migration callers cannot both
+    /// create revision one.</summary>
+    public bool AppendIfNoEventsOfType(EventType eventType, DomainEventPayload payload,
+        DurabilityClass durability)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        if (payload.Type() != eventType)
+            throw new ArgumentException("Initialization payload type does not match the requested event type.", nameof(payload));
+        lock (WriterGate())
+        {
+            CatchUp();
+            if (_store.ReadFrom(_sessionId, 1).Any(envelope => envelope.Type == eventType)) return false;
+            Append(payload, durability);
+            return true;
         }
     }
 
@@ -207,6 +226,8 @@ public sealed class EventStream
             return;
         }
 
+        foreach (var payload in payloads) ValidateSessionSecurityPayloadIdentity(payload);
+
         ValidateModeAuthorityBatch(payloads, causations);
         CatchUp();
         var validation = _tracker.Clone();
@@ -241,6 +262,14 @@ public sealed class EventStream
     private object WriterGate() => WriteGates.GetValue(_store,
         _ => new System.Collections.Concurrent.ConcurrentDictionary<SessionId, object>())
         .GetOrAdd(_sessionId, static _ => new object());
+
+    private void ValidateSessionSecurityPayloadIdentity(DomainEventPayload payload)
+    {
+        if (payload is SessionSecurityPolicySet policy
+            && policy.SessionId != _sessionId)
+            throw new InvalidDataException("Session security event identity must match its journal session.");
+        if (payload is SessionSecurityPolicySet validPolicy) validPolicy.Validate();
+    }
 
     private void ValidatePreM6Records(IReadOnlyList<DomainEvent> envelopes, IReadOnlyList<DomainEventPayload> payloads)
     {

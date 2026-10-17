@@ -140,7 +140,20 @@ public sealed class SimulationEngine
             DateTimeOffset.Now);
 
         var stream = new EventStream(_store, _codecs, sessionId);
-        stream.Append(new SessionCreated(sessionId, session.Workspace.Id.ToString(), session.Workspace.DisplayPath, session.Profile, session.CreatedAt));
+        var creationEvents = new List<DomainEventPayload>
+        {
+            new SessionCreated(sessionId, session.Workspace.Id.ToString(), session.Workspace.DisplayPath,
+                session.Profile, session.CreatedAt),
+        };
+        if (!_store.ReadFrom(sessionId, 1).Select(_codecs.Decode).OfType<SessionSecurityPolicySet>().Any())
+        {
+            var priorSession = _store.ReadFrom(sessionId, 1).Select(_codecs.Decode).OfType<SessionCreated>().Any();
+            creationEvents.Add(SessionSecurityPolicySet.FromPreset(sessionId, 1, ModelPolicyCategory.ObserveOnly,
+                priorSession ? SessionSecurityProvenance.LegacyMigrated : SessionSecurityProvenance.Native,
+                priorSession ? SessionSecurityPolicySource.LegacyMigration : SessionSecurityPolicySource.UserDefault,
+                session.CreatedAt));
+        }
+        stream.AppendBatch(creationEvents, DurabilityClass.Barrier);
 
         stream.Append(new RunCreated(runId, sessionId, scenario.Input, scenario.Mode, ExecutionStrategy.Direct,
             FailurePolicy.BlockDependents, new TaskBudget(null, null, null, null), rootTaskId, DateTimeOffset.Now));

@@ -180,6 +180,7 @@ public sealed class MutationLedger
     private readonly List<PendingEditValidation> _pendingValidations = new();
     private readonly List<ObservedMutation> _observed = new();
     private FileMutationPolicy? _policy;
+    private Func<FileMutationPolicy?>? _policyProvider;
     private int _turn;
     private int _turnChangedLines;
     private int _runChangedLines;
@@ -191,11 +192,19 @@ public sealed class MutationLedger
     }
 
     /// <summary>Política de mutación efectiva de este Run; null si la frontera no la fijó.</summary>
-    public FileMutationPolicy? MutationPolicy => _policy;
+    public FileMutationPolicy? MutationPolicy => _policyProvider is null ? _policy : _policyProvider();
 
     /// <summary>Vincula la política de mutación efectiva del Run. La llama el
     /// <see cref="ModelCapabilityBoundary"/> al construirse; no debe re-vincularse a mitad de Run.</summary>
     public void Bind(FileMutationPolicy? policy) => _policy = policy;
+
+    /// <summary>Binds an authoritative dynamic policy intersection that can only tighten during
+    /// the Run. Mutation accounting state remains on this ledger when revisions change.</summary>
+    public void BindProvider(Func<FileMutationPolicy?> provider)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        _policyProvider = provider;
+    }
 
     /// <summary>Número del Turn actual (0 antes del primero).</summary>
     public int TurnNumber => _turn;
@@ -244,7 +253,7 @@ public sealed class MutationLedger
     public MutationRefusal? RefuseMutation(ModelToolCapability operation, string path, bool targetExists,
         int deletedLines, int insertedLines, int originalLines)
     {
-        var policy = _policy;
+        var policy = MutationPolicy;
         if (policy is null)
         {
             // Sin política activa (frontera sin fijar) esta capa no restringe: manda el techo.
@@ -328,7 +337,7 @@ public sealed class MutationLedger
     public MutationRefusal? RefuseMutationBatch(IReadOnlyList<MutationProposal> proposals)
     {
         ArgumentNullException.ThrowIfNull(proposals);
-        var policy = _policy;
+        var policy = MutationPolicy;
         if (policy is null) return null;
         var projectedFiles = new HashSet<string>(_turnFiles, StringComparer.Ordinal);
         var projectedLines = _turnChangedLines;
@@ -380,7 +389,7 @@ public sealed class MutationLedger
         _runChangedLines += delta;
         _runMutations++;
 
-        if (_policy?.RequirePostEditValidation == true)
+        if (MutationPolicy?.RequirePostEditValidation == true)
         {
             _pendingValidations.Add(new PendingEditValidation(path, _turn, toolCallId));
         }
