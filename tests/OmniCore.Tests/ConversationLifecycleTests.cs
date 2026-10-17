@@ -81,6 +81,62 @@ public sealed class ConversationLifecycleTests
         finally { Directory.Delete(root, recursive: true); }
     }
 
+    [Theory]
+    [InlineData("new", true)]
+    [InlineData("resume", true)]
+    [InlineData("current", false)]
+    [InlineData("preowned", false)]
+    public void Failed_selection_releases_only_a_new_destination_lease(string selection, bool destinationReleased)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-conversation-rollback-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var journal = Path.Combine(root, "journal.db");
+        var pointer = Path.Combine(root, "last-session");
+        var codecs = EventCodecs.Create();
+        try
+        {
+            using var store = new SqliteEventStore(journal);
+            try
+            {
+                var server = new OmniServer(store, codecs, new InMemoryAuditSink(), pointer,
+                    artifacts: new FileArtifactStore(root), platformPathsFactory: () => new Paths(root));
+                Assert.Equal("ok", Command(server, "conversation.new").Status);
+                var previous = server.LastSessionId()!;
+                Assert.Equal("ok", Command(server, "conversation.new").Status);
+                var destination = server.LastSessionId()!;
+                Assert.Equal("ok", Command(server, "conversation.resume", previous.ToString()).Status);
+                if (selection == "current") destination = previous;
+                if (selection == "preowned") Assert.True(store.AcquireSessionWriterLease(destination));
+
+                var before = store.ReadEvents(EventType.Of("session.created"))
+                    .Select(codecs.Decode).OfType<SessionCreated>().Select(created => created.SessionId).ToHashSet();
+                // An existing directory at the pointer path makes the atomic File.Move fail
+                // after the destination lease has been acquired, on every supported platform.
+                File.Delete(pointer);
+                Directory.CreateDirectory(pointer);
+                var ack = Command(server, selection == "new" ? "conversation.new" : "conversation.resume",
+                    selection == "new" ? null : destination.ToString());
+                Assert.Equal("error", ack.Status);
+                Assert.Equal(previous, server.LastSessionId());
+                var after = store.ReadEvents(EventType.Of("session.created"))
+                    .Select(codecs.Decode).OfType<SessionCreated>().Select(created => created.SessionId).ToHashSet();
+                Assert.True(before.IsSubsetOf(after));
+                if (selection == "new") destination = Assert.Single(after.Except(before));
+
+                using var contender = new SqliteEventStore(journal);
+                try
+                {
+                    if (destinationReleased) Assert.True(contender.AcquireSessionWriterLease(destination));
+                    else Assert.Throws<SessionWriterLeaseUnavailableException>(() => contender.AcquireSessionWriterLease(destination));
+                    Assert.Throws<SessionWriterLeaseUnavailableException>(() => contender.AcquireSessionWriterLease(previous));
+                }
+                finally { Microsoft.Data.Sqlite.SqliteConnection.ClearPool((Microsoft.Data.Sqlite.SqliteConnection)contender.Connection); }
+            }
+            finally { Microsoft.Data.Sqlite.SqliteConnection.ClearPool((Microsoft.Data.Sqlite.SqliteConnection)store.Connection); }
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     [Fact]
     public void Switching_or_compacting_cannot_interrupt_an_open_model_turn()
     {

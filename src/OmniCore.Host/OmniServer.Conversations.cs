@@ -50,6 +50,7 @@ public sealed partial class OmniServer
             var previous = (_lastSessionId, _lastRunId);
             SessionId? attempted = null;
             long sequenceBefore = 0;
+            var acquiredTargetLease = false;
             try
             {
                 token.ThrowIfCancellationRequested();
@@ -79,7 +80,8 @@ public sealed partial class OmniServer
                     run = _store.ReadFrom(target, 1).Select(_codecs.Decode).OfType<RunCreated>().LastOrDefault()?.RunId;
                 }
                 attempted = target; sequenceBefore = _store.CurrentSequence(target);
-                if (_store is SqliteEventStore sqlite) sqlite.AcquireSessionWriterLease(target);
+                if (_store is SqliteEventStore sqlite)
+                    acquiredTargetLease = sqlite.AcquireSessionWriterLease(target);
                 // First actual intent resolves the initial model route. A blank conversation
                 // does not inherit the previous conversation's route grants.
                 if (name == "conversation.new") StartSession(target, deferRouting: true);
@@ -88,10 +90,12 @@ public sealed partial class OmniServer
                 _recoveryProblem = null;
                 if (run is not null) { RecoverPendingEffects(); RecoverPendingAgentOrchestration(); }
                 SaveLastSession();
+                var ack = CommandOutcomeAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+                    target, sequenceBefore, new CommandId(Guid.Parse(command.MessageId)));
                 if (_store is SqliteEventStore owned && previous._lastSessionId is { } old && old != target)
                     owned.ReleaseSessionWriterLease(old);
-                return CommandOutcomeAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
-                    target, sequenceBefore, new CommandId(Guid.Parse(command.MessageId)));
+                acquiredTargetLease = false;
+                return ack;
             }
             catch (SessionWriterLeaseUnavailableException)
             { return new(command.MessageId, "busy", "session_writer_owned", RuntimeCommandOutcome.Deferred("session_writer_owned")); }
@@ -101,6 +105,13 @@ public sealed partial class OmniServer
                 if (attempted is { } failed)
                     return FailedDurableCommandAck(command.MessageId, failed, sequenceBefore, "conversation.failed", restoreRunIdentity: false);
                 return new(command.MessageId, "error", "conversation.failed", RuntimeCommandOutcome.Rejected());
+            }
+            finally
+            {
+                // A failed selection must not retain a newly acquired destination lease.
+                // Pre-existing leases (including the previous Session) remain owned.
+                if (acquiredTargetLease && attempted is { } target && _store is SqliteEventStore owned)
+                    owned.ReleaseSessionWriterLease(target);
             }
         }
     }
