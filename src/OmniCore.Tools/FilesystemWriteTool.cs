@@ -4,39 +4,10 @@ using System.Text.Json;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 
-/// <summary>
-/// filesystem.write (M3 EPIC-021, ADR-0044 §5): escritura COMPLETA de un archivo dentro del
-/// workspace.
-///
-///  - CREACIÓN: si el archivo no existe, lo crea (directorios padre incluidos) en UTF-8 sin
-///    BOM. No exige token: no hay estado previo que verificar.
-///  - REEMPLAZO: si el archivo existe, exige <c>expectedVersion</c> (token SHA-256 del
-///    contenido vigente) y lo verifica ANTES de mutar; un token obsoleto → STALE_WRITE con el
-///    mismo formato que filesystem.patch y el archivo queda intacto. Conserva el encoding/BOM
-///    original. Rechaza el no-op (contenido idéntico) y vaciar el archivo existente.
-///
-/// Cuando el pipeline activa la política del modelo (registry por-Run cableado), aplica
-/// ADR-0044 §5 ANTES de escribir nada:
-///
-///  - modo de mutación: el reemplazo exige <c>FileMutationMode.Full</c>; la creación exige al
-///    menos <c>PatchAndCreate</c> (la frontera de capacidad expone filesystem.write create-only
-///    en ese modo; esta verificación en la tool es defensa en profundidad porque aquí ya se
-///    sabe si el destino existe) → MUTATION_REFUSED;
-///  - límites por Turn: MaxFilesPerTurn y MaxChangedLinesPerTurn (líneas borradas +
-///    insertadas acumuladas) → LIMIT_EXCEEDED;
-///  - MaxRewriteRatio: fracción de las líneas ORIGINALES que esta operación reescribe;
-///  - lectura previa efectiva de la ruta/versión en el mismo Run para el REEMPLAZO
-///    (PRIOR_READ_REQUIRED) cuando la política la exige (<c>RequirePriorRead</c>);
-///  - registra la validación post-edición pendiente si la política la exige
-///    (<c>RequirePostEditValidation</c>).
-///
-/// Escrito atómico (bloqueante 1 de auditoría, igual que filesystem.patch): temporal hermano
-/// con apertura EXCLUSIVA + FileOptions.WriteThrough y publicación vía reemplazo atómico. Los
-/// metadatos de reconciliación viajan en el <c>ToolCallStarted</c> (Barrier, ADR-0002 §2):
-/// para una creación el pre-hash es el centinela <c>absent</c> (no hay estado previo), así un
-/// crash entre el Barrier y la publicación reconcilia Applied/NotApplied sin duplicar
-/// (ADR-0004 §4). La frontera de paths y los destinos de secretos se revalidan en Execute
-/// contra escapes y symlinks/junctions, además de en Prepare.
+/// <summary>Creates new workspace files in UTF-8 without BOM. Existing destinations are
+/// refused in every policy, including FullAgent; localized edits use filesystem.patch.
+/// Publication is no-overwrite, with durable reconciliation metadata and mutation accounting.
+/// The expectedVersion argument remains readable for compatibility with historical journals.
 /// </summary>
 public sealed class FilesystemWriteTool : ITool, IReconcilableTool
 {
@@ -49,7 +20,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         _boundary = boundary;
         _descriptor = new ToolDescriptor(
             new ToolId("filesystem.write"),
-            "Writes a complete file within the workspace: creates it if it does not exist, or replaces existing content after verifying expectedVersion. Use filesystem.patch for localized changes.",
+            "Creates a NEW file within the workspace. Existing files are never overwritten: read them and use filesystem.patch for localized edits. Never delete/recreate existing files or use shell/process commands to bypass this rule; preserve file identity and unrelated content.",
             new InputSchema("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"},\"expectedVersion\":{\"type\":[\"string\",\"null\"]}},\"required\":[\"path\",\"content\"]}"),
             new[] { "write" },
             readOnly: false,
@@ -83,8 +54,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
                 ToolErrorCode.PermissionDenied);
         }
 
-        // El contenido debe estar presente como string (puede estar vacío: la decisión de si un
-        // vacío es válido —creación sí, reemplazo no— es de Execute, que sabe si el archivo existe).
+        // New files may be empty. Existing destinations are always refused in Execute.
         if (content is null)
         {
             return Rejected("Falta 'content' en los argumentos", ToolErrorCode.InvalidArguments);
@@ -94,9 +64,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         // evalúe la resource path real (no vacío) — ADR-0014 §3, ADR-0044 §2.
         var claims = new ResourceClaims(new[] { path }, new[] { path }, new NetworkGrant[0], null, new string[0]);
 
-        // Prepare es PURO (INV-013, ADR-0014 §3): no toca el filesystem. Si el archivo existe y
-        // el token falta/está obsoleto se rechaza en ExecuteAsync (y DescribeReconciliation
-        // devuelve null): aquí no hay I/O para saberlo.
+        // Prepare is pure: existence is checked in Execute, never by overwriting a destination.
         var intent = new ToolIntent(call.ToolCallId, call.ToolId, call.NormalizedArgumentsJson,
             EffectClass.NonIdempotent, claims, ToolRisk.Medium, null);
         return new Prepared(intent);
@@ -110,16 +78,15 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
     ///
     ///  - CREACIÓN: pre = centinela <c>absent</c> (no hay estado previo observable); post = hash
     ///    de los bytes UTF-8 sin BOM del contenido.
-    ///  - REEMPLAZO: pre = token de versión vigente (solo si coincide con el contenido real);
-    ///    post = hash de los nuevos bytes conservando el encoding detectado.
+    /// Existing destinations return no reconciliation spec because this tool cannot edit them.
     ///
     /// Es oportunista: si el dry-run no es fiable (ruta fuera de la frontera o hacia un secreto,
-    /// reemplazo con token obsoleto o encoding inválido) devuelve null y ExecuteAsync decide.
+    /// o destino existente) devuelve null y ExecuteAsync decide.
     /// </summary>
     public ReconciliationSpec? DescribeReconciliation(AuthorizedToolIntent intent, ToolExecutionContext context,
         CancellationToken cancellationToken)
     {
-        var (path, expectedVersion, content) = ParseArguments(intent.Intent.NormalizedArgumentsJson);
+        var (path, _, content) = ParseArguments(intent.Intent.NormalizedArgumentsJson);
         if (path is null || path.Length == 0 || content is null)
         {
             return null;
@@ -139,20 +106,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
 
         try
         {
-            if (File.Exists(full))
-            {
-                // Reemplazo: metadatos fiables solo si el token declara el estado REAL vigente.
-                var bytes = File.ReadAllBytes(full);
-                if (expectedVersion is null || FilesystemPatchTool.VersionToken(bytes) != expectedVersion)
-                {
-                    return null;
-                }
-
-                var postBytes = FileVersion.Encode(content, FileVersion.Decode(bytes).Encoding);
-                return FilesystemPreimage.Capture(new ReconciliationSpec(expectedVersion,
-                    FilesystemPatchTool.VersionToken(postBytes), null),
-                    FilesystemPreimage.IsLeafOnly(full, context.WorkspaceRoot) ? context.Artifacts : null, bytes);
-            }
+            if (File.Exists(full)) return null; // Existing files must use filesystem.patch.
 
             if (Directory.Exists(full))
             {
@@ -188,7 +142,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var (path, expectedVersion, content) = ParseArguments(intent.Intent.NormalizedArgumentsJson);
+        var (path, _, content) = ParseArguments(intent.Intent.NormalizedArgumentsJson);
         if (path is null)
         {
             return ToolResult.Error(ToolErrorCode.InvalidArguments,
@@ -233,93 +187,13 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
 
         if (File.Exists(full))
         {
-            return await ReplaceFile(path, full, expectedVersion, content!, ledger, intent, context,
-                cancellationToken).ConfigureAwait(false);
+            return ToolResult.Error(ToolErrorCode.MutationRefused,
+                "MUTATION_REFUSED: filesystem.write solo crea archivos nuevos. El archivo ya existe: léelo y usa filesystem.patch "
+                + "con expectedVersion para editarlo sin sustituirlo. No lo borres ni lo recrees mediante otras herramientas.");
         }
 
         return await CreateFile(path, full, content!, ledger, intent, context, cancellationToken)
             .ConfigureAwait(false);
-    }
-
-    /// <summary>REEMPLAZO de un archivo existente: token obligatorio + STALE_WRITE + política de mutación.</summary>
-    private async Task<ToolResult> ReplaceFile(string path, string full, string? expectedVersion, string content,
-        MutationLedger? ledger, AuthorizedToolIntent intent, ToolExecutionContext context,
-        CancellationToken cancellationToken)
-    {
-        // El reemplazo completo exige SIEMPRE el token de versión (ADR-0044 §5): es la única
-        // defensa contra pisar un estado que el modelo no vio.
-        if (expectedVersion is null || expectedVersion.Length == 0)
-        {
-            ledger?.RecordTokenViolation(path, ModelToolCapability.ReplaceFile);
-            return ToolResult.Error(ToolErrorCode.InvalidArguments,
-                "Falta 'expectedVersion': el token de versión es obligatorio para reemplazar un archivo existente (ADR-0044 §5). "
-                + "Lee el archivo y usa el token [version:…], o usa filesystem.patch para un cambio localizado.");
-        }
-
-        // ADR-0044 §5 (RequirePriorRead): lectura previa EFECTIVA del MISMO path/version en este
-        // Run. Por defecto se exige; la política del modelo puede desactivarlo (RequirePriorRead
-        // = false), nunca al revés. El registro ausente (pipeline sin frontera) no restringe aquí.
-        if (context.ReadRegistry is not null && (ledger?.MutationPolicy?.RequirePriorRead ?? true)
-            && !context.ReadRegistry.Matches(path, expectedVersion))
-        {
-            ledger?.RecordTokenViolation(path, ModelToolCapability.ReplaceFile);
-            return ToolResult.Error(ToolErrorCode.PriorReadRequired,
-                "PRIOR_READ_REQUIRED: no se puede reemplazar " + path
-                + " sin una lectura previa efectiva de esa ruta/versión en este Run (ADR-0044 §5)."
-                + " Lee el archivo y usa el token [version:…] que la lectura devuelva.");
-        }
-
-        // Se opera sobre los BYTES REALES: token SHA-256 del contenido vigente, encoding
-        // detectado y conservado al reescribir (ADR-0044 §5).
-        cancellationToken.ThrowIfCancellationRequested();
-        var bytes = await File.ReadAllBytesAsync(full, cancellationToken).ConfigureAwait(false);
-        var actualVersion = FileVersion.VersionToken(bytes);
-        if (expectedVersion != actualVersion)
-        {
-            ledger?.RecordTokenViolation(path, ModelToolCapability.ReplaceFile);
-            return ToolResult.Error(ToolErrorCode.StaleWrite,
-                FileVersion.StaleWriteMessage(actualVersion));
-        }
-
-        FileVersion.DecodedFile decoded;
-        try
-        {
-            decoded = FileVersion.Decode(bytes);
-        }
-        catch (UnsupportedEncodingException ex)
-        {
-            // Encoding no soportado (p. ej. UTF-32): se rechaza sin modificar el archivo.
-            return ToolResult.Error(ToolErrorCode.ToolFailure, ex.Message);
-        }
-
-        if (decoded.Text == content)
-        {
-            return ToolResult.Error(ToolErrorCode.InvalidArguments,
-                "El contenido es idéntico al actual: no hay cambio que aplicar (un reemplazo sin cambio no es un efecto válido)");
-        }
-
-        if (content.Length == 0)
-        {
-            return ToolResult.Error(ToolErrorCode.InvalidArguments,
-                "No se permite vaciar un archivo existente con filesystem.write: conserva contenido o usa filesystem.patch");
-        }
-
-        // Presupuesto de la política (ADR-0044 §5) ANTES de escribir nada: modo (el reemplazo
-        // completo exige Full), archivos/líneas por Turn y ratio de reescritura.
-        FileVersion.ChangedLines(decoded.Text, content, out var deleted, out var inserted);
-        var originalLines = FileVersion.CountLines(decoded.Text);
-        var refusal = ledger?.RefuseMutation(ModelToolCapability.ReplaceFile, path, targetExists: true,
-            deleted, inserted, originalLines);
-        if (refusal is not null)
-        {
-            return ToolResult.Error(refusal.Code, refusal.Message);
-        }
-
-        var newBytes = FileVersion.Encode(content, decoded.Encoding);
-        return await Publish(path, full, newBytes, ledger, intent, context.WorkspaceRoot, created: false,
-            expectedVersion, deletedLines: deleted, insertedLines: inserted,
-            summaryPrefix: "Archivo reemplazado: " + path + " (" + originalLines + "→"
-                + FileVersion.CountLines(content) + " líneas)", cancellationToken, originalLines).ConfigureAwait(false);
     }
 
     /// <summary>CREACIÓN de un archivo nuevo (directorios padre incluidos), UTF-8 sin BOM.</summary>
@@ -339,23 +213,22 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         }
 
         var newBytes = FileVersion.Encode(content, FileVersion.FileEncoding.Utf8NoBom);
-        return await Publish(path, full, newBytes, ledger, intent, context.WorkspaceRoot, created: true,
-            expectedVersion: null, deletedLines: 0, insertedLines: lines,
+        return await Publish(path, full, newBytes, ledger, intent, context.WorkspaceRoot,
+            deletedLines: 0, insertedLines: lines,
             summaryPrefix: "Archivo creado: " + path + " (" + lines + " líneas)", cancellationToken)
             .ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Escritura atómica compartida por creación y reemplazo (bloqueante 1 de auditoría): bytes
+    /// Creación atómica sin sobrescritura (bloqueante 1 de auditoría): bytes
     /// al temporal hermano con apertura EXCLUSIVA (CreateNew + FileShare.None, WriteThrough) y
-    /// publicación vía reemplazo atómico. En la CREACIÓN se re-verifica que el destino siga
+    /// publicación vía rename sin sobrescritura. Se re-verifica que el destino siga
     /// ausente justo antes de publicar (TOCTOU): si apareció, se niega sin pisarlo. La
     /// contabilidad del ledger SOLO se actualiza tras publicar con éxito.
     /// </summary>
     private async Task<ToolResult> Publish(string path, string full, byte[] newBytes, MutationLedger? ledger,
-        AuthorizedToolIntent intent, string workspaceRoot, bool created, string? expectedVersion,
-        int deletedLines, int insertedLines, string summaryPrefix, CancellationToken cancellationToken,
-        int originalLines = 0)
+        AuthorizedToolIntent intent, string workspaceRoot,
+        int deletedLines, int insertedLines, string summaryPrefix, CancellationToken cancellationToken)
     {
         var tempPath = Path.Combine(
             Path.GetDirectoryName(full)!,
@@ -396,12 +269,12 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
                     "Ruta fuera del workspace (revalidada antes de publicar)");
             }
 
-            if (created && File.Exists(full))
+            if (File.Exists(full))
             {
                 // TOCTOU de creación: el archivo apareció entre la verificación y la publicación.
-                // No se pisa: el modelo debe releer y decidir (reemplazo o patch).
+                // No se pisa: el modelo debe releer y usar filesystem.patch.
                 return ToolResult.Error(ToolErrorCode.StaleWrite,
-                    "El archivo ya existe (apareció tras verificar su ausencia): no se escribió nada. Reléelo y usa expectedVersion para reemplazarlo.");
+                    "El archivo ya existe (apareció tras verificar su ausencia): no se escribió nada. Reléelo y usa filesystem.patch.");
             }
 
             // Costura de test: fallo determinista DESPUÉS de escribir el temporal y antes de
@@ -409,62 +282,15 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
             TestFailureHook?.Invoke(tempPath, full);
 
             // El commit barrier está en el lock por ruta: el re-chequeo final y el rename quedan
-            // serializados entre writers cooperantes. No hay API portable de rename condicional
-            // por hash; un writer no cooperante aún puede cambiar el destino entre el hash y move.
+            // serializados entre writers cooperantes. Move(overwrite:false) también rechaza
+            // un destino creado por otro proceso entre la comprobación y la publicación.
             using (FilePublishLock.Acquire(full, cancellationToken))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (created)
-                {
-                    if (File.Exists(full))
-                    {
-                        return ToolResult.Error(ToolErrorCode.StaleWrite,
-                            "El archivo ya existe (apareció tras verificar su ausencia): no se escribió nada. Reléelo y usa expectedVersion para reemplazarlo.");
-                    }
-                }
-                else
-                {
-                    if (!File.Exists(full))
-                    {
-                        return ToolResult.Error(ToolErrorCode.StaleWrite, FileVersion.StaleWriteMessage("absent"));
-                    }
-
-                    byte[] currentBytes;
-                    try
-                    {
-                        currentBytes = File.ReadAllBytes(full);
-                    }
-                    catch (FileNotFoundException)
-                    {
-                        return ToolResult.Error(ToolErrorCode.StaleWrite, FileVersion.StaleWriteMessage("absent"));
-                    }
-                    catch (DirectoryNotFoundException)
-                    {
-                        return ToolResult.Error(ToolErrorCode.StaleWrite, FileVersion.StaleWriteMessage("absent"));
-                    }
-
-                    var currentVersion = FileVersion.VersionToken(currentBytes);
-                    if (expectedVersion != currentVersion)
-                    {
-                        return ToolResult.Error(ToolErrorCode.StaleWrite, FileVersion.StaleWriteMessage(currentVersion));
-                    }
-                }
-
-                cancellationToken.ThrowIfCancellationRequested();
-                if (created)
-                {
-                    File.Move(tempPath, full, overwrite: false);
-                }
-                else if (OperatingSystem.IsWindows())
-                {
-                    // File.Replace publishes by an atomic filesystem replacement on Windows.
-                    // It cannot condition the replacement on the hash just checked above.
-                    File.Replace(tempPath, full, destinationBackupFileName: null);
-                }
-                else
-                {
-                    File.Move(tempPath, full, overwrite: true);
-                }
+                if (File.Exists(full))
+                    return ToolResult.Error(ToolErrorCode.StaleWrite,
+                        "El archivo apareció antes de publicar: no se escribió nada; usa filesystem.patch.");
+                File.Move(tempPath, full, overwrite: false);
 
                 TestAfterPublishHook?.Invoke(tempPath, full);
             }
@@ -504,7 +330,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         // Contabiliza SOLO tras el efecto durable (y registra la validación post-edición si la
         // política la exige, ADR-0044 §5).
         ledger?.RecordMutation(path, deletedLines, insertedLines, intent.Intent.ToolCallId,
-            created ? ModelToolCapability.CreateFile : ModelToolCapability.ReplaceFile, originalLines);
+            ModelToolCapability.CreateFile, 0);
 
         var newVersion = FileVersion.VersionToken(newBytes);
         var summary = summaryPrefix + " [version:" + newVersion + "]";

@@ -81,6 +81,96 @@ public sealed class FilesystemPatchToolTests
         return preview.Substring(idx + start.Length, end - idx - start.Length);
     }
 
+    [Theory]
+    [InlineData("SHORT")]
+    [InlineData("a much longer replacement α")]
+    [InlineData("same!!")]
+    public void Patch_updates_the_original_open_file_and_preserves_creation_time(string replacement)
+    {
+        var ws = TempDir();
+        try
+        {
+            var path = Path.Combine(ws, "identity.txt");
+            const string original = "header\r\nbefore\r\nfooter\r\n";
+            File.WriteAllText(path, original, new System.Text.UTF8Encoding(true));
+            var creation = File.GetCreationTimeUtc(path);
+            using var held = new FileStream(path, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            var token = FilesystemPatchTool.VersionToken(File.ReadAllBytes(path));
+            var result = PatchExecutor(ws).ExecuteToolWithoutJournal(
+                PatchCall(ws, "identity.txt", token, "before", replacement), false,
+                TestContext.Current.CancellationToken);
+            Assert.True(result.Succeeded, result.Summary);
+            held.Position = 0;
+            using var copy = new MemoryStream();
+            held.CopyTo(copy);
+            // An atomic replace/rename would leave this existing handle on the old file.
+            var expected = new System.Text.UTF8Encoding(true).GetPreamble().Concat(
+                System.Text.Encoding.UTF8.GetBytes(original.Replace("before", replacement))).ToArray();
+            Assert.Equal(expected, copy.ToArray());
+            Assert.Equal(expected, File.ReadAllBytes(path));
+            // Unix filesystems without birthtime may report ctime here, which changes on edit.
+            if (OperatingSystem.IsWindows()) Assert.Equal(creation, File.GetCreationTimeUtc(path));
+        }
+        finally { RmDir(ws); }
+    }
+
+    [Fact]
+    public void Failed_rollback_retains_preimage_and_reports_unknown_effect()
+    {
+        var ws = TempDir();
+        try
+        {
+            var path = Path.Combine(ws, "uncertain.txt");
+            const string original = "header\nbefore\nfooter\n";
+            File.WriteAllText(path, original);
+            var tools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
+            var patch = (FilesystemPatchTool)tools.Catalog().Find(new ToolId("filesystem.patch"))!;
+            patch.TestDuringWriteHook = () => throw new IOException("injected write failure");
+            patch.TestBeforeRollbackHook = () => throw new IOException("injected rollback failure");
+            var executor = ScriptedToolExecutor.WithWorkspace(tools.Catalog(),
+                ScriptedPermissionPolicy.WithTool("filesystem.patch", PermissionDecision.Allow), ws);
+            var result = executor.ExecuteToolWithoutJournal(PatchCall(ws, "uncertain.txt", VersionOf(original),
+                "before", "longer replacement"), false, TestContext.Current.CancellationToken);
+            Assert.False(result.Succeeded);
+            Assert.Equal(EffectOutcome.Unknown, result.Effect);
+            Assert.Equal(ToolCallState.EffectUnknown, result.FinalState);
+            Assert.Contains(result.Events, e => e is ToolCallEffectUnknown);
+            var backup = Assert.Single(Directory.EnumerateFiles(ws), file => file != path);
+            Assert.Equal(original, File.ReadAllText(backup));
+            Assert.NotEqual(original, File.ReadAllText(path));
+        }
+        finally { RmDir(ws); }
+    }
+
+    [Fact]
+    public void Patch_write_failure_restores_original_bytes_on_the_same_file()
+    {
+        var ws = TempDir();
+        try
+        {
+            var path = Path.Combine(ws, "rollback.txt");
+            const string original = "header\nbefore\nfooter\n";
+            File.WriteAllText(path, original);
+            using var held = new FileStream(path, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            var tools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
+            var patch = (FilesystemPatchTool)tools.Catalog().Find(new ToolId("filesystem.patch"))!;
+            patch.TestDuringWriteHook = () => throw new IOException("injected mid-commit failure");
+            var executor = ScriptedToolExecutor.WithWorkspace(tools.Catalog(),
+                ScriptedPermissionPolicy.WithTool("filesystem.patch", PermissionDecision.Allow), ws);
+            var result = executor.ExecuteToolWithoutJournal(PatchCall(ws, "rollback.txt", VersionOf(original),
+                "before", "longer replacement"), false, TestContext.Current.CancellationToken);
+            Assert.False(result.Succeeded);
+            Assert.Equal(original, File.ReadAllText(path));
+            held.Position = 0;
+            using var reader = new StreamReader(held);
+            Assert.Equal(original, reader.ReadToEnd());
+            Assert.Single(Directory.EnumerateFiles(ws));
+        }
+        finally { RmDir(ws); }
+    }
+
     [Fact]
     public async System.Threading.Tasks.Task Patch_applies_localized_change_and_preserves_unrelated_content()
     {

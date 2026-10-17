@@ -86,7 +86,8 @@ public sealed partial class TuiWiringTests
             Assert.Equal(BillingMode.IncludedQuota, lunaProvider.BillingMode);
             Assert.Equal(BillingMode.MeteredCurrency, registry.Provider(target.ProviderId)!.BillingMode);
             var policies = ModelPolicyHost.Create();
-            policies.Set(new(luna.ProviderId, luna.Id), 0, "ScopedCoder", "Isolated real file creation acceptance.", default);
+            var lunaPolicy = policies.Set(new(luna.ProviderId, luna.Id), 0, "FullAgent", "User-authorized frontier model; full tool catalog, localized edits only.", default);
+            Assert.Equal(int.MaxValue, lunaPolicy.MaxVisibleTools);
             policies.Set(new(target.ProviderId, target.Id), 0, "PatchOnly", "Isolated localized edit acceptance; no whole-file replacement.", default);
             policies.Select(ModelPolicyHost.WorkspaceSelectionId(fx.Workspace), new(luna.ProviderId, luna.Id), luna.Id, false, default);
             runtime = OmniCliRuntime.Create(fx.Workspace);
@@ -118,6 +119,8 @@ public sealed partial class TuiWiringTests
             WaitForReply(1);
             Assert.True(File.Exists(targetFile), "Luna must create the real file, not just claim it.");
             var before = File.ReadAllText(targetFile);
+            using var originalFile = new FileStream(targetFile, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
             Assert.Equal(lines, File.ReadAllLines(targetFile));
             File.WriteAllText(Path.Combine(evidence, "antes-luna.txt"), before, new UTF8Encoding(false));
             Assert.All(fx.Decoded<ModelStepStarted>(), step => Assert.Equal(luna.Id, step.ModelId));
@@ -150,6 +153,10 @@ public sealed partial class TuiWiringTests
             fx.InjectKey(new Key(KeyCode.Enter)); // A single approval must resume the already submitted input.
             WaitForReply(2);
             var after = File.ReadAllText(targetFile);
+            originalFile.Position = 0;
+            using var originalHandleBytes = new MemoryStream();
+            originalFile.CopyTo(originalHandleBytes);
+            Assert.Equal(File.ReadAllBytes(targetFile), originalHandleBytes.ToArray());
             Assert.Equal(before.Replace("estado: pendiente", "estado: editado por DeepSeek", StringComparison.Ordinal), after);
             var editCalls = fx.Decoded<ToolCallRequested>().Skip(toolCount).ToArray();
             Assert.Contains(editCalls, call => call.ToolName == "filesystem.read");
@@ -175,6 +182,8 @@ public sealed partial class TuiWiringTests
                 sameSession = true, sameRun = true, promptResent = false, consentEnterCount = 1,
                 inputCountBeforeConsent = inputCount, inputCountAfterReply = fx.Decoded<UserInputReceived>().Count(),
                 linesBefore = lines.Length, unchangedLines = 19, patchedLines = 1, wholeFileRewrite = false,
+                originalFileHandleSeesEdit = true, sourcePolicy = lunaPolicy.Category,
+                sourceMaxVisibleTools = lunaPolicy.MaxVisibleTools,
                 sourceTools = fx.Decoded<ToolCallRequested>().Take(toolCount).Select(call => call.ToolName).ToArray(),
                 targetTools = editCalls.Select(call => call.ToolName).ToArray(),
                 modelSteps = fx.Decoded<ModelStepStarted>().Select(step => step.ModelId).ToArray(),

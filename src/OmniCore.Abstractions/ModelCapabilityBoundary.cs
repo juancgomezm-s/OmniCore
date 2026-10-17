@@ -62,7 +62,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             { "plan.propose", ModelToolCapability.PlanProposal },
             { "mode.propose", ModelToolCapability.PlanProposal },
             { "filesystem.patch", ModelToolCapability.PatchExisting },
-            { "filesystem.write", ModelToolCapability.ReplaceFile },
+            { "filesystem.write", ModelToolCapability.CreateFile },
             { "filesystem.delete", ModelToolCapability.DeleteFile },
             { "filesystem.move", ModelToolCapability.MoveOrRename },
             // Batch integration can create, replace, and delete. Classify it at the strictest
@@ -165,11 +165,8 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
                     "worktree integration can create, replace, or delete workspace files", capability);
         }
 
-        // EPIC-021 (ADR-0044 §5): filesystem.write se declara ReplaceFile, pero lo que el modo
-        // de mutación concede depende de la política: Full → reemplazo completo; PatchAndCreate
-        // → SOLO creación de archivos (la frontera no tiene I/O para saber si el destino existe,
-        // así que deja pasar el intento como CreateFile y la TOOL rechaza el reemplazo de un
-        // existente); ningún otro modo → oculta/rechaza.
+        // Legacy replacement-classified integrations retain their historical mode mapping.
+        // filesystem.write is independently classified CreateFile and cannot replace files.
         if (capability == ModelToolCapability.ReplaceFile)
         {
             var writeCapability = WriteCapabilityForMode();
@@ -188,7 +185,8 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         if (!_policy.ToolPolicy.Allows(capability))
         {
             return ModelCapabilityDecision.Reject(
-                "capacidad " + capability + " fuera del techo de la categoría " + _policy.Category,
+                "capacidad " + capability + " fuera del techo de la categoría " + _policy.Category
+                    + (intent.ToolId.ToString() == "filesystem.write" ? "; usa filesystem.patch para editar archivos existentes" : ""),
                 capability);
         }
 
@@ -262,6 +260,10 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
     /// </summary>
     public int MaxVisibleTools() => _policy.ToolPolicy.MaxVisibleTools;
 
+    /// <summary>An explicit full-agent profile receives the eligible catalog immediately,
+    /// without first having to discover basic editing/execution tools.</summary>
+    public bool UsesFullToolCatalog() => _policy.Category == ModelPolicyCategory.FullAgent;
+
     /// <summary>Discloses permitted tools in a stable, useful order before applying the visible
     /// count. Basic workspace read/search and authorized file edits remain available ahead of
     /// optional references, proposals and process capabilities when the list is small.</summary>
@@ -318,8 +320,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             return false;
         }
 
-        // EPIC-021: la exposición de filesystem.write sigue al modo (create-only en
-        // PatchAndCreate, oculta en PatchExisting/None). Ver Evaluate para el detalle.
+        // Compatibility mapping for legacy replacement-classified tools.
         if (capability == ModelToolCapability.ReplaceFile)
         {
             var writeCapability = WriteCapabilityForMode();
@@ -347,7 +348,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
     }
 
     /// <summary>
-    /// Capacidad efectiva que la frontera exige a una tool de reemplazo (filesystem.write) según
+    /// Capacidad efectiva que la frontera exige a una tool legacy de reemplazo según
     /// el modo de mutación: Full → ReplaceFile; PatchAndCreate → CreateFile (exposición
     /// create-only, ADR-0044 §5); resto → null (oculta/rechazada).
     /// </summary>

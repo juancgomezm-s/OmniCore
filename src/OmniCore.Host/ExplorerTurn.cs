@@ -4239,7 +4239,7 @@ public sealed class ExplorerTurn
         var definitions = _catalog.Definitions();
         if (_selection.ToolMode != ToolMode.Discovered)
             definitions = definitions.Where(tool => tool.Name != "tool.search").ToArray();
-        else
+        else if (_boundary?.UsesFullToolCatalog() != true)
         {
             var visibleIds = new HashSet<string>(StringComparer.Ordinal)
                 { "filesystem.read", "filesystem.list", "filesystem.search", "search.text",

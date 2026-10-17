@@ -379,7 +379,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         return outcome.Succeeded
             ? new ToolOutcome(true, outcome.Summary ?? "ok", outcome.Preview, outcome.Effect, outcome.FinalState,
                 events, artifact: outcome.Artifact)
-            : new ToolOutcome(false, outcome.Summary ?? "fallo", outcome.Preview, null, outcome.FinalState,
+            : new ToolOutcome(false, outcome.Summary ?? "fallo", outcome.Preview,
+                outcome.Effect == EffectOutcome.None ? null : outcome.Effect, outcome.FinalState,
                 events, outcome.PendingInteractionId);
     }
 }

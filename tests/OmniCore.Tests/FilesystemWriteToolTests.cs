@@ -271,7 +271,7 @@ public sealed class FilesystemWriteToolTests
     }
 
     [Fact]
-    public void Replace_detects_change_after_initial_version_check_and_preserves_concurrent_content()
+    public void Replace_is_refused_before_publication_hooks_can_run()
     {
         var ws = TempDir();
         var full = Path.Combine(ws, "race.txt");
@@ -288,8 +288,8 @@ public sealed class FilesystemWriteToolTests
                 WriteCall("race.txt", "ours", VersionOf("original")), true, TestContext.Current.CancellationToken);
 
             Assert.False(outcome.Succeeded);
-            Assert.StartsWith("STALE_WRITE:", outcome.Summary);
-            Assert.Equal("concurrent", File.ReadAllText(full));
+            Assert.Contains("filesystem.patch", outcome.Summary);
+            Assert.Equal("original", File.ReadAllText(full));
             Assert.DoesNotContain(Directory.EnumerateFiles(ws), file => Path.GetFileName(file).Contains(".tmp-", StringComparison.Ordinal));
         }
         finally
@@ -303,7 +303,6 @@ public sealed class FilesystemWriteToolTests
     {
         var ws = TempDir();
         var full = Path.Combine(ws, "cancel.txt");
-        File.WriteAllText(full, "original");
         using var cts = new CancellationTokenSource();
         try
         {
@@ -317,7 +316,7 @@ public sealed class FilesystemWriteToolTests
                 WriteCall("cancel.txt", "ours", VersionOf("original")), true, cts.Token);
 
             Assert.False(outcome.Succeeded);
-            Assert.Equal("original", File.ReadAllText(full));
+            Assert.False(File.Exists(full));
             Assert.DoesNotContain(Directory.EnumerateFiles(ws), file => Path.GetFileName(file).Contains(".tmp-", StringComparison.Ordinal));
         }
         finally
@@ -331,7 +330,6 @@ public sealed class FilesystemWriteToolTests
     {
         var ws = TempDir();
         var full = Path.Combine(ws, "cancel-after.txt");
-        File.WriteAllText(full, "original");
         using var cts = new CancellationTokenSource();
         try
         {
@@ -357,7 +355,7 @@ public sealed class FilesystemWriteToolTests
     // ==================================================================== 2. Reemplazo
 
     [Fact]
-    public void Replace_with_correct_token_replaces_content_and_preserves_encoding()
+    public void Replace_with_correct_token_is_refused_and_preserves_encoded_bytes()
     {
         var ws = TempDir();
         var original = "linea-uno\nlinea-dos\n";
@@ -370,13 +368,12 @@ public sealed class FilesystemWriteToolTests
             var outcome = executor.ExecuteToolWithoutJournal(WriteCall("doc.txt", updated, token), true,
                 TestContext.Current.CancellationToken);
 
-            Assert.True(outcome.Succeeded, "summary=" + outcome.Summary);
+            Assert.False(outcome.Succeeded, "summary=" + outcome.Summary);
             var bytes = File.ReadAllBytes(Path.Combine(ws, "doc.txt"));
-            // BOM UTF-16 LE conservado + contenido re-codificado en el mismo encoding.
-            var expected = Encoding.Unicode.GetPreamble().Concat(Encoding.Unicode.GetBytes(updated)).ToArray();
+            // The refused replacement preserves every original byte, including its BOM.
+            var expected = Encoding.Unicode.GetPreamble().Concat(Encoding.Unicode.GetBytes(original)).ToArray();
             Assert.Equal(expected, bytes);
-            Assert.Contains("[version:" + VersionOfBytes(bytes) + "]", outcome.Summary);
-            Assert.Contains("Archivo reemplazado", outcome.Summary);
+            Assert.Contains("filesystem.patch", outcome.Summary);
         }
         finally
         {
@@ -385,7 +382,7 @@ public sealed class FilesystemWriteToolTests
     }
 
     [Fact]
-    public void Replace_with_wrong_token_is_stale_write_and_file_stays_unchanged()
+    public void Replace_with_wrong_token_is_refused_and_file_stays_unchanged()
     {
         var ws = TempDir();
         var original = "linea-uno\nlinea-dos\n";
@@ -400,9 +397,9 @@ public sealed class FilesystemWriteToolTests
 
             Assert.False(outcome.Succeeded);
             Assert.Equal(ToolCallState.Failed, outcome.FinalState);
-            Assert.StartsWith("STALE_WRITE:", outcome.Summary);
+            Assert.StartsWith("MUTATION_REFUSED:", outcome.Summary);
             // Mismo formato que filesystem.patch: el token vigente viaja [version:…] para releer.
-            Assert.Contains("[version:" + VersionOf(original) + "]", outcome.Summary);
+            Assert.Contains("filesystem.patch", outcome.Summary);
             Assert.Equal(original, File.ReadAllText(Path.Combine(ws, "doc.txt")));
         }
         finally
@@ -433,7 +430,7 @@ public sealed class FilesystemWriteToolTests
     }
 
     [Fact]
-    public void Replace_with_identical_content_is_rejected_as_noop()
+    public void Replace_with_identical_content_is_still_refused()
     {
         var ws = TempDir();
         File.WriteAllText(Path.Combine(ws, "doc.txt"), "igual\n");
@@ -445,7 +442,7 @@ public sealed class FilesystemWriteToolTests
                 TestContext.Current.CancellationToken);
 
             Assert.False(outcome.Succeeded);
-            Assert.Contains("idéntico", outcome.Summary);
+            Assert.Contains("solo crea", outcome.Summary);
         }
         finally
         {
@@ -466,7 +463,7 @@ public sealed class FilesystemWriteToolTests
                 TestContext.Current.CancellationToken);
 
             Assert.False(outcome.Succeeded);
-            Assert.Contains("vaciar", outcome.Summary);
+            Assert.Contains("filesystem.patch", outcome.Summary);
             Assert.Equal("contenido\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
         }
         finally
@@ -569,7 +566,7 @@ public sealed class FilesystemWriteToolTests
     }
 
     [Fact]
-    public void FullAgent_write_replaces_existing_file_with_prior_read()
+    public void FullAgent_write_cannot_replace_existing_file_even_with_prior_read()
     {
         var ws = TempDir();
         var original = EightLineFile();
@@ -588,8 +585,9 @@ public sealed class FilesystemWriteToolTests
                 WriteCall("doc.txt", "reescritura\ncompleta\n", token), true,
                 TestContext.Current.CancellationToken);
 
-            Assert.True(outcome.Succeeded, "summary=" + outcome.Summary);
-            Assert.Equal("reescritura\ncompleta\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
+            Assert.False(outcome.Succeeded, "summary=" + outcome.Summary);
+            Assert.Contains("filesystem.patch", outcome.Summary);
+            Assert.Equal(original, File.ReadAllText(Path.Combine(ws, "doc.txt")));
         }
         finally
         {
@@ -640,12 +638,12 @@ public sealed class FilesystemWriteToolTests
             var executor = Pipeline(ws, boundary);
             var token = VersionOf(original);
 
-            // Token correcto PERO sin lectura previa en este Run → PRIOR_READ_REQUIRED.
+            // Even a correct token cannot enable full replacement.
             var outcome = executor.ExecuteToolWithoutJournal(
                 WriteCall("doc.txt", "reemplazo\n", token), true, TestContext.Current.CancellationToken);
 
             Assert.False(outcome.Succeeded, "summary=" + outcome.Summary);
-            Assert.StartsWith("PRIOR_READ_REQUIRED:", outcome.Summary);
+            Assert.StartsWith("MUTATION_REFUSED:", outcome.Summary);
             Assert.Equal(original, File.ReadAllText(Path.Combine(ws, "doc.txt")));
         }
         finally
@@ -655,15 +653,14 @@ public sealed class FilesystemWriteToolTests
     }
 
     [Fact]
-    public void RequirePriorRead_false_allows_replace_without_prior_read()
+    public void Disabling_prior_read_cannot_enable_complete_replacement()
     {
         var ws = TempDir();
         var original = EightLineFile();
         File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         try
         {
-            // El MISMO escenario, con la política que desactiva la exigencia → el valor cambia el
-            // comportamiento (ADR-0044 §5, RequirePriorRead).
+            // Disabling a profile read requirement must not enable complete replacement.
             var boundary = new ModelCapabilityBoundary(
                 CustomEffective(Mutation(FileMutationMode.Full, 10, 1000, 1.0, requirePriorRead: false)));
             var executor = Pipeline(ws, boundary);
@@ -673,8 +670,9 @@ public sealed class FilesystemWriteToolTests
                 WriteCall("doc.txt", "reemplazo sin lectura\n", token), true,
                 TestContext.Current.CancellationToken);
 
-            Assert.True(outcome.Succeeded, "summary=" + outcome.Summary);
-            Assert.Equal("reemplazo sin lectura\n", File.ReadAllText(Path.Combine(ws, "doc.txt")));
+            Assert.False(outcome.Succeeded, "summary=" + outcome.Summary);
+            Assert.Contains("filesystem.patch", outcome.Summary);
+            Assert.Equal(original, File.ReadAllText(Path.Combine(ws, "doc.txt")));
         }
         finally
         {
@@ -859,8 +857,7 @@ public sealed class FilesystemWriteToolTests
             var ledger = boundary.ReadRegistry().Ledger;
             var token = VersionOf(original);
 
-            var outcome = executor.ExecuteToolWithoutJournal(WriteCall("doc.txt",
-                "nueva-1\nnueva-2\nnueva-3\nlinea-4\nlinea-5\nlinea-6\nlinea-7\nlinea-8\n", token), true,
+            var outcome = executor.ExecuteToolWithoutJournal(PatchCall("doc.txt", token, "linea-1\nlinea-2\nlinea-3", "nueva-1\nnueva-2\nnueva-3"), true,
                 TestContext.Current.CancellationToken);
 
             Assert.False(outcome.Succeeded, "summary=" + outcome.Summary);
@@ -891,8 +888,7 @@ public sealed class FilesystemWriteToolTests
             var executor = Pipeline(ws, boundary);
             var token = VersionOf(original);
 
-            var outcome = executor.ExecuteToolWithoutJournal(WriteCall("doc.txt",
-                "nueva-1\nnueva-2\nnueva-3\nlinea-4\nlinea-5\nlinea-6\nlinea-7\nlinea-8\n", token), true,
+            var outcome = executor.ExecuteToolWithoutJournal(PatchCall("doc.txt", token, "linea-1\nlinea-2\nlinea-3", "nueva-1\nnueva-2\nnueva-3"), true,
                 TestContext.Current.CancellationToken);
 
             Assert.True(outcome.Succeeded, "summary=" + outcome.Summary);
@@ -1063,15 +1059,16 @@ public sealed class FilesystemWriteToolTests
             Assert.True(create.Succeeded, "summary=" + create.Summary);
             Persist(create);
 
-            // 2) Reemplazo de un archivo existente (token correcto, sin frontera = M2).
+            // 2) Localized edit of an existing file with a correct token.
             File.WriteAllText(Path.Combine(ws, "doc.txt"), "original\n");
             var replaceId = ToolCallId.New();
-            var replace = executor.ExecuteTool(WriteCall(replaceId, "doc.txt", "reemplazado\n",
-                VersionOf("original\n")), true, TestContext.Current.CancellationToken, stream);
+            var editCall = PatchCall("doc.txt", VersionOf("original\n"), "original", "reemplazado");
+            replaceId = editCall.ToolCallId;
+            var replace = executor.ExecuteTool(editCall, true, TestContext.Current.CancellationToken, stream);
             Assert.True(replace.Succeeded, "summary=" + replace.Summary);
             Persist(replace);
 
-            // 3) Un write FALLADO (STALE_WRITE) también viaja por el journal.
+            // 3) A refused full replacement also travels through the journal.
             var staleId = ToolCallId.New();
             var stale = executor.ExecuteTool(WriteCall(staleId, "doc.txt", "x\n", VersionOf("otro\n")), true,
                 TestContext.Current.CancellationToken, stream);

@@ -246,7 +246,9 @@ public sealed class ModelPolicyHost : IDisposable
         var preset = ModelPolicyPresets.For(parsed);
         var policy = note is null
             ? preset
-            : new UserModelPolicy(preset.Category, preset.ToolPolicy, preset.MutationPolicy, preset.Source, note);
+            : new UserModelPolicy(preset.Category, preset.ToolPolicy, preset.MutationPolicy, preset.Source, note,
+                preset.MaxModelStepsPerTurn, preset.MaxToolCallsPerTurn, preset.AllowOrchestration,
+                preset.MaxGenerationSeconds);
         try
         {
             return ToRecord(_service.Set(ToDomainKey(key), expectedRevision, policy, cancellationToken));

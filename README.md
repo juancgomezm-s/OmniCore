@@ -455,6 +455,15 @@ La preferencia se conserva al reiniciar y apagar el modelo actual no lo sustituy
 Usa **`/modelo`** para elegir con cuál trabajar: muestra únicamente los encendidos.
 **F3** abre ese mismo selector. Activar un modelo no lo elige ni inicia una consulta.
 
+El perfil **FullAgent**, concedido explícitamente al modelo, expone todo el catálogo
+de herramientas disponible sin reducirlo por rasgos provisionales de cualificación.
+Los permisos del proyecto y las restricciones guardadas siguen aplicándose.
+`filesystem.write` crea exclusivamente archivos nuevos: incluso FullAgent debe leer
+los existentes y editarlos con `filesystem.patch`. Los parches conservan el archivo
+original, su codificación y el contenido ajeno al cambio; no lo borran ni lo sustituyen
+por un temporal. No se permite eludir esta regla mediante comandos de procesos.
+[Contrato de edición y recuperación](docs/validation/frontier-file-identity-20261017.md).
+
 Los modelos de **OpenRouter** activados también aparecen en **`/modelo` y F3**. Busca `OpenRouter`,
 recorre el catálogo y pulsa Enter para elegir uno; la aplicación registra sólo
 ese modelo, conserva la conversación y no realiza inferencia al seleccionarlo.

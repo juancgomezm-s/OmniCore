@@ -61,6 +61,18 @@ public sealed class FilesystemPreimageIntegrationTests
                 "read", "{\"path\":\"file.txt\"}"), false, TestContext.Current.CancellationToken, stream);
             Assert.True(read.Succeeded);
             stream.AppendBatch(read.Events, DurabilityClass.Standard);
+            if (toolName == "filesystem.write")
+            {
+                var refusedExecutor = ScriptedToolExecutor.WithWorkspace(tools,
+                    ScriptedPermissionPolicy.WithTool("filesystem.write", PermissionDecision.Allow), workspace);
+                var refused = refusedExecutor.ExecuteToolWithoutJournal(new ValidatedToolCall(ToolCallId.New(), new ToolId(toolName),
+                    "refused-replace", JsonSerializer.Serialize(new { path = "file.txt", content = "updated α\r\nsecond\n",
+                        expectedVersion = FileVersion.VersionToken(original) })), false,
+                    TestContext.Current.CancellationToken);
+                Assert.False(refused.Succeeded);
+                Assert.Equal(original, File.ReadAllBytes(file));
+                toolName = "filesystem.patch";
+            }
             var call = ToolCallId.New();
             var arguments = toolName == "filesystem.write"
                 ? JsonSerializer.Serialize(new Dictionary<string, string> { ["path"] = "file.txt",
@@ -143,12 +155,12 @@ public sealed class FilesystemPreimageIntegrationTests
             File.WriteAllBytes(file, original);
             var artifacts = new FaultyArtifacts(new FileArtifactStore(Path.Combine(root, "cas")), failure);
             var events = new List<DomainEventPayload>();
-            var runtime = ToolRuntime.For(new FakeCatalog().Add(new FilesystemWriteTool(new PathBoundaryValidator())),
-                OmniCore.Security.ScriptedPermissionPolicy.WithTool("filesystem.write", PermissionDecision.Allow),
+            var runtime = ToolRuntime.For(new FakeCatalog().Add(new FilesystemPatchTool(new PathBoundaryValidator())),
+                OmniCore.Security.ScriptedPermissionPolicy.WithTool("filesystem.patch", PermissionDecision.Allow),
                 evt => { events.Add(evt); return VoidBox.Instance; });
             var arguments = JsonSerializer.Serialize(new Dictionary<string, string> { ["path"] = "file.txt",
-                ["content"] = "updated\n", ["expectedVersion"] = FileVersion.VersionToken(original) });
-            var result = runtime.Run(new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.write"), "write", arguments),
+                ["oldText"] = "original", ["newText"] = "updated", ["expectedVersion"] = FileVersion.VersionToken(original) });
+            var result = runtime.Run(new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.patch"), "write", arguments),
                 new ToolPreparationContext(root, DateTimeOffset.UtcNow),
                 new ToolExecutionContext(root, null, artifacts: artifacts), false, TestContext.Current.CancellationToken);
             Assert.False(result.Succeeded);
@@ -253,12 +265,12 @@ public sealed class FilesystemPreimageIntegrationTests
             var inner = new FileArtifactStore(Path.Combine(root, "cas"));
             var artifacts = new FaultyArtifacts(inner, "none", () => File.WriteAllBytes(file, concurrent));
             var events = new List<DomainEventPayload>();
-            var runtime = ToolRuntime.For(new FakeCatalog().Add(new FilesystemWriteTool(new PathBoundaryValidator())),
-                ScriptedPermissionPolicy.WithTool("filesystem.write", PermissionDecision.Allow),
+            var runtime = ToolRuntime.For(new FakeCatalog().Add(new FilesystemPatchTool(new PathBoundaryValidator())),
+                ScriptedPermissionPolicy.WithTool("filesystem.patch", PermissionDecision.Allow),
                 evt => { events.Add(evt); return VoidBox.Instance; });
             var arguments = JsonSerializer.Serialize(new Dictionary<string, string> { ["path"] = "file.txt",
-                ["content"] = "updated\n", ["expectedVersion"] = FileVersion.VersionToken(original) });
-            var result = runtime.Run(new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.write"), "write", arguments),
+                ["oldText"] = "original", ["newText"] = "updated", ["expectedVersion"] = FileVersion.VersionToken(original) });
+            var result = runtime.Run(new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.patch"), "write", arguments),
                 new ToolPreparationContext(root, DateTimeOffset.UtcNow), new ToolExecutionContext(root, null, artifacts: artifacts),
                 false, TestContext.Current.CancellationToken);
             Assert.False(result.Succeeded);

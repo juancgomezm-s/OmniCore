@@ -328,6 +328,7 @@ public sealed class OmniCliRuntime : IDisposable
         + " Answer in the conversation. For examples, demonstrations, or rendering tests, include the requested code, Markdown tables, and explanation directly in your final response."
         + " For Markdown demonstrations, present the formatted examples directly rather than wrapping the whole example in a Markdown code fence. If the user asks for literal Markdown source, use a text code fence to keep its syntax literal."
         + " Do not create or modify workspace files unless the user explicitly requests file changes. Do not replace a requested inline answer with links to generated files."
+        + " Preserve existing file identity and unrelated content: read and apply localized filesystem.patch edits. filesystem.write creates new files only. Never delete/recreate an existing file, replace it with a temporary file, or bypass these rules through shell/process commands."
         + " A conversational example does not require filesystem tools or a new plan. Preserve explicit user requests to edit files and all approval and completion requirements.";
 
     /// <summary>Ejecuta un turno Explorer real, componiendo provider, políticas y persistencia.</summary>
