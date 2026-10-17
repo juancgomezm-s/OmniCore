@@ -15,7 +15,7 @@ using OmniCore.Protocol;
 namespace OmniCore.Tests;
 
 [Collection(nameof(ProcessEnvironmentCollection))]
-public sealed class StdioTransportTests
+public sealed partial class StdioTransportTests
 {
     [Fact]
     public void Stdio_host_query_discovers_a_trusted_project_skill_from_the_configured_roots()
@@ -525,6 +525,80 @@ public sealed class StdioTransportTests
     }
 
     [Fact]
+    public async Task Session_security_default_set_completes_and_replays_its_stdio_receipt()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-session-security-receipt-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var dataDirectory = Path.Combine(root, "data");
+        var configDirectory = Path.Combine(root, "config");
+        Directory.CreateDirectory(workspace);
+        Directory.CreateDirectory(dataDirectory);
+        var oldData = Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
+        var oldConfig = Environment.GetEnvironmentVariable("OMNICORE_CONFIG_DIR");
+        var oldDirectory = Environment.CurrentDirectory;
+        Process? host = null;
+        var key = RandomNumberGenerator.GetBytes(32);
+        try
+        {
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", dataDirectory);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", configDirectory);
+            Environment.CurrentDirectory = workspace;
+            var cli = Path.Combine(FindRepositoryRoot(), "src", "OmniCore.Cli", "bin", "Debug", "net10.0", "omni.dll");
+            host = StartRawHost(cli, workspace, Convert.ToHexString(key));
+            var hello = RawExchange(host, WireEnvelope.FromJson(
+                "{\"version\":\"1.0\",\"messageType\":\"hello\",\"messageId\":\"security-default-hello\",\"payload\":{\"supportedVersions\":[\"1.0\"]}}"));
+            using var helloPayload = JsonDocument.Parse(hello.PayloadJson);
+            var nonce = helloPayload.RootElement.GetProperty("trustedActionNonce").GetString()!;
+
+            var initialResponse = RawExchange(host, WireEnvelope.Command("security-default-before",
+                "{\"operation\":\"query\",\"name\":\"sessionSecurityDefault\"}"));
+            using var initialPayload = JsonDocument.Parse(initialResponse.PayloadJson);
+            using var initialDefault = JsonDocument.Parse(initialPayload.RootElement.GetProperty("json").GetString()!);
+            var originalRevision = initialDefault.RootElement.GetProperty("revision").GetString()!;
+            Assert.Equal("ObserveOnly", initialDefault.RootElement.GetProperty("category").GetString());
+
+            var command = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"session.security.default.set\",\"category\":\"PatchOnly\",\"expectedRevision\":\""
+                + originalRevision + "\"}");
+            var signed = TrustedActionEnvelope(command, key, nonce, workspace, null, null);
+            var accepted = Ack(RawExchange(host, signed));
+            Assert.Equal("ok", accepted.Status);
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, accepted.Outcome?.Kind);
+
+            var requestHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
+            var lookupResponse = RawExchange(host, WireEnvelope.Command("security-default-lookup",
+                "{\"operation\":\"command.result\",\"commandId\":\"" + command.MessageId
+                + "\",\"requestHash\":\"" + requestHash + "\"}"));
+            using var lookup = JsonDocument.Parse(lookupResponse.PayloadJson);
+            Assert.Equal("completed", lookup.RootElement.GetProperty("state").GetString());
+            Assert.Equal("Accepted", lookup.RootElement.GetProperty("ack").GetProperty("outcome").GetString());
+
+            var replayed = Ack(RawExchange(host, signed));
+            Assert.Equal(accepted.Status, replayed.Status);
+            Assert.Equal(accepted.Outcome?.Kind, replayed.Outcome?.Kind);
+            var updatedResponse = RawExchange(host, WireEnvelope.Command("security-default-after",
+                "{\"operation\":\"query\",\"name\":\"sessionSecurityDefault\"}"));
+            using var updatedPayload = JsonDocument.Parse(updatedResponse.PayloadJson);
+            using var updatedDefault = JsonDocument.Parse(updatedPayload.RootElement.GetProperty("json").GetString()!);
+            Assert.Equal("PatchOnly", updatedDefault.RootElement.GetProperty("category").GetString());
+            Assert.NotEqual(originalRevision, updatedDefault.RootElement.GetProperty("revision").GetString());
+        }
+        finally
+        {
+            if (host is not null)
+            {
+                try { if (!host.HasExited) host.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+                try { await host.WaitForExitAsync(TestContext.Current.CancellationToken); } catch (InvalidOperationException) { }
+                host.Dispose();
+            }
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", oldData);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", oldConfig);
+            Environment.CurrentDirectory = oldDirectory;
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Stdio_rejects_image_before_admission_when_effective_model_is_text_only()
     {
         var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-modality-preflight-" + Guid.NewGuid().ToString("N"));
@@ -587,9 +661,12 @@ public sealed class StdioTransportTests
             var uploaded = RawExchange(host, TrustedActionEnvelope(finish, key, nonce, workspace, null, null));
             Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, Ack(uploaded).Outcome?.Kind);
             using var uploadedPayload = JsonDocument.Parse(uploaded.PayloadJson);
+            var defaultRevision = ReadSessionSecurityDefaultRevision(host);
             var start = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
                 "{\"cmd\":\"conversation.start\",\"text\":\"inspect this image\",\"mode\":\"plan\","
-                + "\"expectedRevision\":null,\"attachments\":[" + uploadedPayload.RootElement.GetProperty("attachment").GetRawText() + "]}");
+                + "\"expectedRevision\":null,\"expectedPolicyRevision\":null,\"expectedDefaultRevision\":"
+                + JsonSerializer.Serialize(defaultRevision) + ",\"attachments\":["
+                + uploadedPayload.RootElement.GetProperty("attachment").GetRawText() + "]}");
             var rejected = Ack(RawExchange(host,
                 TrustedActionEnvelope(start, key, nonce, workspace, null, null)));
 
@@ -692,9 +769,11 @@ public sealed class StdioTransportTests
             Assert.Equal("fixture.png", uploadedPayload.RootElement.GetProperty("attachment").GetProperty("fileName").GetString());
             var attachmentJson = uploadedPayload.RootElement.GetProperty("attachment").GetRawText();
 
+            var defaultRevision = ReadSessionSecurityDefaultRevision(host);
             var command = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(), "{\"cmd\":\"conversation.start\","
                 + "\"text\":\"único envío al proveedor de prueba\",\"attachments\":[" + attachmentJson
-                + "],\"mode\":\"plan\",\"expectedRevision\":null}");
+                + "],\"mode\":\"plan\",\"expectedRevision\":null,\"expectedPolicyRevision\":null,\"expectedDefaultRevision\":"
+                + JsonSerializer.Serialize(defaultRevision) + "}");
             var signed = TrustedActionEnvelope(command, key, nonce, workspace, null, null);
             var admission = Ack(RawExchange(host, signed));
             Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, admission.Outcome?.Kind);
@@ -755,6 +834,36 @@ public sealed class StdioTransportTests
             Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, cancelAck.Outcome?.Kind);
             Assert.Equal("cancelled", ConversationResult(host, command.MessageId, requestHash).GetProperty("state").GetString());
             Assert.Equal(1, provider.RequestCount);
+
+            var setPolicy = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"session.security.set\",\"sessionId\":"
+                + JsonSerializer.Serialize(scope.SessionId)
+                + ",\"category\":\"ObserveOnly\",\"expectedRevision\":1}");
+            var policyAck = Ack(RawExchange(host, TrustedActionEnvelope(setPolicy, key,
+                helloPayload.RootElement.GetProperty("trustedActionNonce").GetString()!, workspace,
+                scope.SessionId, null)));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Accepted, policyAck.Outcome?.Kind);
+            long countBeforeStale;
+            using (var beforeStale = new SqliteEventStore(journal, readOnly: true))
+                countBeforeStale = beforeStale.CountEvents(OmniCore.Domain.SessionId.Parse(scope.SessionId));
+
+            var staleConversation = WireEnvelope.Command(OmniCore.Protocol.Ids.NewV7(),
+                "{\"cmd\":\"conversation.start\",\"text\":\"keep this draft; do not consume it\",\"mode\":\"plan\","
+                + "\"expectedRevision\":null,\"expectedPolicyRevision\":1,\"expectedDefaultRevision\":null}");
+            var staleAck = Ack(RawExchange(host, TrustedActionEnvelope(staleConversation, key,
+                helloPayload.RootElement.GetProperty("trustedActionNonce").GetString()!, workspace,
+                scope.SessionId, null)));
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Rejected, staleAck.Outcome?.Kind);
+            Assert.Equal("session_security.stale_revision", staleAck.Error);
+            Assert.Equal(1, provider.RequestCount);
+            using (var afterStale = new SqliteEventStore(journal, readOnly: true))
+            {
+                Assert.Equal(countBeforeStale, afterStale.CountEvents(OmniCore.Domain.SessionId.Parse(scope.SessionId)));
+                var afterEvents = afterStale.ReadFrom(OmniCore.Domain.SessionId.Parse(scope.SessionId), 1)
+                    .Select(codecs.Decode).ToArray();
+                Assert.Single(afterEvents.OfType<OmniCore.Domain.UserInputReceived>());
+                Assert.Single(afterEvents.OfType<OmniCore.Domain.RunCreated>());
+            }
 
             using var store = new SqliteEventStore(journal, readOnly: true);
             var events = store.ReadFrom(OmniCore.Domain.SessionId.Parse(scope.SessionId), 1)
@@ -826,6 +935,16 @@ public sealed class StdioTransportTests
             ?? throw new InvalidOperationException("Session scope missing.");
     }
 
+    private static string ReadSessionSecurityDefaultRevision(Process host)
+    {
+        var response = RawExchange(host, WireEnvelope.Command("security-default-query-" + Guid.NewGuid().ToString("N"),
+            "{\"operation\":\"query\",\"name\":\"sessionSecurityDefault\"}"));
+        using var payload = JsonDocument.Parse(response.PayloadJson);
+        using var snapshot = JsonDocument.Parse(payload.RootElement.GetProperty("json").GetString()!);
+        return snapshot.RootElement.GetProperty("revision").GetString()
+            ?? throw new InvalidOperationException("Session security default revision missing.");
+    }
+
     private static (bool Global, bool Project) ReadAgentMemoryConsent(Process host)
     {
         var response = RawExchange(host, WireEnvelope.Command("agent-sources-" + Guid.NewGuid().ToString("N"),
@@ -875,6 +994,7 @@ public sealed class StdioTransportTests
             {
                 "Accepted" => RuntimeCommandOutcome.Accepted(),
                 "Rejected" => RuntimeCommandOutcome.Rejected(),
+                "NoOp" => RuntimeCommandOutcome.NoOp(),
                 "Deferred" => RuntimeCommandOutcome.Deferred("unknown"),
                 _ => null,
             },
