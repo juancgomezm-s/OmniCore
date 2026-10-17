@@ -245,14 +245,14 @@ public sealed partial class TuiWiringTests
     });
 
     [Fact]
-    public void Preferences_model_picker_selects_registered_subscription_without_requiring_discovery() => RunTuiTest(fx =>
+    public void Model_command_selects_registered_subscription_without_requiring_discovery() => RunTuiTest(fx =>
     {
         var policies = ModelPolicyHost.Create(Path.Combine(fx.Root, "offline-picker"));
         policies.RegisterChatGptModel("registered-only", 8192, 2048);
         var account = new TestAccount { Current = new(true, "***1234", null, false), FailCatalog = true };
         fx.StartTui(policies, account, initialColumns: 120, initialRows: 40);
-        KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "preferences open");
-        ChoosePreferenceCategory(fx, "models_execution"); ClickId(fx, "preferences-model-select");
+        Type(fx, "/modelo");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay?.Id == "omni-model-palette", "model command opens picker");
         Assert.Equal(0, account.CatalogCalls);
         var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
         fx.Invoke(() =>

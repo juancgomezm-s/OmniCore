@@ -10,7 +10,7 @@ internal static class TuiMenuCommands
     {
         ["preferences"] = "general", ["sidebar"] = "general", ["animation"] = "general",
         ["login"] = "accounts_connections", ["logout"] = "accounts_connections", ["openrouter"] = "accounts_connections",
-        ["models"] = "models_execution", ["model"] = "models_execution",
+        ["models"] = "models_execution",
         ["tools"] = "tools_security", ["permissions"] = "tools_security", ["trust"] = "tools_security",
         ["context"] = "context_sessions", ["memory"] = "context_sessions",
         ["extensions"] = "extensions_skills", ["skills"] = "extensions_skills",

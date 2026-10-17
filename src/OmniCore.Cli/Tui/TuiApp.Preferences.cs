@@ -419,8 +419,8 @@ public sealed partial class TuiApp
                 break;
             case "models_execution":
                 Section("section_models", y++);
-                AddNamedAction("preferences-model-select", _localization.Resolve("shell.select_model"), y, () =>
-                { CloseOverlay(); ShowModelPicker(refreshCatalog: false); _preferencesReturnToCategory = true; }); y += 2;
+                AddNamedAction("preferences-models-enabled", _localization.Resolve("shell.models.enable"), y, () =>
+                { CloseOverlay(); ShowModelToggles(); _preferencesReturnToCategory = true; }); y += 2;
                 AddAction("preferences-models-open", "models_open", y, () => { CloseOverlay(); ShowPolicyPreferences("models_execution"); }); y += 2;
                 var catalogButton = new Button { Id = "preferences-model-catalog-open", X = MenuIndent.Level1, Y = y,
                     Width = Dim.Fill(3), TextAlignment = Alignment.Start, Text = _localization.Resolve("modelCatalogPreferences.open") };

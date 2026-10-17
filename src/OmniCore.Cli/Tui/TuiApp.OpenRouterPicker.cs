@@ -7,7 +7,7 @@ public sealed partial class TuiApp
 {
     private void RefreshOpenRouterPicker(FrameView frame, Label feedback,
         IReadOnlyList<ProviderConnectionMenuRow> providers, TextField search,
-        Func<ModelPolicyKeyDto?> highlighted)
+        Func<ModelPolicyKeyDto?> highlighted, Action<string, ModelPolicyKeyDto?>? reopen = null)
     {
         if (_providerConnectionHost is not ITuiOpenRouterCatalogHost catalog) return;
         var button = frame.SubViews.OfType<Button>().Single(view => view.Id == "omni-palette-openrouter-refresh");
@@ -39,7 +39,9 @@ public sealed partial class TuiApp
                     var query = search.Text.ToString();
                     var focused = highlighted();
                     _catalogCancellation = null;
-                    CloseOverlay(); ShowModelPicker(refreshCatalog: false, query: query, highlighted: focused);
+                    CloseOverlay();
+                    if (reopen is null) ShowModelPicker(refreshCatalog: false, query: query, highlighted: focused);
+                    else reopen(query, focused);
                     if (notice is not null && _overlay?.SubViews.OfType<Label>()
                             .FirstOrDefault(view => view.Id == "omni-palette-feedback") is { } label)
                         label.Text = notice;

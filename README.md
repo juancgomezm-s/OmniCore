@@ -438,12 +438,21 @@ una sola acción; se conservan el historial y el mensaje original. El permiso no
 se reutiliza para conexiones modificadas ni para repetir una petición ya atendida.
 [Validación del cambio de modelo](docs/validation/model-route-resume-20261016.md).
 
-Los modelos de **OpenRouter** también aparecen en **F3**. Busca `OpenRouter`,
+En **F4 → Modelos y perfiles → Activar modelos…** puedes buscar en la lista
+completa, incluidos los modelos del catálogo de OpenRouter, y encender o apagar
+cada uno con su interruptor: `[   █]` encendido, `[█   ]` apagado. Clic, Enter o
+Espacio guardan el cambio inmediatamente; las flechas sólo recorren la lista.
+La preferencia se conserva al reiniciar y apagar el modelo actual no lo sustituye.
+
+Usa **`/modelo`** para elegir con cuál trabajar: muestra únicamente los encendidos.
+**F3** abre ese mismo selector. Activar un modelo no lo elige ni inicia una consulta.
+
+Los modelos de **OpenRouter** activados también aparecen en **`/modelo` y F3**. Busca `OpenRouter`,
 recorre el catálogo y pulsa Enter para elegir uno; la aplicación registra sólo
 ese modelo, conserva la conversación y no realiza inferencia al seleccionarlo.
 **Actualizar OpenRouter** consulta el catálogo oficial cuando necesites renovarlo;
 abrir F3 utiliza la copia guardada. No hace falta registrar cada modelo desde
-Preferencias antes de poder encontrarlo en el selector.
+Preferencias antes de poder encontrarlo en el selector; su interruptor debe estar encendido.
 [Validación del catálogo y selector](docs/validation/openrouter-model-picker-20261016.md).
 
 Las opciones disponibles en **F4** se administran desde su menú y no se repiten

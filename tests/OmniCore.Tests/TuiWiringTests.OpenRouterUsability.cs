@@ -71,6 +71,8 @@ public sealed partial class TuiWiringTests
             .SubViews.OfType<ListView>().Single().Source!.ToList().Cast<object>()
             .Select(row => row.ToString()!.Split(' ', StringSplitOptions.RemoveEmptyEntries)[0]).ToArray());
         Assert.Contains("/" + HumanCommandAliases.DisplayName("plan", locale), names);
+        Assert.Contains("/" + HumanCommandAliases.DisplayName("model", locale), names);
+        Assert.DoesNotContain("/" + HumanCommandAliases.DisplayName("models", locale), names);
         Assert.Contains("/" + HumanCommandAliases.DisplayName("delegate", locale), names);
         Assert.Contains("/" + HumanCommandAliases.DisplayName("cancel", locale), names);
         Assert.DoesNotContain(names, name => OmniCore.Cli.TuiMenuCommands.IsMenuOwned(name[1..]));
