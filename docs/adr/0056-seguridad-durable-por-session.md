@@ -49,22 +49,25 @@ elegidas por el modelo.
 
 ## Consecuencias y estado
 
-El checkpoint Core `08a4a6f` pasó el build de solución con cero advertencias y cero errores; el foco
-de seguridad y lifecycle pasó 56/56. Los tests están en el commit `06af380`; comandos y logs se
-registran en [el acta M9-K](../validation/m9-block-k-20261017.md). Esos resultados solo validan ese
-checkpoint. El HEAD posterior incluye cambios de admisión y reanudación explícita de cuestionarios
-que todavía no se han compilado ni probado.
+El checkpoint publicado Core `5c315ba` incluye seguridad durable, lifecycle y respuesta/reanudación
+de cuestionarios. El build de solución y 120 casos focales únicos se verificaron en los ciclos
+descritos en [el acta M9-K](../validation/m9-block-k-20261017.md); esa cifra no representa una sola
+ejecución completa. Incluye recuperación tras reiniciar el Host y restauración conservadora del
+presupuesto de mutación del Turn. Los grants de lectura/versionado no se restauran como autoridad.
 
-En OmniCoder, el build de app y 9 pruebas unitarias pasaron en el ciclo K2. El E2E encontró fallos de
-tipos, lectura durante transición de conexión y registro de la consulta `conversations`; se aplicaron
-correcciones y el E2E integrado está en reintento. No se declara verificado el recorrido final
-Core→stdio→SDK→Electron.
+El checkpoint publicado OmniCoder `c85a77c` incluye consumidor SDK/Main/UI para cuestionarios y
+lifecycle. Pasaron el E2E real Electron→Host→fixture HTTP de dos Sessions y el de respuesta de
+cuestionario en el mismo Run, además de las pruebas focales registradas. La matriz de CI de ese
+checkpoint pasó en Windows/Ubuntu y su package gate. Esto no acredita inferencia de un proveedor
+del usuario ni el bloque posterior que retira grants y confirmaciones redundantes.
 
-K permanece abierto hasta que pase el E2E real, se validen los cambios Core posteriores al checkpoint
-verde y se comprueben todos los puntos de admisión. El lifecycle nativo de listar/crear/abrir/
-renombrar/compactar está implementado en el checkpoint K2 de código, sujeto a esa validación. La
-propiedad de Sessions importadas requiere un importador Core real; hasta entonces no se anuncia ruta
-de import. L tiene lógica Core para respuestas y reanudación explícitas de cuestionario, todavía sin
-consumidor SDK/UI ni validación. La paridad de los demás mutadores de runtime y M (ConPTY/procesos
-persistentes) siguen abiertos. La aceptación manual de M8 corresponde al usuario y permanece
+La suite completa de Core sobre `5c315ba` detectó 121 fallos de 4860 casos en Ubuntu. El análisis y
+la reparación se siguen en [el informe de CI](../ci-failure-analysis.md). No se extrapolan los
+resultados focales a esa suite y K permanece abierto hasta corregir las regresiones y completar
+SEC-CONV-01–13.
+
+La propiedad de Sessions importadas requiere un importador Core real; hasta entonces no se anuncia
+ruta de importación. El cuestionario sí tiene consumidor y validación integrada; permisos,
+PlanApproval, modelos/rutas y los demás mutadores de L siguen pendientes. M (ConPTY/procesos
+persistentes) no está construido. La aceptación manual de M8 corresponde al usuario y permanece
 pendiente.

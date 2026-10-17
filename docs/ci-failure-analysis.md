@@ -1,5 +1,35 @@
 # Reparación y validación de CI/Linux de OmniCore
 
+## Regresiones detectadas tras seguridad de Session (2026-10-17)
+
+El run [39077479124](https://github.com/juancgomezm-s/OmniCore/actions/runs/39077479124),
+sobre `5c315ba`, informa **121 fallos de 4860 casos** en el job Ubuntu
+`117527528666`. Instalación npm en Windows/Ubuntu y empaquetado Linux pasaron;
+eso no acredita la suite de Core. OmniCoder pasó su matriz Windows/Ubuntu y
+su package gate en el run independiente
+[39077489183](https://github.com/juancgomezm-s/OmniCode/actions/runs/39077489183).
+
+La inspección inicial agrupa los fallos, sin presentarlos todavía como reparados:
+
+- Reanudación: varias fixtures escriben un Run sin `SessionCreated`. La migración
+  conservadora de seguridad rechaza ese journal al recuperar escritura. El estado
+  se informa como `busy/session_writer_owned`, aunque esa causa no demuestra una
+  lease ocupada; deben distinguirse ambos motivos sin permitir un journal inválido.
+- Delegación: fixtures que antes sólo seleccionaban ORQ y una política de modelo
+  permisiva no seleccionan ahora un techo de Session que permita orquestación.
+  Deben declarar su autorización explícita; no se debe ampliar el default ni
+  omitir la intersección de políticas para hacer pasar las pruebas.
+- Atomicidad: las expectativas numéricas de inicialización todavía cuentan sólo
+  `SessionCreated` y omiten su nuevo snapshot durable de seguridad. Se debe
+  comprobar el par canónico, causalidad, rango del ACK y rollback completo.
+- Portabilidad: `SessionSecurityPolicyBoundaryTests` usa una ruta base Windows
+  literal que no es absoluta en Linux. La fixture necesita una ruta de la plataforma.
+
+Log completo descargado en el equipo de trabajo:
+`C:/Users/juanc/.codex/omnicode-ci-repair-20261013/117527528666-job.log`.
+La reparación y su evidencia focal siguen pendientes; no se declara CI verde ni
+M9 cerrado por los resultados focales del checkpoint anterior.
+
 ## Reparación focal de integración (2026-10-17)
 
 El run [39004749905](https://github.com/juancgomezm-s/OmniCore/actions/runs/39004749905)
