@@ -61,3 +61,17 @@ idéntico; no se repitieron sus suites amplias ni la inferencia autenticada Luna
 
 Estas verificaciones no acreditan nuevos proveedores reales, instaladores ni cierre de M8/M9.
 La verificación de publicación y CI remoto se informa por separado tras subir main.
+
+## Comprobación final del consumidor
+
+Se completaron los otros seis casos del archivo Host E2E: conexión/replay/caída, guard MCP,
+cambio de proyecto con conexión pendiente, media.read, imágenes nativas CAS/persistencia y
+command.sim real. Resultado: 6 aprobados, 2 filtrados por haberse validado antes, sin fallos;
+`%TEMP%\omni-merge-coder-remaining-e2e-20261016.log`. Los ocho casos únicos del archivo se aprobaron
+en corridas separadas. Sólo se adaptaron selectores al menú existente (summary directo, badge
+Disponible y ruta del proyecto en Sidecar); se conservaron los asserts de comportamiento.
+`%TEMP%\omni-merge-coder-orphans-final-20261016.log` confirma `NO_ORPHANS`.
+
+Tras un nuevo fetch no quedan ramas locales/remotas fuera de main en ninguno de los dos repos.
+Todos los HEAD de worktrees, incluidos los snapshots detached, son ancestros de main. Los otros
+worktrees accesibles están limpios; los stashes previos se conservaron.
