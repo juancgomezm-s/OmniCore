@@ -3045,7 +3045,7 @@ public sealed class CliEndToEndTests
     }
 
     [Fact]
-    public async Task Act_executes_read_and_approved_patch_before_completing_gates()
+    public async Task Act_applies_approved_patch_but_does_not_complete_without_session_gates()
     {
         await InIsolatedCli(async (workspace, _, data, provider) =>
         {
@@ -3075,7 +3075,7 @@ public sealed class CliEndToEndTests
                 new UserModelPolicy(stored.Policy.Category, stored.Policy.ToolPolicy, noPostEditGate,
                     stored.Policy.Source, "cli-e2e-approved-patch"), CancellationToken.None);
             var act = await Run("act", "actualiza doc.txt");
-            Assert.True(act.Code == 0, SafeActFailureDiagnostic(workspace, act.Code));
+            Assert.Equal(1, act.Code);
             Assert.Equal("one\ntwo-X\nthree\nfour\nfive\nsix\nseven\neight\n",
                 File.ReadAllText(Path.Combine(workspace, "doc.txt")));
             Assert.Contains("[herramienta] filesystem.read", act.Output);
@@ -3093,9 +3093,9 @@ public sealed class CliEndToEndTests
             var ordered = payloads.ToList();
             Assert.True(ordered.IndexOf(started) < ordered.IndexOf(succeeded),
                 "Barrier ToolCallStarted must precede successful effect outcome");
-            var validation = Assert.Single(payloads.OfType<RunValidationStarted>());
-            var completed = Assert.Single(payloads.OfType<RunCompleted>());
-            Assert.True(payloads.ToList().IndexOf(validation) < payloads.ToList().IndexOf(completed));
+            var rejected = Assert.Single(payloads.OfType<RunValidationRejected>());
+            Assert.Equal(new[] { "post-edit-validation", "plan" }, rejected.Gates);
+            Assert.DoesNotContain(payloads, payload => payload is RunCompleted);
             Assert.Equal(3, provider.RequestCount);
         });
     }
@@ -3148,7 +3148,7 @@ public sealed class CliEndToEndTests
 
             var act = await Run("act", "actualiza doc.txt");
 
-            Assert.True(act.Code == 0, SafeActFailureDiagnostic(workspace, act.Code));
+            Assert.Equal(1, act.Code);
             Assert.Equal("one\ntwo-X\nthree\nfour\nfive\nsix\nseven\neight\n",
                 File.ReadAllText(Path.Combine(workspace, "doc.txt")));
             using var reopened = OmniHost.CreateModelQualificationStore(data);
@@ -3157,6 +3157,10 @@ public sealed class CliEndToEndTests
             Assert.Equal(1, mutation.Samples);
             Assert.Equal(MutationEvidenceRecorder.Source, mutation.Source);
             Assert.Equal(0.925, mutation.Value, 4); // 2 líneas cambiadas sobre 8: solo penaliza el tamaño del diff
+            var payloads = ReadCurrentSessionEvents(workspace);
+            var rejected = Assert.Single(payloads.OfType<RunValidationRejected>());
+            Assert.Equal(new[] { "post-edit-validation", "plan" }, rejected.Gates);
+            Assert.DoesNotContain(payloads, payload => payload is RunCompleted);
             Assert.Contains(traits, trait => trait.Trait == "InstructionFollowing" && trait.Samples == 10);
             AssertNoLeaks(act.Output);
         });
@@ -3254,31 +3258,6 @@ public sealed class CliEndToEndTests
         var store = new SqliteEventStore(Path.Combine(workspaceData, "journal.db"));
         try { return store.ReadFrom(sessionId, 1).Select(EventCodecs.Create().Decode).ToArray(); }
         finally { store.Close(); }
-    }
-
-    private static string SafeActFailureDiagnostic(string workspace, int exitCode)
-    {
-        try
-        {
-            var recent = ReadCurrentSessionEvents(workspace).TakeLast(32).Select(payload => payload switch
-            {
-                ToolCallRequested requested => $"toolcall.requested:{requested.ToolName}",
-                ToolCallStarted => "toolcall.started",
-                ToolCallSucceeded => "toolcall.succeeded",
-                ToolCallFailed failed => $"toolcall.failed:{failed.ErrorCode?.Value ?? "none"}:{failed.EffectOutcome}",
-                ToolCallRejected toolRejected => $"toolcall.rejected:{toolRejected.ErrorCode?.Value ?? "none"}",
-                RunValidationStarted => "run.validation_started",
-                RunValidationRejected validationRejected => $"run.validation_rejected:gates={string.Join(',', validationRejected.Gates)}:missingCount={validationRejected.Missing.Count}",
-                RunCompleted completed => $"run.completed:{completed.Outcome}",
-                RunFailed => "run.failed",
-                _ => payload.GetType().Name,
-            });
-            return $"ACT exit code {exitCode}; recent journal events (typed fields only): {string.Join(" | ", recent)}";
-        }
-        catch (Exception exception)
-        {
-            return $"ACT exit code {exitCode}; journal diagnostic unavailable ({exception.GetType().Name}).";
-        }
     }
 
     private static IReadOnlyList<DomainEvent> ReadCurrentSessionJournalEvents(string workspace)
