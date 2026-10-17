@@ -3,7 +3,8 @@ using System.Text.Json.Serialization;
 
 namespace OmniCore.Protocol;
 
-public sealed record ConversationRow(string Id, string Title, DateTimeOffset UpdatedAt, bool Current);
+public sealed record ConversationRow(string Id, string Title, DateTimeOffset UpdatedAt, bool Current,
+    long JournalSequence = 0);
 public sealed record ConversationList(IReadOnlyList<ConversationRow> Conversations);
 
 public static class ConversationJson

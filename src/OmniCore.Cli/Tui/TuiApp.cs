@@ -532,7 +532,7 @@ public sealed partial class TuiApp
         var names = ReadStringArray(commandCatalogJson, "commands")
             .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode", "reasoning",
                 "cancel", "interrupt", "preferences", "models", "sidebar", "agents", "delegate", "agent", "join", "fanout", "animation", "images",
-                "new", "sessions", "resume-session", "clear", "compact" })
+                "new", "sessions", "resume-session", "rename-session", "clear", "compact" })
             .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name))
             .Where(name => !TuiMenuCommands.IsMenuOwned(name, aliases));
         var suggestions = ComposerAutocomplete.Complete(draft,
@@ -578,6 +578,7 @@ public sealed partial class TuiApp
         "/new" => _localization.Resolve("shell.conversation.new"),
         "/sessions" => _localization.Resolve("shell.conversation.title"),
         "/resume-session" => _localization.Resolve("shell.conversation.resume"),
+        "/rename-session" => _localization.Resolve("shell.conversation.renamed"),
         "/clear" => _localization.Resolve("shell.conversation.clear"),
         "/compact" => _localization.Resolve("shell.conversation.compact"),
         "/agents" => _localization.Resolve("shell.inspect_run_agents_and_lanes"),
@@ -2840,7 +2841,7 @@ public sealed partial class TuiApp
         var shown = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var row in rows)
             if (shown.Add(row.Name)) lines.Add("  /" + row.DisplayName + " — " + row.Description);
-        foreach (var name in new[] { "new", "sessions", "resume-session", "clear", "compact", "act", "mode", "runmode", "ultracode", "reasoning", "agents", "delegate", "agent", "join", "fanout" })
+        foreach (var name in new[] { "new", "sessions", "resume-session", "rename-session", "clear", "compact", "act", "mode", "runmode", "ultracode", "reasoning", "agents", "delegate", "agent", "join", "fanout" })
             if (shown.Add(name)) lines.Add("  /" + HumanCommandAliases.DisplayName(name, _locale) + " — " + CommandDescription("/" + name));
         lines.Add(_localization.Resolve("shell.help_keys"));
         lines.Add("F6 — " + _localization.Resolve("shell.conversation.title"));

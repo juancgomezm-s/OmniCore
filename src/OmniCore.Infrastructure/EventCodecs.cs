@@ -55,6 +55,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.SkillActivationChanged())
             .Plus(Typed.RunInteractionResumed())
             .Plus(Typed.SessionCreated())
+            .Plus(Typed.SessionTitleChanged())
             .Plus(Typed.SessionSecurityPolicySet())
             .Plus(Typed.SessionRoutingPolicySet())
             .Plus(Typed.SessionRoutingPolicyRevised())
@@ -434,6 +435,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(ModeSwitchLimits))]
 [JsonSerializable(typeof(ProductEffort))]
 [JsonSerializable(typeof(SessionCreated))]
+[JsonSerializable(typeof(SessionTitleChanged))]
 [JsonSerializable(typeof(SessionSecurityPolicySet))]
 [JsonSerializable(typeof(SessionRoutingPolicySet))]
 [JsonSerializable(typeof(SessionRoutingPolicyRevised))]
@@ -684,6 +686,9 @@ public sealed class Typed
 
     public static CodecPair SessionCreated() =>
         Of(EventType.Of("session.created"), EventJsonContext.Default.SessionCreated);
+
+    public static CodecPair SessionTitleChanged() =>
+        Of(EventType.Of("session.title_changed"), EventJsonContext.Default.SessionTitleChanged);
 
     public static CodecPair SessionSecurityPolicySet() =>
         Of(EventType.Of("session.security_policy_set"), EventJsonContext.Default.SessionSecurityPolicySet);

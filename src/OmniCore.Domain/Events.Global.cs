@@ -13,6 +13,21 @@ public record SessionCreated(SessionId SessionId, string WorkspaceId, string Wor
     public int SchemaVersion() => 1;
 }
 
+/// <summary>A user-selected display title for a Session, guarded by journal-sequence compare-and-set.</summary>
+public sealed record SessionTitleChanged(SessionId SessionId, string Title, long ExpectedSequence)
+    : IValidatedDomainEventPayload
+{
+    public EventType Type() => EventType.Of("session.title_changed");
+    public int SchemaVersion() => 1;
+
+    public void Validate()
+    {
+        if (string.IsNullOrWhiteSpace(Title) || Title.Length > 120 || Title.Any(char.IsControl)
+            || !string.Equals(Title, Title.Trim(), StringComparison.Ordinal) || ExpectedSequence < 1)
+            throw new ArgumentException("Session title event is invalid.");
+    }
+}
+
 /// <summary>
 /// WorkspaceRootEstablished: fija la RAÍZ DURADERA Y VERIFICABLE del workspace al crear la sesión.
 /// Es el origen EXPLÍCITO y seguro que usa la recuperación del Host (ADR-0004 §5) para reconciliar

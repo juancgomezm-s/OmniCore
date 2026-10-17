@@ -21,9 +21,10 @@ public sealed partial class OmniServer
             if (_workspaceRoot is { } root && created.WorkspaceId != WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(root)).ToString()) continue;
             var history = _store.ReadFrom(created.SessionId, 1);
             var first = history.Select(_codecs.Decode).OfType<UserInputReceived>().FirstOrDefault();
-            var title = first is null ? "" : InputTitle(first.InputPartsJson);
+            var explicitTitle = history.Select(_codecs.Decode).OfType<SessionTitleChanged>().LastOrDefault();
+            var title = explicitTitle?.Title ?? (first is null ? "" : InputTitle(first.InputPartsJson));
             rows.Add(new(created.SessionId.ToString(), title, history.LastOrDefault()?.Timestamp ?? created.CreatedAt,
-                created.SessionId == _lastSessionId));
+                created.SessionId == _lastSessionId, history.LastOrDefault()?.Sequence ?? 0));
         }
         return new(rows.OrderByDescending(row => row.UpdatedAt).ToArray());
     }
@@ -68,6 +69,39 @@ public sealed partial class OmniServer
                     sequenceBefore = attempted is null ? 0 : _store.CurrentSequence(attempted);
                     if (attempted is { } active) EnsureSessionSecurityPolicy(active);
                     return CompactConversation(command, token);
+                }
+                if (name == "conversation.rename")
+                {
+                    if (_lastSessionId is not { } active || !fields.TryGetValue("sessionId", out var sessionText)
+                        || !Guid.TryParseExact(sessionText, "D", out var parsedSession) || parsedSession != active.Value
+                        || !fields.TryGetValue("title", out var title) || string.IsNullOrWhiteSpace(title)
+                        || title.Length > 120 || title.Any(char.IsControl) || title != title.Trim()
+                        || !long.TryParse(fields.GetValueOrDefault("expectedSequence"),
+                            System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture,
+                            out var expectedSequence) || expectedSequence < 1)
+                        return new(command.MessageId, "error", "conversation.rename.invalid", RuntimeCommandOutcome.Rejected());
+                    attempted = active;
+                    sequenceBefore = _store.CurrentSequence(active);
+                    var titleEvent = new SessionTitleChanged(active, title, expectedSequence);
+                    var stream = new EventStream(_store, _codecs, active);
+                    stream.AppendAdmitted(titleEvent, DurabilityClass.Barrier, journal =>
+                    {
+                        var payloads = journal.Select(_codecs.Decode).ToArray();
+                        if (journal.Count == 0 || journal[^1].SessionId != active
+                            || journal[^1].Sequence != expectedSequence
+                            || payloads.OfType<SessionCreated>().LastOrDefault()?.SessionId != active)
+                            throw new InvalidOperationException("conversation.rename.stale_revision");
+                        var closedTurns = payloads.Select(payload => payload switch
+                        {
+                            TurnCompleted completed => (TurnId?)completed.TurnId,
+                            TurnAbandoned abandoned => abandoned.TurnId,
+                            _ => null,
+                        }).OfType<TurnId>().ToHashSet();
+                        if (payloads.OfType<TurnStarted>().Any(started => !closedTurns.Contains(started.TurnId)))
+                            throw new InvalidOperationException("shell.conversation.busy");
+                    });
+                    return CommandOutcomeAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+                        active, sequenceBefore, new CommandId(Guid.Parse(command.MessageId)));
                 }
                 SessionId target;
                 RunId? run = null;

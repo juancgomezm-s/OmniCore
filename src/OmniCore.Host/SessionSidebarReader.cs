@@ -13,9 +13,11 @@ internal static class SessionSidebarReader
     {
         var all = store.ReadFrom(session, 1).Where(e => e.SessionId == session).ToArray();
         var sequence = all.LastOrDefault()?.Sequence ?? 0;
-        // A session has no canonical title yet: use its first Run objective as a stable display fallback.
-        var title = all.Where(e => e.Type.ToString() == "run.created").Select(codecs.Decode)
-            .OfType<RunCreated>().FirstOrDefault(e => e.SessionId == session)?.Objective ?? "";
+        // A user-selected title is canonical; otherwise use the first Run objective as display fallback.
+        var title = all.Select(codecs.Decode).OfType<SessionTitleChanged>()
+            .LastOrDefault(e => e.SessionId == session)?.Title
+            ?? all.Where(e => e.Type.ToString() == "run.created").Select(codecs.Decode)
+                .OfType<RunCreated>().FirstOrDefault(e => e.SessionId == session)?.Objective ?? "";
         static string Safe(string text) => new PiiRedactor().Redact(text);
         var empty = new SessionSidebarSnapshot(session.ToString(), run?.ToString(), sequence,
             Safe(title), null, null, null, null, recoveryBlocked, false);

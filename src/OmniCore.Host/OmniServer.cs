@@ -792,7 +792,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
         using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
         var commandName = fields.TryGetValue("cmd", out var c) ? c : null;
-        if (commandName is "conversation.new" or "conversation.resume" or "conversation.compact")
+        if (commandName is "conversation.new" or "conversation.resume" or "conversation.rename" or "conversation.compact")
             return HandleConversationCommand(command, fields, commandName, trustedUserAction, cancellationToken);
         if (commandName == "session.security.set")
             return trustedUserAction

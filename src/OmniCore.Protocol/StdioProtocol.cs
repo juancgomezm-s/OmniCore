@@ -30,6 +30,7 @@ public static class StdioProtocol
         "query.workingState",
         "query.commands",
         "query.sessionSidebar",
+        "query.conversations",
         "query.changedFiles",
         "query.agents",
         "query.agentSources",
@@ -60,6 +61,10 @@ public static class StdioProtocol
     [
         "command.session.input.user",
         "command.conversation.start.user",
+        "command.conversation.new.user",
+        "command.conversation.resume.user",
+        "command.conversation.rename.user",
+        "command.conversation.compact.user",
         "command.session.security.set.user",
         "command.session.security.default.set.user",
         "command.run.interrupt.user",
@@ -83,6 +88,7 @@ public static class StdioProtocol
         new("workingState", "query.workingState", "Current plan and working state", "session", "session-read", true),
         new("commands", "query.commands", "Effective human command catalog", "session", "workspace-read", true),
         new("sessionSidebar", "query.sessionSidebar", "Session sidebar and persisted artifacts", "session", "session-read", true),
+        new("conversations", "query.conversations", "Sessions in the current workspace", "workspace", "workspace-read", true),
         new("changedFiles", "query.changedFiles", "Changed files and artifact references", "session", "session-read", true),
         new("agents", "query.agents", "Agent lanes and delegated tasks", "session", "session-read", true),
         new("agent.sources", "query.agentSources", "External agent instruction and memory sources", "workspace", "workspace-read", true),
@@ -151,7 +157,8 @@ public static class StdioProtocol
     }
 
     public static bool IsSupportedCommand(string name) => name is "sim" or "sim.resume" or "session.input"
-        or "conversation.start" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
+        or "conversation.start" or "conversation.new" or "conversation.resume" or "conversation.rename" or "conversation.compact"
+        or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
         or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish"
         or "external.memory.consent";
 
@@ -161,8 +168,12 @@ public static class StdioProtocol
         new("sim.resume", "command.sim.resume", "generic", "command.result.lookup", "Resume a deterministic simulation"),
         new("session.input", "command.session.input", "generic", "command.result.lookup", "Persist literal user input without inference"),
         new("conversation.start", "command.conversation.start.user", "native-confirmation+hmac+session-scope+security-revision-v1", "conversation.result.lookup", "Persist input and invoke the Core conversation pipeline"),
+        new("conversation.new", "command.conversation.new.user", "native-confirmation+hmac+connection-scope+receipt", "command.result.lookup", "Create a blank Session with the configured security ceiling"),
+        new("conversation.resume", "command.conversation.resume.user", "native-confirmation+hmac+workspace-session-scope+lease+receipt", "command.result.lookup", "Resume a Session in the current workspace"),
+        new("conversation.rename", "command.conversation.rename.user", "native-confirmation+hmac+session-sequence-cas+receipt", "command.result.lookup", "Set the current Session title with compare-and-set"),
+        new("conversation.compact", "command.conversation.compact.user", "native-confirmation+hmac+session-scope+receipt", "command.result.lookup", "Compact the current Session context while retaining history"),
         new("session.security.set", "command.session.security.set.user", "native-confirmation+hmac+session-revision", "command.result.lookup", "Set a revision-checked Session capability ceiling"),
-        new("session.security.default.set", "command.session.security.default.set.user", "native-confirmation+hmac+user-revision", "", "Set the configured security ceiling for new Sessions"),
+        new("session.security.default.set", "command.session.security.default.set.user", "native-confirmation+hmac+user-revision", "command.result.lookup", "Set the configured security ceiling for new Sessions"),
         new("run.interrupt", "command.run.interrupt.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Interrupt the active Run"),
         new("run.cancel", "command.run.cancel.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Cancel the active Run"),
         new("run.mode.select", "command.run.mode.select.user", "native-confirmation+hmac+session-scope", "command.result.lookup", "Select the active Run mode"),

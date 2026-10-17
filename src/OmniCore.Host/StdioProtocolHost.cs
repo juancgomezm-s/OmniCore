@@ -187,7 +187,8 @@ public static class StdioProtocolHost
                     || !StdioProtocol.IsSupportedCommand(nameElement.GetString()!))
                     throw new InvalidDataException();
                 var commandName = nameElement.GetString()!;
-                var trustedOnly = commandName is "conversation.start" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
+                var trustedOnly = commandName is "conversation.start" or "conversation.new" or "conversation.resume"
+                    or "conversation.rename" or "conversation.compact" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
                     or "external.memory.consent"
                     or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish";
                 TrustedActionScope? trustedScope = null;
@@ -202,7 +203,8 @@ public static class StdioProtocolHost
                 if (trustedOnly && trustedScope is null)
                     return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_user_action_required",
                         RuntimeCommandOutcome.Rejected()));
-                if (trustedScope is not null && commandName is not ("session.input" or "conversation.start" or "session.security.set" or "session.security.default.set"
+                if (trustedScope is not null && commandName is not ("session.input" or "conversation.start" or "conversation.new" or "conversation.resume"
+                    or "conversation.rename" or "conversation.compact" or "session.security.set" or "session.security.default.set"
                     or "run.interrupt" or "run.cancel" or "run.mode.select" or "external.memory.consent" or "attachment.upload.begin"
                     or "attachment.upload.chunk" or "attachment.upload.finish"))
                     return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_action_not_supported",
@@ -449,7 +451,8 @@ public static class StdioProtocolHost
         using var payload = JsonDocument.Parse(command.PayloadJson);
         if (!payload.RootElement.TryGetProperty("cmd", out var cmd) || cmd.ValueKind != JsonValueKind.String) return false;
         var commandName = cmd.GetString();
-        if (commandName is not ("session.input" or "conversation.start" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
+        if (commandName is not ("session.input" or "conversation.start" or "conversation.new" or "conversation.resume"
+            or "conversation.rename" or "conversation.compact" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
             or "external.memory.consent"
             or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish")) return false;
         if (commandName.StartsWith("attachment.upload.", StringComparison.Ordinal))
@@ -462,6 +465,36 @@ public static class StdioProtocolHost
         }
         if ((commandName is "run.interrupt" or "run.cancel" or "run.mode.select") && expectedRun.Value is null) return false;
         var properties = payload.RootElement.EnumerateObject().Select(property => property.Name).ToArray();
+        if (commandName is "conversation.new" or "conversation.resume" or "conversation.compact" or "conversation.rename")
+        {
+            if (properties.Distinct(StringComparer.Ordinal).Count() != properties.Length) return false;
+            var valid = commandName switch
+            {
+                "conversation.new" => properties.Length == 1 && properties[0] == "cmd",
+                "conversation.resume" => properties.Length == 2
+                    && !properties.Except(["cmd", "sessionId"], StringComparer.Ordinal).Any()
+                    && CanonicalPayloadSession(payload.RootElement, "sessionId"),
+                "conversation.compact" => properties.Length == 1 && properties[0] == "cmd"
+                    && expectedSession.Value is not null,
+                "conversation.rename" => properties.Length == 4
+                    && !properties.Except(["cmd", "sessionId", "title", "expectedSequence"], StringComparer.Ordinal).Any()
+                    && expectedSession.Value is not null
+                    && payload.RootElement.TryGetProperty("sessionId", out var targetSession)
+                    && targetSession.ValueKind == JsonValueKind.String && targetSession.GetString() == expectedSession.Value
+                    && payload.RootElement.TryGetProperty("title", out var title)
+                    && title.ValueKind == JsonValueKind.String && title.GetString() is { Length: > 0 and <= 120 } titleText
+                    && !string.IsNullOrWhiteSpace(titleText) && !titleText.Any(char.IsControl)
+                    && string.Equals(titleText, titleText.Trim(), StringComparison.Ordinal)
+                    && payload.RootElement.TryGetProperty("expectedSequence", out var sequence)
+                    && sequence.ValueKind == JsonValueKind.Number && sequence.TryGetInt64(out var expectedSequence)
+                    && expectedSequence > 0,
+                _ => false,
+            };
+            if (!valid) return false;
+            scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
+                CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
+            return true;
+        }
         if (commandName is "session.input" or "conversation.start")
         {
             var hasAttachments = commandName == "conversation.start" && HasAttachments(payload.RootElement);
@@ -578,6 +611,11 @@ public static class StdioProtocolHost
         return (string.Equals(element.GetString(), canonical, StringComparison.Ordinal) ? canonical : null,
             !string.Equals(element.GetString(), canonical, StringComparison.Ordinal));
     }
+
+    private static bool CanonicalPayloadSession(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var element) && element.ValueKind == JsonValueKind.String
+        && Guid.TryParseExact(element.GetString(), "D", out var id)
+        && string.Equals(element.GetString(), id.ToString("D"), StringComparison.Ordinal);
 
     private static bool HasAttachments(JsonElement root) => root.TryGetProperty("attachments", out var attachments)
         && attachments.ValueKind == JsonValueKind.Array && attachments.GetArrayLength() is > 0 and <= AttachmentReferences.MaximumCount;
@@ -869,7 +907,7 @@ public static class StdioProtocolHost
             var hostOnlyQueries = new HashSet<string>(["query.toolCatalog", "query.extensionCatalog", "query.mcpConfiguration",
                 "query.hookCatalog", "query.skillCatalog", "query.sessionMemory", "query.modePreferences",
                 "query.reasoningPreferences", "query.workspaceStatus", "query.turnContext", "query.openRouterStatus", "query.uiPreferences",
-                "query.sessionSecurity", "query.sessionSecurityDefault",
+                "query.sessionSecurity", "query.sessionSecurityDefault", "query.conversations",
                 "query.commandOutcome"],
                 StringComparer.Ordinal);
             supported = supported.Where(capability => !hostOnlyQueries.Contains(capability));

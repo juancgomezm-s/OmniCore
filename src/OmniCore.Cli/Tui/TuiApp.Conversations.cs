@@ -14,7 +14,7 @@ public sealed partial class TuiApp
     private bool HandleConversationSlash(string input)
     {
         if (!CommandLineParser.TryParse(input, out var parsed) || parsed is null
-            || parsed.Name is not ("new" or "sessions" or "resume-session" or "clear" or "compact")) return false;
+            || parsed.Name is not ("new" or "sessions" or "resume-session" or "rename-session" or "clear" or "compact")) return false;
         _composer!.Text = ""; HideCommandHelper();
         if (HasActiveModelWork) { ShowMessage(_localization.Resolve("shell.conversation.busy")); return true; }
         if (parsed.Name == "clear" && parsed.Arguments.Count == 0)
@@ -36,7 +36,37 @@ public sealed partial class TuiApp
                 ? "shell.conversation.nothing_to_compact" : "shell.conversation.compacted"); PollEvents(); }
             return true;
         }
+        if (parsed.Name == "rename-session" && parsed.Arguments.Count > 0)
+        {
+            RenameCurrentConversation(string.Join(' ', parsed.Arguments));
+            return true;
+        }
         ShowMessage(_localization.Resolve("shell.conversation.arguments")); return true;
+    }
+
+    private void RenameCurrentConversation(string title)
+    {
+        title = title.Trim();
+        if (title.Length is 0 or > 120 || title.Any(char.IsControl))
+        { ShowMessage(_localization.Resolve("shell.conversation.arguments")); return; }
+        try
+        {
+            var row = ConversationJson.Decode(_client.Query("conversations", CancellationToken.None)?.Json ?? "{}")
+                ?.Conversations.FirstOrDefault(item => item.Current);
+            if (row is null) { ShowMessage(_localization.Resolve("conversation.failed")); return; }
+            if (_client is not ITrustedUserActionClient trusted)
+            { ShowMessage(_localization.Resolve("conversation.trusted_required")); return; }
+            var payload = "{\"cmd\":\"conversation.rename\",\"sessionId\":"
+                + System.Text.Json.JsonSerializer.Serialize(row.Id) + ",\"title\":"
+                + System.Text.Json.JsonSerializer.Serialize(title) + ",\"expectedSequence\":"
+                + row.JournalSequence.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}";
+            var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+            if (ack.Status != "ok") { ShowMessage(_localization.ResolveWire(ack.Error ?? "conversation.failed")); return; }
+            _turnStatus = _localization.Resolve("shell.conversation.renamed");
+            _state = RefreshState(); RenderState();
+        }
+        catch (System.Text.Json.JsonException)
+        { ShowMessage(_localization.Resolve("conversation.failed")); }
     }
 
     private CommandAck ConversationCommand(string name, string? session = null)

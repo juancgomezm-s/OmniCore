@@ -2771,7 +2771,8 @@ public sealed class OmniCliRuntime : IDisposable
                     var actExecutor = OmniHost.CreateActExecutor(actTools.Catalog(), workspaceRoot,
                         boundary, restrictions, runId, audit, interactionResponder, interactive, artifacts,
                         server.ResolveLaneAgentProfile(sessionId, runId, laneId),
-                        additionalBoundaries: extensionBoundaries);
+                        additionalBoundaries: extensionBoundaries,
+                        acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission);
                     var approvedResolution = ResolveReasoningResolution(server.CurrentRunReasoningSelection(),
                         server.CurrentModeAuthority(), route.ReasoningCapability, null, null, selectedMaxOutputTokens);
                     route.ReasoningCapability.ValidateRequest(approvedResolution.AppliedRequest);
