@@ -118,12 +118,12 @@ public sealed class EventStream
         DurabilityClass durability)
     {
         ArgumentNullException.ThrowIfNull(payload);
-        if (payload.Type() != eventType)
+        if (!payload.Type().Equals(eventType))
             throw new ArgumentException("Initialization payload type does not match the requested event type.", nameof(payload));
         lock (WriterGate())
         {
             CatchUp();
-            if (_store.ReadFrom(_sessionId, 1).Any(envelope => envelope.Type == eventType)) return false;
+            if (_store.ReadFrom(_sessionId, 1).Any(envelope => envelope.Type.Equals(eventType))) return false;
             Append(payload, durability);
             return true;
         }
