@@ -919,7 +919,35 @@ public static class StdioProtocolHost
         {
             var store = server.ReceiptStore;
             if (store is null) return null;
-            var candidates = events.Where(evt => evt.RunId == runId && evt.Sequence < turnStartSequence
+            var startEvent = events.FirstOrDefault(evt => evt.RunId == runId
+                && evt.Sequence == turnStartSequence && codecs.Decode(evt) is TurnStarted);
+            if (startEvent is null || codecs.Decode(startEvent) is not TurnStarted currentTurn) return null;
+
+            // Bind only admissions in the current Lane's interval. Older deferred receipts stay
+            // durable after a questionnaire continuation; they must not make a later Turn in the
+            // same Run ambiguous. Child-lane terminals do not advance this boundary.
+            var laneByTurn = events.Where(evt => evt.RunId == runId && evt.Sequence < turnStartSequence)
+                .Select(evt => (evt.Sequence, Payload: codecs.Decode(evt)))
+                .Where(item => item.Payload is TurnStarted)
+                .Select(item => (TurnStarted)item.Payload)
+                .ToDictionary(item => item.TurnId, item => item.LaneId);
+            var previousTerminalSequence = events.Where(evt => evt.RunId == runId && evt.Sequence < turnStartSequence)
+                .Select(evt => (evt.Sequence, Payload: codecs.Decode(evt)))
+                .Select(item => (item.Sequence, TurnId: item.Payload switch
+                {
+                    TurnCompleted completed => completed.TurnId,
+                    TurnAbandoned abandoned => abandoned.TurnId,
+                    TurnInterrupted interrupted => interrupted.TurnId,
+                    _ => (TurnId?)null,
+                }))
+                .Where(item => item.TurnId is { } priorTurn
+                    && laneByTurn.TryGetValue(priorTurn, out var lane) && lane == currentTurn.LaneId)
+                .Select(item => item.Sequence)
+                .DefaultIfEmpty(0)
+                .Max();
+
+            var candidates = events.Where(evt => evt.RunId == runId && evt.Sequence > previousTerminalSequence
+                    && evt.Sequence < turnStartSequence
                     && codecs.Decode(evt) is UserInputReceived)
                 .Select(evt => (Event: evt, Cause: evt.Causation as CommandCausation))
                 .Where(item => item.Cause is not null)
