@@ -2030,7 +2030,33 @@ public sealed partial class TuiApp
     {
         if (_window is null || _overlay is not null) return;
         _policies.ReloadModels();
-        var available = _policies.Models.Where(m => _policies.IsVisibleInPicker(m.ProviderId, m.Id)).ToArray();
+        IReadOnlyList<OpenRouterPickerModel> routerModels = [];
+        ProviderConnectionMenuRow[] routerProviders = [];
+        string? routerError = null;
+        if (_providerConnectionHost is ITuiOpenRouterCatalogHost routerCatalog)
+        {
+            try
+            {
+                routerProviders = _providerConnectionHost.List(CancellationToken.None)
+                    .Where(row => row.Backend == "openrouter" && row.CanDiscoverModels).ToArray();
+                routerModels = routerCatalog.CachedOpenRouterPickerModels(CancellationToken.None);
+            }
+            catch (Exception) { routerError = _localization.Resolve("openrouter.catalog.failed"); }
+        }
+        var configured = _policies.Models.ToArray();
+        var available = configured.Concat(routerModels
+                .Where(model => !configured.Any(existing => existing.Id == model.Id))
+                .Select(model => new ModelRegistryModelDescriptor(model.Id, model.ProviderId, 0, 0, 0)))
+            .Where(m => _policies.IsVisibleInPicker(m.ProviderId, m.Id)).ToArray();
+        string ModelName(ModelRegistryModelDescriptor model) => CatalogDisplay(_policies.DisplayName(model.Id)
+            ?? routerModels.FirstOrDefault(row => row.ProviderId == model.ProviderId && row.Id == model.Id)?.Name
+            ?? model.Id, 160);
+        string ProviderLabel(ModelRegistryModelDescriptor model) =>
+            routerProviders.Any(row => row.ProviderId == model.ProviderId)
+                ? model.ProviderId == "openrouter" ? "OpenRouter" : "OpenRouter · " + CatalogDisplay(model.ProviderId, 80)
+                : CatalogDisplay(model.ProviderId, 80);
+        string ModelRow(ModelRegistryModelDescriptor model) => (_selectedModel == model.Id ? " ✓  " : "    ")
+            + CatalogDisplay(_policies.DisplayName(model.Id) ?? model.Id, 160) + "   ·   " + ProviderLabel(model);
         var models = available;
         var frame = OverlayFrame(_localization.Resolve("shell.select_model"), Math.Clamp(available.Length + 9, 12, 20));
         frame.Id = "omni-model-palette";
@@ -2038,16 +2064,16 @@ public sealed partial class TuiApp
         frame.ViewportSettings |= ViewportSettingsFlags.Transparent;
         frame.SubViews.Single(view => view.Id == "omni-menu-title").Width = Dim.Fill(10);
         var feedback = new Label { Id = "omni-palette-feedback", X = 2, Y = 1, Width = Dim.Fill(4),
-            Text = models.Length == 0 ? _localization.Resolve("shell.no_visible_models_check_f4_models")
-                : "" };
+            Text = routerError ?? (routerProviders.Length > 0 && routerModels.Count == 0
+                ? _localization.Resolve("openrouter.picker.notLoaded")
+                : models.Length == 0 ? _localization.Resolve("shell.no_visible_models_check_f4_models") : "") };
         frame.Add(feedback);
         var searchLabel = new Label { Id = "omni-heading", X = 2, Y = 2, Width = 8, Text = _localization.Resolve("shell.search") };
         var search = new TextField { Id = "omni-palette-search", X = 10, Y = 2, Width = Dim.Fill(15), Text = query };
         var searchHint = new Label { Id = "omni-help", X = Pos.AnchorEnd(12), Y = 2, Width = 10, Text = "Ctrl+F" };
         var list = new ListView { Id = "omni-model-list", X = 2, Y = 4, Width = Dim.Fill(4), Height = Dim.Fill(4),
             CanFocus = models.Length > 0, ShowMarks = false };
-        list.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(models.Select(model =>
-            (_selectedModel == model.Id ? " ✓  " : "    ") + (_policies.DisplayName(model.Id) ?? model.Id) + "   ·   " + model.ProviderId)));
+        list.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(models.Select(ModelRow)));
         var position = new Label { Id = "omni-heading", X = 2, Y = Pos.AnchorEnd(3), Width = Dim.Fill(4) };
         void UpdatePosition() => position.Text = models.Length == 0 ? _localization.Resolve("shell.no_matches_check_search_or_f4")
             : $"{(list.SelectedItem ?? 0) + 1} / {models.Length}  ·  " + _localization.Resolve("shell.navigate_enter_select");
@@ -2055,10 +2081,9 @@ public sealed partial class TuiApp
         void FilterModels()
         {
             var text = search.Text.ToString().Trim();
-            models = available.Where(model => (model.Id + " " + (_policies.DisplayName(model.Id) ?? "") + " " + model.ProviderId)
+            models = available.Where(model => (model.Id + " " + ModelName(model) + " " + ProviderLabel(model))
                 .Contains(text, StringComparison.OrdinalIgnoreCase)).ToArray();
-            list.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(models.Select(model =>
-                (_selectedModel == model.Id ? " ✓  " : "    ") + (_policies.DisplayName(model.Id) ?? model.Id) + "   ·   " + model.ProviderId)));
+            list.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(models.Select(ModelRow)));
             list.CanFocus = models.Length > 0;
             if (models.Length > 0) list.SelectedItem = 0;
             list.EnsureSelectedItemVisible();
@@ -2114,6 +2139,12 @@ public sealed partial class TuiApp
             var key = new ModelPolicyKeyDto(model.ProviderId, model.Id);
             try
             {
+                if (!configured.Any(existing => existing.Id == model.Id && existing.ProviderId == model.ProviderId)
+                    && _providerConnectionHost is ITuiOpenRouterCatalogHost selectedCatalog)
+                {
+                    selectedCatalog.RegisterOpenRouterModels(model.ProviderId, [model.Id], CancellationToken.None);
+                    _policies.ReloadModels();
+                }
                 var safe = _policies.Get(key, CancellationToken.None) is null;
                 _policies.Select(WorkspaceSelectionId, key, model.Id, safe, CancellationToken.None);
                 _turnStatus = safe ? _localization.Resolve("shell.safe_mode_observeonly") : null;
@@ -2134,13 +2165,31 @@ public sealed partial class TuiApp
         var manage = new Button { Id = "omni-palette-action", X = 2, Y = Pos.AnchorEnd(1), Text = _localization.Resolve("shell.manage_models_ctrl_m") };
         manage.Accepted += (_, _) => { CloseOverlay(); ShowModelPolicies(); };
         var refresh = new Button { Id = "omni-palette-refresh", X = 2, Y = Pos.AnchorEnd(2),
-            Text = _localization.Resolve("shell.refresh_models"), Enabled = _policies.SupportsDiscovery };
+            Text = _localization.Resolve(routerProviders.Length > 0 ? "openrouter.picker.refreshChatGpt" : "shell.refresh_models"),
+            Enabled = _policies.SupportsDiscovery };
         refresh.Accepted += (_, _) => RefreshAccountModels(frame, feedback, page, picker: true, highlighted: HighlightedModel);
+        if (routerProviders.Length > 0)
+        {
+            var routerRefresh = new Button { Id = "omni-palette-openrouter-refresh", X = Pos.Right(refresh) + 1,
+                Y = Pos.AnchorEnd(2), Text = _localization.Resolve("openrouter.picker.refresh") };
+            routerRefresh.Accepted += (_, args) =>
+            {
+                args.Handled = true;
+                RefreshOpenRouterPicker(frame, feedback, routerProviders, search, HighlightedModel);
+            };
+            frame.Add(routerRefresh);
+        }
         ApplyTheme(_window, dimmed: true);
         if (_conversation is not null) _conversation.Dimmed = true;
         frame.Add(searchLabel, search, searchHint, list, position, close, manage, refresh); ApplyTheme(frame); _overlay = frame; _window.Add(frame);
         if (models.Length > 0) list.SetFocus(); else search.SetFocus();
-        if (refreshCatalog && _policies.SupportsDiscovery) RefreshAccountModels(frame, feedback, page, picker: true, highlighted: HighlightedModel);
+        var refreshSubscription = refreshCatalog && _policies.SupportsDiscovery;
+        if (refreshSubscription && routerProviders.Length > 0)
+        {
+            try { refreshSubscription = (_account ??= _accountOverride ?? new TuiAccountHost()).Status().LoggedIn; }
+            catch (Exception) { refreshSubscription = false; }
+        }
+        if (refreshSubscription) RefreshAccountModels(frame, feedback, page, picker: true, highlighted: HighlightedModel);
     }
 
     private void ShowModelPolicies(int page = 0, bool refreshCatalog = true, int focusIndex = -1, int focusColumn = 0)

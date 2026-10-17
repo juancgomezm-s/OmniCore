@@ -438,6 +438,14 @@ una sola acción; se conservan el historial y el mensaje original. El permiso no
 se reutiliza para conexiones modificadas ni para repetir una petición ya atendida.
 [Validación del cambio de modelo](docs/validation/model-route-resume-20261016.md).
 
+Los modelos de **OpenRouter** también aparecen en **F3**. Busca `OpenRouter`,
+recorre el catálogo y pulsa Enter para elegir uno; la aplicación registra sólo
+ese modelo, conserva la conversación y no realiza inferencia al seleccionarlo.
+**Actualizar OpenRouter** consulta el catálogo oficial cuando necesites renovarlo;
+abrir F3 utiliza la copia guardada. No hace falta registrar cada modelo desde
+Preferencias antes de poder encontrarlo en el selector.
+[Validación del catálogo y selector](docs/validation/openrouter-model-picker-20261016.md).
+
 Las opciones disponibles en **F4** se administran desde su menú y no se repiten
 como comandos en el autocompletado, el catálogo o la ayuda de la TUI. Los comandos
 visibles se reservan para el trabajo de la conversación. Los nombres antiguos
