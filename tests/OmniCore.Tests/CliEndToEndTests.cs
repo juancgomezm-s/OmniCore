@@ -3394,7 +3394,7 @@ public sealed class CliEndToEndTests
             "data: [DONE]", "");
     }
 
-    private static string ResponsesToolCallResponse(string id, string name, string arguments)
+    internal static string ResponsesToolCallResponse(string id, string name, string arguments)
     {
         var wireName = name.Length is > 0 and <= 64 && !name.StartsWith("omni_", StringComparison.Ordinal)
             && name.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-')
@@ -3416,7 +3416,7 @@ public sealed class CliEndToEndTests
         });
     }
 
-    private static string ResponsesTextResponse(string text)
+    internal static string ResponsesTextResponse(string text)
     {
         var encoded = System.Text.Json.JsonSerializer.Serialize(text);
         return string.Join("\n", new[]
@@ -3485,7 +3485,7 @@ public sealed class CliEndToEndTests
     }
 
     /// <summary>A tiny real HTTP server returning deterministic OpenAI-compatible SSE responses.</summary>
-    private sealed class ScriptedHttpProvider : IAsyncDisposable
+    internal sealed class ScriptedHttpProvider : IAsyncDisposable
     {
         private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
         private readonly CancellationTokenSource _stop = new();
@@ -3493,6 +3493,7 @@ public sealed class CliEndToEndTests
         private Func<int, string, string>? _response;
         private Func<int, string, Task<string>>? _asyncResponse;
         private int _requestCount;
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<int, TaskCompletionSource<bool>> _requestWaiters = new();
 
         public ScriptedHttpProvider()
         {
@@ -3504,6 +3505,14 @@ public sealed class CliEndToEndTests
 
         public string BaseUrl { get; }
         public int RequestCount => Volatile.Read(ref _requestCount);
+        public Task WaitForRequestAsync(int count, CancellationToken cancellationToken)
+        {
+            if (RequestCount >= count) return Task.CompletedTask;
+            var waiter = _requestWaiters.GetOrAdd(count,
+                _ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
+            if (RequestCount >= count) waiter.TrySetResult(true);
+            return waiter.Task.WaitAsync(cancellationToken);
+        }
         public void RespondWith(Func<int, string, string> response)
         {
             _asyncResponse = null;
@@ -3551,6 +3560,8 @@ public sealed class CliEndToEndTests
                 }
 
                 var requestNumber = Interlocked.Increment(ref _requestCount) - 1;
+                _requestWaiters.GetOrAdd(requestNumber + 1,
+                    _ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult(true);
                 var request = new string(body, 0, read);
                 var eventText = _asyncResponse is { } asyncResponse
                     ? await asyncResponse(requestNumber, request).ConfigureAwait(false)

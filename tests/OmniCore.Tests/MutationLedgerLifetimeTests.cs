@@ -77,4 +77,29 @@ public sealed class MutationLedgerLifetimeTests
         Assert.Equal(1, registry.Ledger.MutationsThisRun);
         Assert.Equal(3, registry.Ledger.ChangedLinesThisRun);
     }
+
+    [Fact]
+    public void Restored_budget_keys_preserve_path_identity_without_splitting_digest_case()
+    {
+        var sourceLedger = new FileReadRegistry().Ledger;
+        var charges = new List<MutationBudgetCharged>();
+        sourceLedger.RecordMutation("Foo.txt", 0, 1, ToolCallId.New(),
+            emitDurableCharge: payload => charges.Add(Assert.IsType<MutationBudgetCharged>(payload)));
+        sourceLedger.RecordMutation("foo.txt", 0, 2, ToolCallId.New(),
+            emitDurableCharge: payload => charges.Add(Assert.IsType<MutationBudgetCharged>(payload)));
+        Assert.Equal(2, charges.Select(charge => charge.TargetKeyHash).Distinct(StringComparer.Ordinal).Count());
+
+        var restored = new FileReadRegistry().Ledger;
+        foreach (var charge in charges)
+            restored.RestoreRunBudgetCharge(charge.TargetKeyHash, charge.ChangedLines);
+
+        Assert.Equal(2, restored.FilesTouchedThisRun);
+        Assert.Equal(3, restored.ChangedLinesThisRun);
+        Assert.Equal(2, restored.MutationsThisRun);
+
+        var sameDigest = new FileReadRegistry().Ledger;
+        sameDigest.RestoreRunBudgetCharge(charges[0].TargetKeyHash.ToUpperInvariant(), changedLines: 1);
+        sameDigest.RestoreRunBudgetCharge(charges[0].TargetKeyHash.ToLowerInvariant(), changedLines: 1);
+        Assert.Equal(1, sameDigest.FilesTouchedThisRun);
+    }
 }
