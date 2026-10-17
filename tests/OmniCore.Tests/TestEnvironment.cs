@@ -5,8 +5,9 @@ namespace OmniCore.Tests;
 /// <summary>
 /// Aísla los tests de los datos reales del usuario: antes de cualquier test, los directorios de
 /// datos y de configuración de la plataforma (<c>%LOCALAPPDATA%\OmniCore</c>, <c>%APPDATA%\OmniCore</c>)
-/// se reubican en un temporal del proceso. Ningún test lee la configuración ni escribe el journal,
-/// las credenciales o los blobs del usuario.
+/// se reubican en un temporal del proceso. Las pruebas habituales no leen la configuración ni
+/// escriben el journal, las credenciales o los blobs del usuario. La aceptación LiveModelSwitchTests
+/// requiere activación y rutas reales explícitas, ejecución exclusiva y restauración al finalizar.
 /// </summary>
 internal static class TestEnvironment
 {

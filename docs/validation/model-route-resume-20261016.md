@@ -74,5 +74,53 @@ Evidencia en `C:/Users/juanc/.codex/omnicore-linux-20261014/`:
   con captura SVG/texto y vista PNG inspeccionada.
 
 Se abrió una sola instancia de la TUI completa con la versión publicada después
-de cerrar la anterior. No se inició WSL. No se acredita CI remoto ni una petición
-a ChatGPT remoto en esta entrega.
+de cerrar la anterior. No se inició WSL. Estas series locales iniciales no
+acreditaban una petición a ChatGPT remoto. La siguiente aceptación sí la acredita.
+
+## Aceptación con Luna y Sol reales
+
+El 16 de octubre de 2026 se ejecutó `LiveModelSwitchTests` con el perfil de
+suscripción `codex`, el endpoint configurado de `chatgpt.com` y las credenciales
+ya disponibles para OmniCore. No se sustituyeron las respuestas por un proveedor
+simulado ni se cambiaron los modelos configurados del usuario.
+
+Se usó la TUI de producción (`TuiApp.RunWith`) con el driver DOTNET de Terminal.Gui,
+el runtime real y un workspace nuevo. No se automatizó la ventana nativa de
+Windows Terminal ni se modificó la conversación que el usuario tenía abierta.
+Los cambios de selección quedaron asociados sólo al workspace de aceptación.
+
+1. Luna recibió `CONTINUIDAD-329A1050FE3D` y respondió con esa clave.
+2. Se abrió F3, se seleccionó `gpt-6.1-sol` y se confirmó con Enter.
+3. Se envió una sola vez una petición de recordar la clave, sin incluir su valor.
+4. Se enfocó «Usar en esta conversación» y se inyectó un solo Enter.
+5. La propia TUI reanudó la petición: Sol respondió `CONTINUIDAD-329A1050FE3D`.
+
+| Comprobación | Resultado real |
+| --- | --- |
+| Modelos invocados, en orden | `gpt-6-luna`, `gpt-6.1-sol`. |
+| Respuestas y turnos completados | 2; finalización `EndTurn`. |
+| Mensajes del usuario al aparecer el consentimiento / al responder Sol | 3 / 3: semilla, contexto enviado a Luna y petición enviada a Sol. |
+| Copias de la petición destinada a Sol | Una. |
+| Sesiones / Runs | 1 / 1, conservados. |
+| Enter de aceptación | Uno, sin llamada manual al método de reanudación. |
+| Aceptación en Release | 1 aprobada, 0 fallidas, 0 omitidas; 22 segundos. |
+
+Una segunda lectura independiente, usando SQLite en modo de sólo lectura,
+confirmó los modelos, las dos respuestas, `allow_route` y el recuento de mensajes.
+La cuenta y los tokens no aparecen en los archivos de evidencia.
+
+Evidencia adicional en el mismo directorio externo:
+
+- `live-luna-sol-20261016-v3.log`: ejecución real aprobada.
+- `live-luna-sol-20261016/result.json`: clave, respuesta y comprobaciones del flujo.
+- `live-luna-sol-20261016/journal-proof.json`: lectura independiente del journal.
+- `live-luna-sol-20261016/settings-live-sol-consent-120x40.txt` y
+  `settings-live-sol-response-120x40.txt`: texto de los fotogramas del driver real.
+  La conversión de colores a PNG resultó en blanco; esos PNG no acreditan el aspecto visual.
+
+La aceptación requiere `OMNI_LIVE_LUNA_SOL=1`, `OMNI_LIVE_USER_DATA_DIR`,
+`OMNI_LIVE_USER_CONFIG_DIR` y `OMNI_LIVE_EVIDENCE_DIR`. Sin esa activación se
+informa como omitida, no como aprobada. La colección impide ejecución paralela
+mientras se seleccionan explícitamente las rutas reales del usuario; al finalizar
+se restauran las variables del proceso. Las pruebas habituales siguen aisladas.
+No se acredita una nueva ejecución de CI remoto.
