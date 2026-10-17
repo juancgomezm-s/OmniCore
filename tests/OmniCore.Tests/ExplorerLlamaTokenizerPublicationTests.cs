@@ -64,7 +64,13 @@ public sealed class ExplorerLlamaTokenizerPublicationTests
             Assert.True(artifacts.AllPublicationsHeld);
             Assert.True(observedEvents.AllStartAppendsHeld);
             Assert.False(LeaseHeld(root));
-            var tool = Assert.Single(artifacts.ToolReferences);
+            Assert.Equal(2, artifacts.PreparedToolReferences.Count);
+            Assert.All(artifacts.PreparedToolReferences, reference => Assert.Equal(
+                artifacts.PreparedToolReferences[0].Hash, reference.Hash));
+            Assert.Equal(failStart ? 1 : 2, artifacts.ToolArtifactPublishCalls);
+            var tool = Assert.Single(artifacts.PublishedToolReferences);
+            Assert.Single(artifacts.PublishedToolBlobHashes);
+            Assert.Contains(tool.Id, artifacts.PreparedToolReferences.Select(reference => reference.Id));
             var events = store.ReadFrom(session, 1).Select(codecs.Decode).ToArray();
             if (failStart)
             {
@@ -140,7 +146,7 @@ public sealed class ExplorerLlamaTokenizerPublicationTests
         {
             Calls++;
             AllCallsUnlocked &= !LeaseHeld(root);
-            NoToolBlobDuringCounts &= artifacts.ToolReferences.All(reference => !artifacts.Verify(reference.Hash, reference.Size));
+            NoToolBlobDuringCounts &= artifacts.PreparedToolReferences.All(reference => !artifacts.Verify(reference.Hash, reference.Size));
             return System.Threading.Tasks.Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) {
                 Content = new StringContent("{\"tokens\":[1,2]}") });
         }
@@ -149,20 +155,35 @@ public sealed class ExplorerLlamaTokenizerPublicationTests
     private sealed class ObservedArtifacts(FileArtifactStore inner, string root)
         : IArtifactStore, IArtifactPreparationStore, IArtifactPublicationLease
     {
-        public List<ArtifactRef> ToolReferences { get; } = new();
+        // Pressure counting prepares an in-memory CAS ref, then final planning prepares the
+        // committed ref. Only Publish creates/touches a blob; one ref may be rooted by both the
+        // TurnStarted and ModelStepStarted snapshots, so count unique refs and SHA blobs too.
+        public List<ArtifactRef> PreparedToolReferences { get; } = new();
+        public HashSet<ArtifactId> PublishedToolReferenceIds { get; } = new();
+        public HashSet<ContentHash> PublishedToolBlobHashes { get; } = new();
+        public IReadOnlyList<ArtifactRef> PublishedToolReferences => PreparedToolReferences
+            .Where(reference => PublishedToolReferenceIds.Contains(reference.Id)).ToArray();
+        public int ToolArtifactPublishCalls { get; private set; }
         public bool AllPublicationsHeld { get; private set; } = true;
         public ArtifactRef PutText(string content, string mediaType, ArtifactKind kind, Sensitivity sensitivity)
         {
             var reference = inner.PutText(content, mediaType, kind, sensitivity);
-            Observe(reference);
-            if (kind == ArtifactKind.ToolOutput) ToolReferences.Add(reference);
+            RecordPublication(reference);
             return reference;
         }
         public IPreparedArtifact PrepareText(string content, string mediaType, ArtifactKind kind, Sensitivity sensitivity)
         {
             var prepared = inner.PrepareText(content, mediaType, kind, sensitivity);
-            if (kind == ArtifactKind.ToolOutput) ToolReferences.Add(prepared.Reference);
+            if (kind == ArtifactKind.ToolOutput) PreparedToolReferences.Add(prepared.Reference);
             return new ObservedPrepared(prepared, this);
+        }
+        private void RecordPublication(ArtifactRef reference)
+        {
+            Observe(reference);
+            if (reference.Kind != ArtifactKind.ToolOutput) return;
+            ToolArtifactPublishCalls++;
+            PublishedToolReferenceIds.Add(reference.Id);
+            PublishedToolBlobHashes.Add(reference.Hash);
         }
         private void Observe(ArtifactRef reference)
         {
@@ -172,7 +193,7 @@ public sealed class ExplorerLlamaTokenizerPublicationTests
         private sealed class ObservedPrepared(IPreparedArtifact inner, ObservedArtifacts owner) : IPreparedArtifact
         {
             public ArtifactRef Reference => inner.Reference;
-            public ArtifactRef Publish() { var reference = inner.Publish(); owner.Observe(reference); return reference; }
+            public ArtifactRef Publish() { var reference = inner.Publish(); owner.RecordPublication(reference); return reference; }
         }
         public string? GetText(ContentHash hash) => inner.GetText(hash);
         public bool Verify(ContentHash hash, long size) => inner.Verify(hash, size);

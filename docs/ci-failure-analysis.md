@@ -1,5 +1,38 @@
 # Reparación y validación de CI/Linux de OmniCore
 
+## Reparación focal de integración (2026-10-17)
+
+El run [39004749905](https://github.com/juancgomezm-s/OmniCore/actions/runs/39004749905)
+falló en siete casos de Core, con el mismo resultado en Windows y Ubuntu: dos
+variantes de publicación CAS del tokenizer, cuatro cuadros de animación y una
+prueba de reflow del centro de preferencias. Esta reparación modifica únicamente
+instrumentación y lecturas de pruebas; no cambia código de producto.
+El run independiente de OmniCoder [39004732300](https://github.com/juancgomezm-s/OmniCode/actions/runs/39004732300)
+fue exitoso, pero no acredita Core.
+
+| Área | Causa confirmada | Ajuste y límite conservado |
+| --- | --- | --- |
+| Tokenizer/CAS (2 casos) | El pase de presión prepara una referencia en memoria y el plan final otra referencia del mismo hash. El test sumaba ambas como publicaciones. La misma referencia final puede enraizarse en `TurnStarted` y `ModelStepStarted`. | Distinguir referencias preparadas de publicaciones, y contar aparte llamadas de publicación, IDs publicados y blobs SHA únicos. Se conservan las comprobaciones de tokenizer sin lease, lease durante publicación, raíces del journal y recolección tras fallo. |
+| Animación (4 casos) | El frame dibuja nombres localizados (“Pulso Omega” y “Giro braille”), no IDs internos `omega-pulse`/`braille-spinner`; la espera nunca podía observar su marcador. | Esperar el rótulo humano y verificar la selección persistida por su ID canónico. Permanecen las comprobaciones de celdas braille, color `#38BDF8`, tamaño y ajuste del overlay. No se amplió el timeout. |
+| Reflow de preferencias (1 caso) | El test enumeraba `View.SubViews` y leía foco mientras el loop UI reemplazaba el overlay al redimensionar. La enumeración se hacía fuera del hilo que posee el árbol de vistas. | Añadir lectura síncrona en el hilo UI para snapshots y assertions de foco, idioma, búsqueda y borrador; volver a localizar vistas por ID tras cada reflow. No se cambia el reflow de producción ni se oculta la excepción copiando colecciones desde el hilo incorrecto. |
+
+Validación local focal, con salida stdout real conservada en `%LOCALAPPDATA%\Temp`:
+
+| Log | Filtro | Resultado |
+| --- | --- | --- |
+| `omnicore-ci-repair-tokenizer-20261017.log` | `Tokenizer_runs_unlocked_before_CAS_publication_and_snapshot_roots_commit_under_lease` | 2 PASS, 0 FAIL |
+| `omnicore-ci-repair-animations-20261017.log` | `Visual_frames_export_the_real_driver_cells` + `DisplayName~animations` | 4 PASS, 0 FAIL |
+| `omnicore-ci-repair-reflow-20261017.log` | `Preferences_center_reflows_live_without_losing_search_category_locale_or_focus` | 1 PASS, 0 FAIL |
+| `omnicore-ci-repair-preferences-20261017.log` | `Preferences_center_navigates_by_keyboard_and_cancelled_locale_preview_preserves_chat` | 1 PASS, 0 FAIL; comprueba la lectura UI-thread compartida |
+| `omnicore-ci-repair-build-tests-net10-20261017.log` | `dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore` | Build net10.0 correcto, 0 warnings, 0 errores |
+
+Las siete variantes que fallaron en CI pasan en esta reparación focal. La
+validación local no acredita por sí sola Windows y Ubuntu del head corregido;
+la matriz de CI debe volver a ejecutarse después de integrar el commit.
+La construcción nueva de conversaciones nativas y seguridad por Session (M9-K)
+se pausó al detectar el fallo de main; el contrato tiene una propuesta revisada,
+pero su implementación y los criterios SEC-CONV siguen pendientes.
+
 ## Seguimiento: regresiones de Core tras M9-F/F2 — 2026-10-15
 
 Rama de corrección: `codex/core-ci-regressions`. Se conserva la interfaz integrada
