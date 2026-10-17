@@ -4355,6 +4355,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             ? Path.GetFullPath(configured)
             : Path.GetFullPath(".");
         var paths = _platformPathsFactory();
+        var securityDefault = new SessionSecurityDefaultConfiguration(paths).Read();
         var hooks = ProjectExtensionHooks.Load(workspace, paths,
             new WorkspaceTrustStore(paths).IsTrusted(workspace), _lifecycleRpcInvokerFactory());
         var startingApplications = DispatchCreationHooks(hooks, LifecyclePoint.SessionStarting,
