@@ -65,6 +65,7 @@ public static class StdioProtocol
         "command.conversation.resume.user",
         "command.conversation.rename.user",
         "command.conversation.compact.user",
+        "command.conversation.questionnaire.respond.user",
         "command.session.security.set.user",
         "command.session.security.default.set.user",
         "command.run.interrupt.user",
@@ -160,7 +161,7 @@ public static class StdioProtocol
         or "conversation.start" or "conversation.new" or "conversation.resume" or "conversation.rename" or "conversation.compact"
         or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
         or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish"
-        or "external.memory.consent";
+        or "external.memory.consent" or "interaction.respond";
 
     public static IReadOnlyList<NativeCommandDescriptor> NativeCommands { get; } =
     [
@@ -172,6 +173,7 @@ public static class StdioProtocol
         new("conversation.resume", "command.conversation.resume.user", "native-confirmation+hmac+workspace-session-scope+lease+receipt", "command.result.lookup", "Resume a Session in the current workspace"),
         new("conversation.rename", "command.conversation.rename.user", "native-confirmation+hmac+session-sequence-cas+receipt", "command.result.lookup", "Set the current Session title with compare-and-set"),
         new("conversation.compact", "command.conversation.compact.user", "native-confirmation+hmac+session-scope+receipt", "command.result.lookup", "Compact the current Session context while retaining history"),
+        new("interaction.respond", "command.conversation.questionnaire.respond.user", "native-confirmation+hmac+session-run-interaction-scope+policy-revision+receipt+resume", "command.result.lookup", "Answer a pending questionnaire and continue its existing Run"),
         new("session.security.set", "command.session.security.set.user", "native-confirmation+hmac+session-revision", "command.result.lookup", "Set a revision-checked Session capability ceiling"),
         new("session.security.default.set", "command.session.security.default.set.user", "native-confirmation+hmac+user-revision", "command.result.lookup", "Set the configured security ceiling for new Sessions"),
         new("run.interrupt", "command.run.interrupt.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Interrupt the active Run"),

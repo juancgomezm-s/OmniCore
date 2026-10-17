@@ -798,6 +798,8 @@ public sealed class OmniCliRuntime : IDisposable
         var run = new RunId(runGuid);
         var receipt = server.ReceiptStore?.ReadCommandReceipt(admitted.CommandId);
         var expectedSession = session.ToString();
+        var isQuestionnaireContinuation = admitted.ContinuationInteractionId is not null;
+        TurnId? continuationTurnId = null;
         if (server.LastSessionId() != session || server.LastRunId() != run
             || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(session) != run
             || receipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
@@ -806,6 +808,33 @@ public sealed class OmniCliRuntime : IDisposable
             || !string.Equals(receipt.SessionId, expectedSession, StringComparison.Ordinal)
             || receipt.FirstSequence != admitted.FirstSequence || receipt.LastSequence != admitted.LastSequence)
             return 1;
+        if (isQuestionnaireContinuation)
+        {
+            if (receipt is not { ExecutionState: "deferred", ExecutionCode: "input_required" }
+                || !string.Equals(receipt.ExecutionRunId, run.ToString(), StringComparison.Ordinal)
+                || admitted.ContinuationCommandId is not { Length: > 0 } continuationCommandId
+                || admitted.ContinuationRequestHash is not { Length: 64 } continuationHash
+                || admitted.ContinuationFirstSequence is not { } continuationFirst
+                || admitted.ContinuationLastSequence is not { } continuationLast
+                || continuationLast < continuationFirst)
+                return 1;
+            var responseReceipt = server.ReceiptStore?.ReadCommandReceipt(continuationCommandId);
+            if (responseReceipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                    OutcomeKind: "Accepted", ExecutionState: null }
+                || !string.Equals(responseReceipt.RequestHash, continuationHash, StringComparison.Ordinal)
+                || !string.Equals(responseReceipt.SessionId, expectedSession, StringComparison.Ordinal)
+                || responseReceipt.FirstSequence != continuationFirst
+                || responseReceipt.LastSequence != continuationLast)
+                return 1;
+            if (!TryValidateQuestionnaireContinuation(server, session, run,
+                admitted.ContinuationInteractionId!, continuationCommandId, continuationFirst, continuationLast,
+                out continuationTurnId))
+                return 1;
+        }
+        else if (receipt.ExecutionState is not null)
+        {
+            return 1;
+        }
         var runIsAct = server.CurrentRunMode() is RunMode.Act or RunMode.Orchestrate;
         int exitCode;
         try
@@ -835,12 +864,83 @@ public sealed class OmniCliRuntime : IDisposable
                 .Select(item => ((TurnStarted)item.Payload).TurnId).ToHashSet();
             var completed = journal.Where(item => item.Payload is TurnCompleted)
                 .Select(item => ((TurnCompleted)item.Payload).TurnId).ToHashSet();
-            return started.Intersect(completed).Any(turnId => journal.Any(item =>
+            return started.Intersect(completed).Any(turnId => (continuationTurnId is null || turnId == continuationTurnId)
+                && journal.Any(item =>
                 item.Payload is AssistantMessageRecorded assistant && assistant.TurnId == turnId
                 || item.Payload is AssistantImagesRecorded images && images.TurnId == turnId)) ? 0 : 1;
         }
         if (journal.Any(item => item.Payload is TurnInterrupted)) return 130;
         return exitCode == 130 ? 1 : exitCode;
+    }
+
+    private static bool TryValidateQuestionnaireContinuation(OmniServer server, SessionId session, RunId run,
+        string interactionText, string responseCommandText, long responseFirstSequence, long responseLastSequence,
+        out TurnId? continuationTurnId)
+    {
+        continuationTurnId = null;
+        if (!Guid.TryParseExact(interactionText, "D", out var interactionGuid)
+            || !string.Equals(interactionText, interactionGuid.ToString("D"), StringComparison.Ordinal)
+            || !Guid.TryParseExact(responseCommandText, "D", out var responseCommandGuid)
+            || !string.Equals(responseCommandText, responseCommandGuid.ToString("D"), StringComparison.Ordinal)) return false;
+        var interaction = new InteractionId(interactionGuid);
+        var responseCommand = new CommandId(responseCommandGuid);
+        var codecs = server.AcquireCodecs();
+        var events = server.AcquireStore().ReadFrom(session, 1);
+        var requestEnvelope = events.FirstOrDefault(evt => evt.RunId == run
+            && codecs.Decode(evt) is InteractionRequested request
+            && request.InteractionId == interaction && request.Kind == InteractionKind.Question
+            && request.ToolCallJson is { Length: > 0 });
+        if (requestEnvelope is null) return false;
+        var resolvedEnvelope = events.FirstOrDefault(evt => evt.Sequence >= responseFirstSequence
+            && evt.Sequence <= responseLastSequence && evt.RunId == run
+            && codecs.Decode(evt) is InteractionResolved resolved
+            && resolved.InteractionId == interaction && resolved.IsQuestionnaire && resolved.AnswerRef is not null
+            && evt.Causation is CommandCausation resolutionCause && resolutionCause.CommandId == responseCommand);
+        var resumedInput = events.FirstOrDefault(evt => evt.Sequence >= responseFirstSequence
+            && evt.Sequence <= responseLastSequence && evt.RunId == run
+            && codecs.Decode(evt) is UserInputReceived input
+            && input.Origin == "InteractionResponse(Questionnaire)"
+            && evt.Causation is CommandCausation inputCause && inputCause.CommandId == responseCommand);
+        if (resolvedEnvelope is null || resumedInput is null
+            || RunProjection.Replay(session, run, codecs, events).State != RunState.Running) return false;
+
+        var requested = (InteractionRequested)codecs.Decode(requestEnvelope);
+        if (requested.ToolCallJson is null) return false;
+        string? callId;
+        try
+        {
+            using var link = System.Text.Json.JsonDocument.Parse(requested.ToolCallJson);
+            if (!link.RootElement.TryGetProperty("toolCallId", out var id)
+                || id.ValueKind != System.Text.Json.JsonValueKind.String) return false;
+            callId = id.GetString();
+        }
+        catch (System.Text.Json.JsonException) { return false; }
+        if (string.IsNullOrWhiteSpace(callId)) return false;
+
+        // The deferred questionnaire must belong to the still-open Turn. This guards the
+        // rehydrated provider continuation from being attached to a later user invocation.
+        TurnId? openTurn = null;
+        foreach (var evt in events.Where(evt => evt.RunId == run))
+        {
+            switch (codecs.Decode(evt))
+            {
+                case TurnStarted started:
+                    openTurn = started.TurnId;
+                    break;
+                case TurnCompleted completed when openTurn == completed.TurnId:
+                case TurnAbandoned abandoned when openTurn == abandoned.TurnId:
+                case TurnInterrupted interrupted when openTurn == interrupted.TurnId:
+                    openTurn = null;
+                    break;
+            }
+        }
+        if (openTurn is null || requestEnvelope.TurnId != openTurn) return false;
+        var correlatedToolCall = events.Any(evt => evt.RunId == run && evt.TurnId == openTurn
+            && codecs.Decode(evt) is ToolCallRequested toolCall
+            && toolCall.ToolName == "user.ask" && toolCall.ToolCallId.ToString() == callId);
+        if (!correlatedToolCall) return false;
+        continuationTurnId = openTurn;
+        return true;
     }
 
     public Task<int> DelegationAsync(string delegationId, Action<string> diagnostics, CancellationToken token) =>

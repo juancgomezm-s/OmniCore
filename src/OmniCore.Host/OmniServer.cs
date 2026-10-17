@@ -3753,17 +3753,36 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                         var cancelled = fields.TryGetValue("cancelled", out var c) && c == "true";
                         var stream = new EventStream(_store, _codecs, session);
                         DomainEventPayload? transition = null;
-                        if (questionnaire.SourceScope(stream, interaction)?.RunId is { } activeRun
-                            && RunProjection.Replay(session, activeRun, _codecs, _store.ReadFrom(session, 1)).State
-                                == RunState.AwaitingInput)
-                            transition = new UserInputReceived(activeRun, "[\"QuestionnaireResponse\"]", null,
-                                "InteractionResponse(Questionnaire)");
-                        var result = questionnaire.Resolve(stream, interaction, answers, cancelled, null, transition);
-                        if (!result.Accepted)
-                            throw new FormatException(result.AlreadyResolved ? "interacción ya resuelta"
-                                : result.UnknownInteraction ? "interacción desconocida"
-                                : "respuesta inválida: " + string.Join(",", (result.Errors ?? Array.Empty<QuestionnaireError>())
-                                    .Select(e => e.Code.ToString())));
+                        var requestedScope = questionnaire.SourceScope(stream, interaction);
+                        var expectedRun = fields.GetValueOrDefault("expectedRunId");
+                        var expectedPolicyRevision = fields.GetValueOrDefault("expectedPolicyRevision");
+                        lock (_modeAuthorityMutationGate)
+                        {
+                            if (trustedUserAction)
+                            {
+                                if (expectedRun is null || !Guid.TryParseExact(expectedRun, "D", out var expectedRunGuid)
+                                    || expectedRun != new RunId(expectedRunGuid).ToString()
+                                    || requestedScope?.RunId?.ToString() != expectedRun
+                                    || control.ActiveRun(session)?.ToString() != expectedRun
+                                    || !long.TryParse(expectedPolicyRevision,
+                                        System.Globalization.NumberStyles.None,
+                                        System.Globalization.CultureInfo.InvariantCulture, out var policyRevision)
+                                    || policyRevision < 1
+                                    || ReadSessionSecurityPolicy(session)?.PolicyRevision != policyRevision)
+                                    throw new SessionSecurityRevisionConflictException();
+                            }
+                            if (requestedScope?.RunId is { } activeRun
+                                && RunProjection.Replay(session, activeRun, _codecs, _store.ReadFrom(session, 1)).State
+                                    == RunState.AwaitingInput)
+                                transition = new UserInputReceived(activeRun, "[\"QuestionnaireResponse\"]", null,
+                                    "InteractionResponse(Questionnaire)");
+                            var result = questionnaire.Resolve(stream, interaction, answers, cancelled, null, transition);
+                            if (!result.Accepted)
+                                throw new FormatException(result.AlreadyResolved ? "interacción ya resuelta"
+                                    : result.UnknownInteraction ? "interacción desconocida"
+                                    : "respuesta inválida: " + string.Join(",", (result.Errors ?? Array.Empty<QuestionnaireError>())
+                                        .Select(e => e.Code.ToString())));
+                        }
                     }
                     else
                     {
