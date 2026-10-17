@@ -70,10 +70,7 @@ public sealed partial class OmniServer
                 throw new InvalidDataException("Session journal identity mismatch.");
             return _codecs.Decode(envelope);
         }).OfType<SessionCreated>().FirstOrDefault();
-        if (created is null || created.SessionId != session
-            || !string.Equals(created.WorkspaceId,
-                WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(created.WorkspaceDisplayPath)).ToString(),
-                StringComparison.Ordinal))
+        if (created is null || created.SessionId != session)
             throw new InvalidDataException("Cannot initialize security policy for an unknown or invalid Session.");
 
         var migrated = SessionSecurityPolicySet.FromPreset(session, 1, ModelPolicyCategory.ObserveOnly,
@@ -223,4 +220,5 @@ public sealed partial class OmniServer
     }
 }
 
-internal sealed class SessionSecurityRevisionConflictException : InvalidOperationException { }
+internal sealed class SessionSecurityRevisionConflictException()
+    : InvalidOperationException("session_security.stale_revision") { }
