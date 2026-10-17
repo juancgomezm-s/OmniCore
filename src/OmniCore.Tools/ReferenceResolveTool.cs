@@ -92,7 +92,7 @@ public sealed class ReferenceResolveTool : ITool, IReferenceResolver
         if (File.Exists(full))
         {
             var text = File.ReadAllText(full);
-            var redacted = new OmniCore.Domain.RedactionPolicy().Redact(text);
+            var redacted = text;
             var preview = redacted.Length > 200 ? redacted.Substring(0, 200) + "…" : redacted;
             return new ResolvedReference("file", full, preview);
         }

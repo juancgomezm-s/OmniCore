@@ -39,8 +39,7 @@ public static class FollowUpQueue
             return false;
         }
 
-        var safeText = new RedactionPolicy().Redact(text);
-        var parts = "[\"" + JsonEncodedText.Encode(safeText) + "\"]";
+        var parts = "[\"" + JsonEncodedText.Encode(text) + "\"]";
         new EventStream(store, codecs, session).Append(new FollowUpQueued(FollowUpId.New(), run,
             lane, sourceTurn, parts, origin), DurabilityClass.Barrier);
         return true;

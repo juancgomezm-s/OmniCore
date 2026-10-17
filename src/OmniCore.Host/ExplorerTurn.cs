@@ -619,9 +619,8 @@ public sealed class ExplorerTurn
             instructionSnapshot.Validate();
             if (!string.Equals(instructionSnapshot.ResolvedInstruction, instruction, StringComparison.Ordinal))
                 throw new ArgumentException("Turn instruction snapshot must match the applied instruction.", nameof(instructionSnapshot));
-            // Instructions pass through the same redaction boundary as the materialized prompt.
-            // Do not expose an unredacted copy in the canonical event payload.
-            instructionSnapshot = instructionSnapshot with { ResolvedInstruction = _redaction.Redact(instruction) };
+            // Private instruction snapshots retain exactly what the request applied.
+            instructionSnapshot = instructionSnapshot with { ResolvedInstruction = instruction };
         }
         // Historical Turns without this contract must not acquire a current intent snapshot.
         if (isResume) instructionSnapshot = originalConfiguration?.InstructionSnapshot;
@@ -793,7 +792,7 @@ public sealed class ExplorerTurn
             return new TurnResult(recoveredPlanError, StopReason.Error, 0,
                 new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
         }
-        var queuedQuestion = _redaction.Redact(question ?? "").Length > 0
+        var queuedQuestion = (question ?? "").Length > 0
             && FollowUpQueue.TryQueue(_store, _codecs, sessionId, runId, laneId, question ?? "", origin);
         var runEvents = stream.EventsSince(1);
         _approvedProtectedPreferenceIdentities.Clear();
@@ -877,7 +876,7 @@ public sealed class ExplorerTurn
         var messageOwners = new Dictionary<ModelMessage, RunId>(ReferenceEqualityComparer.Instance);
         try
         {
-            new RunSummaryService(_store, _codecs, _artifacts, _redaction.Redact).EnsureRecorded(sessionId);
+            new RunSummaryService(_store, _codecs, _artifacts, static text => text).EnsureRecorded(sessionId);
             messages = LoadConversation(stream, runId, isResume ? turnId : null, laneId, messageOwners);
         }
         catch (InvalidDataException)
@@ -886,7 +885,7 @@ public sealed class ExplorerTurn
                 new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
         }
         messages = ProjectAssistantImagesForModelContext(messages);
-        var safeQuestion = isResume || queuedQuestion ? "" : _redaction.Redact(question ?? "");
+        var safeQuestion = isResume || queuedQuestion ? "" : (question ?? "");
         var pendingFollowUps = isResume || origin == "InteractionResponse(ModelRouteConsent)"
             ? Array.Empty<FollowUpQueue.Item>()
             : FollowUpQueue.Pending(_store, _codecs, sessionId, runId, laneId).Take(1).ToArray();
@@ -894,7 +893,7 @@ public sealed class ExplorerTurn
         {
             var text = FollowUpText(followUp.InputPartsJson);
             if (text.Length > 0)
-                messages.Add(new ModelMessage(MessageRole.User, new ContentBlock[] { new TextBlock(_redaction.Redact(text)) }));
+                messages.Add(new ModelMessage(MessageRole.User, new ContentBlock[] { new TextBlock(text) }));
         }
         if (safeQuestion.Length > 0)
         {
@@ -1610,7 +1609,7 @@ public sealed class ExplorerTurn
                     if (block is ToolCallBlock call)
                     {
                         toolBlocks.Add(new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
-                            _redaction.Redact(call.ArgumentsJson)));
+                            call.ArgumentsJson));
                     }
                 }
 
@@ -1642,10 +1641,7 @@ public sealed class ExplorerTurn
 
                 // Una respuesta ToolUse conserva sus bloques y orden en un solo mensaje.
                 // Se mantiene la redacción vigente; el replay opaco requiere una política aparte.
-                var durableAssistantContent = resolved.Content.Select(block => block is ToolCallBlock memoryCall
-                    ? memoryCall with { ArgumentsJson = SafeToolArguments(memoryCall.ToolName, memoryCall.ArgumentsJson) }
-                    : block).ToArray();
-                messages.Add(RedactMessage(new ModelMessage(MessageRole.Assistant, durableAssistantContent)));
+                messages.Add(PreserveMessage(new ModelMessage(MessageRole.Assistant, resolved.Content)));
 
                 var pendingDiscoveredToolIds = new HashSet<string>(StringComparer.Ordinal);
                 foreach (ToolCallBlock call in toolBlocks)
@@ -1960,10 +1956,10 @@ public sealed class ExplorerTurn
                         continue;
                     }
 
-                    // Redacción obligatoria del tool result antes de dárselo al modelo.
+                    // The authorized tool result is conversation data; preserve its original text.
                     var content = outcome.Preview is not null && outcome.Preview!.Length > 0
-                        ? _redaction.Redact(outcome.Preview!)
-                        : (outcome.Summary is null ? "ok" : _redaction.Redact(outcome.Summary!));
+                        ? outcome.Preview!
+                        : (outcome.Summary ?? "ok");
                     var succeeded = outcome.Succeeded && planError is null;
                     var resultText = succeeded ? content : "error: " + _redaction.Redact(planError ?? outcome.Summary ?? "failed");
                     allToolCalls.Add(new ToolUseTrace(call.ToolName, succeeded,
@@ -2024,7 +2020,7 @@ public sealed class ExplorerTurn
                 {
                     using var finalPublication = (_artifacts as IArtifactPublicationLease)
                         ?.AcquirePublicationLease(CancellationToken.None);
-                    var safeResponse = finalText is null ? "" : _redaction.Redact(finalText);
+                    var safeResponse = finalText ?? "";
                     var responseEvents = new List<DomainEventPayload>();
                     if (!invalidUsageObserved)
                     {
@@ -2061,7 +2057,7 @@ public sealed class ExplorerTurn
                             var part = finalResponseParts[index];
                             var artifact = part.Kind == "image"
                                 ? imageOutputs[part.ImageIndex].Artifact
-                                : _artifacts.PutText(_redaction.Redact(part.Text ?? ""), "text/markdown",
+                                : _artifacts.PutText(part.Text ?? "", "text/markdown",
                                     ArtifactKind.ModelResponse, Sensitivity.Sensitive);
                             orderedParts.Add(new AssistantResponsePart(part.Kind, artifact, index));
                         }
@@ -2075,7 +2071,7 @@ public sealed class ExplorerTurn
             AuditSpend(sessionId, runId, laneId, turnId, stop, turnUsage,
                 ReadTurnModelStepCost(stream, turnId), usageAvailable: !invalidUsageObserved);
             AuditPolicy(sessionId, runId, turnId, stop);
-            return new TurnResult(finalText is null ? null : _redaction.Redact(finalText), stop, steps,
+            return new TurnResult(finalText, stop, steps,
                 turnUsage, allToolCalls.ToArray(), artifactId);
         }
         catch (Exception ex)
@@ -2242,7 +2238,7 @@ public sealed class ExplorerTurn
         using var parsed = System.Text.Json.JsonDocument.Parse(partsJson);
         var parts = parsed.RootElement.EnumerateArray().Select(part => part.GetString() ?? "");
         return new ModelMessage(MessageRole.User,
-            new ContentBlock[] { new TextBlock(_redaction.Redact(string.Join("\n", parts))) });
+            new ContentBlock[] { new TextBlock(string.Join("\n", parts)) });
     }
 
     /// <summary>
@@ -2453,7 +2449,7 @@ public sealed class ExplorerTurn
     private string? VisibleAnswerText(IReadOnlyList<ContentBlock> content)
     {
         var blocks = content.OfType<TextBlock>().ToArray();
-        return blocks.Length == 0 ? null : _redaction.Redact(string.Concat(blocks.Select(block => block.Text)));
+        return blocks.Length == 0 ? null : string.Concat(blocks.Select(block => block.Text));
     }
 
     private static string QuestionnaireArgumentDigest(string argumentsJson)
@@ -2521,13 +2517,13 @@ public sealed class ExplorerTurn
                 if (block is ReasoningBlock reasoning)
                 {
                     writer.WriteString("kind", "reasoning");
-                    writer.WriteString("text", reasoning.VisibleText is null ? null : _redaction.Redact(reasoning.VisibleText));
+                    writer.WriteString("text", reasoning.VisibleText);
                     writer.WriteString("visibility", reasoning.Visibility.ToString());
                 }
                 else if (block is TextBlock text)
                 {
                     writer.WriteString("kind", "text");
-                    writer.WriteString("text", _redaction.Redact(text.Text));
+                    writer.WriteString("text", text.Text);
                 }
                 else if (block is ToolCallBlock call)
                 {
@@ -2586,7 +2582,7 @@ public sealed class ExplorerTurn
                     if (canonicalCalls.TryGetValue(callId, out var call))
                     {
                         var arguments = questionnaireArguments.TryGetValue(callId, out var schema) ? schema : call.ArgumentsJson;
-                        blocks.Add(new ToolCallBlock(call.ToolCallId, call.ProviderCallId, call.ToolName, _redaction.Redact(arguments)));
+                        blocks.Add(new ToolCallBlock(call.ToolCallId, call.ProviderCallId, call.ToolName, arguments));
                     }
                     else if (allTurnCalls.ContainsKey(callId)) throw new InvalidDataException(failure);
                     // An unexecuted call has no canonical requested event; don't manufacture one.
@@ -2621,7 +2617,7 @@ public sealed class ExplorerTurn
                 var text = block.GetProperty("text").GetString();
                 if (kind == "text" && text is not null)
                 {
-                    blocks.Add(new TextBlock(_redaction.Redact(text)));
+                    blocks.Add(new TextBlock(text));
                     continue;
                 }
                 if (kind != "reasoning") throw new InvalidDataException(failure);
@@ -2630,7 +2626,7 @@ public sealed class ExplorerTurn
                     || !Enum.IsDefined(visibility) || visibility.ToString() != visibilityName)
                     throw new InvalidDataException(failure);
                 // Provider signatures and opaque artifact refs are never stored in this projection.
-                blocks.Add(new ReasoningBlock(text is null ? null : _redaction.Redact(text), visibility, null));
+                blocks.Add(new ReasoningBlock(text, visibility, null));
             }
             return blocks;
         }
@@ -2709,7 +2705,7 @@ public sealed class ExplorerTurn
                     {
                         var text = _artifacts.GetText(part.Artifact.Hash)
                             ?? throw new InvalidDataException("Persisted response text is missing.");
-                        text = _redaction.Redact(text);
+                        // The stored canonical text is replayed unchanged.
                         orderedParts.Add(("text", text, -1));
                         publishedText.Add(text);
                     }
@@ -2727,7 +2723,7 @@ public sealed class ExplorerTurn
                     .LastOrDefault(item => item.TurnId == turnId);
                 if (assistant?.ContentRef is { } textRef && _artifacts.GetText(textRef.Hash) is { } text)
                 {
-                    text = _redaction.Redact(text);
+                    // The stored canonical text is replayed unchanged.
                     orderedParts.Insert(0, ("text", text, -1));
                     publishedText.Add(text);
                 }
@@ -3058,14 +3054,14 @@ public sealed class ExplorerTurn
                             : Array.Empty<string>();
                     var text = string.Join("\n", parts.Where(static part => part.Length > 0));
                     var content = new List<ContentBlock>();
-                    if (text.Length > 0) content.Add(new TextBlock(_redaction.Redact(text)));
+                    if (text.Length > 0) content.Add(new TextBlock(text));
                     foreach (var reference in input.Attachments ?? Array.Empty<ArtifactRef>())
                     {
                         var attachment = AttachmentContentMaterializer.Read(reference, _artifacts);
                         if (attachment is ImageBlock && !_selection.InputModalities.Contains("image", StringComparer.Ordinal))
                             throw new NotSupportedException("The effective model/provider route does not declare image input support.");
                         if (attachment is DocumentBlock document)
-                            attachment = document with { ExtractedText = _redaction.Redact(document.ExtractedText) };
+                            attachment = document;
                         content.Add(attachment);
                     }
                     if (content.Count > 0) AppendHistory(new ModelMessage(MessageRole.User, content));
@@ -3100,7 +3096,7 @@ public sealed class ExplorerTurn
                         ? schemaJson : call.ArgumentsJson;
                     AppendHistory(new ModelMessage(MessageRole.Assistant, new ContentBlock[] {
                         new ToolCallBlock(call.ToolCallId, call.ProviderCallId, call.ToolName,
-                            _redaction.Redact(arguments))
+                            arguments)
                     }));
                 }
             }
@@ -3125,7 +3121,7 @@ public sealed class ExplorerTurn
                     ? questionnaireResults[callId!.ToString()]
                     : payload switch
                     {
-                        ToolCallSucceeded e => _redaction.Redact(e.ResultJson),
+                        ToolCallSucceeded e => e.ResultJson,
                         ToolCallFailed e => "error: " + _redaction.Redact(e.Cause),
                         ToolCallRejected e => "error: " + _redaction.Redact(e.Reason),
                         _ => "error",
@@ -3151,7 +3147,7 @@ public sealed class ExplorerTurn
                 var text = _artifacts.GetText(assistant.ContentRef.Hash);
                 if (!string.IsNullOrEmpty(text))
                     AppendHistory(new ModelMessage(MessageRole.Assistant,
-                        new ContentBlock[] { new TextBlock(_redaction.Redact(text)) }));
+                        new ContentBlock[] { new TextBlock(text) }));
             }
             else if (type == "assistant_images.recorded")
             {
@@ -3169,7 +3165,7 @@ public sealed class ExplorerTurn
                 var text = DecodeUsageResponse(_artifacts.GetText(completed.ResponseArtifact.Hash));
                 if (!string.IsNullOrEmpty(text))
                     AppendHistory(new ModelMessage(MessageRole.Assistant,
-                        new ContentBlock[] { new TextBlock(_redaction.Redact(text)) }));
+                        new ContentBlock[] { new TextBlock(text) }));
             }
         }
 
@@ -3404,7 +3400,7 @@ public sealed class ExplorerTurn
             + QuestionnaireCodec.EncodeAnswers(outcome.Answers ?? Array.Empty<QuestionAnswer>()) + "}";
     }
 
-    private string EffectiveSystemPrompt(string instruction) => _redaction.Redact(
+    private string EffectiveSystemPrompt(string instruction) => (
         "Contexto del workspace (fuentes del run):\n"
         + (instruction ?? "").Replace("{context}", "", StringComparison.Ordinal).Trim()
         + "\nFingerprint: " + _fingerprint.ModelKey + " · " + _fingerprint.ContextPolicyHash);
@@ -3424,34 +3420,33 @@ public sealed class ExplorerTurn
         // transcript import, worker admission, scheduler decision or authority transfer.
         var inherited = new ContextInheritanceService(_store, _codecs, _artifacts)
             .FindDelegationProjection(sessionId, runId, laneId);
-        if (inherited is not null) contributors.Add(new RedactingContextContributor(inherited, _redaction));
+        if (inherited is not null) contributors.Add(new ValidatedContextContributor(inherited));
         if (hookAnnotations is { Count: > 0 })
-            contributors.Add(new RedactingContextContributor(
-                new LifecycleAnnotationContributor(hookAnnotations), _redaction));
+            contributors.Add(new ValidatedContextContributor(
+                new LifecycleAnnotationContributor(hookAnnotations)));
         var hasWorkingState = false;
         foreach (var contributor in _materializer.Contributors())
         {
             hasWorkingState |= contributor is WorkingStateContributor;
-            contributors.Add(new RedactingContextContributor(contributor, _redaction,
+            contributors.Add(new ValidatedContextContributor(contributor,
                 rejectSkills: _activeSkills is { Count: 0 }));
         }
 
         if (!hasWorkingState && !string.IsNullOrWhiteSpace(workingStateText))
         {
-            contributors.Add(new RedactingContextContributor(new WorkingStateContributor(workingStateText),
-                _redaction));
+            contributors.Add(new ValidatedContextContributor(new WorkingStateContributor(workingStateText)));
         }
 
         // ADR-0048 §3: la directiva de Replan/Diagnose/SplitTask se proyecta del journal en cada Turn.
         if (StallWatch.ActiveDirective(_stallDecoder, stream.EventsSince(1), runId, laneId) is { } directive)
         {
             var canProposePlan = _catalog.Find(new ToolId("plan.propose")) is not null;
-            contributors.Add(new RedactingContextContributor(
-                new StallDirectiveContributor(directive.Render(canProposePlan)), _redaction));
+            contributors.Add(new ValidatedContextContributor(
+                new StallDirectiveContributor(directive.Render(canProposePlan))));
         }
 
         var prompt = EffectiveSystemPrompt(instruction);
-        contributors.Add(new RedactingContextContributor(new SystemPromptContributor(prompt), _redaction));
+        contributors.Add(new ValidatedContextContributor(new SystemPromptContributor(prompt)));
         var sessionCheckpoint = SessionConversationCheckpoint.Read(stream.EventsSince(1), _codecs, _artifacts, runId, laneId);
         if (sessionCheckpoint is not null)
             contributors.Add(new ContextCheckpointContributor(sessionCheckpoint.Id, sessionCheckpoint.ThroughSequence,
@@ -3465,6 +3460,7 @@ public sealed class ExplorerTurn
         var entries = new List<ConversationContextEntry>();
         var messageById = new Dictionary<string, ModelMessage>(StringComparer.Ordinal);
         var runById = new Dictionary<string, RunId>(StringComparer.Ordinal);
+        var policy = _harness?.ContextManagement ?? ContextManagementPolicy.Default;
         var firstUser = true;
         var latestUserIndex = -1;
         for (var i = messages.Count - 1; i >= 0; i--)
@@ -3475,7 +3471,7 @@ public sealed class ExplorerTurn
         }
         for (var i = 0; i < messages.Count; i++)
         {
-            var safe = RedactMessage(messages[i]);
+            var safe = PreserveMessage(messages[i]);
             var id = "conversation-" + i.ToString("D6", System.Globalization.CultureInfo.InvariantCulture);
             var kind = safe.Role switch
             {
@@ -3485,7 +3481,7 @@ public sealed class ExplorerTurn
             };
             // Historical context must never silently evict the user's current intent.
             // If protected input itself cannot fit, the existing overflow barrier stops dispatch.
-            var preserve = safe.Role == MessageRole.User && (firstUser || i == latestUserIndex);
+            var preserve = !policy.AutomaticCompaction || safe.Role == MessageRole.User && (firstUser || i == latestUserIndex);
             if (safe.Role == MessageRole.User)
             {
                 firstUser = false;
@@ -3497,11 +3493,10 @@ public sealed class ExplorerTurn
             runById.Add(id, messageOwners.TryGetValue(messages[i], out var owner) ? owner : runId);
         }
 
-        var policy = _harness?.ContextManagement ?? ContextManagementPolicy.Default;
         var summarizedIds = new HashSet<string>(StringComparer.Ordinal);
-        var summaryService = new RunSummaryService(_store, _codecs, _artifacts, _redaction.Redact);
+        var summaryService = new RunSummaryService(_store, _codecs, _artifacts, static text => text);
         var summaries = summaryService.Read(sessionId, runId);
-        if (summaries.Count > 0)
+        if (policy.AutomaticCompaction && summaries.Count > 0)
         {
             // Probe the existing budget policy, not a new percentage/character heuristic.
             // Prepared artifacts are not published by this probe.
@@ -3519,7 +3514,7 @@ public sealed class ExplorerTurn
                 contributors.Add(new RunSummaryContributor(summary, artifact, summaryService.Render(summary)));
             }
         }
-        var priorCheckpoint = ReadLatestCheckpoint(stream, runId, laneId);
+        var priorCheckpoint = policy.AutomaticCompaction ? ReadLatestCheckpoint(stream, runId, laneId) : null;
         var compactedThroughIndex = priorCheckpoint?.CompactedThroughItemIndex ?? -1;
         var compactedIds = new HashSet<string>(entries.Where(e => !e.PreserveWhenTrimming
                 && ConversationIndex(e.Id) is var index && index >= 0 && index <= compactedThroughIndex)
@@ -3530,11 +3525,12 @@ public sealed class ExplorerTurn
         // its original user message cannot be removed. Preserve the configured cadence.
         var candidates = entries.Where(e => IsConversationKind(e.Kind)
             && (!e.PreserveWhenTrimming || e.Id == currentInput?.Id && e.Id != firstInput?.Id)
-            && !summarizedIds.Contains(e.Id)).ToArray();
+            && !compactedIds.Contains(e.Id) && !summarizedIds.Contains(e.Id)).ToArray();
         var oldCount = Math.Max(0, candidates.Length - Math.Max(0, policy.RecentTailItems));
         var oldItems = candidates.Take(oldCount).ToArray();
         var newOldItems = oldItems.Where(e => !compactedIds.Contains(e.Id)).ToArray();
-        var probeEntries = entries.Where(entry => !compactedIds.Contains(entry.Id) && !summarizedIds.Contains(entry.Id)).ToArray();
+        var probeEntries = entries.Where(entry => !compactedIds.Contains(entry.Id) && !summarizedIds.Contains(entry.Id))
+            .Select(entry => entry with { PreserveWhenTrimming = true }).ToArray();
         var pressureContributors = contributors.Append(new SessionConversationContributor(probeEntries)).ToList();
         if (priorCheckpoint is not null) pressureContributors.Add(new ContextCheckpointContributor(priorCheckpoint.Id,
             priorCheckpoint.ThroughSequence, priorCheckpoint.Summary, priorCheckpoint.Artifact));
@@ -3547,7 +3543,7 @@ public sealed class ExplorerTurn
             oldItems = candidates.Take(Math.Max(1, candidates.Length / 2)).ToArray();
             newOldItems = oldItems.Where(entry => !compactedIds.Contains(entry.Id)).ToArray();
         }
-        if (newOldItems.Any(entry => !entry.PreserveWhenTrimming)
+        if (policy.AutomaticCompaction && newOldItems.Any(entry => !entry.PreserveWhenTrimming)
             && (atCapacity || ContextCompaction.ShouldCompact(newOldItems.Length, policy)))
         {
             var material = (priorCheckpoint?.Summary is { Length: > 0 } oldSummary
@@ -3564,7 +3560,7 @@ public sealed class ExplorerTurn
             if (_metaModelProvider is not null && (canInvokeMeta?.Invoke() ?? true))
             {
                 metaModel = new MetaModelService(_metaModelProvider, _artifacts,
-                    new ContextStreamEventSink(stream, _artifacts), _selection, _redaction.Redact, usage => _pricing?.CostUsd(usage),
+                    new ContextStreamEventSink(stream, _artifacts), _selection, static text => text, usage => _pricing?.CostUsd(usage),
                     reserveMeta, dispatchMeta, finishMeta, releaseMeta);
                 try
                 {
@@ -3609,7 +3605,10 @@ public sealed class ExplorerTurn
                 checkpointContext, checkpointArtifact);
         }
 
-        var filteredEntries = entries.Where(e => !compactedIds.Contains(e.Id) && !summarizedIds.Contains(e.Id)).ToArray();
+        // Summaries are the only authorized replacement of historical messages. Remaining
+        // messages are indivisible: never silently shorten text, tool arguments or results.
+        var filteredEntries = entries.Where(e => !compactedIds.Contains(e.Id) && !summarizedIds.Contains(e.Id))
+            .Select(entry => entry with { PreserveWhenTrimming = true }).ToArray();
         contributors.Add(new SessionConversationContributor(filteredEntries));
         if (priorCheckpoint is not null)
         {
@@ -3821,7 +3820,7 @@ public sealed class ExplorerTurn
             writer.WriteString("laneId", laneId.ToString());
             writer.WriteNumber("throughEventSequence", throughSequence);
             writer.WriteString("metaModelFingerprint", metaModelFingerprint);
-            writer.WriteString("summary", _redaction.Redact(summary));
+            writer.WriteString("summary", summary);
             WriteCheckpointSection(writer, "goals", Section("Goal", "Goals"));
             WriteCheckpointSection(writer, "constraints", Section("Constraint", "Constraints"));
             WriteCheckpointSection(writer, "decisions", Section("Decision", "Decisions"));
@@ -3835,7 +3834,7 @@ public sealed class ExplorerTurn
             writer.WriteNumber("compactedThroughItemIndex", compactedThroughItemIndex);
             writer.WriteEndObject();
         }
-        return _artifacts.PutText(_redaction.Redact(System.Text.Encoding.UTF8.GetString(output.ToArray())),
+        return _artifacts.PutText(System.Text.Encoding.UTF8.GetString(output.ToArray()),
             "application/vnd.omnicore.context-checkpoint+json", ArtifactKind.ContextSnapshot, Sensitivity.Sensitive);
     }
 
@@ -3903,7 +3902,7 @@ public sealed class ExplorerTurn
             _ => block,
         }).ToArray();
 
-    private ModelMessage RedactMessage(ModelMessage message)
+    private ModelMessage PreserveMessage(ModelMessage message)
     {
         var blocks = new List<ContentBlock>();
         foreach (var block in message.Content)
@@ -3911,29 +3910,28 @@ public sealed class ExplorerTurn
             switch (block)
             {
                 case TextBlock text:
-                    blocks.Add(new TextBlock(_redaction.Redact(text.Text)));
+                    blocks.Add(new TextBlock(text.Text));
                     break;
                 case DocumentBlock document:
-                    blocks.Add(document with { ExtractedText = _redaction.Redact(document.ExtractedText) });
+                    blocks.Add(document);
                     break;
                 case ImageBlock image:
                     blocks.Add(image);
                     break;
                 case ToolCallBlock call:
                     blocks.Add(new ToolCallBlock(call.Id, call.ProviderCallId, call.ToolName,
-                        SafeToolArguments(call.ToolName, call.ArgumentsJson)));
+                        call.ArgumentsJson));
                     break;
                 case ToolResultBlock result:
-                    blocks.Add(new ToolResultBlock(result.Id, RedactBlocks(result.Content), result.IsError));
+                    blocks.Add(new ToolResultBlock(result.Id, PreserveBlocks(result.Content), result.IsError));
                     break;
                 case ReasoningBlock reasoning:
-                    blocks.Add(new ReasoningBlock(reasoning.VisibleText is null
-                        ? null : _redaction.Redact(reasoning.VisibleText), reasoning.Visibility,
+                    blocks.Add(new ReasoningBlock(reasoning.VisibleText, reasoning.Visibility,
                         VerifiedOpaqueStateRef(reasoning.OpaquePayload)));
                     break;
                 case CitationBlock citation:
-                    blocks.Add(new CitationBlock(_redaction.Redact(citation.Text),
-                        _redaction.Redact(citation.SourceRef)));
+                    blocks.Add(new CitationBlock(citation.Text,
+                        citation.SourceRef));
                     break;
                 case ProviderOpaqueBlock:
                     blocks.Add(new TextBlock("[estado opaco del provider omitido]"));
@@ -3968,12 +3966,12 @@ public sealed class ExplorerTurn
         }
     }
 
-    private IReadOnlyList<ContentBlock> RedactBlocks(IReadOnlyList<ContentBlock> blocks)
+    private IReadOnlyList<ContentBlock> PreserveBlocks(IReadOnlyList<ContentBlock> blocks)
     {
         var result = new List<ContentBlock>();
         foreach (var block in blocks)
         {
-            var safe = RedactMessage(new ModelMessage(MessageRole.Tool, new[] { block }));
+            var safe = PreserveMessage(new ModelMessage(MessageRole.Tool, new[] { block }));
             result.AddRange(safe.Content);
         }
 
@@ -4112,7 +4110,7 @@ public sealed class ExplorerTurn
         }
 
         var content = System.Text.Encoding.UTF8.GetString(output.ToArray());
-        return _artifacts.PutText(_redaction.Redact(content), "application/json",
+        return _artifacts.PutText(content, "application/json",
             ArtifactKind.ContextSnapshot, Sensitivity.Sensitive);
     }
 
@@ -4152,16 +4150,14 @@ public sealed class ExplorerTurn
         { token.ThrowIfCancellationRequested(); return System.Threading.Tasks.Task.FromResult(items); }
     }
 
-    private sealed class RedactingContextContributor : IContextContributor
+    private sealed class ValidatedContextContributor : IContextContributor
     {
         private readonly IContextContributor _inner;
-        private readonly RedactionPolicy _redaction;
         private readonly bool _rejectSkills;
 
-        public RedactingContextContributor(IContextContributor inner, RedactionPolicy redaction, bool rejectSkills = false)
+        public ValidatedContextContributor(IContextContributor inner, bool rejectSkills = false)
         {
             _inner = inner;
-            _redaction = redaction;
             _rejectSkills = rejectSkills;
         }
 
@@ -4174,11 +4170,7 @@ public sealed class ExplorerTurn
             {
                 if (_rejectSkills && item.Kind == ContextItemKind.Skill)
                     throw new InvalidDataException("Skill context contradicts the declared empty active skill set.");
-                var content = item.Provenance.Sensitive
-                    ? "[contenido sensible omitido]"
-                    : _redaction.Redact(item.Content);
-                result.Add(new ContextItem(item.Id, item.Kind, content, item.EstimatedTokens, item.Priority,
-                    item.Retention, item.Provenance, item.PreserveWhenTrimming));
+                result.Add(item);
             }
 
             return result.ToArray();

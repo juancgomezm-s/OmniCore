@@ -13,6 +13,109 @@ namespace OmniCore.Tests;
 
 public sealed class ConversationHistoryCanonicalTests
 {
+    [Fact]
+    public void Queued_followup_and_steering_preserve_original_text_after_reopen()
+    {
+        using var fixture = new Fixture();
+        var turn = TurnId.New();
+        var stream = new EventStream(fixture.Store, fixture.Codecs, fixture.Session);
+        stream.Append(new TurnStarted(turn, fixture.Run.RootLane));
+        const string input = "  Bearer fixture-token-123456\r\nEspañol e\u0301 \t  ";
+        Assert.True(FollowUpQueue.TryQueue(fixture.Store, fixture.Codecs, fixture.Session,
+            fixture.Run.RunId, fixture.Run.RootLane, input, "user"));
+        Assert.True(SteeringQueue.TryReceive(fixture.Store, fixture.Codecs, fixture.Session, SteeringId.New(),
+            fixture.Run.RunId, fixture.Run.RootLane, turn, input, "user"));
+        fixture.Reopen();
+        using var followup = System.Text.Json.JsonDocument.Parse(Assert.Single(FollowUpQueue.Pending(
+            fixture.Store, fixture.Codecs, fixture.Session, fixture.Run.RunId, fixture.Run.RootLane)).InputPartsJson);
+        using var steering = System.Text.Json.JsonDocument.Parse(Assert.Single(SteeringQueue.Pending(
+            fixture.Store, fixture.Codecs, fixture.Session, fixture.Run.RunId, fixture.Run.RootLane, turn)).InputPartsJson);
+        Assert.Equal(input, followup.RootElement[0].GetString());
+        Assert.Equal(input, steering.RootElement[0].GetString());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void User_and_assistant_text_round_trip_verbatim_in_private_history_and_next_request(bool reopen)
+    {
+        using var fixture = new Fixture();
+        const string input = "  Español <>&\r\nBearer fixture-only-token-123456\r\npassword=example123  e\u0301 é\t  ";
+        const string reply = "\nLiteral: Authorization: Bearer fixture-only-answer-456789\r\n{\"token\":\"example789\"}  ";
+        Assert.NotEqual(input, new PiiRedactor().Redact(input));
+        SecretRedactorRegistry.Register("fixture-only-token-123456");
+        SecretRedactorRegistry.Register("fixture-only-answer-456789");
+        new EventStream(fixture.Store, fixture.Codecs, fixture.Session).Append(
+            new UserInputReceived(fixture.Run.RunId, System.Text.Json.JsonSerializer.Serialize(new[] { input }), null));
+        ModelRequest? submitted = null;
+        var result = fixture.CreateTurn((request, _) => { submitted = request; return Response(reply); })
+            .Ask("", "system", fixture.Session, fixture.Run.RunId, fixture.Run.RootLane, "",
+                TestContext.Current.CancellationToken);
+        Assert.Equal(StopReason.EndTurn, result.StopReason);
+        Assert.Equal(input, Assert.IsType<TextBlock>(Assert.Single(Assert.Single(submitted!.Messages,
+            message => message.Role == MessageRole.User).Content)).Text);
+        Assert.Equal(reply, result.FinalText);
+        if (reopen) fixture.Reopen();
+        var history = fixture.History();
+        Assert.Equal(input, Assert.IsType<TextBlock>(Assert.Single(Assert.Single(history,
+            message => message.Role == MessageRole.User).Content)).Text);
+        Assert.Equal(reply, Assert.IsType<TextBlock>(Assert.Single(Assert.Single(history,
+            message => message.Role == MessageRole.Assistant).Content)).Text);
+        ModelRequest? next = null;
+        Assert.Equal(StopReason.EndTurn, fixture.CreateTurn((request, _) => { next = request; return Response("next"); })
+            .Ask("continúa", "system", fixture.Session, fixture.Run.RunId, fixture.Run.RootLane, "",
+                TestContext.Current.CancellationToken).StopReason);
+        Assert.Equal(reply, Assert.IsType<TextBlock>(Assert.Single(Assert.Single(next!.Messages,
+            message => message.Role == MessageRole.Assistant).Content)).Text);
+    }
+
+    [Fact]
+    public void Automatic_pressure_compaction_announces_checkpoint_and_keeps_original_after_reopen()
+    {
+        using var fixture = new Fixture();
+        var original = "Decision: preserve the fixture. " + string.Join(' ', Enumerable.Repeat("history", 10_000))
+            + " Bearer fixture-original-token-789";
+        fixture.RecordAnswer(canonical: true, legacy: false, canonicalText: original);
+        ModelRequest? submitted = null;
+        var result = fixture.CreateTurn((request, _) => { submitted = request; return Response("continued"); })
+            .Ask("continue without resending", "system", fixture.Session, fixture.Run.RunId, fixture.Run.RootLane, "",
+                TestContext.Current.CancellationToken);
+        Assert.Equal(StopReason.EndTurn, result.StopReason);
+        Assert.NotNull(submitted);
+        Assert.Contains("Context checkpoint", submitted.Instructions);
+        Assert.Contains(submitted.Messages.SelectMany(message => message.Content).OfType<TextBlock>(),
+            block => block.Text == "continue without resending");
+        Assert.DoesNotContain(submitted.Messages.SelectMany(message => message.Content).OfType<TextBlock>(),
+            block => block.Text == original);
+        fixture.Reopen();
+        var journal = fixture.Store.ReadFrom(fixture.Session, 1);
+        Assert.Single(journal.Select(fixture.Codecs.Decode).OfType<ContextCheckpointRecorded>());
+        var notice = new ProtocolMapper(fixture.Codecs).Map(journal).Single(envelope =>
+            OmniCore.Protocol.JsonObj.Parse(envelope.PayloadJson)["type"] == "context.checkpoint_recorded");
+        var state = new OmniCore.Client.ClientProjection().Apply(OmniCore.Client.ClientState.Empty(), notice);
+        Assert.Equal("Contexto compactado automáticamente; mensajes originales conservados.",
+            Assert.Single(state.Conversation.Blocks).Text);
+        Assert.Equal(original, Assert.IsType<TextBlock>(Assert.Single(fixture.History()
+            .First(message => message.Role == MessageRole.Assistant).Content)).Text);
+    }
+
+    [Fact]
+    public void Insufficient_context_does_not_silently_rewrite_or_drop_previous_conversation()
+    {
+        using var fixture = new Fixture();
+        var original = "A historical answer " + string.Join(' ', Enumerable.Repeat("history", 10_000)) + " Bearer fixture-original-token-789";
+        fixture.RecordAnswer(canonical: true, legacy: false, canonicalText: original);
+        var invoked = false;
+        var result = fixture.CreateTurn((_, _) => { invoked = true; return Response("must not run"); }, automaticCompaction: false)
+            .Ask("continue", "system", fixture.Session, fixture.Run.RunId, fixture.Run.RootLane, "",
+                TestContext.Current.CancellationToken);
+        Assert.Equal(StopReason.ContextOverflow, result.StopReason);
+        Assert.False(invoked);
+        Assert.Empty(fixture.Store.ReadFrom(fixture.Session, 1).Select(fixture.Codecs.Decode).OfType<ContextCheckpointRecorded>());
+        var assistant = Assert.Single(fixture.History(), message => message.Role == MessageRole.Assistant);
+        Assert.Equal(original, Assert.IsType<TextBlock>(Assert.Single(assistant.Content)).Text);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -187,7 +290,7 @@ public sealed class ConversationHistoryCanonicalTests
             Run = TestRun.Open(Store, Session);
         }
 
-        public void RecordAnswer(bool canonical, bool legacy)
+        public void RecordAnswer(bool canonical, bool legacy, string canonicalText = "Decisión canónica: PostgreSQL.")
         {
             var stream = new EventStream(Store, Codecs, Session);
             var turn = TurnId.New();
@@ -199,7 +302,7 @@ public sealed class ConversationHistoryCanonicalTests
                     ArtifactKind.ModelResponse, Sensitivity.Sensitive)));
             }
             if (canonical) stream.Append(new AssistantMessageRecorded(Run.RunId, Run.RootLane, turn,
-                _artifacts.PutText("Decisión canónica: PostgreSQL.", "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Sensitive)));
+                _artifacts.PutText(canonicalText, "text/markdown", ArtifactKind.ModelResponse, Sensitivity.Sensitive)));
             stream.Append(new TurnCompleted(turn));
         }
 
@@ -207,7 +310,7 @@ public sealed class ConversationHistoryCanonicalTests
             _artifacts.PutBytes(bytes, mediaType, ArtifactKind.Other, Sensitivity.Sensitive) with { FileName = fileName };
 
         public ExplorerTurn CreateTurn(Func<ModelRequest, CancellationToken, ModelResponse> provider, bool enforceCaps = false,
-            IReadOnlyList<string>? inputModalities = null)
+            IReadOnlyList<string>? inputModalities = null, bool automaticCompaction = true)
         {
             var catalog = new FakeCatalog();
             var executor = ScriptedToolExecutor.WithWorkspace(catalog,
@@ -218,6 +321,8 @@ public sealed class ConversationHistoryCanonicalTests
                 new ModelSelection(new ModelIdValue("scripted"), 8192, ToolMode.Direct, null,
                     inputModalities: inputModalities),
                 Store, Codecs, _artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
+                harness: new HarnessPolicy(ToolCallFormat.Native, ToolMode.Direct, 100, GuidanceLevel.Off,
+                    3, PlanControl.ModelDriven, 8, contextManagement: ContextManagementPolicy.Default with { AutomaticCompaction = automaticCompaction }),
                 pricing: enforceCaps ? new ModelPricing(1m, 1m) : null, enforceDefaultSpendCaps: enforceCaps);
         }
 

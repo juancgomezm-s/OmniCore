@@ -73,7 +73,7 @@ public sealed class SecretLeakTests
     }
 
     [Fact]
-    public void Known_secret_is_redacted_before_journal_artifact_context_and_log_sinks()
+    public void Canonical_tool_arguments_remain_literal_while_diagnostic_artifacts_and_logs_redact()
     {
         var redactor = SecretRedactor.Shared;
         var known = "echoed-secret-value-7642";
@@ -85,14 +85,13 @@ public sealed class SecretLeakTests
         var stream = new EventStream(store, codecs, session);
         stream.Append(new ToolCallRequested(ToolCallId.New(), "fake-tool", "fake.echo",
             "{\"value\":\"" + known + "\"}"));
-        Assert.DoesNotContain(known, store.ReadFrom(session, 1).Single().PayloadJson);
-        Assert.Contains(SecretRedactor.Marker, store.ReadFrom(session, 1).Single().PayloadJson);
+        Assert.Contains(known, store.ReadFrom(session, 1).Single().PayloadJson);
 
         var artifactPath = Path.Combine(Path.GetTempPath(), "omnicore-redaction-" + Guid.NewGuid().ToString("N"));
         try
         {
             var artifacts = new FileArtifactStore(artifactPath, redactor);
-            var artifact = artifacts.PutText(known, "text/plain", ArtifactKind.ContextSnapshot, Sensitivity.Normal);
+            var artifact = artifacts.PutText(known, "text/plain", ArtifactKind.Other, Sensitivity.Normal);
             var persisted = artifacts.GetText(artifact.Hash)!;
             Assert.True(artifact.Redacted);
             Assert.DoesNotContain(known, persisted);
@@ -111,7 +110,7 @@ public sealed class SecretLeakTests
     }
 
     [Fact]
-    public void Fake_tool_echo_is_redacted_before_the_next_context_and_final_result()
+    public void Authorized_tool_echo_remains_literal_in_conversation_and_diagnostics_are_redacted()
     {
         var redactor = SecretRedactor.Shared;
         var known = "tool-echo-secret-13579";
@@ -148,11 +147,11 @@ public sealed class SecretLeakTests
         var result = turn.Ask("question", "instruction", server.LastSessionId()!, server.LastRunId()!,
             server.LastLaneId()!, "", CancellationToken.None);
         Assert.Equal(2, requests.Count);
-        Assert.DoesNotContain(known, string.Join(" ", requests[1].Messages.SelectMany(message => message.Content)
-            .OfType<TextBlock>().Select(block => block.Text)));
-        Assert.DoesNotContain(known, result.FinalText ?? "");
+        Assert.Contains(known, string.Join(" ", requests[1].Messages.SelectMany(message => message.Content)
+            .OfType<ToolResultBlock>().SelectMany(result => result.Content).OfType<TextBlock>().Select(block => block.Text)));
+        Assert.Equal("provider echoed " + known, result.FinalText);
         Assert.All(result.ToolCalls, trace => Assert.DoesNotContain(known, trace.Summary ?? ""));
-        Assert.DoesNotContain(known, string.Join("\n", server.AcquireStore().ReadFrom(server.LastSessionId()!, 1)
+        Assert.Contains(known, string.Join("\n", server.AcquireStore().ReadFrom(server.LastSessionId()!, 1)
             .Select(evt => evt.PayloadJson)));
     }
 
@@ -177,7 +176,7 @@ public sealed class SecretLeakTests
     [InlineData("cD5@x")]
     [InlineData("eF6#yZ")]
     [InlineData("gH7$wX9")]
-    public void Four_to_seven_character_secrets_are_redacted_by_journal_artifact_context_and_log_sinks(
+    public void Short_registered_values_remain_in_private_calls_and_redact_in_diagnostic_sinks(
         string secret)
     {
         var redactor = SecretRedactor.Shared;
@@ -187,13 +186,13 @@ public sealed class SecretLeakTests
         var session = SessionId.New();
         new EventStream(store, EventCodecs.Create(), session).Append(new ToolCallRequested(
             ToolCallId.New(), "short-secret", "fake.echo", "{\"value\":\"" + secret + "\"}"));
-        Assert.DoesNotContain(secret, store.ReadFrom(session, 1).Single().PayloadJson);
+        Assert.Contains(secret, store.ReadFrom(session, 1).Single().PayloadJson);
 
         var artifactRoot = Path.Combine(Path.GetTempPath(), "omnicore-short-redaction-" + Guid.NewGuid().ToString("N"));
         try
         {
             var artifacts = new FileArtifactStore(artifactRoot, redactor);
-            var artifact = artifacts.PutText(secret, "text/plain", ArtifactKind.ContextSnapshot, Sensitivity.Normal);
+            var artifact = artifacts.PutText(secret, "text/plain", ArtifactKind.Other, Sensitivity.Normal);
             Assert.True(artifact.Redacted);
             Assert.Equal(SecretRedactor.Marker, artifacts.GetText(artifact.Hash));
             Assert.DoesNotContain(secret, new RedactionPolicy().Redact("context=" + secret));
@@ -255,7 +254,7 @@ public sealed class SecretLeakTests
     }
 
     [Fact]
-    public void Every_event_payload_is_redacted_by_the_journal_codec()
+    public void Private_user_event_codec_preserves_original_text_even_for_registered_patterns()
     {
         _ = SecretRedactor.Shared;
         var secret = "journal-canary-" + Guid.NewGuid().ToString("N");
@@ -264,12 +263,12 @@ public sealed class SecretLeakTests
 
         var encoded = EventCodecs.Create().CodecFor(input.Type()).Encode(input);
 
-        Assert.DoesNotContain(secret, encoded, StringComparison.Ordinal);
-        Assert.Contains(SecretRedactor.Marker, encoded, StringComparison.Ordinal);
+        var decoded = Assert.IsType<UserInputReceived>(EventCodecs.Create().CodecFor(input.Type()).Decode(input.Type(), encoded));
+        Assert.Equal(input.InputPartsJson, decoded.InputPartsJson);
     }
 
     [Fact]
-    public void A_short_secret_inside_an_id_never_corrupts_the_event_and_is_still_redacted_in_text()
+    public void A_short_registered_pattern_never_corrupts_identifiers_or_original_user_text()
     {
         _ = SecretRedactor.Shared;
         var secret = "c0ff" + Random.Shared.Next(1000, 9999);
@@ -282,12 +281,11 @@ public sealed class SecretLeakTests
         var decoded = Assert.IsType<UserInputReceived>(codec.Decode(input.Type(), encoded));
 
         Assert.Equal(run, decoded.RunId);
-        Assert.DoesNotContain("la clave es " + secret, encoded, StringComparison.Ordinal);
-        Assert.Contains(SecretRedactor.Marker, decoded.InputPartsJson, StringComparison.Ordinal);
+        Assert.Equal(input.InputPartsJson, decoded.InputPartsJson);
     }
 
     [Fact]
-    public void A_secret_shaped_like_a_guid_is_redacted_when_it_is_the_whole_value()
+    public void A_guid_shaped_user_value_is_not_rewritten_by_the_private_event_codec()
     {
         _ = SecretRedactor.Shared;
         var guidSecret = Guid.NewGuid().ToString();
@@ -296,6 +294,8 @@ public sealed class SecretLeakTests
 
         var encoded = EventCodecs.Create().CodecFor(input.Type()).Encode(input);
 
-        Assert.DoesNotContain(guidSecret, encoded, StringComparison.Ordinal);
+        var decoded = Assert.IsType<UserInputReceived>(EventCodecs.Create().CodecFor(input.Type()).Decode(input.Type(), encoded));
+        Assert.Equal(input.InputPartsJson, decoded.InputPartsJson);
+        Assert.Equal(input.Origin, decoded.Origin);
     }
 }

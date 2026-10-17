@@ -344,8 +344,7 @@ public sealed class TypedCodec<T> : IDomainEventCodec where T : class, DomainEve
     }
 
     /// <summary>
-    /// Serializa el payload y redacta los secretos conocidos del proceso (ADR-0018 §3): el payload
-    /// redactado es lo único que llega al journal, venga del camino que venga.
+    /// Serializes private conversation payloads losslessly; diagnostic payloads redact known secrets.
     /// </summary>
     public string Encode(DomainEventPayload payload)
     {
@@ -355,7 +354,9 @@ public sealed class TypedCodec<T> : IDomainEventCodec where T : class, DomainEve
         var redactor = OmniCore.Abstractions.SecretRedactorRegistry.Current;
         // Por valor y respetando ids: sustituir sobre el JSON crudo podía corromper un GUID que
         // contuviera un secreto corto y dejar el evento ilegible.
-        return redactor is null ? json : JournalRedaction.RedactStringValues(json, redactor);
+        var conversation = payload is UserInputReceived or FollowUpQueued or TurnSteeringReceived
+            or ToolCallRequested or ToolCallSucceeded or InteractionRequested or InteractionResolved or RunCreated or TurnStarted;
+        return conversation || redactor is null ? json : JournalRedaction.RedactStringValues(json, redactor);
     }
 
     public string DebugType() => _type.ToString();

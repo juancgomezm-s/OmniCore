@@ -28,7 +28,7 @@ public sealed class ToolRequestUnicodeReceiptTests
     }
 
     [Fact]
-    public void Actual_sensitive_argument_redaction_still_prevents_minting_an_executable_receipt()
+    public void Credential_like_example_arguments_are_preserved_and_bound_without_rewriting()
     {
         var session = SessionId.New();
         var store = new InMemoryEventStore();
@@ -36,8 +36,10 @@ public sealed class ToolRequestUnicodeReceiptTests
         var stream = new EventStream(store, codecs, session);
         var request = new ToolCallRequested(ToolCallId.New(), "provider-call", "filesystem.write",
             "{\"path\":\"contact.txt\",\"content\":\"Bearer fixture-sensitive-token-123456\"}");
-        Assert.Throws<InvalidDataException>(() => stream.AppendToolCallRequestAdmitted(request, _ => { }));
+        var receipt = stream.AppendToolCallRequestAdmitted(request, _ => { });
         var persisted = Assert.IsType<ToolCallRequested>(codecs.Decode(Assert.Single(store.ReadFrom(session, 1))));
-        Assert.DoesNotContain("fixture-sensitive-token-123456", persisted.ArgumentsJson);
+        Assert.Equal(request, persisted);
+        Assert.True(receipt.MatchesCall(new ValidatedToolCall(request.ToolCallId, new ToolId(request.ToolName),
+            request.ProviderCallId, request.ArgumentsJson)));
     }
 }

@@ -131,8 +131,20 @@ public sealed class ConfigLoader
             }
 
             CheckKeys(root, "settings.yaml", "$", ["ui", "budget", "sidebar", "widgets", "locked", "defaultModel", "gates",
-                    "commandAliases", "toolPreferences"],
+                    "commandAliases", "toolPreferences", "conversation"],
                 diagnostics);
+            if (root.Children.TryGetValue(new YamlScalarNode("conversation"), out var conversationNode))
+            {
+                if (conversationNode is not YamlMappingNode conversation)
+                    AddAtNode(diagnostics, "settings.yaml", "conversation", "config.wrongType", conversationNode);
+                else
+                {
+                    CheckKeys(conversation, "settings.yaml", "conversation", ["autoCompact"], diagnostics);
+                    if (conversation.Children.TryGetValue(new YamlScalarNode("autoCompact"), out var autoCompact)
+                        && autoCompact is not YamlScalarNode { Value: "true" or "false", Style: ScalarStyle.Plain })
+                        AddAtNode(diagnostics, "settings.yaml", "conversation.autoCompact", "config.wrongType", autoCompact);
+                }
+            }
             if (root.Children.TryGetValue(new YamlScalarNode("ui"), out var uiNode))
             {
                 if (uiNode is not YamlMappingNode ui)

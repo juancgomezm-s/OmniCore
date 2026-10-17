@@ -55,7 +55,7 @@ public sealed class BlobProbe
 
 /// <summary>
 /// Artifact Store content-addressed en filesystem (ADR-0001 §5, ADR-0041 §3). Blobs en
-/// blobs/sha256/&lt;2&gt;/&lt;2&gt;/&lt;hash&gt;. El texto se redacta antes de hashear y escribir;
+/// blobs/sha256/&lt;2&gt;/&lt;2&gt;/&lt;hash&gt;. El texto de diagnóstico se redacta antes de hashear y escribir;
 /// la publicación usa temporal → flush → rename atómico y las refs registran si hubo redacción.
 /// <para>
 /// Lectura (GetText/Verify): el <c>ContentHash</c> se valida ANTES de construir cualquier
@@ -183,10 +183,12 @@ public sealed class FileArtifactStore : IArtifactStore, IBinaryArtifactStore, IA
 
     public IPreparedArtifact PrepareText(string content, string mediaType, ArtifactKind kind, Sensitivity sensitivity)
     {
-        // Redacción obligatoria del contenido antes de persistir (ADR-0018 §4): ningún blob
-        // del store lleva secretos en claro.
-        var safe = new RedactionPolicy().Redact(content);
-        if (_redactor is not null) safe = _redactor.Redact(safe);
+        // These are private canonical messages/context, not diagnostic exports. Preserve the
+        // exact text for display and replay; audit and diagnostic artifacts retain redaction.
+        var conversation = kind is ArtifactKind.ModelResponse or ArtifactKind.ContextSnapshot
+            or ArtifactKind.Transcript or ArtifactKind.ToolOutput or ArtifactKind.ProcessOutput;
+        var safe = conversation ? content : new RedactionPolicy().Redact(content);
+        if (!conversation && _redactor is not null) safe = _redactor.Redact(safe);
         var redacted = !string.Equals(safe, content, StringComparison.Ordinal);
         var bytes = Encoding.UTF8.GetBytes(safe);
         var hash = Sha256.Hex(bytes);

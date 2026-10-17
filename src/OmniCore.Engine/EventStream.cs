@@ -399,7 +399,12 @@ public sealed class EventStream
                 + " pero el codec registrado escribe v" + current);
         }
 
-        var json = RedactPayload(_codecs.CodecFor(type).Encode(payload));
+        var encoded = _codecs.CodecFor(type).Encode(payload);
+        // Canonical conversation data is the source for replay, not a diagnostic log.
+        // Redacting it changes what the model receives and invalidates exact tool receipts.
+        var json = payload is UserInputReceived or FollowUpQueued or TurnSteeringReceived
+            or ToolCallRequested or ToolCallSucceeded or InteractionRequested or InteractionResolved or RunCreated or TurnStarted
+            ? encoded : RedactPayload(encoded);
         var ids = EnvelopeIds.From(json);
         var scope = executionScope ?? ExecutionScope.Current;
         var runId = ids.RunId ?? scope?.RunId;

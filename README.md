@@ -554,7 +554,14 @@ cantidad de elementos sigue disponible como protección adicional del perfil:
 por defecto resume cada 24 elementos antiguos y conserva 12 recientes. Los
 elementos incluyen mensajes y resultados de herramientas, no sólo turnos completos.
 Si el contenido protegido no cabe, el turno se detiene con un desbordamiento
-explícito. El historial original permanece en el journal.
+explícito. Cada checkpoint automático muestra un aviso en la conversación, sin
+pedir confirmación. El resumen se guarda por separado: los mensajes y resultados
+originales permanecen intactos en el journal y sus artifacts, también al reabrir.
+Los mensajes recientes no se truncan ni se sustituyen para hacerlos caber.
+
+La compactación está activa de forma predeterminada. En el `settings.yaml` de
+usuario puede desactivarse con `conversation: { autoCompact: false }`; entonces
+sólo `/compactar` crea resúmenes y un desbordamiento detiene la solicitud.
 
 El contexto reúne instrucciones, estado vigente del trabajo, contribuciones
 habilitadas, historial reciente y checkpoints. Las trazas de razonamiento
@@ -563,10 +570,14 @@ opaca conserva las restricciones de ruta, modelo y proveedor que exija el
 adaptador. Los contadores de la interfaz corresponden a las solicitudes
 efectivamente enviadas; compactar no inventa una medición nueva.
 
-Los resultados de herramientas de más de 4096 caracteres se guardan íntegros,
-redactados, en un artifact recuperable con `artifact.read`. Su vista acotada
-incluye el inicio, líneas de errores o verificaciones y el final; las líneas
-repetidas no ocupan varias veces esa vista. Los resultados cortos se conservan.
+Los mensajes privados de usuario, las respuestas y los resultados autorizados
+de herramientas conservan su texto literal: no se sustituyen ejemplos de claves,
+correos u otros patrones por máscaras antes de guardarlos, mostrarlos o enviarlos.
+Los artifacts originales pueden consultarse con `artifact.read`, sujeto a los
+permisos de la sesión. Los resúmenes pueden abreviar trazas de herramientas como
+parte de la compactación anunciada, sin alterar sus originales. Los diagnósticos,
+la auditoría y los errores de autenticación conservan su redacción de secretos;
+las credenciales siguen almacenándose mediante sus proveedores de secretos.
 Los resúmenes periódicos incorporan el checkpoint anterior y las novedades,
 priorizando instrucciones, decisiones, cambios, fallos, pruebas y pendientes.
 El resumen se envía una vez, sin repetir sus secciones como otro bloque.

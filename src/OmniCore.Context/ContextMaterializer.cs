@@ -71,7 +71,7 @@ public sealed class ContextMaterializer
         {
             cancellationToken.ThrowIfCancellationRequested();
             var candidate = item;
-            if (candidate.Kind == ContextItemKind.ToolResult && _artifacts is not null
+            if (candidate.Kind == ContextItemKind.ToolResult && !candidate.PreserveWhenTrimming && _artifacts is not null
                 && candidate.Content.Length > _policy.ExternalizeAboveCharacters)
             {
                 var safeOutput = new RedactionPolicy().Redact(candidate.Content);
@@ -480,7 +480,7 @@ public sealed class ContextCheckpointContributor : IContextContributor
             "engine", ScopeLevel.Run, false, new[] { "checkpoint=" + checkpointId, "artifact=" + artifact.Hash });
         _item = new ContextItem("checkpoint-" + checkpointId, ContextItemKind.Summary,
             "Context checkpoint through event " + throughSequence + ":\n" + summary, 0,
-            ContextPriority.High, RetentionPolicy.KeepForever, provenance);
+            ContextPriority.High, RetentionPolicy.KeepForever, provenance, preserveWhenTrimming: true);
     }
 
     public Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request,

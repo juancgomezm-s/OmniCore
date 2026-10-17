@@ -68,7 +68,7 @@ public sealed class MetaModelService
             new ModelMessage[] { new(MessageRole.User, new ContentBlock[] { new TextBlock(
                 "Update a durable conversation summary from the previous checkpoint and new older history. Preserve the user's goals, constraints, decisions, corrections, pending work and uncertainty. Preserve tool evidence that affects the task: changed files, exact errors, failed attempts, commands, exit codes and test results. Merge repeated reads and progress chatter; do not repeat entire logs. Keep artifact references needed to recover details. Use labeled sections: Goals, Constraints, Decisions, Facts, Modified file, Failed attempt, Tests, Pending, Open question. Do not invent information or infer success from missing evidence.\n\n"
                 + safeInput) }) },
-            "You are a deterministic context summarization service. Preserve uncertainty and redact secrets.",
+            "You are a deterministic context summarization service. Preserve uncertainty and factual meaning.",
             Array.Empty<ToolDefinition>(), ToolChoice.None(), null, _selection.Reasoning, null, null);
         TokenUsage? usage = null;
         var fields = TokenUsageFields.None;
@@ -80,7 +80,7 @@ public sealed class MetaModelService
             ? _costEstimator?.Invoke(usage) : null;
         try
         {
-            await PublishArtifactAsync(safeInput, ArtifactKind.Other,
+            await PublishArtifactAsync(safeInput, ArtifactKind.ContextSnapshot,
                 input => new MetaModelInvocationStarted(invocationId, runId, operation,
                     modelFingerprint, input), cancellationToken).ConfigureAwait(false);
             began = true;

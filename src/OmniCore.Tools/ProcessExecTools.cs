@@ -268,9 +268,6 @@ internal static class ProcessToolJson
             var combined = stdout.Length == 0 ? stderr : stderr.Length == 0 ? stdout : stdout + "\n" + stderr;
             var truncated = combined.Length > 16_384;
             if (truncated) combined = combined[..16_384] + "\n[output capped]";
-            combined = new RedactionPolicy().Redact(combined);
-            var redactor = SecretRedactorRegistry.Current;
-            if (redactor is not null) combined = redactor.Redact(combined);
             var originalSize = stdout.Length + stderr.Length;
             if (output.TimedOut)
                 return new ToolResult("Proceso agotó timeout o fue cancelado. " + combined, combined, null,

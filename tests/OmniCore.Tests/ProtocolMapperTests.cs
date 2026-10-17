@@ -36,6 +36,27 @@ public sealed class ProtocolMapperTests
         return state;
     }
 
+    [Theory]
+    [InlineData("es", "Contexto compactado automáticamente; mensajes originales conservados.")]
+    [InlineData("en", "Context automatically compacted; original messages preserved.")]
+    [InlineData("fr", "Contexte condensé automatiquement ; messages originaux conservés.")]
+    [InlineData("it", "Contesto compattato automaticamente; messaggi originali conservati.")]
+    public void Automatic_checkpoint_is_a_localized_nonmodal_notice_once_per_event(string locale, string expected)
+    {
+        var (store, session, run, stream) = Journal();
+        var artifact = new ArtifactRef(ArtifactId.New(), ContentHash.Sha256(new string('a', 64)), 10, "application/json", ArtifactKind.ContextSnapshot, Sensitivity.Sensitive, false);
+        stream.Append(new ContextCheckpointRecorded("auto", run.RunId, store.CurrentSequence(session), artifact, "deterministic-v1"));
+        var wire = Assert.Single(new ProtocolMapper(Codecs).Map(store.ReadFrom(session, 1)),
+            envelope => JsonObj.Parse(envelope.PayloadJson)["type"] == "context.checkpoint_recorded");
+        var projection = new ClientProjection(new Localization(locale));
+        var state = projection.Apply(ClientState.Empty(), wire);
+        Assert.Equal(expected, Assert.Single(state.Conversation.Blocks).Text);
+        Assert.Empty(state.Overlays);
+        Assert.Single(projection.Apply(state, wire).Conversation.Blocks);
+        var child = WireEnvelope.Event("child", wire.PayloadJson[..^1] + "," + JsonObj.Field("conversationScope", "child") + "}");
+        Assert.Empty(projection.Apply(ClientState.Empty(), child).Conversation.Blocks);
+    }
+
     [Fact]
     public void Mapped_events_carry_type_sequence_session_and_run_but_not_engine_internals()
     {
@@ -211,14 +232,15 @@ public sealed class ProtocolMapperTests
     }
 
     [Fact]
-    public void Secrets_in_user_text_are_redacted_before_reaching_the_wire()
+    public void Private_user_text_reaches_the_wire_without_pattern_substitution()
     {
         var (store, session, run, stream) = Journal();
         stream.Append(new UserInputReceived(run.RunId, "[\"mi clave es sk-ant-api03-abcdefghijklmnop\"]", null));
 
         var wire = new ProtocolMapper(Codecs).Map(store.ReadFrom(session, 1));
 
-        Assert.DoesNotContain(wire, w => w.PayloadJson.Contains("sk-ant-api03-abcdefghijklmnop", StringComparison.Ordinal));
+        var input = Assert.Single(wire, w => JsonObj.Parse(w.PayloadJson)["type"] == "user_input.received");
+        Assert.Equal("mi clave es sk-ant-api03-abcdefghijklmnop", JsonObj.Parse(input.PayloadJson)["text"]);
     }
 
     [Fact]

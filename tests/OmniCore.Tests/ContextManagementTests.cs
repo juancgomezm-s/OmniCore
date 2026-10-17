@@ -192,6 +192,31 @@ public sealed class ContextManagementTests
     }
 
     [Fact]
+    public async System.Threading.Tasks.Task Private_summary_input_and_output_are_saved_without_substitutions()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-private-summary-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            const string source = "Decision: literal Bearer fixture-summary-token-123456\r\nEspañol  ";
+            const string reply = "Decision: retain Bearer fixture-summary-token-123456";
+            var artifacts = new FileArtifactStore(root);
+            var events = new RecordingContextEventSink();
+            var provider = new ScriptedSummaryProvider(reply);
+            var selection = new ModelSelection(new ModelIdValue("fixture"), 4096, ToolMode.Direct, null);
+            var service = new MetaModelService(provider, artifacts, events, selection);
+            Assert.Equal(reply, await service.SummarizeAsync(RunId.New(), "CompressContext", source, 1000,
+                TestContext.Current.CancellationToken));
+            Assert.EndsWith(source, Assert.IsType<TextBlock>(Assert.Single(provider.LastRequest!.Messages[0].Content)).Text);
+            var started = Assert.IsType<MetaModelInvocationStarted>(events.Payloads[0]);
+            var completed = Assert.IsType<MetaModelInvocationCompleted>(events.Payloads[1]);
+            Assert.Equal(source, artifacts.GetText(started.InputArtifact.Hash));
+            Assert.Equal(ArtifactKind.ContextSnapshot, started.InputArtifact.Kind);
+            Assert.Equal(reply, artifacts.GetText(completed.OutputArtifact.Hash));
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Meta_model_uses_provider_records_typed_events_and_redacts_summary_artifacts()
     {
         var root = Path.Combine(Path.GetTempPath(), "omnicore-meta-" + Guid.NewGuid().ToString("N"));

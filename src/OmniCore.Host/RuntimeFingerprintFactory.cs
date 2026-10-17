@@ -349,6 +349,7 @@ internal static class RuntimeFingerprintFactory
         writer.WriteNumber("compactAfterItems", policy.CompactAfterItems);
         writer.WriteNumber("autoCompactAtPercent", OmniCore.Context.ContextCompaction.AutoCompactAtPercent);
         writer.WriteNumber("maxCheckpointCharacters", policy.MaxCheckpointCharacters);
+        writer.WriteBoolean("automaticCompaction", policy.AutomaticCompaction);
     }
 
     private static FingerprintComponent Component(string name, Action<Utf8JsonWriter> write, string version = "1",

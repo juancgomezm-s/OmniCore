@@ -26,7 +26,7 @@ public sealed class FileArtifactStoreTests
             const string secret = "fixture-prepared-secret-123456";
             redactor.RegisterSecret(secret);
             var store = new FileArtifactStore(data, redactor);
-            var prepared = store.PrepareText("hola " + secret, "text/plain", ArtifactKind.ToolOutput,
+            var prepared = store.PrepareText("hola " + secret, "text/plain", ArtifactKind.Other,
                 Sensitivity.Sensitive);
             var reference = prepared.Reference;
             Assert.True(reference.Redacted);

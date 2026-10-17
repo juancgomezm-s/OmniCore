@@ -34,7 +34,7 @@ public sealed class MetaArtifactPublicationFailureTests
         Assert.Empty(fixture.Payloads().OfType<MetaModelInvocationNotDispatched>());
         Assert.Empty(fixture.Payloads().OfType<MetaModelInvocationCompleted>());
         Assert.Empty(fixture.Payloads().OfType<MetaModelInvocationFailed>());
-        var input = Assert.Single(fixture.Sink.Published, p => p.Kind == ArtifactKind.Other);
+        var input = Assert.Single(fixture.Sink.Published, p => p.Kind == ArtifactKind.ContextSnapshot);
         Assert.True(fixture.Artifacts.Verify(input.Hash, input.Size)); // unreferenced until GC
 
         fixture.CloseJournal();

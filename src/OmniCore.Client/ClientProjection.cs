@@ -291,7 +291,7 @@ public sealed class ClientProjection
         if (Get(f, "conversationScope") is "child" or "ambiguous"
             && type is "user_input.received" or "assistant_message.recorded" or "toolcall.requested"
                 or "toolcall.succeeded" or "toolcall.failed" or "toolcall.rejected"
-                or "toolcall.permission_denied" or "toolcall.cancelled" or "model_step.started")
+                or "toolcall.permission_denied" or "toolcall.cancelled" or "model_step.started" or "context.checkpoint_recorded")
             return state;
         switch (type)
         {
@@ -314,6 +314,10 @@ public sealed class ClientProjection
                 var applied = kind.Length == 0 ? null : kind + (budget.Length == 0 ? "" : ":" + budget);
                 return WithStatus(state, null, null, appliedReasoning: applied, replaceAppliedReasoning: true);
             }
+            case "context.checkpoint_recorded":
+                if (Get(f, "automatic") != "true" || state.Conversation.Blocks.Any(block => block.Id == evt.MessageId))
+                    return state;
+                return Append(state, Block(evt, ConversationRole.System, _text.Resolve("shell.conversation.auto_compacted")));
             case "run.awaiting_input":
                 return Append(state, Block(evt, ConversationRole.System, _text.Resolve("run.awaiting_input", null, null)));
             case "run.completed":
