@@ -56,10 +56,9 @@ public sealed partial class TuiApp
             if (row is null) { ShowMessage(_localization.Resolve("conversation.failed")); return; }
             if (_client is not ITrustedUserActionClient trusted)
             { ShowMessage(_localization.Resolve("conversation.trusted_required")); return; }
-            var payload = "{\"cmd\":\"conversation.rename\",\"sessionId\":"
-                + System.Text.Json.JsonSerializer.Serialize(row.Id) + ",\"title\":"
-                + System.Text.Json.JsonSerializer.Serialize(title) + ",\"expectedSequence\":"
-                + row.JournalSequence.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}";
+            var payload = "{" + JsonObj.Field("cmd", "conversation.rename") + ","
+                + JsonObj.Field("sessionId", row.Id) + "," + JsonObj.Field("title", title) + ","
+                + JsonObj.FieldRaw("expectedSequence", row.JournalSequence.ToString(System.Globalization.CultureInfo.InvariantCulture)) + "}";
             var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
             if (ack.Status != "ok") { ShowMessage(_localization.ResolveWire(ack.Error ?? "conversation.failed")); return; }
             _turnStatus = _localization.Resolve("shell.conversation.renamed");
