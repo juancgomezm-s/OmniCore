@@ -26,12 +26,15 @@ internal sealed class ConfiguredCompletionGates
     private readonly bool _interactive;
     private readonly WeakSandboxConsentState _weakSandboxConsent;
     private readonly AgentProfile? _laneProfile;
+    private readonly ModelCapabilityBoundary? _boundary;
+    private readonly Func<IDisposable>? _acquireSessionSecurityAdmission;
 
     public ConfiguredCompletionGates(WorkspaceGatesYaml configuration, string workspaceRoot,
         RunId runId, LaneId laneId, TaskId? taskId,
         IReadOnlyDictionary<string, string>? restrictions, IAuditSink audit, IArtifactStore artifacts,
         Func<InteractionRequested, string?>? interactionResponder, bool interactive,
-        AgentProfile? laneProfile = null)
+        AgentProfile? laneProfile = null, ModelCapabilityBoundary? boundary = null,
+        Func<IDisposable>? acquireSessionSecurityAdmission = null)
     {
         _configuration = configuration;
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
@@ -44,6 +47,8 @@ internal sealed class ConfiguredCompletionGates
         _interactionResponder = interactionResponder;
         _interactive = interactive;
         _laneProfile = laneProfile;
+        _boundary = boundary;
+        _acquireSessionSecurityAdmission = acquireSessionSecurityAdmission;
         _weakSandboxConsent = OmniHost.GetWeakSandboxConsentState(runId);
     }
 
@@ -93,8 +98,11 @@ internal sealed class ConfiguredCompletionGates
         IPermissionPolicy policy = OmniHost.CreateGrantAwarePolicy(RunMode.Act, _restrictions, _workspaceRoot, _runId, _audit);
         if (_laneProfile is not null)
             policy = new AgentProfilePermissionPolicy(policy, _laneProfile, new PathBoundaryValidator(), _workspaceRoot);
-        var executor = new ScriptedToolExecutor(catalog, policy, _workspaceRoot, boundary: null,
-            _audit, _interactionResponder, _interactive, _weakSandboxConsent);
+        var validationBoundary = _boundary?.ForTrustedValidationProcess();
+        var executor = new ScriptedToolExecutor(catalog, policy, _workspaceRoot, validationBoundary,
+            _audit, _interactionResponder, _interactive, _weakSandboxConsent,
+            artifacts: _artifacts, workspaceWriteLeases: HostWorkspaceWriteLeases.Shared,
+            acquireSessionSecurityAdmission: _acquireSessionSecurityAdmission);
         var outcome = executor.ExecuteTool(new ValidatedToolCall(callId, new ToolId("process.exec"),
             "completion-gate:" + key + ":" + callId, argsJson), false, cancellationToken, stream);
         if (outcome.Events.Count > 0)

@@ -2337,7 +2337,8 @@ public sealed class OmniCliRuntime : IDisposable
                                     server.AcquireCodecs(), journal);
                                 var gateRunner = new ConfiguredCompletionGates(selectedGateConfig, workspaceRoot,
                                     runId, laneId, projection.RootTask, restrictions, audit, artifacts,
-                                    interactionResponder, interactive);
+                                    interactionResponder, interactive, boundary: boundary,
+                                    acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission);
                                 outcomes.AddRange(gateRunner.Run(new EventStream(server.AcquireStore(),
                                     server.AcquireCodecs(), sessionId), token, selectedCore));
                             }
@@ -2408,7 +2409,10 @@ public sealed class OmniCliRuntime : IDisposable
                                 Test = externalGates.Test,
                                 Acceptance = false,
                             }, laneRoot, work.Run, work.Delegation.ChildLaneId, work.Scope.TaskId,
-                                restrictions, audit, artifacts, interactionResponder, interactive, work.Profile)
+                                restrictions, audit, artifacts, interactionResponder, interactive, work.Profile,
+                                boundary: CreateBoundary(effectivePolicy, laneRoot,
+                                    sessionSecurityPolicy: () => server.ReadSessionSecurityPolicy(work.Session)),
+                                acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission)
                                 .Run(new EventStream(server.AcquireStore(), server.AcquireCodecs(), work.Session), token);
                             if (gateResults.Any(gate => !gate.Passed))
                                 return new ExplorerTurn.TurnResult("Lane completion gate failed.", StopReason.Error,
@@ -2450,9 +2454,11 @@ public sealed class OmniCliRuntime : IDisposable
                     var childExecutor = childRequiresActTools
                         ? OmniHost.CreateActExecutor(childTools.Catalog(), laneRoot, childBoundary,
                             restrictions, work.Run, audit, interactionResponder, interactive, artifacts,
-                            work.Profile, receiveMailbox)
+                            work.Profile, receiveMailbox,
+                            acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission)
                         : OmniHost.CreateExplorerExecutor(childTools.Catalog(), laneRoot, childBoundary,
-                            restrictions, work.Run, work.Profile, receiveMailbox, artifacts: artifacts);
+                            restrictions, work.Run, work.Profile, receiveMailbox, artifacts: artifacts,
+                            acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission);
                     var childMaterializer = new ContextMaterializer(tokenCounter,
                         [new WorkingStateContributor(childWorkingState)]);
                     var childTurn = BuildTurn(productReasoning, reasoningResolution, childExecutor,
@@ -2482,7 +2488,8 @@ public sealed class OmniCliRuntime : IDisposable
                             ExecutionId: work.Scope.ExecutionId));
                         var gateResults = new ConfiguredCompletionGates(gateConfiguration, laneRoot, work.Run,
                             work.Delegation.ChildLaneId, work.Scope.TaskId, restrictions, audit, artifacts,
-                            interactionResponder, interactive, work.Profile)
+                            interactionResponder, interactive, work.Profile, boundary: childBoundary,
+                            acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission)
                             .Run(new EventStream(server.AcquireStore(), server.AcquireCodecs(), work.Session), token);
                         if (gateResults.Any(gate => !gate.Passed))
                             return new ExplorerTurn.TurnResult("Lane completion gate failed.", StopReason.Error,
@@ -2583,7 +2590,8 @@ public sealed class OmniCliRuntime : IDisposable
                                     () => server.ReadSessionSecurityPolicy(sessionId));
                                 var rootExecutor = OmniHost.CreateActExecutor(rootTools.Catalog(), workspaceRoot,
                                     rootBoundary, restrictions, runId, audit, interactionResponder, interactive,
-                                    artifacts, rootProfile, additionalBoundaries: extensionBoundaries);
+                                    artifacts, rootProfile, additionalBoundaries: extensionBoundaries,
+                                    acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission);
                                 var rootTurn = BuildTurn(productReasoning, reasoningResolution, rootExecutor,
                                     rootTools.Catalog(), rootBoundary, materializer);
                                 var rootInstruction = TurnInstruction(effectiveMode, conversationOnly);
@@ -3378,7 +3386,8 @@ public sealed class OmniCliRuntime : IDisposable
                             var runner = new ConfiguredCompletionGates(gateConfiguration,
                                 _workspaceRoot ?? Directory.GetCurrentDirectory(), runId,
                                 laneId, run.RootTask, restrictions, audit, artifacts,
-                                interactionResponder, interactive);
+                                interactionResponder, interactive, boundary: activeTurn.CapabilityBoundary,
+                                acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission);
                             selectedResults.AddRange(runner.Run(stream, cancellationToken, selectedCore));
                         }
                         if (activeSkillValidators?.HasValidators == true)
@@ -3447,7 +3456,8 @@ public sealed class OmniCliRuntime : IDisposable
                         var runner = new ConfiguredCompletionGates(gateConfiguration,
                             _workspaceRoot ?? Directory.GetCurrentDirectory(), runId,
                             laneId, run.RootTask, restrictions, audit, artifacts,
-                            interactionResponder, interactive);
+                            interactionResponder, interactive, boundary: activeTurn.CapabilityBoundary,
+                            acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission);
                         results.AddRange(runner.Run(stream, cancellationToken,
                             excludedValidatorIds: beforeValidationIds));
                     }

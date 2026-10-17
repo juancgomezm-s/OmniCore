@@ -74,6 +74,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     private bool _worktreeStartupRecoveryAttempted;
     private bool _writerOwnershipUnavailable;
+    private bool _sessionSecurityRecoveryBlocked;
+    private bool _writerLeaseRecoveryBlocked;
 
     private readonly string? _stateFile;
 
@@ -344,13 +346,43 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             var before = ReadSessionPointer();
             if (before is { } pointer && pointer.Session is { } target)
             {
-                try { store.AcquireSessionWriterLease(target); }
-                catch (SessionWriterLeaseUnavailableException) { return false; }
-                var after = ReadSessionPointer();
-                if (after != before) continue;
-                _lastSessionId = target;
-                _lastRunId = pointer.Run;
-                _lastSnapshot = pointer.Run is { } run ? MaterializeFromJournal(target, run) : null;
+                var acquiredTargetLease = false;
+                var targetPublished = false;
+                try
+                {
+                    acquiredTargetLease = store.AcquireSessionWriterLease(target);
+                    if (ReadSessionPointer() != before) continue;
+                    lock (_modeAuthorityMutationGate)
+                    {
+                        // A recovered Session becomes writable only after its durable ceiling is
+                        // present. Keep this migration on lease recovery, never on a read query.
+                        if (ReadSessionPointer() != before) continue;
+                        EnsureSessionSecurityPolicy(target);
+                        _lastSessionId = target;
+                        _lastRunId = pointer.Run;
+                        _lastSnapshot = pointer.Run is { } run ? MaterializeFromJournal(target, run) : null;
+                        targetPublished = true;
+                    }
+                }
+                catch (SessionWriterLeaseUnavailableException)
+                {
+                    _writerOwnershipUnavailable = true;
+                    _writerLeaseRecoveryBlocked = true;
+                    _recoveryProblem = "session writer ownership is unavailable";
+                    return false;
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                    or InvalidOperationException or ArgumentException or InvalidDataException)
+                {
+                    _writerOwnershipUnavailable = true;
+                    _sessionSecurityRecoveryBlocked = true;
+                    _recoveryProblem = "session security initialization is blocked: " + exception.GetType().Name;
+                    return false;
+                }
+                finally
+                {
+                    if (acquiredTargetLease && !targetPublished) store.ReleaseSessionWriterLease(target);
+                }
             }
             else if (_stateFile is not null)
             {
@@ -361,11 +393,45 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             }
             else if (_lastSessionId is { } existing)
             {
-                try { store.AcquireSessionWriterLease(existing); }
-                catch (SessionWriterLeaseUnavailableException) { return false; }
-                _lastSnapshot = _lastRunId is { } run ? MaterializeFromJournal(existing, run) : null;
+                var acquiredExistingLease = false;
+                var existingPublished = false;
+                try
+                {
+                    acquiredExistingLease = store.AcquireSessionWriterLease(existing);
+                    lock (_modeAuthorityMutationGate)
+                    {
+                        EnsureSessionSecurityPolicy(existing);
+                        _lastSnapshot = _lastRunId is { } run ? MaterializeFromJournal(existing, run) : null;
+                        existingPublished = true;
+                    }
+                }
+                catch (SessionWriterLeaseUnavailableException)
+                {
+                    _writerOwnershipUnavailable = true;
+                    _writerLeaseRecoveryBlocked = true;
+                    _recoveryProblem = "session writer ownership is unavailable";
+                    return false;
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+                    or InvalidOperationException or ArgumentException or InvalidDataException)
+                {
+                    _writerOwnershipUnavailable = true;
+                    _sessionSecurityRecoveryBlocked = true;
+                    _recoveryProblem = "session security initialization is blocked: " + exception.GetType().Name;
+                    return false;
+                }
+                finally
+                {
+                    if (acquiredExistingLease && !existingPublished) store.ReleaseSessionWriterLease(existing);
+                }
             }
             _writerOwnershipUnavailable = false;
+            if (_sessionSecurityRecoveryBlocked || _writerLeaseRecoveryBlocked)
+            {
+                _recoveryProblem = null;
+                _sessionSecurityRecoveryBlocked = false;
+                _writerLeaseRecoveryBlocked = false;
+            }
             return true;
         }
         return false;
@@ -708,6 +774,18 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
         var requestedConversationCommand = fields.TryGetValue("cmd", out var requestedName)
             && requestedName is "conversation.new" or "conversation.resume";
+        // Reject a plainly stale native input before lease recovery can perform the separate,
+        // conservative legacy-policy migration for the active Session.
+        if (!requestedConversationCommand && fields.GetValueOrDefault("cmd") == "session.input"
+            && fields.TryGetValue("expectedPolicyRevision", out var expectedPolicyRaw)
+            && long.TryParse(expectedPolicyRaw, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var expectedPolicyRevision)
+            && expectedPolicyRevision > 0
+            && (ReadSessionPointer()?.Session ?? _lastSessionId) is { } scopedSession
+            && ReadSessionSecurityPolicy(scopedSession) is { } currentPolicy
+            && currentPolicy.PolicyRevision != expectedPolicyRevision)
+            return new CommandAck(command.MessageId, "error", "session_security.stale_revision",
+                RuntimeCommandOutcome.Rejected());
         if (!requestedConversationCommand && !EnsureWriterOwnershipForCommand())
             return new CommandAck(command.MessageId, "busy", "session_writer_owned",
                 RuntimeCommandOutcome.Deferred("session_writer_owned"));
@@ -1986,12 +2064,15 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             // journal initialization is all-or-nothing; no incomplete Run becomes selectable.
             var durableIdentity = WorkspaceRootIdentity.Establish(workspacePath);
             var hookPaths = _platformPathsFactory();
-            var securityDefault = new SessionSecurityDefaultConfiguration(hookPaths).Read();
             var lifecycleHooks = ProjectExtensionHooks.Load(physicalWorkspaceRoot, hookPaths,
                 new WorkspaceTrustStore(hookPaths).IsTrusted(physicalWorkspaceRoot),
                 _lifecycleRpcInvokerFactory());
             var sessionStartingApplications = DispatchCreationHooks(lifecycleHooks,
                 LifecyclePoint.SessionStarting, "session.created", runId, taskId, laneId);
+            var securityDefaults = new SessionSecurityDefaultConfiguration(hookPaths);
+            using (securityDefaults.AcquireAdmissionLease())
+            {
+            var securityDefault = securityDefaults.Read();
             var creationEvents = new List<DomainEventPayload>
             {
                 new SessionCreated(sessionId,
@@ -2025,6 +2106,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 new PlanCreated(planId, runId, PlanItemId.New(), objective),
             });
             stream.AppendBatch(creationEvents, DurabilityClass.Barrier);
+            }
             AppendLifecycleApplications(stream, sessionStartingApplications,
                 new ExecutionScopeState(runId, taskId, laneId));
             foreach (var (point, eventType, pointTask, pointLane) in new[]
@@ -3595,15 +3677,41 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                     outcomeSession = _lastSessionId;
                     outcomeSequenceBefore = outcomeSession is null ? 0 : _store.CurrentSequence(outcomeSession);
                     var session = outcomeSession ?? SessionId.New();
-                    if (outcomeSession is null)
-                    {
-                        outcomeSession = session; // keep the attempted identity even if initialization fails
-                        StartSession(session);
-                    }
                     bool startsRun;
                     lock (_modeAuthorityMutationGate)
                     {
+                        var hasNativeSecurityRevisions = fields.ContainsKey("expectedPolicyRevision")
+                            || fields.ContainsKey("expectedDefaultRevision");
+                        if (hasNativeSecurityRevisions
+                            && (!trustedUserAction || !fields.ContainsKey("expectedPolicyRevision")
+                                || !fields.ContainsKey("expectedDefaultRevision")))
+                            throw new FormatException("session_security.expected_revision_required");
+                        var expectedPolicyRaw = fields.GetValueOrDefault("expectedPolicyRevision");
+                        var expectedDefaultRaw = fields.GetValueOrDefault("expectedDefaultRevision");
+                        var expectedPolicyRevision = expectedPolicyRaw is not (null or "null")
+                            && long.TryParse(expectedPolicyRaw, System.Globalization.NumberStyles.None,
+                                System.Globalization.CultureInfo.InvariantCulture, out var parsedPolicyRevision)
+                                ? parsedPolicyRevision : (long?)null;
+                        var expectedDefaultRevision = expectedDefaultRaw is not (null or "null")
+                            ? expectedDefaultRaw : null;
+                        if (hasNativeSecurityRevisions && (expectedPolicyRaw is not (null or "null")
+                                && expectedPolicyRevision is null
+                            || expectedDefaultRevision is not null && (expectedDefaultRevision.Length != 64
+                                || !expectedDefaultRevision.All(Uri.IsHexDigit))))
+                            throw new FormatException("session_security.invalid_expected_revision");
+                        if (outcomeSession is null)
+                        {
+                            if (expectedPolicyRevision is not null)
+                                throw new FormatException("session_security.session_scope_changed");
+                            outcomeSession = session; // keep the attempted identity even if initialization fails
+                            StartSession(session, expectedDefaultRevision: expectedDefaultRevision);
+                        }
+                        else if (expectedDefaultRevision is not null)
+                            throw new FormatException("session_security.session_scope_changed");
                         EnsureSessionSecurityPolicy(session);
+                        if (expectedPolicyRevision is { } expected
+                            && ReadSessionSecurityPolicy(session)?.PolicyRevision != expected)
+                            throw new SessionSecurityRevisionConflictException();
                         var mode = ReadModePreference().Mode;
                         if (trustedUserAction && fields.TryGetValue("mode", out var requestedMode))
                         {
@@ -3711,7 +3819,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         }
         catch (Exception ex) when (ex is RunAlreadyActiveException or RunNotActiveException
             or InteractionNotPendingException or InvalidInteractionOptionException or InvalidStateTransitionException
-            or FormatException or ArgumentException)
+            or FormatException or ArgumentException or SessionSecurityRevisionConflictException)
         {
             if (explicitOutcome)
             {
@@ -4345,7 +4453,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             : _lastRunId ?? throw new FormatException("falta runId y no hay un Run en curso");
 
     /// <summary>Crea una sesión nueva en el journal (primer input sin sesión previa).</summary>
-    private void StartSession(SessionId session, bool deferRouting = false)
+    private void StartSession(SessionId session, bool deferRouting = false, string? expectedDefaultRevision = null)
     {
         // Hosts that explicitly configure a workspace root establish it durably with the
         // session. This gives delegated work and crash recovery the same verified authority
@@ -4355,27 +4463,37 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             ? Path.GetFullPath(configured)
             : Path.GetFullPath(".");
         var paths = _platformPathsFactory();
-        var securityDefault = new SessionSecurityDefaultConfiguration(paths).Read();
         var hooks = ProjectExtensionHooks.Load(workspace, paths,
             new WorkspaceTrustStore(paths).IsTrusted(workspace), _lifecycleRpcInvokerFactory());
         var startingApplications = DispatchCreationHooks(hooks, LifecyclePoint.SessionStarting,
             "session.created", null);
-        var creation = new List<DomainEventPayload>
-        {
-            new SessionCreated(session, WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(workspace)).ToString(),
-                workspace, ProfileId.New(), DateTimeOffset.UtcNow),
-            SessionSecurityPolicySet.FromPreset(session, 1, securityDefault.Category,
-                SessionSecurityProvenance.Native, SessionSecurityPolicySource.UserDefault, DateTimeOffset.UtcNow),
-        };
-        if (!deferRouting) creation.Add(new SessionRoutingPolicySet(session, _newSessionRoutingPolicy));
-        if (_workspaceRoot is { Length: > 0 })
-        {
-            var physicalRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspace);
-            creation.Add(new WorkspaceRootEstablished(session, physicalRoot, DateTimeOffset.UtcNow,
-                WorkspaceRootIdentity.Establish(physicalRoot)));
-        }
+        var defaults = new SessionSecurityDefaultConfiguration(paths);
         var stream = new EventStream(_store, _codecs, session);
-        stream.AppendBatch(creation, DurabilityClass.Barrier);
+        using (defaults.AcquireAdmissionLease())
+        {
+            // The snapshot used in the journal is exactly the one compared with the caller.
+            // The config lease prevents another Host's default.set from racing this commit.
+            var securityDefault = defaults.Read();
+            if (expectedDefaultRevision is not null
+                && (securityDefault.Revision == "unavailable"
+                    || !string.Equals(securityDefault.Revision, expectedDefaultRevision, StringComparison.Ordinal)))
+                throw new SessionSecurityRevisionConflictException();
+            var creation = new List<DomainEventPayload>
+            {
+                new SessionCreated(session, WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(workspace)).ToString(),
+                    workspace, ProfileId.New(), DateTimeOffset.UtcNow),
+                SessionSecurityPolicySet.FromPreset(session, 1, securityDefault.Category,
+                    SessionSecurityProvenance.Native, SessionSecurityPolicySource.UserDefault, DateTimeOffset.UtcNow),
+            };
+            if (!deferRouting) creation.Add(new SessionRoutingPolicySet(session, _newSessionRoutingPolicy));
+            if (_workspaceRoot is { Length: > 0 })
+            {
+                var physicalRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspace);
+                creation.Add(new WorkspaceRootEstablished(session, physicalRoot, DateTimeOffset.UtcNow,
+                    WorkspaceRootIdentity.Establish(physicalRoot)));
+            }
+            stream.AppendBatch(creation, DurabilityClass.Barrier);
+        }
         AppendLifecycleApplications(stream, startingApplications);
         AppendLifecycleApplications(stream, DispatchCreationHooks(hooks, LifecyclePoint.SessionStarted,
             "session.started", null));

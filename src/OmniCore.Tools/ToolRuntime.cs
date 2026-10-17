@@ -370,7 +370,8 @@ public sealed class ToolRuntime
             {
                 var approved = _policy.AuthorizeApproved(intent, approvedGrant);
                 _emit(new ToolCallAuthorized(validated.ToolCallId));
-                return Execute(validated, approved, intent, tool, execContext, cancellationToken);
+                return Execute(validated, approved, intent, tool, execContext, cancellationToken,
+                    boundaryAskApproved: boundaryAsk);
             }
             catch (OmniCore.Domain.PermissionDeniedException ex)
             {
@@ -384,7 +385,8 @@ public sealed class ToolRuntime
         {
             var authorized = _policy.Authorize(intent);
             _emit(new ToolCallAuthorized(validated.ToolCallId));
-            return Execute(validated, authorized, intent, tool, execContext, cancellationToken);
+            return Execute(validated, authorized, intent, tool, execContext, cancellationToken,
+                boundaryAskApproved: boundaryAsk);
         }
         catch (OmniCore.Domain.PermissionDeniedException ex)
         {
@@ -394,7 +396,7 @@ public sealed class ToolRuntime
     }
 
     private Outcome Execute(ValidatedToolCall call, AuthorizedToolIntent authorized, ToolIntent intent, ITool tool,
-        ToolExecutionContext execContext, CancellationToken cancellationToken)
+        ToolExecutionContext execContext, CancellationToken cancellationToken, bool boundaryAskApproved)
     {
         // 4a. Frontera de capacidad otra vez antes de ejecutar (ADR-0044 §5): el intent ya está
         // autorizado; si el techo cambió o la primera evaluación se saltó, Authorized → Failed.
@@ -531,10 +533,12 @@ public sealed class ToolRuntime
             foreach (var activeBoundary in ActiveBoundaries())
             {
                 var boundaryDecision = activeBoundary.Evaluate(intent);
-                if (!boundaryDecision.Allowed)
+                if (!boundaryDecision.Allowed || (boundaryDecision.RequiresAsk && !boundaryAskApproved))
                 {
                     _emit(new ToolCallFailed(call.ToolCallId,
-                        "frontera de capacidad: " + boundaryDecision.Reason, EffectOutcome.None,
+                        boundaryDecision.RequiresAsk && !boundaryAskApproved
+                            ? "session_security.approval_required"
+                            : "frontera de capacidad: " + boundaryDecision.Reason, EffectOutcome.None,
                         ToolErrorCode.CapabilityRefused));
                     return new Outcome(false, boundaryDecision.Reason, null, ToolCallState.Failed,
                         EffectOutcome.None);

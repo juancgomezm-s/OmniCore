@@ -93,6 +93,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
     /// </summary>
     private readonly FileReadRegistry _readRegistry;
     private readonly Func<SessionSecurityPolicySet?>? _sessionSecurityPolicy;
+    private readonly bool _trustedValidationProcess;
 
     public ModelCapabilityBoundary(EffectiveModelPolicy policy)
         : this(policy, CoreTools)
@@ -113,12 +114,13 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
 
     public ModelCapabilityBoundary(EffectiveModelPolicy policy,
         IReadOnlyDictionary<string, ModelToolCapability> toolCapabilities, FileReadRegistry readRegistry,
-        Func<SessionSecurityPolicySet?>? sessionSecurityPolicy)
+        Func<SessionSecurityPolicySet?>? sessionSecurityPolicy, bool trustedValidationProcess = false)
     {
         _policy = policy;
         _toolCapabilities = toolCapabilities;
         _readRegistry = readRegistry;
         _sessionSecurityPolicy = sessionSecurityPolicy;
+        _trustedValidationProcess = trustedValidationProcess;
         // La contabilidad de mutaciones por Run (EPIC-021) viaja con el registro de lecturas:
         // ambos son el estado per-Run de la política del modelo.
         if (_sessionSecurityPolicy is null) _readRegistry.Ledger.Bind(policy.MutationPolicy);
@@ -127,6 +129,17 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
 
     /// <summary>Registro de lecturas efectivas de este Run (ADR-0044 §5).</summary>
     public FileReadRegistry ReadRegistry() => _readRegistry;
+
+    /// <summary>Marks a fixed Host-owned validator invocation. Its exact argv and permission
+    /// checks remain in the Host process tool; model policy does not grant or veto this user
+    /// configured gate, while the durable Session ceiling still bounds the effect.</summary>
+    public ModelCapabilityBoundary ForTrustedValidationProcess()
+    {
+        var toolCapabilities = _toolCapabilities.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        toolCapabilities["process.exec"] = ModelToolCapability.ValidationProcess;
+        return new ModelCapabilityBoundary(_policy, toolCapabilities, _readRegistry, _sessionSecurityPolicy,
+            trustedValidationProcess: true);
+    }
 
     /// <summary>
     /// Señala el inicio de un Turn en la contabilidad por Run (ADR-0044 §5): reinicia los
@@ -150,6 +163,13 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         var toolName = intent.ToolId.ToString();
         var sessionDecision = EvaluateSessionSecurityCeiling(intent, toolName);
         if (sessionDecision is { Allowed: false }) return sessionDecision;
+
+        // A configured completion gate is a User-owned, Host-bound argv. Do not let a model
+        // profile disable that existing control, but require the durable Session ceiling above.
+        if (_trustedValidationProcess && toolName == "process.exec"
+            && _toolCapabilities.TryGetValue(toolName, out var trustedCapability)
+            && trustedCapability == ModelToolCapability.ValidationProcess)
+            return sessionDecision is { RequiresAsk: true } ? sessionDecision : ModelCapabilityDecision.Allow();
 
         // 1. Tool inventada u oculta: sin clasificación no hay autorización posible.
         if (!_toolCapabilities.TryGetValue(toolName, out var capability))
@@ -304,7 +324,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             && string.Equals(intent.Claims.Writes.Single(), cwd,
                 OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
         if (intent.Claims.Writes.Count > 0 && !MutationAllowed(ceiling.FileMutationMode, capability)
-            && !boundedValidation)
+            && !(boundedValidation && ceiling.FileMutationMode is FileMutationMode.PatchAndCreate or FileMutationMode.Full))
             return ModelCapabilityDecision.Reject("file mutation is outside the current Session security ceiling", capability);
         if (capability is ModelToolCapability.DeleteFile or ModelToolCapability.MoveOrRename)
         {
@@ -352,7 +372,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         var maximumLines = mode == FileMutationMode.None ? 0
             : Math.Min(current.MaxChangedLinesPerTurn, ceiling.MaxChangedLinesPerTurn);
         static DestructiveActionPolicy Stricter(DestructiveActionPolicy first, DestructiveActionPolicy second) =>
-            Rank(first) <= Rank(second) ? first : second;
+            Rank(first) >= Rank(second) ? first : second;
         return new FileMutationPolicy(mode, Stricter(current.Delete, ceiling.DeletePolicy),
             Stricter(current.MoveOrRename, ceiling.MoveOrRenamePolicy), maximumFiles, maximumLines,
             Math.Min(current.MaxRewriteRatio, ceiling.MaxRewriteRatio),
@@ -387,6 +407,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         // responsibility of the registering Host tool; this does not grant filesystem tools or
         // arbitrary dynamic ids any mutation capability.
         if (capability != ModelToolCapability.ValidationProcess
+            || _policy.MutationPolicy.Mode != FileMutationMode.Full
             || intent.Effect != EffectClass.NonIdempotent || intent.Risk != ToolRisk.High
             || intent.Claims.Process is not { NetworkRequired: false, EffectClass: "External",
                 WorkingDirectory: { Length: > 0 } cwd }

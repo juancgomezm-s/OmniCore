@@ -21,6 +21,7 @@ public static class StdioProtocol
         "command.sim",
         "command.sim.resume",
         "command.session.input",
+        "conversation.admission.session-security.v1",
         "command.result.lookup",
         "query.state",
         "query.sessionIdentity",
@@ -139,8 +140,11 @@ public static class StdioProtocol
             + Q(capabilities.Contains("events.replay.page") ? "available" : "unsupported") + "}";
         var artifacts = "{\"id\":\"artifact.read.chunk\",\"capability\":\"artifact.read.chunk\",\"boundedBytes\":true,\"availability\":"
             + Q(capabilities.Contains("artifact.read.chunk") ? "available" : "unsupported") + "}";
+        var features = "[{\"id\":\"conversation.admission.session-security.v1\",\"availability\":"
+            + Q(capabilities.Contains("conversation.admission.session-security.v1") ? "available" : "unsupported") + "}]";
         return "{\"apiVersion\":1,\"protocolVersion\":\"1.0\",\"queries\":[" + queries
             + "],\"commands\":[" + commands + "],\"eventApis\":[" + streams + "],\"artifactApis\":[" + artifacts + "]"
+            + ",\"features\":" + features
             + ",\"excluded\":[{\"id\":\"diff.open\",\"availability\":\"not_exposed\",\"reason\":\"Path-parameterized artifact reads require a dedicated bounded contract.\"},"
             + "{\"id\":\"complete\",\"availability\":\"not_exposed\",\"reason\":\"Filesystem completion can read arbitrary paths and has no native scoped request DTO yet.\"},"
             + "{\"id\":\"humanActionScope\",\"availability\":\"trusted_connection_only\",\"capability\":\"query.humanActionScope\"}]}";
@@ -156,7 +160,7 @@ public static class StdioProtocol
         new("sim", "command.sim", "generic", "command.result.lookup", "Submit a deterministic simulation scenario"),
         new("sim.resume", "command.sim.resume", "generic", "command.result.lookup", "Resume a deterministic simulation"),
         new("session.input", "command.session.input", "generic", "command.result.lookup", "Persist literal user input without inference"),
-        new("conversation.start", "command.conversation.start.user", "native-confirmation+hmac+session-scope", "conversation.result.lookup", "Persist input and invoke the Core conversation pipeline"),
+        new("conversation.start", "command.conversation.start.user", "native-confirmation+hmac+session-scope+security-revision-v1", "conversation.result.lookup", "Persist input and invoke the Core conversation pipeline"),
         new("session.security.set", "command.session.security.set.user", "native-confirmation+hmac+session-revision", "command.result.lookup", "Set a revision-checked Session capability ceiling"),
         new("session.security.default.set", "command.session.security.default.set.user", "native-confirmation+hmac+user-revision", "", "Set the configured security ceiling for new Sessions"),
         new("run.interrupt", "command.run.interrupt.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Interrupt the active Run"),

@@ -273,6 +273,7 @@ public sealed class ExplorerTurn
     /// efectiva ya está intersectada con el harness por el resolver.
     /// </summary>
     private readonly ModelCapabilityBoundary? _boundary;
+    internal ModelCapabilityBoundary? CapabilityBoundary => _boundary;
 
     private readonly ModelPricing? _pricing;
 

@@ -35,6 +35,8 @@ internal sealed class SessionSecurityDefaultConfiguration(IPlatformPaths paths)
         }
     }
 
+    internal FileStream AcquireAdmissionLease() => ConfigurationWriteLease.Acquire(_file);
+
     internal SessionSecurityDefaultSnapshot Set(string expectedRevision, ModelPolicyCategory category,
         CancellationToken cancellationToken)
     {

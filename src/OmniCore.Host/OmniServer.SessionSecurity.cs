@@ -63,6 +63,19 @@ public sealed partial class OmniServer
         var current = ReadSessionSecurityPolicy(session);
         if (current is not null) return current;
 
+        var journal = _store.ReadFrom(session, 1);
+        var created = journal.Select(envelope =>
+        {
+            if (envelope.SessionId != session)
+                throw new InvalidDataException("Session journal identity mismatch.");
+            return _codecs.Decode(envelope);
+        }).OfType<SessionCreated>().FirstOrDefault();
+        if (created is null || created.SessionId != session
+            || !string.Equals(created.WorkspaceId,
+                WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(created.WorkspaceDisplayPath)).ToString(),
+                StringComparison.Ordinal))
+            throw new InvalidDataException("Cannot initialize security policy for an unknown or invalid Session.");
+
         var migrated = SessionSecurityPolicySet.FromPreset(session, 1, ModelPolicyCategory.ObserveOnly,
             SessionSecurityProvenance.LegacyMigrated, SessionSecurityPolicySource.LegacyMigration,
             DateTimeOffset.UtcNow);
@@ -156,7 +169,12 @@ public sealed partial class OmniServer
                     startedTools.Remove(succeeded.ToolCallId);
                     break;
                 case ToolCallFailed failed:
-                    startedTools.Remove(failed.ToolCallId);
+                    if (failed.EffectOutcome != EffectOutcome.Unknown)
+                        startedTools.Remove(failed.ToolCallId);
+                    break;
+                case ToolCallReconciled reconciled when reconciled.Outcome is ReconciliationOutcome.Applied
+                    or ReconciliationOutcome.NotApplied:
+                    startedTools.Remove(reconciled.ToolCallId);
                     break;
                 case AgentExecutionStarted childStarted when childStarted.ParentExecutionId is not null:
                     activeChildren.Add(childStarted.ExecutionId);

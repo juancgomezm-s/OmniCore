@@ -3,6 +3,8 @@ namespace OmniCore.Cli;
 using System.Collections.ObjectModel;
 using OmniCore.Host;
 using OmniCore.Client;
+using OmniCore.Domain;
+using OmniCore.Protocol;
 using Terminal.Gui.Drivers;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
@@ -165,7 +167,66 @@ public sealed partial class TuiApp
         frame.KeyDown += (_, key) => { if (key.KeyCode == KeyCode.Esc) { key.Handled = true; CloseOverlay(); ShowPreferences("tools_security", categoryPage: true); } };
         panel.Add(addRule, trust, grants, revoke);
         panel.Add(MenuIndent.Help(SecurityPref("help"), 33, 3, "security-help"));
-        ConfigurePreferenceScroll(panel, 37);
+        var sessionPolicy = ReadSecurityPolicyPresentation();
+        var sessionDefault = ReadSecurityDefaultPresentation();
+        panel.Add(MenuIndent.Heading(SecurityPref("session_ceiling"), 37));
+        var sessionStatus = new Label { Id = "session-security-status", X = MenuIndent.Level1, Y = 38,
+            Width = Dim.Fill(4), Height = 1, Text = sessionPolicy.SessionId is null
+                ? SecurityPref("session_security_no_session")
+                : sessionPolicy.Category is null ? SecurityPref("session_security_unavailable")
+                : SecurityPref("category." + sessionPolicy.Category) + " · "
+                    + SecurityPref("policy_revision") + " " + sessionPolicy.Revision + " · "
+                    + SecurityPref("provenance") + " " + SecurityPref("provenance." + sessionPolicy.Provenance) };
+        var changeSessionCeiling = new Button { Id = "session-security-change", X = MenuIndent.Level1, Y = 39,
+            Text = SecurityPref("session_security_change"), Enabled = sessionPolicy.SessionId is not null
+                && sessionPolicy.Category is not null && sessionPolicy.Revision is not null
+                && _client is ITrustedUserActionClient };
+        changeSessionCeiling.Accepted += (_, _) =>
+        {
+            if (sessionPolicy.SessionId is null || sessionPolicy.Category is null || sessionPolicy.Revision is null
+                || _client is not ITrustedUserActionClient trusted) return;
+            var categories = new[] { "ObserveOnly", "PatchOnly", "ScopedCoder", "FullAgent" };
+            var next = categories[(Array.IndexOf(categories, sessionPolicy.Category) + 1) % categories.Length];
+            ConfirmSecurityChange(SecurityPref("session_ceiling"), SecurityPref("session_security_confirm")
+                + Environment.NewLine + SecurityPref("category." + next), () =>
+            {
+                var payload = "{" + JsonObj.Field("cmd", "session.security.set") + ","
+                    + JsonObj.Field("sessionId", sessionPolicy.SessionId) + ","
+                    + JsonObj.Field("expectedRevision", sessionPolicy.Revision.Value.ToString(
+                        System.Globalization.CultureInfo.InvariantCulture)) + ","
+                    + JsonObj.Field("category", next) + "}";
+                var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+                if (ack.Status == "ok") { CloseOverlay(); ShowSecurityPreferences("tools_security"); }
+                else { CloseOverlay(); ShowMessage(_localization.ResolveWire(ack.Error ?? "securityPreferences.stale")); }
+            });
+        };
+        panel.Add(sessionStatus, changeSessionCeiling);
+        panel.Add(MenuIndent.Heading(SecurityPref("default_ceiling"), 41));
+        var defaultStatus = new Label { Id = "session-security-default-status", X = MenuIndent.Level1, Y = 42,
+            Width = Dim.Fill(4), Height = 1, Text = SecurityPref("category." + sessionDefault.Category)
+                + (sessionDefault.IsConfigured ? "" : " · " + SecurityPref("session_security_default_unconfigured"))
+                + (sessionDefault.Revision == "unavailable" ? " · " + SecurityPref("unavailable") : "") };
+        var changeDefaultCeiling = new Button { Id = "session-security-default-change", X = MenuIndent.Level1, Y = 43,
+            Text = SecurityPref("default_security_change"), Enabled = sessionDefault.Revision != "unavailable"
+                && _client is ITrustedUserActionClient };
+        changeDefaultCeiling.Accepted += (_, _) =>
+        {
+            if (sessionDefault.Revision == "unavailable" || _client is not ITrustedUserActionClient trusted) return;
+            var categories = new[] { "ObserveOnly", "PatchOnly", "ScopedCoder", "FullAgent" };
+            var next = categories[(Array.IndexOf(categories, sessionDefault.Category) + 1) % categories.Length];
+            ConfirmSecurityChange(SecurityPref("default_ceiling"), SecurityPref("default_security_confirm")
+                + Environment.NewLine + SecurityPref("category." + next), () =>
+            {
+                var payload = "{" + JsonObj.Field("cmd", "session.security.default.set") + ","
+                    + JsonObj.Field("expectedRevision", sessionDefault.Revision) + ","
+                    + JsonObj.Field("category", next) + "}";
+                var ack = trusted.SendUserAction(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+                if (ack.Status == "ok") { CloseOverlay(); ShowSecurityPreferences("tools_security"); }
+                else { CloseOverlay(); ShowMessage(_localization.ResolveWire(ack.Error ?? "securityPreferences.stale")); }
+            });
+        };
+        panel.Add(defaultStatus, changeDefaultCeiling);
+        ConfigurePreferenceScroll(panel, 47);
         frame.Add(panel, save, back, note);
         ApplyTheme(frame); _overlay = frame; _window.Add(frame); levelButtons[0].SetFocus();
     }
@@ -200,4 +261,44 @@ public sealed partial class TuiApp
     }
 
     private string SecurityPref(string key) => _localization.Resolve("securityPreferences." + key);
+
+    private (string? SessionId, long? Revision, string? Category, string? Provenance) ReadSecurityPolicyPresentation()
+    {
+        try
+        {
+            var json = _client.Query("sessionSecurity", CancellationToken.None)?.Json;
+            if (string.IsNullOrWhiteSpace(json)) return default;
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object) return default;
+            var sessionId = root.TryGetProperty("sessionId", out var id) ? id.GetString() : null;
+            var category = root.TryGetProperty("category", out var categoryValue) ? categoryValue.GetString() : null;
+            var provenance = root.TryGetProperty("provenance", out var provenanceValue) ? provenanceValue.GetString() : null;
+            var revision = root.TryGetProperty("revision", out var revisionValue) && revisionValue.TryGetInt64(out var parsed)
+                ? parsed : (long?)null;
+            if (!Guid.TryParse(sessionId, out _) || category is not ("ObserveOnly" or "PatchOnly" or "ScopedCoder" or "FullAgent")
+                || provenance is null || revision is null or < 1) return default;
+            return (sessionId, revision, category, provenance);
+        }
+        catch (Exception) { return default; }
+    }
+
+    private (string Category, string Revision, bool IsConfigured) ReadSecurityDefaultPresentation()
+    {
+        try
+        {
+            var json = _client.Query("sessionSecurityDefault", CancellationToken.None)?.Json;
+            if (string.IsNullOrWhiteSpace(json)) return ("ObserveOnly", "unavailable", false);
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            var root = document.RootElement;
+            var category = root.TryGetProperty("category", out var categoryValue) ? categoryValue.GetString() : null;
+            var revision = root.TryGetProperty("revision", out var revisionValue) ? revisionValue.GetString() : null;
+            var configured = root.TryGetProperty("isConfigured", out var configuredValue)
+                && configuredValue.ValueKind == System.Text.Json.JsonValueKind.True;
+            if (category is not ("ObserveOnly" or "PatchOnly" or "ScopedCoder" or "FullAgent")
+                || string.IsNullOrWhiteSpace(revision)) return ("ObserveOnly", "unavailable", false);
+            return (category, revision, configured);
+        }
+        catch (Exception) { return ("ObserveOnly", "unavailable", false); }
+    }
 }

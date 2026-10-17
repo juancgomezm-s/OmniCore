@@ -465,9 +465,13 @@ public static class StdioProtocolHost
         if (commandName is "session.input" or "conversation.start")
         {
             var hasAttachments = commandName == "conversation.start" && HasAttachments(payload.RootElement);
-            var expectedProperties = hasAttachments
-                ? new[] { "cmd", "text", "mode", "expectedRevision", "attachments" }
-                : ["cmd", "text", "mode", "expectedRevision"];
+            var expectedProperties = commandName == "conversation.start"
+                ? hasAttachments
+                    ? new[] { "cmd", "text", "mode", "expectedRevision", "expectedPolicyRevision", "expectedDefaultRevision", "attachments" }
+                    : ["cmd", "text", "mode", "expectedRevision", "expectedPolicyRevision", "expectedDefaultRevision"]
+                : hasAttachments
+                    ? new[] { "cmd", "text", "mode", "expectedRevision", "attachments" }
+                    : ["cmd", "text", "mode", "expectedRevision"];
             if (properties.Length != expectedProperties.Length || properties.Except(expectedProperties, StringComparer.Ordinal).Any()
                 || !payload.RootElement.TryGetProperty("text", out var text) || text.ValueKind != JsonValueKind.String
                 || (string.IsNullOrWhiteSpace(text.GetString()) && !hasAttachments) || text.GetString()!.Length > 32_000
@@ -477,6 +481,20 @@ public static class StdioProtocolHost
                 || (inputRevision.ValueKind != JsonValueKind.Null &&
                     (inputRevision.ValueKind != JsonValueKind.Number || !inputRevision.TryGetInt64(out var parsedInputRevision)
                      || parsedInputRevision < 0))) return false;
+            if (commandName == "conversation.start")
+            {
+                if (!payload.RootElement.TryGetProperty("expectedPolicyRevision", out var policyRevision)
+                    || !payload.RootElement.TryGetProperty("expectedDefaultRevision", out var defaultRevision)) return false;
+                if (expectedSession.Value is null)
+                {
+                    if (policyRevision.ValueKind != JsonValueKind.Null || defaultRevision.ValueKind != JsonValueKind.String
+                        || defaultRevision.GetString() is not { Length: 64 } defaultHash
+                        || !defaultHash.All(Uri.IsHexDigit)) return false;
+                }
+                else if (policyRevision.ValueKind != JsonValueKind.Number
+                    || !policyRevision.TryGetInt64(out var parsedPolicyRevision) || parsedPolicyRevision < 1
+                    || defaultRevision.ValueKind != JsonValueKind.Null) return false;
+            }
             scope = new(expectedSession.Value, expectedRun.Value, workspaceHash,
                 inputRevision.ValueKind == JsonValueKind.Null ? null : inputRevision.GetInt64(),
                 CheckRevision: true, RequirePlanRun: mode.GetString() == "plan", RequestedMode: mode.GetString(),
@@ -708,6 +726,8 @@ public static class StdioProtocolHost
                     : revision.GetInt64().ToString(System.Globalization.CultureInfo.InvariantCulture);
                 var input = "{" + JsonObj.Field("cmd", "session.input") + "," + JsonObj.Field("text", text)
                     + "," + JsonObj.Field("mode", mode) + ",\"expectedRevision\":" + revisionJson
+                    + ",\"expectedPolicyRevision\":" + root.GetProperty("expectedPolicyRevision").GetRawText()
+                    + ",\"expectedDefaultRevision\":" + root.GetProperty("expectedDefaultRevision").GetRawText()
                     + (attachments is null ? "" : "," + JsonObj.FieldRaw("attachments", attachments)) + "}";
                 var ack = DispatchCommand(client, command, trustedScope, out var executed, input);
                 if (executed && ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted)
