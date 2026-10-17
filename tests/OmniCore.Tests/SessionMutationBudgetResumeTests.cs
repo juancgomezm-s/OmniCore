@@ -170,6 +170,103 @@ public sealed class SessionMutationBudgetResumeTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Restart_fails_closed_when_prior_success_has_no_verifiable_budget_charge(bool includeInvalidCharge)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-mutation-budget-unknown-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        Directory.CreateDirectory(workspace);
+        var journal = Path.Combine(root, "journal.db");
+        var blobs = Path.Combine(root, "artifacts");
+        var codecs = EventCodecs.Create();
+        SqliteEventStore? store = new(journal);
+        try
+        {
+            var artifacts = new FileArtifactStore(blobs);
+            var session = SessionId.New();
+            var canonicalWorkspace = ProjectIdentity.CanonicalWorkspacePath(workspace);
+            var stream = new EventStream(store, codecs, session);
+            stream.Append(new SessionCreated(session, WorkspaceId.Of(canonicalWorkspace).ToString(), canonicalWorkspace,
+                ProfileId.New(), DateTimeOffset.UtcNow));
+            stream.Append(SessionPolicy(session, revision: 1, files: 4, changedLines: 100), DurabilityClass.Barrier);
+            var run = TestRun.Open(stream, session, mode: RunMode.Act);
+            var turn = TurnId.New();
+            var priorCall = ToolCallId.New();
+            using (ExecutionScope.Begin(new ExecutionScopeState(run.RunId, run.RootTask, run.RootLane, turn)))
+            {
+                stream.Append(new TurnStarted(turn, run.RootLane));
+                var history = new List<DomainEventPayload>
+                {
+                    new ToolCallRequested(priorCall, "legacy-write", "filesystem.write", WriteArguments("legacy.txt", "old\n")),
+                    new ToolCallPrepared(priorCall, "{}"),
+                    new PermissionEvaluated(priorCall, PermissionDecision.Allow, "[]", null),
+                    new ToolCallAuthorized(priorCall),
+                    new ToolCallStarted(priorCall, EffectClass.NonIdempotent, null),
+                };
+                if (includeInvalidCharge)
+                    history.Add(new MutationBudgetCharged(priorCall, "invalid-target-hash", 1));
+                history.Add(new ToolCallSucceeded(priorCall, "{}"));
+                stream.AppendBatch(history, DurabilityClass.Standard);
+            }
+
+            // Reopen the durable journal so the next turn's budget comes only from replay.
+            store.Close();
+            store = new SqliteEventStore(journal);
+            artifacts = new FileArtifactStore(blobs);
+            var server = new OmniServer(store, codecs, new InMemoryAuditSink(), artifacts: artifacts);
+            var catalog = new HostTools(new PathBoundaryValidator(), new PlanService(),
+                includeMutationTools: true).Catalog();
+            var model = ModelPolicyPresets.FullAgent();
+            var effective = new EffectiveModelPolicy(ModelPolicyKey.For("fixture", "unknown-budget"), 1,
+                model.Category, model.ToolPolicy, model.MutationPolicy, isFallback: false,
+                model.MaxModelStepsPerTurn, model.MaxToolCallsPerTurn, model.AllowOrchestration,
+                model.MaxGenerationSeconds);
+            var boundary = new ModelCapabilityBoundary(effective, ModelCapabilityBoundary.CoreTools,
+                new FileReadRegistry(workspace), sessionSecurityPolicy: () => server.ReadSessionSecurityPolicy(session));
+            var permission = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>
+            {
+                ["filesystem.write"] = PermissionDecision.Allow,
+            });
+            var executor = ScriptedToolExecutor.WithWorkspace(catalog, permission, workspace, boundary);
+            var calls = 0;
+            ModelResponse Provider(ModelRequest _, CancellationToken __) => ++calls switch
+            {
+                1 => ToolResponse(new ToolCallBlock(ToolCallId.New(), "new-write", "filesystem.write",
+                    WriteArguments("must-not-exist.txt", "blocked\n"))),
+                2 => TextResponse(),
+                _ => throw new InvalidOperationException("Unexpected provider call " + calls),
+            };
+            var explorer = new ExplorerTurn(Provider, executor, catalog,
+                new ContextMaterializer(new FakeTokenCounter(), []),
+                new ExecutionFingerprint("fixture", "schema", "tools", "context", "output", "unknown-budget"),
+                new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null),
+                store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
+                boundary: boundary, sessionSecurityPolicy: () => server.ReadSessionSecurityPolicy(session));
+
+            var result = explorer.Ask("continue the existing turn", "system", session, run.RunId,
+                run.RootLane, "", TestContext.Current.CancellationToken);
+
+            Assert.Equal(StopReason.EndTurn, result.StopReason);
+            Assert.False(File.Exists(Path.Combine(workspace, "must-not-exist.txt")));
+            Assert.True(boundary.ReadRegistry().Ledger.RunBudgetIsUnknown);
+            var events = store.ReadFrom(session, 1).Select(codecs.Decode).ToArray();
+            var attemptedCall = Assert.Single(events.OfType<ToolCallRequested>(), item => item.ProviderCallId == "new-write");
+            Assert.Contains(events.OfType<ToolCallFailed>(), item => item.ToolCallId == attemptedCall.ToolCallId
+                && item.EffectOutcome == EffectOutcome.None
+                && item.ErrorCode == ToolErrorCode.LimitExceeded
+                && item.Cause.Contains(MutationLedger.LimitExceededCode, StringComparison.Ordinal));
+            Assert.DoesNotContain(events.OfType<ToolCallSucceeded>(), item => item.ToolCallId == attemptedCall.ToolCallId);
+            CanonicalStateTracker.Replay(codecs, store.ReadFrom(session, 1));
+        }
+        finally
+        {
+            store?.Close();
+            try { Directory.Delete(root, recursive: true); } catch (IOException) { }
+        }
+    }
+
     private static SessionSecurityPolicySet SessionPolicy(SessionId session, long revision, int files,
         int changedLines, SessionSecurityPolicySource source = SessionSecurityPolicySource.UserDefault)
     {
