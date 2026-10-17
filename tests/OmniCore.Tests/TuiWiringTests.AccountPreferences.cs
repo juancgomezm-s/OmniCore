@@ -400,40 +400,45 @@ public sealed partial class TuiWiringTests
         var changed = new System.Collections.Concurrent.ConcurrentQueue<string>();
         fx.StartTui(initialColumns: 80, initialRows: 25, localeChanged: changed.Enqueue);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "centro visible en ancho estrecho");
-        var initial = fx.App.Overlay!;
+        var initial = fx.Read(() => fx.App.Overlay!);
         fx.Invoke(() =>
         {
             var search = Descendants(initial).OfType<TextField>().Single(view => view.Id == "preferences-search");
             search.Text = "cuenta";
         });
-        fx.Wait(() => Descendants(fx.App.Overlay!).OfType<ListView>()
-            .Single(view => view.Id == "preferences-categories").Source!.Count > 0, "búsqueda activa");
-        var narrowCategories = Descendants(initial).OfType<ListView>().Single(view => view.Id == "preferences-categories");
-        fx.Invoke(() => narrowCategories.SetFocus());
-        fx.Wait(() => narrowCategories.HasFocus, "la lista de categorías conserva el foco antes del reflow");
+        fx.Wait(() => fx.Read(() => Descendants(fx.App.Overlay!).OfType<ListView>()
+            .Single(view => view.Id == "preferences-categories").Source!.Count > 0), "búsqueda activa");
+        fx.Invoke(() => Descendants(fx.App.Overlay!).OfType<ListView>()
+            .Single(view => view.Id == "preferences-categories").SetFocus());
+        fx.Wait(() => fx.Read(() => Descendants(fx.App.Overlay!).OfType<ListView>()
+            .Single(view => view.Id == "preferences-categories").HasFocus), "la lista de categorías conserva el foco antes del reflow");
         fx.Invoke(() => fx.Application.Driver!.SetScreenSize(120, 35));
-        fx.Wait(() => fx.App.Overlay is not null && !ReferenceEquals(initial, fx.App.Overlay)
-            && Descendants(fx.App.Overlay).Any(view => view.Id == "preferences-categories" && view.HasFocus),
+        fx.Wait(() => fx.Read(() => fx.App.Overlay is not null && !ReferenceEquals(initial, fx.App.Overlay)
+            && Descendants(fx.App.Overlay).Any(view => view.Id == "preferences-categories" && view.HasFocus)),
             "reflow al ancho amplio conserva el foco de categorías");
-        var wideSearch = Descendants(fx.App.Overlay!).OfType<TextField>().Single(view => view.Id == "preferences-search");
-        Assert.Equal("cuenta", wideSearch.Text.ToString());
-        var wideCategories = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-categories");
-        Assert.True(wideCategories.HasFocus, "el reflow conserva el foco exacto de la lista de categorías");
+        fx.Read(() =>
+        {
+            Assert.Equal("cuenta", Descendants(fx.App.Overlay!).OfType<TextField>().Single(view => view.Id == "preferences-search").Text.ToString());
+            Assert.True(Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-categories").HasFocus,
+                "el reflow conserva el foco exacto de la lista de categorías");
+        });
         ExportPreferenceFrame(fx, 120, 35, "center-wide", "cuenta");
 
-        fx.Invoke(() => wideSearch.Text = "");
+        fx.Invoke(() => Descendants(fx.App.Overlay!).OfType<TextField>().Single(view => view.Id == "preferences-search").Text = "");
         ChoosePreferenceCategory(fx, "general");
-        var locales = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
         ChooseLocaleDraft(fx, 2);
-        Assert.Equal("es", fx.App.PreferencesLocale);
-        var previewFrame = fx.App.Overlay!;
+        Assert.Equal("es", fx.Read(() => fx.App.PreferencesLocale));
+        var previewFrame = fx.Read(() => fx.App.Overlay!);
         fx.Invoke(() => fx.Application.Driver!.SetScreenSize(80, 25));
-        fx.Wait(() => fx.App.Overlay is not null && !ReferenceEquals(previewFrame, fx.App.Overlay)
-            && Descendants(fx.App.Overlay).Any(view => view.Id == "preferences-locale" && view.HasFocus),
+        fx.Wait(() => fx.Read(() => fx.App.Overlay is not null && !ReferenceEquals(previewFrame, fx.App.Overlay)
+            && Descendants(fx.App.Overlay).Any(view => view.Id == "preferences-locale" && view.HasFocus)),
             "reflow al ancho estrecho conserva el foco de idioma");
-        Assert.Equal("fr", fx.App.PreferencesDraftLocale);
-        Assert.Equal("es", fx.App.PreferencesLocale);
-        Assert.True(Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale").HasFocus);
+        fx.Read(() =>
+        {
+            Assert.Equal("fr", fx.App.PreferencesDraftLocale);
+            Assert.Equal("es", fx.App.PreferencesLocale);
+            Assert.True(Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale").HasFocus);
+        });
         ExportPreferenceFrame(fx, 80, 25, "general-fr", "Français");
         Assert.Empty(changed);
         KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is not null

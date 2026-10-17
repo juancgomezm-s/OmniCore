@@ -855,8 +855,7 @@ public sealed partial class TuiWiringTests
                 string.Concat(Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme))));
             // Input injection completing is not the same as its frame being drawn.
             // Wait for the normal loop's completed frame, retaining the timeout below.
-            var marker = scene switch { "animations" => "omega-pulse", "sidebar-settings" => "Panel lateral · ajustes", "table" => "Dependencias", "activity" => "Procesando", "commands" => "Tab completar", "notice" => "Aviso", "settings" => "Preferencias", "settings-fr" => "Préférences", "settings-it" => "Preferenze", "settings-override" => "Preferences", "settings-local" => "visual-local", "settings-local-editor" => "visual-local", "account" => "Cuenta ChatGPT", "login" => "TEST-CODE", "models" => "subscription-b", "picker" => "Subscription B", _ => "Escribe tu siguiente" };
-            if (scene == "animations-braille") marker = "braille-spinner";
+            var marker = scene switch { "animations" => "Pulso Omega", "animations-braille" => "Giro braille", "sidebar-settings" => "Panel lateral · ajustes", "table" => "Dependencias", "activity" => "Procesando", "commands" => "Tab completar", "notice" => "Aviso", "settings" => "Preferencias", "settings-fr" => "Préférences", "settings-it" => "Preferenze", "settings-override" => "Preferences", "settings-local" => "visual-local", "settings-local-editor" => "visual-local", "account" => "Cuenta ChatGPT", "login" => "TEST-CODE", "models" => "subscription-b", "picker" => "Subscription B", _ => "Escribe tu siguiente" };
             if (scene == "tools") marker = "Herramientas";
             if (!text.Contains(marker, StringComparison.Ordinal)) return;
             if (scene == "sidebar" && !text.Contains("Espacio de trabajo", StringComparison.Ordinal)) return;
@@ -943,6 +942,7 @@ public sealed partial class TuiWiringTests
                 else if (scene is "animations" or "animations-braille")
                 {
                     Assert.Contains("✦ Indicadores y animaciones", text);
+                    Assert.Contains(marker, text);
                     Assert.DoesNotContain("Ω", text);
                     Assert.Contains("Razonamiento reportado", text);
                     Assert.Contains("Movimiento reducido", text);
@@ -952,7 +952,7 @@ public sealed partial class TuiWiringTests
                     Assert.All(overlay.SubViews.OfType<Button>(), button => Assert.True(button.Frame.Bottom <= overlay.Viewport.Height));
                     if (scene == "animations-braille")
                     {
-                        Assert.Contains("braille-spinner", text);
+                        Assert.Equal("braille-spinner", new AnimationSettingsStore(Path.Combine(fx.Root, "tui-animations.json")).Load().Waiting);
                         Assert.Contains(cells.Cast<Terminal.Gui.Drawing.Cell>(), cell =>
                             cell.Grapheme?.Any(ch => ch is >= '\u2800' and <= '\u28ff') == true
                             && cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#38BDF8"));
@@ -1534,57 +1534,63 @@ public sealed partial class TuiWiringTests
         fx.StartTui(initialColumns: columns, initialRows: rows, localeChanged: changed.Enqueue);
         fx.Invoke(() => fx.App.Composer!.Text = "keep this draft");
         var conversation = fx.App.Conversation!;
-        var transcript = conversation.Text?.ToString();
+        var transcript = fx.Read(() => conversation.Text?.ToString());
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "centro de preferencias visible");
-        var preferencesOverlay = Assert.IsType<FrameView>(fx.App.Overlay);
-        Assert.Equal(PreferenceCategoryCatalog.All.Count, Descendants(preferencesOverlay).OfType<ListView>().Single(view => view.Id == "preferences-categories").Source!.Count);
-        var categories = Descendants(preferencesOverlay).OfType<ListView>().Single(view => view.Id == "preferences-categories");
-        Assert.Equal(columns >= 100, preferencesOverlay.SubViews.Any(view => view.Id == "preferences-panel"));
-        var search = Descendants(preferencesOverlay).OfType<TextField>().Single(view => view.Id == "preferences-search");
-        fx.Invoke(() => search.Text = "no-such-preference-category");
-        fx.Wait(() => Descendants(fx.App.Overlay!).Single(view => view.Id == "preferences-empty-search").Visible,
+        fx.Read(() =>
+        {
+            var preferencesOverlay = Assert.IsType<FrameView>(fx.App.Overlay);
+            Assert.Equal(PreferenceCategoryCatalog.All.Count, Descendants(preferencesOverlay).OfType<ListView>().Single(view => view.Id == "preferences-categories").Source!.Count);
+            Assert.Equal(columns >= 100, preferencesOverlay.SubViews.Any(view => view.Id == "preferences-panel"));
+        });
+        fx.Invoke(() => Descendants(fx.App.Overlay!).OfType<TextField>().Single(view => view.Id == "preferences-search").Text = "no-such-preference-category");
+        fx.Wait(() => fx.Read(() => Descendants(fx.App.Overlay!).Single(view => view.Id == "preferences-empty-search").Visible),
             "búsqueda sin resultados muestra un estado vacío");
-        Assert.False(Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-categories").Visible);
+        Assert.False(fx.Read(() => Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-categories").Visible));
         if (columns >= 100)
-            Assert.False(Descendants(fx.App.Overlay!).OfType<Button>().Single(view => view.Id == "preferences-open-category").Enabled);
-        fx.Invoke(() => search.Text = "local");
-        fx.Wait(() => categories.Source?.Count == 1, "búsqueda de categorías funciona en el layout actual");
+            Assert.False(fx.Read(() => Descendants(fx.App.Overlay!).OfType<Button>().Single(view => view.Id == "preferences-open-category").Enabled));
+        fx.Invoke(() => Descendants(fx.App.Overlay!).OfType<TextField>().Single(view => view.Id == "preferences-search").Text = "local");
+        fx.Wait(() => fx.Read(() => Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-categories").Source?.Count == 1),
+            "búsqueda de categorías funciona en el layout actual");
         fx.InjectKey(new Key(KeyCode.CursorDown));
         fx.InjectKey(new Key(KeyCode.Enter));
-        fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Motores locales") == true,
+        fx.Wait(() => fx.Read(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Motores locales") == true),
             "Enter abre la categoría filtrada");
         fx.InjectKey(new Key(KeyCode.Esc));
-        fx.Wait(() => fx.App.Overlay?.SubViews.Any(view => view.Id == "preferences-categories") == true,
+        fx.Wait(() => fx.Read(() => fx.App.Overlay?.SubViews.Any(view => view.Id == "preferences-categories") == true),
             "Esc vuelve a navegación estrecha/ancha");
-        fx.Invoke(() => search = Descendants(fx.App.Overlay!).OfType<TextField>().Single(view => view.Id == "preferences-search"));
-        fx.Invoke(() => search.Text = "");
-        fx.Wait(() => Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-categories").Source?.Count == PreferenceCategoryCatalog.All.Count,
+        fx.Invoke(() => Descendants(fx.App.Overlay!).OfType<TextField>().Single(view => view.Id == "preferences-search").Text = "");
+        fx.Wait(() => fx.Read(() => Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-categories").Source?.Count == PreferenceCategoryCatalog.All.Count),
             "limpiar búsqueda recupera todas las categorías");
         ChoosePreferenceCategory(fx, "general");
-        AssertPreferencesGeneralLayoutFit(fx);
-        var language = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
+        fx.Read(() => AssertPreferencesGeneralLayoutFit(fx));
         ChooseLocaleDraft(fx, 2);
-        Assert.Equal("es", fx.App.PreferencesLocale);
-        Assert.True(Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale").HasFocus);
-        Assert.Equal("keep this draft", fx.App.Composer!.Text?.ToString());
-        Assert.Same(conversation, fx.App.Conversation);
-        Assert.Equal(transcript, conversation.Text?.ToString());
+        fx.Read(() =>
+        {
+            Assert.Equal("es", fx.App.PreferencesLocale);
+            Assert.True(Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale").HasFocus);
+            Assert.Equal("keep this draft", fx.App.Composer!.Text?.ToString());
+            Assert.Same(conversation, fx.App.Conversation);
+            Assert.Equal(transcript, conversation.Text?.ToString());
+        });
         Assert.Empty(changed);
 
         fx.InjectKey(new Key(KeyCode.Esc));
-        fx.Wait(() => fx.App.PreferencesLocale == "es"
-            && fx.App.Overlay?.SubViews.Any(view => view.Id == "preferences-categories") == true,
+        fx.Wait(() => fx.Read(() => fx.App.PreferencesLocale == "es"
+            && fx.App.Overlay?.SubViews.Any(view => view.Id == "preferences-categories") == true),
             "volver cancela el idioma no guardado");
         Assert.Empty(changed);
         ChoosePreferenceCategory(fx, "accounts_connections");
         fx.InjectKey(new Key(KeyCode.Esc));
-        fx.Wait(() => fx.App.Overlay?.SubViews.Any(view => view.Id == "preferences-categories") == true,
+        fx.Wait(() => fx.Read(() => fx.App.Overlay?.SubViews.Any(view => view.Id == "preferences-categories") == true),
             "otra categoría vuelve al índice");
         fx.InjectKey(new Key(KeyCode.Esc));
-        fx.Wait(() => fx.App.Overlay is null, "cerrar Preferences");
-        Assert.Equal("es", fx.App.PreferencesLocale);
-        Assert.Equal("keep this draft", fx.App.Composer!.Text?.ToString());
-        Assert.Same(conversation, fx.App.Conversation);
+        fx.Wait(() => fx.Read(() => fx.App.Overlay is null), "cerrar Preferences");
+        fx.Read(() =>
+        {
+            Assert.Equal("es", fx.App.PreferencesLocale);
+            Assert.Equal("keep this draft", fx.App.Composer!.Text?.ToString());
+            Assert.Same(conversation, fx.App.Conversation);
+        });
     });
 
     [Fact]
@@ -2884,9 +2890,9 @@ public sealed partial class TuiWiringTests
             list.SelectedItem = index;
             list.InvokeCommand(Command.Accept);
         });
-        var selected = PreferenceCategoryCatalog.Resolve(new Localization(locale ?? fx.App.PreferencesLocale))
+        var selected = PreferenceCategoryCatalog.Resolve(new Localization(locale ?? fx.Read(() => fx.App.PreferencesLocale)))
             .Single(category => category.Id == categoryId);
-        fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains(selected.Title, StringComparison.Ordinal) == true,
+        fx.Wait(() => fx.Read(() => (fx.App.Overlay as FrameView)?.Title?.Contains(selected.Title, StringComparison.Ordinal) == true),
             "categoría de preferencias visible: " + categoryId);
     }
 
@@ -3145,6 +3151,21 @@ public sealed partial class TuiWiringTests
                     + (LoopError is null ? "" : "; loop caido: " + LoopError.Message) + ")");
             if (LoopError is not null)
                 Assert.Fail(message + " (loop de la TUI caido: " + LoopError + ")");
+        }
+
+        /// <summary>Lee el árbol de vistas en el hilo que lo muta y dibuja.</summary>
+        public T Read<T>(Func<T> read)
+        {
+            ArgumentNullException.ThrowIfNull(read);
+            T value = default!;
+            Invoke(() => value = read());
+            return value;
+        }
+
+        public void Read(Action read)
+        {
+            ArgumentNullException.ThrowIfNull(read);
+            Invoke(read);
         }
 
         /// <summary>Ejecuta una mutación en el hilo UI, espera su finalización y propaga su excepción.</summary>
