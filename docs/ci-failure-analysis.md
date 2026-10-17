@@ -4,7 +4,9 @@
 
 El run [39077479124](https://github.com/juancgomezm-s/OmniCore/actions/runs/39077479124),
 sobre `5c315ba`, informa **121 fallos de 4860 casos** en el job Ubuntu
-`117527528666`. Instalación npm en Windows/Ubuntu y empaquetado Linux pasaron;
+`117527528666`. Windows también falló en **120 casos**, job `117527528701`:
+son exactamente los mismos nombres de prueba, salvo la ruta base literal que
+sólo falla en Linux. Instalación npm en Windows/Ubuntu y empaquetado Linux pasaron;
 eso no acredita la suite de Core. OmniCoder pasó su matriz Windows/Ubuntu y
 su package gate en el run independiente
 [39077489183](https://github.com/juancgomezm-s/OmniCode/actions/runs/39077489183).
@@ -26,7 +28,8 @@ La inspección inicial agrupa los fallos, sin presentarlos todavía como reparad
   literal que no es absoluta en Linux. La fixture necesita una ruta de la plataforma.
 
 Log completo descargado en el equipo de trabajo:
-`C:/Users/juanc/.codex/omnicode-ci-repair-20261013/117527528666-job.log`.
+`C:/Users/juanc/.codex/omnicode-ci-repair-20261013/117527528666-job.log`
+y `117527528701-job.log` en el mismo directorio.
 La reparación y su evidencia focal siguen pendientes; no se declara CI verde ni
 M9 cerrado por los resultados focales del checkpoint anterior.
 
