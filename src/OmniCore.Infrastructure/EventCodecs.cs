@@ -144,6 +144,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.ToolCallFailed())
             .Plus(Typed.ToolCallEffectUnknown())
             .Plus(Typed.ToolCallReconciled())
+            .Plus(Typed.MutationBudgetCharged())
             .Plus(Typed.ToolCallCancelled())
             .Plus(Typed.WorktreeIntegrationStateRecorded())
             .Plus(Typed.UndoStarted())
@@ -530,6 +531,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(ToolCallFailed))]
 [JsonSerializable(typeof(ToolCallEffectUnknown))]
 [JsonSerializable(typeof(ToolCallReconciled))]
+[JsonSerializable(typeof(MutationBudgetCharged))]
 [JsonSerializable(typeof(ToolCallCancelled))]
 [JsonSerializable(typeof(WorktreeIntegrationStateRecorded))]
 [JsonSerializable(typeof(WorktreeIntegrationFileStatus))]
@@ -955,6 +957,9 @@ public sealed class Typed
 
     public static CodecPair ToolCallReconciled() =>
         Of(EventType.Of("toolcall.reconciled"), EventJsonContext.Default.ToolCallReconciled, currentVersion: 2);
+
+    public static CodecPair MutationBudgetCharged() =>
+        Of(EventType.Of("mutation.budget_charged"), EventJsonContext.Default.MutationBudgetCharged);
 
     public static CodecPair ToolCallCancelled() =>
         Of(EventType.Of("toolcall.cancelled"), EventJsonContext.Default.ToolCallCancelled);

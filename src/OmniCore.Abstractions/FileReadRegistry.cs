@@ -1,6 +1,8 @@
 namespace OmniCore.Abstractions;
 
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 
 using OmniCore.Domain;
 
@@ -21,8 +23,9 @@ using OmniCore.Domain;
 /// haciendo <c>filesystem.patch</c> como defensa en profundidad, y el ToolRuntime + el
 /// Permission Engine conservan su autoridad (INV-018): este registro solo RESTRINGE.
 ///
-/// Está destinado a vivir dentro de la frontera de capacidad del modelo (per-Run); no es un
-/// estado global entre sesiones.
+/// Las lecturas efectivas siguen siendo volátiles por Run: tras reiniciar se exige releer antes
+/// de parchear. El contador de mutaciones sí persiste cargas confirmadas por Turn en el journal;
+/// una mutación histórica sin carga verificable bloquea nuevas escrituras en ese Turn.
 ///
 /// SEMÁNTICA TRAS RESTART (ADR-0044 §5): el registro es en-memoria y por-Run. Tras un restart
 /// del proceso, un Run reanudado conserva en su journal los eventos <c>toolcall.requested</c>
@@ -135,6 +138,15 @@ public sealed class FileReadRegistry
 
     /// <summary>Forma canónica de una ruta como clave de contabilidad (misma normalización que las lecturas).</summary>
     internal string CanonicalKey(string path) => Canonical(path);
+
+    /// <summary>Stable opaque identity for mutation-budget accounting. This value cannot be
+    /// resolved back to a path and is never used as filesystem authority.</summary>
+    internal string MutationBudgetKey(string path)
+    {
+        var key = Canonical(path);
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()) key = key.ToUpperInvariant();
+        return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(key)));
+    }
 }
 
 /// <summary>Validación post-edición exigida por la política y aún no verificada (ADR-0044 §5).</summary>
@@ -162,9 +174,10 @@ public sealed record MutationProposal(string Path, ModelToolCapability Operation
 /// validaciones pendientes NO se reinician nunca. Sin la señal de Turn la contabilidad acumula
 /// monótonamente: la interpretación es conservadora (rechaza de más, nunca de menos).
 ///
-/// Es un estado EN MEMORIA y POR RUN: vive dentro de la frontera de capacidad, nunca es un
-/// estado global entre sesiones, y solo RESTRINGE (INV-018): el ToolRuntime y el Permission
-/// Engine conservan su autoridad.
+    /// El estado activo vive dentro de la frontera por Run y solo RESTRINGE (INV-018): el ToolRuntime
+    /// y el Permission Engine conservan su autoridad. Las cargas confirmadas sobreviven a resume;
+    /// un resultado incompleto nunca se interpreta como presupuesto libre. Los diagnósticos Run se
+    /// reconstruyen desde los cargos confirmados y se marcan desconocidos si falta evidencia.
 /// </summary>
 public sealed class MutationLedger
 {
@@ -185,6 +198,8 @@ public sealed class MutationLedger
     private int _turnChangedLines;
     private int _runChangedLines;
     private int _runMutations;
+    private bool _turnBudgetUnknown;
+    private bool _runBudgetUnknown;
 
     internal MutationLedger(FileReadRegistry registry)
     {
@@ -224,6 +239,9 @@ public sealed class MutationLedger
     /// <summary>Mutaciones publicadas con éxito en todo el Run.</summary>
     public int MutationsThisRun => _runMutations;
 
+    /// <summary>True when durable Run totals could not be reconstructed completely.</summary>
+    public bool RunBudgetIsUnknown => _runBudgetUnknown;
+
     /// <summary>
     /// Señala el inicio de un Turn: reinicia la contabilidad POR TURN (archivos y líneas).
     /// Los totales por Run y las validaciones pendientes se conservan.
@@ -233,7 +251,70 @@ public sealed class MutationLedger
         _turn++;
         _turnFiles.Clear();
         _turnChangedLines = 0;
+        _turnBudgetUnknown = false;
     }
+
+    /// <summary>Clears only the current Turn counters before rebuilding them from its durable
+    /// mutation receipts after resume. It does not restore read tokens or authorize file access.</summary>
+    public void ResetTurnBudgetForReplay()
+    {
+        _turnFiles.Clear();
+        _turnChangedLines = 0;
+        _turnBudgetUnknown = false;
+    }
+
+    /// <summary>Clears Run diagnostics before rebuilding them from durable mutation charges.</summary>
+    public void ResetRunBudgetForReplay()
+    {
+        _runFiles.Clear();
+        _runChangedLines = 0;
+        _runMutations = 0;
+        _runBudgetUnknown = false;
+    }
+
+    public void MarkRunBudgetUnknown() => _runBudgetUnknown = true;
+
+    /// <summary>Restores Run-level accounting for one confirmed published target.</summary>
+    public void RestoreRunBudgetCharge(string targetKeyHash, int changedLines)
+    {
+        if (!IsValidBudgetCharge(targetKeyHash, changedLines))
+        {
+            _runBudgetUnknown = true;
+            return;
+        }
+
+        _runFiles.Add(targetKeyHash.ToLowerInvariant());
+        try
+        {
+            _runChangedLines = checked(_runChangedLines + changedLines);
+            _runMutations = checked(_runMutations + 1);
+        }
+        catch (OverflowException) { _runBudgetUnknown = true; }
+    }
+
+    /// <summary>Restores a confirmed durable mutation charge. The digest is accounting identity
+    /// only; it is never resolved to a path or used as file authority.</summary>
+    public void RestoreTurnBudgetCharge(string targetKeyHash, int changedLines)
+    {
+        if (!IsValidBudgetCharge(targetKeyHash, changedLines))
+        {
+            _turnBudgetUnknown = true;
+            return;
+        }
+
+        _turnFiles.Add(targetKeyHash.ToLowerInvariant());
+        try { _turnChangedLines = checked(_turnChangedLines + changedLines); }
+        catch (OverflowException) { _turnBudgetUnknown = true; }
+    }
+
+    private static bool IsValidBudgetCharge(string targetKeyHash, int changedLines) =>
+        targetKeyHash is { Length: 64 }
+        && targetKeyHash.All(Uri.IsHexDigit)
+        && changedLines >= 0;
+
+    /// <summary>Fail-closed state for a prior mutation whose durable outcome or charge cannot be
+    /// verified. Further file mutations are denied for this Turn; the next Turn starts clean.</summary>
+    public void MarkTurnBudgetUnknown() => _turnBudgetUnknown = true;
 
     /// <summary>
     /// Evalúa una mutación PROPUESTA contra la política de este Run (ADR-0044 §5): el modo de
@@ -260,7 +341,15 @@ public sealed class MutationLedger
             return null;
         }
 
-        var changed = deletedLines + insertedLines;
+        if (_turnBudgetUnknown)
+            return new MutationRefusal(ToolErrorCode.LimitExceeded,
+                LimitExceededCode + ": no se puede verificar el presupuesto de mutación previo de este Turn; continúa en un Turn nuevo.");
+
+        var changedTotal = (long)deletedLines + insertedLines;
+        if (deletedLines < 0 || insertedLines < 0 || changedTotal > int.MaxValue)
+            return new MutationRefusal(ToolErrorCode.LimitExceeded,
+                LimitExceededCode + ": el tamaño de la mutación no se puede contabilizar de forma segura.");
+        var changed = (int)changedTotal;
         if (!FileMutationRules.ModeAllows(policy.Mode, operation))
         {
             // Intentar una operación fuera del modo es salirse de lo permitido para este modelo.
@@ -270,7 +359,7 @@ public sealed class MutationLedger
                 + OperationText(operation) + " (" + path + ").");
         }
 
-        var key = _registry.CanonicalKey(path);
+        var key = _registry.MutationBudgetKey(path);
 
         // MaxFilesPerTurn: rutas distintas mutadas en el Turn actual. 0 = sin presupuesto
         // (coherente con FileMutationPolicy.CanMutateFiles).
@@ -291,7 +380,7 @@ public sealed class MutationLedger
         }
 
         // MaxChangedLinesPerTurn: líneas borradas + insertadas acumuladas en el Turn.
-        var delta = deletedLines + insertedLines;
+        var delta = changed;
         if (policy.MaxChangedLinesPerTurn == 0)
         {
             Observe(null, Sample(path, operation, originalLines, changed, withinScope: false));
@@ -299,7 +388,7 @@ public sealed class MutationLedger
                 LimitExceededCode + ": la política del modelo no asigna presupuesto de líneas por Turn.");
         }
 
-        if (_turnChangedLines + delta > policy.MaxChangedLinesPerTurn)
+        if ((long)_turnChangedLines + delta > policy.MaxChangedLinesPerTurn)
         {
             Observe(null, Sample(path, operation, originalLines, changed, withinScope: false));
             return new MutationRefusal(ToolErrorCode.LimitExceeded,
@@ -339,11 +428,18 @@ public sealed class MutationLedger
         ArgumentNullException.ThrowIfNull(proposals);
         var policy = MutationPolicy;
         if (policy is null) return null;
+        if (_turnBudgetUnknown)
+            return new MutationRefusal(ToolErrorCode.LimitExceeded,
+                LimitExceededCode + ": no se puede verificar el presupuesto de mutación previo de este Turn; continúa en un Turn nuevo.");
         var projectedFiles = new HashSet<string>(_turnFiles, StringComparer.Ordinal);
-        var projectedLines = _turnChangedLines;
+        long projectedLines = _turnChangedLines;
         foreach (var proposal in proposals)
         {
-            var changed = proposal.DeletedLines + proposal.InsertedLines;
+            var changedTotal = (long)proposal.DeletedLines + proposal.InsertedLines;
+            if (proposal.DeletedLines < 0 || proposal.InsertedLines < 0 || changedTotal > int.MaxValue)
+                return new MutationRefusal(ToolErrorCode.LimitExceeded,
+                    LimitExceededCode + ": the integration batch has a mutation size that cannot be accounted safely.");
+            var changed = (int)changedTotal;
             if (!FileMutationRules.ModeAllows(policy.Mode, proposal.Operation))
             {
                 Observe(null, Sample(proposal.Path, proposal.Operation, proposal.OriginalLines, changed, withinScope: false));
@@ -353,7 +449,7 @@ public sealed class MutationLedger
             if (policy.MaxFilesPerTurn == 0)
                 return new MutationRefusal(ToolErrorCode.LimitExceeded,
                     LimitExceededCode + ": the active policy assigns no file budget for this Turn.");
-            var key = _registry.CanonicalKey(proposal.Path);
+            var key = _registry.MutationBudgetKey(proposal.Path);
             if (!projectedFiles.Contains(key) && projectedFiles.Count >= policy.MaxFilesPerTurn)
                 return new MutationRefusal(ToolErrorCode.LimitExceeded,
                     LimitExceededCode + ": the integration batch exceeds the remaining file budget for this Turn.");
@@ -378,15 +474,23 @@ public sealed class MutationLedger
     /// </summary>
     public void RecordMutation(string path, int deletedLines, int insertedLines,
         ToolCallId? toolCallId = null, ModelToolCapability operation = ModelToolCapability.PatchExisting,
-        int originalLines = 0)
+        int originalLines = 0, Action<DomainEventPayload>? emitDurableCharge = null)
     {
-        Observe(toolCallId, Sample(path, operation, originalLines, deletedLines + insertedLines), published: true);
-        var key = _registry.CanonicalKey(path);
+        if (deletedLines < 0 || insertedLines < 0)
+            throw new ArgumentOutOfRangeException(nameof(deletedLines), "Mutation line counts cannot be negative.");
+        var key = _registry.MutationBudgetKey(path);
+        var changedLines = checked(deletedLines + insertedLines);
+        if (toolCallId is { } callId && emitDurableCharge is not null)
+        {
+            emitDurableCharge(new MutationBudgetCharged(callId, key, changedLines));
+        }
+
+        Observe(toolCallId, Sample(path, operation, originalLines, changedLines), published: true);
         _turnFiles.Add(key);
         _runFiles.Add(key);
-        var delta = deletedLines + insertedLines;
-        _turnChangedLines += delta;
-        _runChangedLines += delta;
+        var delta = changedLines;
+        _turnChangedLines = checked(_turnChangedLines + delta);
+        _runChangedLines = checked(_runChangedLines + delta);
         _runMutations++;
 
         if (MutationPolicy?.RequirePostEditValidation == true)

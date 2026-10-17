@@ -504,7 +504,8 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         // Contabiliza SOLO tras el efecto durable (y registra la validación post-edición si la
         // política la exige, ADR-0044 §5).
         ledger?.RecordMutation(path, deletedLines, insertedLines, intent.Intent.ToolCallId,
-            created ? ModelToolCapability.CreateFile : ModelToolCapability.ReplaceFile, originalLines);
+            created ? ModelToolCapability.CreateFile : ModelToolCapability.ReplaceFile, originalLines,
+            context.EmitEvent);
 
         var newVersion = FileVersion.VersionToken(newBytes);
         var summary = summaryPrefix + " [version:" + newVersion + "]";

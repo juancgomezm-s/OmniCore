@@ -632,6 +632,7 @@ public sealed class ExplorerTurn
         var resumedTurnId = FindOpenTurn(stream, runId, laneId);
         var isResume = resumedTurnId is not null;
         var turnId = resumedTurnId ?? TurnId.New();
+        RestoreTurnMutationBudget(stream, runId, turnId);
         var originalStart = isResume ? stream.EventsSince(1).LastOrDefault(evt =>
             evt.RunId == runId && _codecs.Decode(evt) is TurnStarted start
                 && start.TurnId == resumedTurnId && start.LaneId == laneId) : null;
@@ -3251,6 +3252,144 @@ public sealed class ExplorerTurn
             }
         }
         return open;
+    }
+
+    /// <summary>Rebuilds Run diagnostics and this logical Turn's mutation budget from durable
+    /// charge events. A legacy, malformed, or interrupted file mutation without a complete charge
+    /// is fail-closed; no journal path or version token is restored as filesystem authority.</summary>
+    private void RestoreTurnMutationBudget(EventStream stream, RunId runId, TurnId turnId)
+    {
+        var ledger = _boundary?.ReadRegistry().Ledger;
+        if (ledger is null) return;
+
+        ledger.ResetTurnBudgetForReplay();
+        ledger.ResetRunBudgetForReplay();
+        var requests = new Dictionary<ToolCallId, string>();
+        var starts = new Dictionary<ToolCallId, (DomainEvent Envelope, ToolCallStarted Payload)>();
+        var terminals = new Dictionary<ToolCallId, (DomainEvent Envelope, DomainEventPayload Payload)>();
+        var charges = new Dictionary<ToolCallId, List<(DomainEvent Envelope, MutationBudgetCharged Charge)>>();
+        var integrationCalls = new HashSet<ToolCallId>();
+        var integrationStates = new Dictionary<ToolCallId, WorktreeIntegrationStateRecorded>();
+
+        foreach (var envelope in stream.EventsSince(1).Where(item => item.RunId == runId))
+        {
+            var payload = _codecs.Decode(envelope);
+            switch (payload)
+            {
+                case ToolCallRequested requested:
+                    if (envelope.ToolCallId != requested.ToolCallId)
+                        ledger.MarkTurnBudgetUnknown();
+                    requests[requested.ToolCallId] = requested.ToolName;
+                    break;
+                case ToolCallStarted started:
+                    if (envelope.ToolCallId != started.ToolCallId
+                        || !starts.TryAdd(started.ToolCallId, (envelope, started)))
+                        ledger.MarkTurnBudgetUnknown();
+                    break;
+                case MutationBudgetCharged charge:
+                    if (envelope.ToolCallId != charge.ToolCallId)
+                        ledger.MarkTurnBudgetUnknown();
+                    if (!charges.TryGetValue(charge.ToolCallId, out var items))
+                        charges[charge.ToolCallId] = items = [];
+                    items.Add((envelope, charge));
+                    break;
+                case ToolCallSucceeded succeeded:
+                    if (envelope.ToolCallId != succeeded.ToolCallId)
+                        ledger.MarkTurnBudgetUnknown();
+                    terminals[succeeded.ToolCallId] = (envelope, payload);
+                    break;
+                case ToolCallFailed failed:
+                    if (envelope.ToolCallId != failed.ToolCallId)
+                        ledger.MarkTurnBudgetUnknown();
+                    terminals[failed.ToolCallId] = (envelope, payload);
+                    break;
+                case ToolCallEffectUnknown unknown:
+                    if (envelope.ToolCallId != unknown.ToolCallId)
+                        ledger.MarkTurnBudgetUnknown();
+                    terminals[unknown.ToolCallId] = (envelope, payload);
+                    break;
+                case ToolCallReconciled reconciled:
+                    if (envelope.ToolCallId != reconciled.ToolCallId)
+                        ledger.MarkTurnBudgetUnknown();
+                    terminals[reconciled.ToolCallId] = (envelope, payload);
+                    break;
+                case WorktreeIntegrationStateRecorded integration:
+                    if (envelope.ToolCallId != integration.ToolCallId)
+                        ledger.MarkTurnBudgetUnknown();
+                    integrationCalls.Add(integration.ToolCallId);
+                    integrationStates[integration.ToolCallId] = integration;
+                    break;
+            }
+        }
+
+        foreach (var (toolCallId, started) in starts)
+        {
+            var isCurrentTurn = started.Envelope.TurnId == turnId;
+            var hasRequest = requests.TryGetValue(toolCallId, out var toolName);
+            if (!hasRequest)
+            {
+                ledger.MarkRunBudgetUnknown();
+                if (isCurrentTurn) ledger.MarkTurnBudgetUnknown();
+                continue;
+            }
+            var governedMutation = toolName is "filesystem.write" or "filesystem.patch" or "worktree.integrate"
+                || integrationCalls.Contains(toolCallId);
+            if (!governedMutation)
+            {
+                continue;
+            }
+
+            var hasCharges = charges.TryGetValue(toolCallId, out var callCharges) && callCharges.Count > 0;
+            terminals.TryGetValue(toolCallId, out var terminal);
+            if (terminal is { Payload: ToolCallSucceeded } && hasCharges)
+            {
+                if (integrationStates.TryGetValue(toolCallId, out var integrationState)
+                    && (integrationState.State != WorktreeIntegrationState.Completed
+                        || integrationState.Files is null
+                        || integrationState.Files.Count(file => file.Outcome == ReconciliationOutcome.Applied) != callCharges!.Count))
+                {
+                    ledger.MarkRunBudgetUnknown();
+                    if (isCurrentTurn) ledger.MarkTurnBudgetUnknown();
+                }
+                foreach (var (chargeEnvelope, charge) in callCharges!)
+                {
+                    if (chargeEnvelope.RunId != runId || chargeEnvelope.TurnId != started.Envelope.TurnId
+                        || chargeEnvelope.ToolCallId != toolCallId
+                        || started.Envelope.RunId != runId
+                        || started.Envelope.ToolCallId != toolCallId
+                        || terminal.Envelope.RunId != runId
+                        || terminal.Envelope.TurnId != started.Envelope.TurnId
+                        || terminal.Envelope.ToolCallId != toolCallId)
+                    {
+                        ledger.MarkRunBudgetUnknown();
+                        if (isCurrentTurn) ledger.MarkTurnBudgetUnknown();
+                        continue;
+                    }
+                    ledger.RestoreRunBudgetCharge(charge.TargetKeyHash, charge.ChangedLines);
+                    if (isCurrentTurn)
+                        ledger.RestoreTurnBudgetCharge(charge.TargetKeyHash, charge.ChangedLines);
+                }
+                continue;
+            }
+
+            // A completed non-effecting failure and a proven NotApplied reconciliation consume
+            // no budget. Every other uncharged or incomplete mutation is uncertain and must not
+            // get a fresh allowance merely because this invocation has a new in-memory boundary.
+            if (terminal is { Payload: ToolCallFailed { EffectOutcome: EffectOutcome.None } } && !hasCharges
+                || terminal is { Payload: ToolCallReconciled { Outcome: ReconciliationOutcome.NotApplied } } && !hasCharges)
+                continue;
+
+            ledger.MarkRunBudgetUnknown();
+            if (isCurrentTurn) ledger.MarkTurnBudgetUnknown();
+        }
+
+        // A charge with no matching Started event is malformed durable evidence. Never ignore it
+        // and accidentally grant a clean budget on the next tool call.
+        foreach (var (toolCallId, callCharges) in charges.Where(pair => !starts.ContainsKey(pair.Key)))
+        {
+            ledger.MarkRunBudgetUnknown();
+            if (callCharges.Any(item => item.Envelope.TurnId == turnId)) ledger.MarkTurnBudgetUnknown();
+        }
     }
 
     private TaskId? FindTaskForLane(IReadOnlyList<DomainEvent> events, RunId runId, LaneId laneId)

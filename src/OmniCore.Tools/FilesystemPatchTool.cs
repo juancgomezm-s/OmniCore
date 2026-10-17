@@ -385,7 +385,8 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         // Contabiliza SOLO tras el efecto durable (y registra la validación post-edición si la
         // política la exige, ADR-0044 §5).
         context.ReadRegistry?.Ledger.RecordMutation(path!, deletedLines, insertedLines,
-            intent.Intent.ToolCallId, ModelToolCapability.PatchExisting, FileVersion.CountLines(content));
+            intent.Intent.ToolCallId, ModelToolCapability.PatchExisting, FileVersion.CountLines(content),
+            context.EmitEvent);
 
         return new ToolResult(summary, null, null, updated.Length, false, EffectOutcome.Applied)
         { AfterStateBytes = newBytes };

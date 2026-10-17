@@ -251,6 +251,12 @@ public sealed class ProtocolMapper
             ["toolCallId"] = e.ToolCallId.ToString(), ["outcome"] = e.Outcome.ToString(),
             ["cause"] = e.Cause?.ToString() ?? "",
         },
+        MutationBudgetCharged e => new()
+        {
+            ["toolCallId"] = e.ToolCallId.ToString(),
+            ["targetKeyHash"] = e.TargetKeyHash,
+            ["changedLines"] = e.ChangedLines.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        },
         InteractionRequested e => new()
         {
             ["interactionId"] = e.InteractionId.ToString(), ["kind"] = e.Kind.ToString(),

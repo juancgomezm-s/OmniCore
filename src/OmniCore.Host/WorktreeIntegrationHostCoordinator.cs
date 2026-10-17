@@ -335,7 +335,7 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
                     FileVersion.ChangedLines(before, after, out var deleted, out var inserted);
                     ledger.RecordMutation(target.Image.RelativePath, deleted, inserted,
                         authorized.Intent.ToolCallId, OperationFor(target.Image),
-                        FileVersion.CountLines(before));
+                        FileVersion.CountLines(before), context.EmitEvent);
                 }
                 AfterWriteForTests?.Invoke(index, target.Image.RelativePath);
             }

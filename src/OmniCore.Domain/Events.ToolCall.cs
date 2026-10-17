@@ -154,6 +154,17 @@ public record ToolCallReconciled(ToolCallId ToolCallId, ReconciliationOutcome Ou
     public int SchemaVersion() => 2;
 }
 
+/// <summary>Durable charge for a file mutation already published by a Host tool. The target is
+/// a canonical digest used only to restore per-Turn budget accounting; it is never a filesystem
+/// path or an authorization to read or write a target.</summary>
+public record MutationBudgetCharged(ToolCallId ToolCallId, string TargetKeyHash, int ChangedLines)
+    : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("mutation.budget_charged");
+
+    public int SchemaVersion() => 1;
+}
+
 /// <summary>ToolCallCancelled: antes de ejecutar (Requested/Prepared/AwaitingPermission/Authorized).</summary>
 public record ToolCallCancelled(ToolCallId ToolCallId, string Cause) : DomainEventPayload
 {
