@@ -3075,7 +3075,7 @@ public sealed class CliEndToEndTests
                 new UserModelPolicy(stored.Policy.Category, stored.Policy.ToolPolicy, noPostEditGate,
                     stored.Policy.Source, "cli-e2e-approved-patch"), CancellationToken.None);
             var act = await Run("act", "actualiza doc.txt");
-            Assert.Equal(0, act.Code);
+            Assert.True(act.Code == 0, SafeActFailureDiagnostic(workspace, act.Code));
             Assert.Equal("one\ntwo-X\nthree\nfour\nfive\nsix\nseven\neight\n",
                 File.ReadAllText(Path.Combine(workspace, "doc.txt")));
             Assert.Contains("[herramienta] filesystem.read", act.Output);
@@ -3148,7 +3148,7 @@ public sealed class CliEndToEndTests
 
             var act = await Run("act", "actualiza doc.txt");
 
-            Assert.Equal(0, act.Code);
+            Assert.True(act.Code == 0, SafeActFailureDiagnostic(workspace, act.Code));
             Assert.Equal("one\ntwo-X\nthree\nfour\nfive\nsix\nseven\neight\n",
                 File.ReadAllText(Path.Combine(workspace, "doc.txt")));
             using var reopened = OmniHost.CreateModelQualificationStore(data);
@@ -3254,6 +3254,31 @@ public sealed class CliEndToEndTests
         var store = new SqliteEventStore(Path.Combine(workspaceData, "journal.db"));
         try { return store.ReadFrom(sessionId, 1).Select(EventCodecs.Create().Decode).ToArray(); }
         finally { store.Close(); }
+    }
+
+    private static string SafeActFailureDiagnostic(string workspace, int exitCode)
+    {
+        try
+        {
+            var recent = ReadCurrentSessionEvents(workspace).TakeLast(32).Select(payload => payload switch
+            {
+                ToolCallRequested requested => $"toolcall.requested:{requested.ToolName}",
+                ToolCallStarted => "toolcall.started",
+                ToolCallSucceeded => "toolcall.succeeded",
+                ToolCallFailed failed => $"toolcall.failed:{failed.ErrorCode?.Value ?? "none"}:{failed.EffectOutcome}",
+                ToolCallRejected toolRejected => $"toolcall.rejected:{toolRejected.ErrorCode?.Value ?? "none"}",
+                RunValidationStarted => "run.validation_started",
+                RunValidationRejected validationRejected => $"run.validation_rejected:gates={string.Join(',', validationRejected.Gates)}:missingCount={validationRejected.Missing.Count}",
+                RunCompleted completed => $"run.completed:{completed.Outcome}",
+                RunFailed => "run.failed",
+                _ => payload.GetType().Name,
+            });
+            return $"ACT exit code {exitCode}; recent journal events (typed fields only): {string.Join(" | ", recent)}";
+        }
+        catch (Exception exception)
+        {
+            return $"ACT exit code {exitCode}; journal diagnostic unavailable ({exception.GetType().Name}).";
+        }
     }
 
     private static IReadOnlyList<DomainEvent> ReadCurrentSessionJournalEvents(string workspace)
