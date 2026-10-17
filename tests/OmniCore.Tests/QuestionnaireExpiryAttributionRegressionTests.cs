@@ -30,7 +30,7 @@ public sealed class QuestionnaireExpiryAttributionRegressionTests
             var codecs = EventCodecs.Create();
             var artifacts = new FileArtifactStore(data);
             var session = SessionId.New();
-            var firstRun = TestRun.Open(store, session, "question run", RunMode.Plan);
+            var firstRun = TestRun.OpenInSession(store, session, root, "question run", RunMode.Plan);
             var interaction = PublishPendingQuestion(store, codecs, artifacts, session, firstRun);
 
             var firstConnection = (SqliteConnection)store.Connection;
@@ -71,7 +71,7 @@ public sealed class QuestionnaireExpiryAttributionRegressionTests
             var codecs = EventCodecs.Create();
             var artifacts = new FileArtifactStore(data);
             var session = SessionId.New();
-            var firstRun = TestRun.Open(store, session, "question run", RunMode.Plan);
+            var firstRun = TestRun.OpenInSession(store, session, root, "question run", RunMode.Plan);
             var interaction = PublishPendingQuestion(store, codecs, artifacts, session, firstRun);
 
             var firstConnection = (SqliteConnection)store.Connection;
@@ -119,7 +119,7 @@ public sealed class QuestionnaireExpiryAttributionRegressionTests
             var codecs = EventCodecs.Create();
             var artifacts = new FileArtifactStore(data);
             var session = SessionId.New();
-            var run = TestRun.Open(store, session, "question run", RunMode.Plan);
+            var run = TestRun.OpenInSession(store, session, root, "question run", RunMode.Plan);
             var interaction = PublishPendingQuestion(store, codecs, artifacts, session, run);
             var requestEvent = Assert.Single(store.ReadFrom(session, 1), evt =>
                 codecs.Decode(evt) is InteractionRequested request && request.InteractionId == interaction);

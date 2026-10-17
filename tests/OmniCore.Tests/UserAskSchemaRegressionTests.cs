@@ -155,7 +155,7 @@ public sealed class UserAskSchemaRegressionTests
             var artifacts = new FileArtifactStore(blobs);
             store = new SqliteEventStore(journal);
             var session = SessionId.New();
-            var run = TestRun.Open(store, session, mode: RunMode.Plan);
+            var run = TestRun.OpenInSession(store, session, root, mode: RunMode.Plan);
             var planId = PlanId.New();
             new EventStream(store, codecs, session).Append(new PlanCreated(planId, run.RunId,
                 PlanItemId.New(), "durable user.ask fixture"));
@@ -334,7 +334,7 @@ public sealed class UserAskSchemaRegressionTests
             var codecs = EventCodecs.Create();
             var artifacts = new FileArtifactStore(Path.Combine(fixtureRoot, "artifacts"));
             var session = SessionId.New();
-            var run = TestRun.Open(store, session, mode: RunMode.Plan);
+            var run = TestRun.OpenInSession(store, session, fixtureRoot, mode: RunMode.Plan);
             var toolCatalog = new FakeCatalog().Add(askTool);
             var permissions = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>(StringComparer.Ordinal)
             {

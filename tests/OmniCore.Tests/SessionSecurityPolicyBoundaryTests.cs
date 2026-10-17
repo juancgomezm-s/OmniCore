@@ -5,7 +5,7 @@ namespace OmniCore.Tests;
 
 public sealed class SessionSecurityPolicyBoundaryTests
 {
-    private const string Workspace = "C:\\workspace";
+    private static readonly string Workspace = Path.Combine(Path.GetTempPath(), "omni-session-security-boundary");
 
     [Theory]
     [InlineData(DestructiveActionPolicy.Allow, DestructiveActionPolicy.Ask, true, true,

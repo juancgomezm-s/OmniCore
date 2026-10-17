@@ -319,6 +319,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     }
 
     internal SqliteEventStore? ReceiptStore => _store as SqliteEventStore;
+    internal bool SessionSecurityRecoveryBlocked => _sessionSecurityRecoveryBlocked;
 
     internal IDisposable AcquireSessionSecurityAdmission()
     {
@@ -367,6 +368,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 catch (SessionWriterLeaseUnavailableException)
                 {
                     _writerOwnershipUnavailable = true;
+                    _sessionSecurityRecoveryBlocked = false;
                     _writerLeaseRecoveryBlocked = true;
                     _recoveryProblem = "session writer ownership is unavailable";
                     return false;
@@ -375,6 +377,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                     or InvalidOperationException or ArgumentException or InvalidDataException)
                 {
                     _writerOwnershipUnavailable = true;
+                    _writerLeaseRecoveryBlocked = false;
                     _sessionSecurityRecoveryBlocked = true;
                     _recoveryProblem = "session security initialization is blocked: " + exception.GetType().Name;
                     return false;
@@ -408,6 +411,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 catch (SessionWriterLeaseUnavailableException)
                 {
                     _writerOwnershipUnavailable = true;
+                    _sessionSecurityRecoveryBlocked = false;
                     _writerLeaseRecoveryBlocked = true;
                     _recoveryProblem = "session writer ownership is unavailable";
                     return false;
@@ -416,6 +420,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                     or InvalidOperationException or ArgumentException or InvalidDataException)
                 {
                     _writerOwnershipUnavailable = true;
+                    _writerLeaseRecoveryBlocked = false;
                     _sessionSecurityRecoveryBlocked = true;
                     _recoveryProblem = "session security initialization is blocked: " + exception.GetType().Name;
                     return false;
@@ -436,6 +441,10 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         }
         return false;
     }
+
+    internal CommandAck WriterOwnershipFailureAck(string messageId) => _sessionSecurityRecoveryBlocked
+        ? new CommandAck(messageId, "error", "session_security.recovery_blocked", RuntimeCommandOutcome.Rejected())
+        : new CommandAck(messageId, "busy", "session_writer_owned", RuntimeCommandOutcome.Deferred("session_writer_owned"));
 
     private (SessionId? Session, RunId? Run)? ReadSessionPointer()
     {
@@ -787,8 +796,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             return new CommandAck(command.MessageId, "error", "session_security.stale_revision",
                 RuntimeCommandOutcome.Rejected());
         if (!requestedConversationCommand && !EnsureWriterOwnershipForCommand())
-            return new CommandAck(command.MessageId, "busy", "session_writer_owned",
-                RuntimeCommandOutcome.Deferred("session_writer_owned"));
+            return WriterOwnershipFailureAck(command.MessageId);
 
         using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
         var commandName = fields.TryGetValue("cmd", out var c) ? c : null;

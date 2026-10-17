@@ -1213,7 +1213,8 @@ public sealed partial class TuiApp
         try
         {
             if (!_turnHost.TryAcquireSessionWriter())
-            { ShowMessage(_localization.Resolve("session_writer_owned")); return false; }
+            { ShowMessage(_localization.Resolve(_turnHost.SessionSecurityRecoveryBlocked
+                ? "session_security.recovery_blocked" : "session_writer_owned")); return false; }
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException)
         {

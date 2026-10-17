@@ -116,17 +116,19 @@ public sealed class SimulationExceptionalCommandOutcomeTests
         Assert.Equal(RuntimeCommandOutcomeKind.Accepted, failed.Outcome?.Kind);
         var session = Assert.IsType<SessionId>(server.LastSessionId());
         Assert.NotEqual(previousSession, session);
-        var created = Assert.Single(store.ReadFrom(session, 1));
-        Assert.IsType<SessionCreated>(EventCodecs.Create().Decode(created));
+        var createdEvents = store.ReadFrom(session, 1);
+        Assert.Equal(2, createdEvents.Count);
+        var created = Assert.Single(createdEvents, evt => EventCodecs.Create().Decode(evt) is SessionCreated);
+        Assert.Single(createdEvents, evt => EventCodecs.Create().Decode(evt) is SessionSecurityPolicySet);
         Assert.Equal(new CommandCausation(new CommandId(Guid.Parse(commandId))), created.Causation);
-        Assert.Equal(created.Sequence, failed.FirstSeq);
-        Assert.Equal(created.Sequence, failed.LastSeq);
+        Assert.Equal(createdEvents[0].Sequence, failed.FirstSeq);
+        Assert.Equal(createdEvents[^1].Sequence, failed.LastSeq);
         Assert.Null(server.LastRunId());
         var resume = server.Send(WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"sim.resume\"}"), CancellationToken.None);
         Assert.Equal(RuntimeCommandOutcomeKind.Rejected, resume.Outcome?.Kind);
         Assert.Null(resume.FirstSeq);
         Assert.Null(resume.LastSeq);
-        Assert.Equal(1, store.CurrentSequence(session));
+        Assert.Equal(2, store.CurrentSequence(session));
     }
 
     private sealed class ThrowingAuditSink : IAuditSink

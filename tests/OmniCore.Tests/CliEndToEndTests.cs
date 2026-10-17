@@ -255,6 +255,7 @@ public sealed class CliEndToEndTests
     {
         await InIsolatedCli(async (workspace, config, data, provider) =>
         {
+            SetSessionSecurityFullAgent();
             const string profile = "0199a000-0000-7000-8000-000000000031";
             const string model = "claude-haiku-5-5";
             var liveClaudeAcceptance = string.Equals(
@@ -441,6 +442,7 @@ public sealed class CliEndToEndTests
     {
         await InIsolatedCli(async (workspace, config, data, provider) =>
         {
+            SetSessionSecurityFullAgent();
             const string profile = "0199a000-0000-7000-8000-000000000033";
             const string model = "claude-haiku-5-5";
             InitializeGitRepository(workspace);
@@ -628,6 +630,7 @@ public sealed class CliEndToEndTests
     {
         await InIsolatedCli(async (workspace, config, data, provider) =>
         {
+            SetSessionSecurityFullAgent();
             const string profile = "0199a000-0000-7000-8000-000000000032";
             const string model = "claude-haiku-5-5";
             InitializeGitRepository(workspace);
@@ -745,6 +748,7 @@ public sealed class CliEndToEndTests
     {
         await InIsolatedCli(async (workspace, config, data, provider) =>
         {
+            SetSessionSecurityFullAgent();
             const string profile = "0199a000-0000-7000-8000-000000000041";
             const string model = "claude-haiku-5-5";
             InitializeGitRepository(workspace);
@@ -813,6 +817,7 @@ public sealed class CliEndToEndTests
     {
         await InIsolatedCli(async (workspace, config, data, provider) =>
         {
+            SetSessionSecurityFullAgent();
             const string profile = "0199a000-0000-7000-8000-000000000001";
             File.AppendAllText(Path.Combine(config, "models.yaml"), "    inputPricePerMillionUsd: 0\n    outputPricePerMillionUsd: 0\n");
             SetSourceModelFullAgent(data);
@@ -902,6 +907,7 @@ public sealed class CliEndToEndTests
     {
         await InIsolatedCli(async (workspace, config, data, provider) =>
         {
+            SetSessionSecurityFullAgent();
             const string profile = "0199a000-0000-7000-8000-000000000021";
             File.WriteAllText(Path.Combine(config, "models.yaml"), """
                 models:
@@ -1124,6 +1130,7 @@ public sealed class CliEndToEndTests
     {
         await InIsolatedCli(async (workspace, config, data, provider) =>
         {
+            SetSessionSecurityFullAgent();
             const string profile = "0199a000-0000-7000-8000-000000000022";
             const string model = "claude-haiku-5-5";
             InitializeGitRepository(workspace);
@@ -1276,6 +1283,7 @@ public sealed class CliEndToEndTests
     {
         await InIsolatedCli(async (workspace, config, data, provider) =>
         {
+            SetSessionSecurityFullAgent();
             const string profileId = "0199a000-0000-7000-8000-000000000011";
             // Keep the physical invocation envelope below the workflow's finite per-stage
             // reservation. This fixture does not increase Run/task budgets to accommodate the
@@ -1782,6 +1790,7 @@ public sealed class CliEndToEndTests
     {
         await InIsolatedCli(async (workspace, config, data, provider) =>
         {
+            SetSessionSecurityFullAgent();
             // The normal 8k fixture has a six-tool Harness ceiling, under which artifact.read
             // correctly outranks optional proposals. Give this case enough declared context
             // for the existing PlanProposal capability to be disclosed without widening policy.
@@ -3040,6 +3049,7 @@ public sealed class CliEndToEndTests
     {
         await InIsolatedCli(async (workspace, _, data, provider) =>
         {
+            SetSessionSecurityFullAgent();
             const string original = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n";
             File.WriteAllText(Path.Combine(workspace, "doc.txt"), original);
             var version = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(original))).ToLowerInvariant();
@@ -3097,6 +3107,7 @@ public sealed class CliEndToEndTests
         // de la configuración exacta que lo ejecutó, y el onboarding la usa en su recomendación.
         await InIsolatedCli(async (workspace, config, data, provider) =>
         {
+            SetSessionSecurityFullAgent();
             const string original = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n";
             File.WriteAllText(Path.Combine(workspace, "doc.txt"), original);
             var version = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(original))).ToLowerInvariant();
@@ -3156,6 +3167,7 @@ public sealed class CliEndToEndTests
     {
         await InIsolatedCli(async (workspace, _, _, provider) =>
         {
+            SetSessionSecurityFullAgent();
             const string original = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n";
             File.WriteAllText(Path.Combine(workspace, "doc.txt"), original);
             Assert.Equal(0, (await Run("trust")).Code);
@@ -3281,6 +3293,14 @@ public sealed class CliEndToEndTests
         using var policies = OmniHost.CreateModelPolicyService(dataDirectory);
         policies.Set(ModelPolicyKey.For("scripted", "scripted-model"), 0,
             ModelPolicyPresets.FullAgent(), CancellationToken.None);
+    }
+
+    private static void SetSessionSecurityFullAgent()
+    {
+        var configuration = new SessionSecurityDefaultConfiguration(OmniHost.CreatePlatformPaths());
+        var current = configuration.Read();
+        configuration.Set(current.Revision, ModelPolicyCategory.FullAgent,
+            TestContext.Current.CancellationToken);
     }
 
     [Fact]

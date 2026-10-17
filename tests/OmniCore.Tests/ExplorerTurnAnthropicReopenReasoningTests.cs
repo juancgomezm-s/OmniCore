@@ -47,7 +47,7 @@ public sealed partial class ExplorerTurnAnthropicContinuationTests
             var artifacts = new FileArtifactStore(root, redactor);
             store = new SqliteEventStore(journal);
             var session = SessionId.New();
-            var run = TestRun.Open(store, session, mode: RunMode.Plan);
+            var run = TestRun.OpenInSession(store, session, root, mode: RunMode.Plan);
             var catalog = new FakeCatalog().Add(new UserAskTool());
             var executor = ScriptedToolExecutor.WithWorkspace(catalog,
                 new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), root);

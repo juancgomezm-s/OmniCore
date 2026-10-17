@@ -37,7 +37,9 @@ public sealed class ExplorerStepPublicationLeaseTests
             var innerArtifacts = new FileArtifactStore(root);
             var artifacts = new LeaseObservingArtifacts(innerArtifacts, root);
             var session = SessionId.New();
-            var run = TestRun.Open(store, session, mode: RunMode.Plan);
+            var run = cancelAfterResponse
+                ? TestRun.Open(store, session, mode: RunMode.Plan)
+                : TestRun.OpenInSession(store, session, root, mode: RunMode.Plan);
             var questionnaires = new QuestionnaireInteractionService(store, codecs, artifacts);
             var catalog = new FakeCatalog().Add(new UserAskTool());
             var executor = ScriptedToolExecutor.WithWorkspace(catalog,

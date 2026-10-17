@@ -22,7 +22,7 @@ public sealed class EffectResolutionOriginAttributionTests
         var store = fixture.Store;
         var codecs = EventCodecs.Create();
         var session = SessionId.New();
-        var originRun = TestRun.Open(store, session, "terminal effect origin");
+        var originRun = TestRun.OpenInSession(store, session, fixture.WorkspaceRoot, "terminal effect origin");
         var originTurn = TurnId.New();
         var originCall = ToolCallId.New();
         var originStream = new EventStream(store, codecs, session);
@@ -126,6 +126,7 @@ public sealed class EffectResolutionOriginAttributionTests
         private readonly string _root = Path.Combine(Path.GetTempPath(), "omni-effect-origin-" + Guid.NewGuid().ToString("N"));
         private readonly string _journal;
         public IEventStore Store { get; }
+        public string WorkspaceRoot => _root;
         public string StateFile => Path.Combine(_root, "session.state");
         public Fixture(bool sqlite)
         {

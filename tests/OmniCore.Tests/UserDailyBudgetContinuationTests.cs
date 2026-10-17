@@ -74,12 +74,12 @@ public sealed class UserDailyBudgetContinuationTests
         try
         {
             var day = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
-            var runA = TestRun.Open(storeA, SessionId.New());
+            var runA = TestRun.OpenInSession(storeA, SessionId.New(), a);
             var first = Request(day, 0m);
             new EventStream(storeA, codecs, runA.SessionId).Append(first);
             new RunControlService(storeA, codecs).Respond(runA.SessionId, first.InteractionId, "allow_plus");
             storeA.Close();
-            var runB = TestRun.Open(storeB, SessionId.New());
+            var runB = TestRun.OpenInSession(storeB, SessionId.New(), b);
             var next = Request(day, stale ? 0m : 10m);
             new EventStream(storeB, codecs, runB.SessionId).Append(next);
             var before = storeB.CurrentSequence(runB.SessionId);

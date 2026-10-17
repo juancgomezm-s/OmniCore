@@ -109,6 +109,57 @@ public sealed class SessionSecurityInFlightReplayTests
         }
     }
 
+    [Fact]
+    public void Writer_admission_reports_policy_recovery_separately_from_lease_contention()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-session-security-writer-diagnostics-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var journal = Path.Combine(root, "journal.db");
+        var stateFile = Path.Combine(root, "active-session.txt");
+        var session = SessionId.New();
+        var codecs = EventCodecs.Create();
+        SqliteEventStore? store = null;
+        OmniServer? server = null;
+        SqliteEventStore? competitor = null;
+        try
+        {
+            File.WriteAllText(stateFile, session + "\n-\n");
+            store = new SqliteEventStore(journal);
+            server = new OmniServer(store, codecs, new InMemoryAuditSink(), stateFile,
+                platformPathsFactory: () => new TestPaths(root));
+
+            // A durable pointer to a journal without canonical SessionCreated is a policy
+            // recovery failure, not a competing writer. The fail-closed result is explicit.
+            Assert.False(server.EnsureWriterOwnershipForCommand());
+            var recovery = server.WriterOwnershipFailureAck(Ids.NewV7());
+            Assert.Equal("error", recovery.Status);
+            Assert.Equal("session_security.recovery_blocked", recovery.Error);
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Rejected, recovery.Outcome?.Kind);
+
+            var workspace = Path.Combine(root, "workspace");
+            Directory.CreateDirectory(workspace);
+            new EventStream(store, codecs, session).Append(new SessionCreated(session,
+                WorkspaceId.Of(workspace).ToString(), workspace, ProfileId.New(), DateTimeOffset.UtcNow));
+            Assert.True(server.EnsureWriterOwnershipForCommand());
+            store.ReleaseSessionWriterLease(session);
+
+            competitor = new SqliteEventStore(journal);
+            Assert.True(competitor.AcquireSessionWriterLease(session));
+            Assert.False(server.EnsureWriterOwnershipForCommand());
+            var busy = server.WriterOwnershipFailureAck(Ids.NewV7());
+            Assert.Equal("busy", busy.Status);
+            Assert.Equal("session_writer_owned", busy.Error);
+            Assert.Equal(OmniCore.Protocol.RuntimeCommandOutcomeKind.Deferred, busy.Outcome?.Kind);
+        }
+        finally
+        {
+            server?.ClosePersistentStore();
+            store?.Dispose();
+            competitor?.Dispose();
+            try { Directory.Delete(root, recursive: true); } catch (IOException) { }
+        }
+    }
+
     [Theory]
     [InlineData(ReconciliationOutcome.Applied, "Accepted", false)]
     [InlineData(ReconciliationOutcome.NotApplied, "Accepted", false)]

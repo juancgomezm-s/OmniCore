@@ -127,7 +127,7 @@ public sealed class SuspendedSpendAccountingRegressionTests
             var codecs = EventCodecs.Create();
             var artifacts = new FileArtifactStore(Path.Combine(root, "blobs"));
             var session = SessionId.New();
-            var run = TestRun.Open(store, session, mode: RunMode.Plan);
+            var run = TestRun.OpenInSession(store, session, root, mode: RunMode.Plan);
             var interactionId = StartQuestionAndSuspend(store, codecs, artifacts, root,
                 session, run.RunId, run.RootLane, sessionCapUsd: 20m, dailyCapUsd: 100m);
             Assert.NotNull(interactionId);
@@ -180,7 +180,7 @@ public sealed class SuspendedSpendAccountingRegressionTests
             var codecs = EventCodecs.Create();
             var artifacts = new FileArtifactStore(Path.Combine(root, "blobs"));
             var session = SessionId.New();
-            var run = TestRun.Open(store, session, mode: RunMode.Plan);
+            var run = TestRun.OpenInSession(store, session, root, mode: RunMode.Plan);
             var interactionId = StartQuestionAndSuspend(store, codecs, artifacts, root,
                 session, run.RunId, run.RootLane, sessionCapUsd: 20m, dailyCapUsd: 100m);
             Assert.NotNull(interactionId);

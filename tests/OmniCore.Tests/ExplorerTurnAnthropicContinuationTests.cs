@@ -36,7 +36,7 @@ public sealed partial class ExplorerTurnAnthropicContinuationTests
             using var handler = new TwoSseHandler();
             var provider = CreateProvider(handler);
             var session = SessionId.New();
-            var run = TestRun.Open(store, session);
+            var run = TestRun.OpenInSession(store, session, root);
             var audit = new InMemoryAuditSink();
             var selection = new ModelSelection(new ModelIdValue("claude-fixture"), 8192, ToolMode.Direct, null);
             var turn = new ExplorerTurn((request, ct) => CompleteLocally(provider, request, ct)

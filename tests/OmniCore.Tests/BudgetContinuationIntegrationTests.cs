@@ -31,7 +31,7 @@ public sealed class BudgetContinuationIntegrationTests
             var codecs = EventCodecs.Create();
             var artifacts = new FileArtifactStore(root);
             var session = SessionId.New();
-            var run = TestRun.Open(store, session);
+            var run = TestRun.OpenInSession(store, session, root);
             var loaded = new ConfigLoader().Load(null, null, scope == "session"
                 ? "budget: {session: 0, daily: 100}" : "budget: {session: 100, daily: 0}");
             var catalog = OmniHost.CreateExplorerTools().Catalog();
@@ -65,7 +65,7 @@ public sealed class BudgetContinuationIntegrationTests
             if (otherSession)
             {
                 session = SessionId.New();
-                run = TestRun.Open(store, session);
+                run = TestRun.OpenInSession(store, session, root);
             }
             var result = Turn().Ask("after restart", "sys", session, run.RunId, run.RootLane, "", CancellationToken.None);
             var allowed = !otherSession || scope == "daily";

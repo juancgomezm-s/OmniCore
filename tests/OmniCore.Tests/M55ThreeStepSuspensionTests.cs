@@ -30,7 +30,7 @@ public sealed class M55ThreeStepSuspensionTests
             var codecs = EventCodecs.Create();
             var artifacts = new FileArtifactStore(blobs);
             var session = SessionId.New();
-            var run = TestRun.Open(store, session, mode: RunMode.Plan);
+            var run = TestRun.OpenInSession(store, session, root, mode: RunMode.Plan);
             var readId = ToolCallId.New();
             var askId = ToolCallId.New();
             var schema = new QuestionnaireSchema("Continue?", null,

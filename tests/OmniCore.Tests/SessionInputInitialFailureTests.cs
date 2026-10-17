@@ -32,11 +32,12 @@ public sealed class SessionInputInitialFailureTests
         if (sessionWasCommitted)
         {
             Assert.Equal(session, server.LastSessionId());
-            Assert.Equal(2, events.Count);
+            Assert.Equal(3, events.Count);
             Assert.IsType<SessionCreated>(codecs.Decode(events[0]));
-            Assert.IsType<SessionRoutingPolicySet>(codecs.Decode(events[1]));
+            Assert.IsType<SessionSecurityPolicySet>(codecs.Decode(events[1]));
+            Assert.IsType<SessionRoutingPolicySet>(codecs.Decode(events[2]));
             Assert.Equal(1L, ack.FirstSeq);
-            Assert.Equal(2L, ack.LastSeq);
+            Assert.Equal(3L, ack.LastSeq);
             Assert.All(events, e => Assert.Equal(new CommandCausation(new CommandId(Guid.Parse(id))), e.Causation));
         }
         else

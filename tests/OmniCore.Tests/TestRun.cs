@@ -1,6 +1,7 @@
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Engine;
+using OmniCore.Host;
 using OmniCore.Infrastructure;
 
 namespace OmniCore.Tests;
@@ -13,6 +14,20 @@ namespace OmniCore.Tests;
 internal static class TestRun
 {
     public sealed record Opened(SessionId SessionId, RunId RunId, TaskId RootTask, LaneId RootLane);
+
+    /// <summary>Creates a canonical Session envelope before opening a Run for Host recovery tests.</summary>
+    public static Opened OpenInSession(IEventStore store, SessionId sessionId, string workspaceRoot,
+        string objective = "objetivo de test", RunMode mode = RunMode.Act) =>
+        OpenInSession(new EventStream(store, EventCodecs.Create(), sessionId), sessionId, workspaceRoot, objective, mode);
+
+    public static Opened OpenInSession(EventStream stream, SessionId sessionId, string workspaceRoot,
+        string objective = "objetivo de test", RunMode mode = RunMode.Act)
+    {
+        var canonicalWorkspace = ProjectIdentity.CanonicalWorkspacePath(Path.GetFullPath(workspaceRoot));
+        stream.Append(new SessionCreated(sessionId, WorkspaceId.Of(canonicalWorkspace).ToString(), canonicalWorkspace,
+            ProfileId.New(), DateTimeOffset.UtcNow));
+        return Open(stream, sessionId, objective, mode);
+    }
 
     public static Opened Open(IEventStore store, SessionId sessionId, string objective = "objetivo de test",
         RunMode mode = RunMode.Act) =>

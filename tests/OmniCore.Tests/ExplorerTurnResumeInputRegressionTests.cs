@@ -35,7 +35,7 @@ public sealed class ExplorerTurnResumeInputRegressionTests
             var codecs = EventCodecs.Create();
             var artifacts = new FileArtifactStore(blobs);
             var session = SessionId.New();
-            var run = TestRun.Open(store, session, mode: RunMode.Plan);
+            var run = TestRun.OpenInSession(store, session, root, mode: RunMode.Plan);
             var service = new QuestionnaireInteractionService(store, codecs, artifacts);
             var catalog = new FakeCatalog().Add(new UserAskTool());
             var executor = ScriptedToolExecutor.WithWorkspace(catalog,

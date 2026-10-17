@@ -15,7 +15,7 @@ public sealed class M3OrphanEffectNotLostTests
     {
         var store = new InMemoryEventStore();
         var session = SessionId.New();
-        var run = TestRun.Open(store, session).RunId;
+        var run = TestRun.OpenInSession(store, session, Path.GetTempPath()).RunId;
         var call = ToolCallId.New();
         var stream = new EventStream(store, EventCodecs.Create(), session);
         stream.Append(new ToolCallRequested(call, "pc-1", "t", "{}"));

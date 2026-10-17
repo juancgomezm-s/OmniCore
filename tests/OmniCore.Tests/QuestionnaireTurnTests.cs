@@ -47,7 +47,7 @@ public sealed class QuestionnaireTurnTests
             var codecs = EventCodecs.Create();
             var artifacts = new FileArtifactStore(blobs);
             var session = SessionId.New();
-            var run = TestRun.Open(store, session, mode: RunMode.Plan);
+            var run = TestRun.OpenInSession(store, session, root, mode: RunMode.Plan);
             var planId = PlanId.New();
             new EventStream(store, codecs, session).Append(new PlanCreated(planId, run.RunId,
                 PlanItemId.New(), "questionnaire fixture plan"));

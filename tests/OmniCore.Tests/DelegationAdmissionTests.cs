@@ -299,6 +299,10 @@ public sealed class DelegationAdmissionTests
             Directory.CreateDirectory(DataRoot);
             Store = new SqliteEventStore(Journal); Artifacts = new FileArtifactStore(DataRoot);
             Reservations = new SqliteSpendReservationStore(Path.Combine(DataRoot, "reservations.db"));
+            var platformPaths = OmniHost.CreatePlatformPaths(Path.Combine(DataRoot, "platform"));
+            var securityDefault = new SessionSecurityDefaultConfiguration(platformPaths);
+            var initialDefault = securityDefault.Read();
+            securityDefault.Set(initialDefault.Revision, ModelPolicyCategory.FullAgent, CancellationToken.None);
             if (failMailboxAckBatches)
             {
                 MailboxAckFault = new MailboxAckFaultStore(Store, Codecs);
@@ -306,6 +310,13 @@ public sealed class DelegationAdmissionTests
             }
             else RuntimeStore = Store;
             Server = NewServer(RuntimeStore);
+            // Delegation is an explicit model-policy fixture; it must be present before the
+            // source ModelStep is fingerprinted, rather than retrofitted after the provider ran.
+            using (var policies = new SqliteModelPolicyStore(platformPaths.UserDatabasePath))
+            {
+                var key = ModelPolicyKey.For("fixture", "fixture");
+                policies.Set(key, 0, ModelPolicyPresets.FullAgent(), CancellationToken.None);
+            }
             Assert.Equal("ok", Server.SendUserAction(WireEnvelope.Command(Ids.NewV7(),
                 "{\"cmd\":\"session.input\",\"mode\":\"orq\",\"text\":\"Principal español\"}"), CancellationToken.None).Status);
             Session = Server.LastSessionId()!; Run = Server.LastRunId()!; Lane = Server.LastLaneId()!;
@@ -412,13 +423,6 @@ public sealed class DelegationAdmissionTests
                 token => Explorer().Ask(question, "system", Session, Run, Lane, "state", token), CancellationToken.None);
             Assert.Null(result.Failure);
             Assert.Equal(StopReason.EndTurn, result.Result?.StopReason);
-            // Admission now requires an explicitly saved orchestration ceiling for the exact
-            // source route/model; test fixtures opt in rather than inheriting by provider brand.
-            using var policies = new SqliteModelPolicyStore(
-                OmniHost.CreatePlatformPaths(Path.Combine(DataRoot, "platform")).UserDatabasePath);
-            var key = ModelPolicyKey.For("fixture", "fixture");
-            policies.Set(key, policies.Get(key, CancellationToken.None)?.Revision ?? 0,
-                ModelPolicyPresets.FullAgent(), CancellationToken.None);
         }
         internal DomainEvent Source() => Store.ReadFrom(Session, 1).Last(e => Codecs.Decode(e) is ModelStepStarted);
         internal DelegationCreateRequest Request()

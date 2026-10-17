@@ -703,8 +703,7 @@ public static class StdioProtocolHost
         // Do not reserve a receipt while another live owner prevents execution: otherwise a
         // transient busy response would poison the command ID as an ambiguous result.
         if (!server.EnsureWriterOwnershipForCommand())
-            return new CommandAck(command.MessageId, "busy", "session_writer_owned",
-                RuntimeCommandOutcome.Deferred("session_writer_owned"));
+            return server.WriterOwnershipFailureAck(command.MessageId);
 
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
         var scope = store.CommandReceiptScope;
