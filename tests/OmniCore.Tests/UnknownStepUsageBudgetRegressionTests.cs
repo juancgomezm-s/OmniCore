@@ -13,6 +13,38 @@ using OmniCore.Tools;
 public sealed class UnknownStepUsageBudgetRegressionTests
 {
     [Theory]
+    [InlineData(BillingMode.Local, false)]
+    [InlineData(BillingMode.Local, true)]
+    [InlineData(BillingMode.IncludedQuota, false)]
+    [InlineData(BillingMode.IncludedQuota, true)]
+    public void Non_monetary_model_keeps_working_with_incomplete_usage_and_legacy_monetary_limits(BillingMode billing, bool runCap)
+    {
+        var fixture = OpenFixture(runCap ? 1m : null);
+        try
+        {
+            var tools = new CountingExecutor(fixture.Executor);
+            var calls = 0;
+            var turn = MakeTurn(fixture, tools, true, (_, _) => ++calls == 1
+                ? ToolUseResponse(TokenUsageFields.None) : EndTurnResponse(), billing);
+            Assert.Equal(StopReason.EndTurn, turn.Ask("first", "system", fixture.Session, fixture.Run,
+                fixture.Lane, "", CancellationToken.None).StopReason);
+            Assert.Equal(StopReason.EndTurn, turn.Ask("second", "system", fixture.Session, fixture.Run,
+                fixture.Lane, "", CancellationToken.None).StopReason);
+            Assert.Equal(3, calls); Assert.Equal(1, tools.ExecuteCount);
+            var events = fixture.Store.ReadFrom(fixture.Session, 1).Select(fixture.Codecs.Decode).ToArray();
+            Assert.DoesNotContain(events.OfType<InteractionRequested>(), request => request.Kind == InteractionKind.BudgetExceeded);
+            Assert.Contains(events.OfType<ModelStepCompleted>(), completed => completed.CostUsd is null
+                && completed.ReportedUsageFields == TokenUsageFields.None);
+            Assert.Equal(runCap ? 1m : (decimal?)null, events.OfType<RunCreated>().Single().Budget!.MaxCostUsd);
+            var paid = MakeTurn(fixture, tools, true, (_, _) => { calls++; return EndTurnResponse(); }, BillingMode.MeteredCurrency);
+            Assert.Equal(StopReason.Cancelled, paid.Ask("paid model", "system", fixture.Session, fixture.Run,
+                fixture.Lane, "", CancellationToken.None).StopReason);
+            Assert.Equal(3, calls); // An explicit paid budget still applies when returning to a metered route.
+        }
+        finally { fixture.DeleteArtifacts(); }
+    }
+
+    [Theory]
     [InlineData(TokenUsageFields.None, true)]
     [InlineData(TokenUsageFields.Input, true)]
     [InlineData(TokenUsageFields.None, false)]
@@ -216,7 +248,7 @@ public sealed class UnknownStepUsageBudgetRegressionTests
     }
 
     private static ExplorerTurn MakeTurn(Fixture fixture, IToolExecutor executor, bool enforceDefaultCaps,
-        Func<ModelRequest, CancellationToken, ModelResponse> complete) => new(complete, executor,
+        Func<ModelRequest, CancellationToken, ModelResponse> complete, BillingMode? billing = null) => new(complete, executor,
         new FakeCatalog().Add(FakeTool.Read("fake.read")),
         new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
         new ExecutionFingerprint("budget-test-model", "h", "t", "context", "o", "test-build"),
@@ -225,7 +257,7 @@ public sealed class UnknownStepUsageBudgetRegressionTests
         new FileArtifactStore(Path.Combine(fixture.TempRoot, "artifacts")), new InMemoryAuditSink(),
         new RedactionPolicy(), pricing: new ModelPricing(1m, 1m),
         enforceDefaultSpendCaps: enforceDefaultCaps, sessionCapUsd: 5m, dailyCapUsd: 20m,
-        maximumGenerationRequestAttempts: 1); // one scripted response per model request
+        maximumGenerationRequestAttempts: 1, billingMode: billing); // one scripted response per model request
 
     private static ModelResponse ToolUseResponse(TokenUsageFields reportedFields) => new(
         new ContentBlock[]

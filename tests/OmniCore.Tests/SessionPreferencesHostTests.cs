@@ -31,7 +31,8 @@ public sealed class SessionPreferencesHostTests
             using var sessionQuery = JsonDocument.Parse(server.Query("memory.session", CancellationToken.None)!.Json);
             var sessionId = sessionQuery.RootElement.GetProperty("session").GetString()!;
             using var skillQuery = JsonDocument.Parse(server.Query("skills", CancellationToken.None)!.Json);
-            var skill = Assert.Single(skillQuery.RootElement.GetProperty("skills").EnumerateArray());
+            var skill = Assert.Single(skillQuery.RootElement.GetProperty("skills").EnumerateArray(),
+                row => row.GetProperty("id").GetString() == "fixture.skill" && row.GetProperty("scope").GetString() == "Project");
             var manifestHash = skill.GetProperty("manifestSha256").GetString()!;
 
             var staleMemory = server.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"memory.session.add\","

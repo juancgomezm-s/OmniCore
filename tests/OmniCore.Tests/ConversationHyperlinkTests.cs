@@ -9,6 +9,37 @@ namespace OmniCore.Tests;
 public sealed class ConversationHyperlinkTests
 {
     [Fact]
+    public async Task Html_report_links_are_active_but_only_existing_workspace_reports_can_be_opened()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-html-links-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var workspace = Path.Combine(root, "workspace"); Directory.CreateDirectory(workspace);
+            var local = Path.Combine(workspace, "reporte con espacios.html");
+            File.WriteAllText(local, "<!doctype html><title>Informe</title>");
+            var outside = Path.Combine(root, "outside.html"); File.WriteAllText(outside, "outside");
+            var browser = new FakeBrowserLauncher(); var host = new WebLinkHost(browser, workspace);
+            var uri = new Uri(local).AbsoluteUri;
+            Assert.True(WebLinkTarget.TryParse(uri, out _));
+            Assert.Contains(MarkdownRenderer.Render("[Abrir informe](" + uri + ")").SelectMany(row => row), span => span.LinkTarget == uri);
+            Assert.Empty(browser.Launched);
+            Assert.True(await host.OpenAsync(uri, CancellationToken.None));
+            Assert.Equal(uri, Assert.Single(browser.Launched).AbsoluteUri);
+            Assert.False(await host.OpenAsync(new Uri(outside).AbsoluteUri, CancellationToken.None));
+            Assert.False(await host.OpenAsync(new Uri(Path.Combine(workspace, "missing.html")).AbsoluteUri, CancellationToken.None));
+            Assert.False(await host.OpenAsync("file://server/share/report.html", CancellationToken.None));
+            Assert.False(WebLinkTarget.TryParse("file:///tmp/report.html?run=script", out _));
+            Assert.False(WebLinkTarget.TryParse("file:///tmp/report%0A.html", out _));
+            var script = Path.Combine(workspace, "script.ps1"); File.WriteAllText(script, "must never execute");
+            Assert.False(await host.OpenAsync(new Uri(script).AbsoluteUri, CancellationToken.None));
+            Assert.Single(browser.Launched);
+            Assert.False((await new SystemBrowserLauncher().LaunchAsync(new Uri(local), CancellationToken.None)).Launched);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public void Hyperlink_literal_notices_preserve_text_and_code_while_exposing_web_targets()
     {
         const string source = "Abre http://localhost:8000/help\n\n`https://code.example.com`";

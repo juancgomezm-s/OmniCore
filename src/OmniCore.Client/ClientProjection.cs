@@ -412,6 +412,19 @@ public sealed class ClientProjection
             : null;
         var title = kind == "BudgetExceeded" && ids.Contains("allow_quota", StringComparer.Ordinal)
             ? Label("interaction.included_quota.title", kind) : Label(prefix + "title", kind);
+        if (kind == "ModelRouteConsent")
+        {
+            title = _text.Resolve("shell.route.title");
+            labels = ids.Select(id => id switch { "allow_route" => _text.Resolve("shell.route.allow"),
+                "deny" => _text.Resolve("shell.route.deny"), _ => Label(prefix + id, id) }).ToArray();
+            var route = JsonObj.Parse(Get(f, "subject"));
+            if (route.GetValueOrDefault("providerId") is { Length: > 0 } provider
+                && route.GetValueOrDefault("routeId") is { Length: > 0 } model)
+                subject = _text.Resolve("shell.route.question", new Dictionary<string, string>
+                    { ["model"] = model, ["provider"] = provider }) + "\n"
+                    + _text.Resolve("shell.route.billing." + (route.GetValueOrDefault("billingMode") switch
+                    { "Local" => "local", "IncludedQuota" => "subscription", "CreditBalance" => "credits", "MeteredCurrency" => "metered", _ => "unknown" }));
+        }
         return new InteractionOverlayModel(Get(f, "interactionId"), kind, title,
             subject, labels, ids, questionnaire, Get(f, "defaultOption"), Get(f, "runId"),
             Get(f, "taskId"), Get(f, "laneId"), Get(f, "executionId"));

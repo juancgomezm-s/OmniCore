@@ -287,6 +287,7 @@ public sealed class ExplorerTurn
     private readonly decimal _sessionCapUsd;
 
     private readonly decimal _dailyCapUsd;
+    private readonly bool _monetaryBilling;
 
     private readonly QuestionnaireInteractionService? _questionnaires;
 
@@ -336,7 +337,8 @@ public sealed class ExplorerTurn
         IReadOnlyList<IHook>? lifecycleHooks = null,
         SessionMemoryPolicy? sessionMemoryPolicy = null,
         Func<IReadOnlyList<string>, Func<string, SkillValidationReadResult?>, string?,
-            CancellationToken, IReadOnlyList<ExternalCompletionGateResult>>? resolveLifecycleValidations = null)
+            CancellationToken, IReadOnlyList<ExternalCompletionGateResult>>? resolveLifecycleValidations = null,
+        BillingMode? billingMode = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -372,8 +374,12 @@ public sealed class ExplorerTurn
         _harness = harness;
         _boundary = boundary;
         _pricing = pricing;
-        _enforceSessionSpendCap = enforceSessionSpendCap ?? enforceDefaultSpendCaps;
-        _enforceDailySpendCap = enforceDailySpendCap ?? enforceDefaultSpendCaps;
+        // Local execution and included subscription usage have no per-invocation USD charge.
+        // Old Session snapshots may still carry a monetary limit; it cannot block these routes.
+        // Undeclared billing retains conservative monetary admission for explicitly capped work.
+        _monetaryBilling = billingMode is not (BillingMode.Local or BillingMode.IncludedQuota);
+        _enforceSessionSpendCap = _monetaryBilling && (enforceSessionSpendCap ?? enforceDefaultSpendCaps);
+        _enforceDailySpendCap = _monetaryBilling && (enforceDailySpendCap ?? enforceDefaultSpendCaps);
         _enforceDefaultSpendCaps = _enforceSessionSpendCap || _enforceDailySpendCap;
         _quotaAdmission = quotaAdmission;
         _quotaAllowsMeta = quotaAllowsMeta;
@@ -833,6 +839,7 @@ public sealed class ExplorerTurn
         var forcedToolName = isResume || dedicatedImageRoute ? null : _forcedInitialToolName;
         var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
         var budget = ReadRunBudget(stream, runId);
+        if (!_monetaryBilling) budget = budget with { MaxCostUsd = null };
         // Primary usage for this Ask remains in SpendGuard. Meta usage is reread in full
         // at each boundary, avoiding a gap/overlap between a historical scan and a sequence delta.
         // Known monetary totals must remain representable even without a cap. Only an
@@ -2920,9 +2927,12 @@ public sealed class ExplorerTurn
         var journal = stream.EventsSince(1);
         var conversationScope = new LaneConversationScope(journal, _codecs, runId, activeLaneId);
         var currentHistoryRun = runId;
+        long currentHistorySequence = 0;
+        var historySequences = new List<long>();
         void AppendHistory(ModelMessage message)
         {
             history.Add(message);
+            historySequences.Add(currentHistorySequence);
             messageOwners?.Add(message, currentHistoryRun);
         }
         var steeringInputs = new Dictionary<SteeringId, TurnSteeringReceived>();
@@ -2943,6 +2953,7 @@ public sealed class ExplorerTurn
         foreach (var evt in journal)
         {
             if (!conversationScope.CanRead(evt)) continue;
+            currentHistorySequence = evt.Sequence;
             var payload = _codecs.Decode(evt);
             if (payload is AssistantMessageRecorded assistant && evt.RunId == assistant.RunId)
                 canonicalAssistantTurns.Add((assistant.RunId, assistant.TurnId));
@@ -3016,6 +3027,7 @@ public sealed class ExplorerTurn
         {
             if (!conversationScope.CanRead(evt)) continue;
             var type = evt.Type.ToString();
+            currentHistorySequence = evt.Sequence;
             currentHistoryRun = evt.RunId ?? runId;
             if (_codecs.Decode(evt) is TurnSteeringReceived steeringReceived)
             {
@@ -3161,7 +3173,10 @@ public sealed class ExplorerTurn
             }
         }
 
-        return history;
+        var checkpoint = SessionConversationCheckpoint.Read(journal, _codecs, _artifacts, runId, activeLaneId);
+        if (checkpoint is null) return history;
+        var firstInput = history.FindIndex(message => message.Role == MessageRole.User);
+        return history.Where((_, index) => index == firstInput || historySequences[index] > checkpoint.ThroughSequence).ToList();
     }
 
     private TurnId? FindOpenTurn(EventStream stream, RunId runId, LaneId laneId)
@@ -3437,6 +3452,16 @@ public sealed class ExplorerTurn
 
         var prompt = EffectiveSystemPrompt(instruction);
         contributors.Add(new RedactingContextContributor(new SystemPromptContributor(prompt), _redaction));
+        var sessionCheckpoint = SessionConversationCheckpoint.Read(stream.EventsSince(1), _codecs, _artifacts, runId, laneId);
+        if (sessionCheckpoint is not null)
+            contributors.Add(new ContextCheckpointContributor(sessionCheckpoint.Id, sessionCheckpoint.ThroughSequence,
+                sessionCheckpoint.Summary, sessionCheckpoint.Artifact));
+        // Pressure probes and final planning share one contribution read. An RPC
+        // contributor must not execute twice merely to check the context threshold.
+        var contributionRequest = new MaterializeRequest(sessionId, runId, contextTask, laneId, turnId,
+            _store.CurrentSequence(sessionId), fingerprint);
+        contributors = contributors.Select(contributor => (IContextContributor)new TurnContextContribution(
+            contributor.GetContextAsync(contributionRequest, cancellationToken).GetAwaiter().GetResult())).ToList();
         var entries = new List<ConversationContextEntry>();
         var messageById = new Dictionary<string, ModelMessage>(StringComparer.Ordinal);
         var runById = new Dictionary<string, RunId>(StringComparer.Ordinal);
@@ -3509,12 +3534,26 @@ public sealed class ExplorerTurn
         var oldCount = Math.Max(0, candidates.Length - Math.Max(0, policy.RecentTailItems));
         var oldItems = candidates.Take(oldCount).ToArray();
         var newOldItems = oldItems.Where(e => !compactedIds.Contains(e.Id)).ToArray();
+        var probeEntries = entries.Where(entry => !compactedIds.Contains(entry.Id) && !summarizedIds.Contains(entry.Id)).ToArray();
+        var pressureContributors = contributors.Append(new SessionConversationContributor(probeEntries)).ToList();
+        if (priorCheckpoint is not null) pressureContributors.Add(new ContextCheckpointContributor(priorCheckpoint.Id,
+            priorCheckpoint.ThroughSequence, priorCheckpoint.Summary, priorCheckpoint.Artifact));
+        var pressure = new ContextMaterializer(_materializer.Counter(), pressureContributors, _artifacts, policy)
+            .PrepareWithinBudget(new MaterializeRequest(sessionId, runId, contextTask, laneId, turnId,
+                _store.CurrentSequence(sessionId), fingerprint), cancellationToken, 0).Snapshot;
+        var atCapacity = ContextCompaction.ShouldCompactAtCapacity(pressure.TokenCount, _selection.ContextBudget);
+        if (atCapacity && !newOldItems.Any(entry => !entry.PreserveWhenTrimming))
+        {
+            oldItems = candidates.Take(Math.Max(1, candidates.Length / 2)).ToArray();
+            newOldItems = oldItems.Where(entry => !compactedIds.Contains(entry.Id)).ToArray();
+        }
         if (newOldItems.Any(entry => !entry.PreserveWhenTrimming)
-            && ContextCompaction.ShouldCompact(newOldItems.Length, policy))
+            && (atCapacity || ContextCompaction.ShouldCompact(newOldItems.Length, policy)))
         {
             var material = (priorCheckpoint?.Summary is { Length: > 0 } oldSummary
                     ? "Previous checkpoint:\n" + oldSummary + "\n\nNew older history:\n" : "")
-                + string.Join("\n", newOldItems.Select(e => e.Content));
+                + string.Join("\n", newOldItems.Select(e => e.Kind == ContextItemKind.ToolResult
+                    ? ToolTraceSummary.Extract(e.Content) : e.Content));
             var compactDetail = System.Text.Json.JsonSerializer.Serialize(new LifecycleCompactionJson(
                 runId.ToString(), turnId.ToString(), newOldItems.Length, material.Length,
                 "bounded-context-compaction"), LifecycleJsonContext.Default.LifecycleCompactionJson);
@@ -3701,10 +3740,14 @@ public sealed class ExplorerTurn
     {
         var journal = stream.EventsSince(1);
         var scope = new LaneConversationScope(journal, _codecs, runId, laneId);
+        var manualBoundary = journal.LastOrDefault(evt => _codecs.Decode(evt) is ContextCheckpointRecorded checkpoint
+            && checkpoint.MetaModelFingerprint == SessionConversationCheckpoint.Fingerprint && scope.CanRead(evt))?.Sequence ?? 0;
         foreach (var evt in journal.Reverse())
         {
+            if (evt.Sequence <= manualBoundary) continue;
             if (evt.RunId != runId || _codecs.Decode(evt) is not ContextCheckpointRecorded latest
                 || latest.RunId != runId || !scope.CanRead(evt)) continue;
+            if (latest.MetaModelFingerprint == SessionConversationCheckpoint.Fingerprint) continue;
             if (_artifacts.GetText(latest.CheckpointArtifact.Hash) is not { } json) return null;
             try
             {
@@ -3735,7 +3778,11 @@ public sealed class ExplorerTurn
             ("facts", "Facts"), ("relevantFiles", "Relevant files"), ("modifiedFiles", "Modified files"),
             ("failedAttempts", "Failed attempts"), ("openQuestions", "Open questions"),
         };
-        var parts = new List<string> { checkpoint.GetProperty("summary").GetString() ?? "" };
+        // The structured fields are an index of the same summary, not additional
+        // context to retransmit a second time. Retain support for legacy field-only bodies.
+        var summary = checkpoint.GetProperty("summary").GetString() ?? "";
+        if (!string.IsNullOrWhiteSpace(summary)) return summary;
+        var parts = new List<string>();
         foreach (var (property, label) in sections)
         {
             if (!checkpoint.TryGetProperty(property, out var values) || values.ValueKind != System.Text.Json.JsonValueKind.Array)
@@ -3947,11 +3994,10 @@ public sealed class ExplorerTurn
                     parts.Add("tool call " + call.ToolName + " " + call.ArgumentsJson);
                     break;
                 case ToolResultBlock result:
-                    parts.Add("tool result " + string.Join(" ", result.Content.Select(RenderContentBlock)));
+                    parts.Add("tool result " + (result.IsError ? "[ERROR] " : "") + string.Join(" ", result.Content.Select(RenderContentBlock)));
                     break;
-                case ReasoningBlock reasoning when reasoning.VisibleText is not null:
-                    parts.Add(reasoning.VisibleText);
-                    break;
+                case ReasoningBlock:
+                    break; // Reasoning display traces are not prose for context summaries.
                 case CitationBlock citation:
                     parts.Add(citation.Text + " " + citation.SourceRef);
                     break;
@@ -3977,9 +4023,9 @@ public sealed class ExplorerTurn
         DocumentBlock document => "document " + document.FileName + " " + document.ExtractedText,
         ImageBlock image => "image " + image.MediaType + " encoded-bytes=" + image.Bytes.Length,
         ToolCallBlock call => "tool call " + call.ToolName + " " + call.ArgumentsJson,
-        ToolResultBlock result => "tool result " + string.Join(" ", result.Content.Select(RenderContentBlock)),
+        ToolResultBlock result => "tool result " + (result.IsError ? "[ERROR] " : "") + string.Join(" ", result.Content.Select(RenderContentBlock)),
         CitationBlock citation => citation.Text + " " + citation.SourceRef,
-        ReasoningBlock reasoning when reasoning.VisibleText is not null => reasoning.VisibleText,
+        ReasoningBlock => string.Empty,
         _ => string.Empty,
     };
 
@@ -4098,6 +4144,12 @@ public sealed class ExplorerTurn
             Messages = messages;
         }
         public void PublishArtifacts() => _prepared.PublishArtifacts();
+    }
+
+    private sealed class TurnContextContribution(IReadOnlyList<ContextItem> items) : IContextContributor
+    {
+        public Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request, CancellationToken token)
+        { token.ThrowIfCancellationRequested(); return System.Threading.Tasks.Task.FromResult(items); }
     }
 
     private sealed class RedactingContextContributor : IContextContributor

@@ -14,7 +14,7 @@ using Task = System.Threading.Tasks.Task;
 namespace OmniCore.Tests;
 
 [Collection(nameof(ProcessEnvironmentCollection))]
-public sealed class CrossWorkspaceDailyCapRegressionTests
+public sealed partial class CrossWorkspaceDailyCapRegressionTests
 {
     private const string ModelId = "cross-workspace-budget-model";
     private const string ProviderId = "cross-workspace-budget-provider";
@@ -206,16 +206,16 @@ public sealed class CrossWorkspaceDailyCapRegressionTests
     }
 
     [Theory]
-    [InlineData(9.0, 1)]
+    [InlineData(9.0, 2)]
     [InlineData(10.0, 2)]
     [InlineData(9.0, 2, "unknown")]
     [InlineData(9.0, 2, "expired")]
     [InlineData(9.0, 2, "other-provider")]
     [InlineData(9.0, 2, "other-session")]
-    [InlineData(9.0, 1, "stale")]
-    [InlineData(9.0, 1, "refresh")]
-    [InlineData(9.0, 1, "fresh-query")]
-    public async Task Included_quota_below_ten_percent_requires_approval_before_next_call(double remaining, int expectedCalls,
+    [InlineData(9.0, 2, "stale")]
+    [InlineData(9.0, 2, "refresh")]
+    [InlineData(9.0, 2, "fresh-query")]
+    public async Task Included_quota_is_advisory_for_chat_and_only_suppresses_optional_background_work(double remaining, int expectedCalls,
         string quotaState = "reported")
     {
         var root = FixtureRoot();
@@ -264,45 +264,21 @@ public sealed class CrossWorkspaceDailyCapRegressionTests
             Assert.Equal(session, server.LastSessionId());
             Assert.Equal(expectedCalls, provider.RequestCount);
             Assert.True(quotaQueries >= 4, "Normal Host flow must query quota before invocation, not rely on SetQuota fixtures");
-            Assert.Equal(expectedCalls == 2, IncludedQuotaAdmission.AllowsMeta(server, session, ProviderId));
-            if (expectedCalls == 1)
-            {
-                var request = Assert.Single(ReadCurrentEvents(workspace).OfType<InteractionRequested>());
-                await new TuiTurnHost(runtime).ExecuteAsync("still awaiting approval", output.Add,
-                    TestContext.Current.CancellationToken);
-                Assert.Single(ReadCurrentEvents(workspace).OfType<InteractionRequested>());
-                Assert.Equal(1, provider.RequestCount);
-                Assert.Equal(InteractionKind.BudgetExceeded, request.Kind);
-                Assert.Null(BudgetContinuation.Offer(request));
-                Assert.Equal("error", server.RespondToInteraction(request.InteractionId, "allow_plus").Status);
-                Assert.Equal("ok", server.RespondToInteraction(request.InteractionId, "allow_quota").Status);
-                var approvalCount = 1;
-                if (quotaState == "refresh")
-                {
-                    reportedQuota = quota with { AsOf = DateTimeOffset.UtcNow,
-                        Windows = [quota.Windows[0] with { RemainingPercent = quota.Windows[0].RemainingPercent with { Value = 8 } }] };
-                    Assert.Equal(3, await new TuiTurnHost(runtime).ResumeQuotaAsync(request.InteractionId.ToString(), output.Add,
-                        TestContext.Current.CancellationToken));
-                    Assert.Equal(1, provider.RequestCount);
-                    request = ReadCurrentEvents(workspace).OfType<InteractionRequested>().Last();
-                    Assert.Equal("ok", server.RespondToInteraction(request.InteractionId, "allow_quota").Status);
-                    approvalCount++;
-                }
-                var resumed = await new TuiTurnHost(runtime).ResumeQuotaAsync(request.InteractionId.ToString(), output.Add,
-                    TestContext.Current.CancellationToken);
-                Assert.True(provider.RequestCount == 2, $"Resume code {resumed}: {string.Join("\n", output)}\nRequests: "
-                    + string.Join("\n", ReadCurrentEvents(workspace).OfType<InteractionRequested>().Select(item => item.SubjectJson)));
-                // Consent belongs to one invocation, not the whole session or every future measurement.
-                await new TuiTurnHost(runtime).ExecuteAsync("another fixture turn", output.Add,
-                    TestContext.Current.CancellationToken);
-                Assert.Equal(2, provider.RequestCount);
-                Assert.Equal(approvalCount + 1, ReadCurrentEvents(workspace).OfType<InteractionRequested>().Count());
-                runtime.HasInteractionClient = false;
-                await runtime.ConversationAsync("attempt without client", output.Add, TestContext.Current.CancellationToken);
-                Assert.Equal(2, provider.RequestCount);
-                Assert.Contains(ReadCurrentEvents(workspace), evt => evt is RunFailed failed
-                    && failed.Cause == "BudgetExceeded");
-            }
+            var backgroundAllowed = remaining >= 10 || quotaState is "unknown" or "expired" or "other-provider" or "other-session";
+            Assert.Equal(backgroundAllowed, IncludedQuotaAdmission.AllowsMeta(server, session, ProviderId));
+            Assert.Empty(ReadCurrentEvents(workspace).OfType<InteractionRequested>());
+            if (quotaState == "refresh")
+                reportedQuota = quota with { AsOf = DateTimeOffset.UtcNow,
+                    Windows = [quota.Windows[0] with { RemainingPercent = quota.Windows[0].RemainingPercent with { Value = 8 } }] };
+            await new TuiTurnHost(runtime).ExecuteAsync("third explicit user question", output.Add,
+                TestContext.Current.CancellationToken);
+            Assert.Equal(3, provider.RequestCount);
+            runtime.HasInteractionClient = false;
+            Assert.Equal(0, await runtime.ConversationAsync("without interaction client", output.Add,
+                TestContext.Current.CancellationToken));
+            Assert.Equal(4, provider.RequestCount);
+            Assert.Empty(ReadCurrentEvents(workspace).OfType<InteractionRequested>());
+            Assert.DoesNotContain(ReadCurrentEvents(workspace), evt => evt is RunFailed { Cause: "BudgetExceeded" });
         }
         finally
         {

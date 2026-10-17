@@ -296,11 +296,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         }
 
         _lastSessionId = SessionId.Parse(text.Substring(0, sep));
-        _lastRunId = RunId.Parse(text.Substring(sep + 1));
+        _lastRunId = text[(sep + 1)..].Trim() == "-" ? null : RunId.Parse(text.Substring(sep + 1));
 
         // Reconstruir el snapshot desde el journal (P0-3): una nueva invocación recupera el
         // contexto que el run de otra invocación materializó, sin re-ejecutar el sim.
-        if (_store is not SqliteEventStore) _lastSnapshot = MaterializeFromJournal(_lastSessionId!, _lastRunId!);
+        if (_store is not SqliteEventStore && _lastRunId is not null) _lastSnapshot = MaterializeFromJournal(_lastSessionId!, _lastRunId);
     }
 
     private void RehydrateUnderWriterOwnership()
@@ -361,7 +361,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         var separator = text.IndexOf('\n');
         if (separator <= 0 || separator == text.Length - 1)
             throw new InvalidDataException("The durable session pointer is malformed.");
-        try { return (SessionId.Parse(text[..separator]), RunId.Parse(text[(separator + 1)..].TrimEnd('\r', '\n'))); }
+        try { return (SessionId.Parse(text[..separator]), text[(separator + 1)..].Trim() == "-" ? null : RunId.Parse(text[(separator + 1)..].TrimEnd('\r', '\n'))); }
         catch (FormatException exception)
         {
             throw new InvalidDataException("The durable session pointer is malformed.", exception);
@@ -405,12 +405,14 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     private void SaveLastSession()
     {
-        if (_stateFile is null || _lastSessionId is null || _lastRunId is null)
+        if (_stateFile is null || _lastSessionId is null)
         {
             return;
         }
 
-        File.WriteAllText(_stateFile!, _lastSessionId!.ToString() + "\n" + _lastRunId!.ToString());
+        var temporary = _stateFile + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try { File.WriteAllText(temporary, _lastSessionId.ToString() + "\n" + (_lastRunId?.ToString() ?? "-")); File.Move(temporary, _stateFile, true); }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
     /// <summary>
@@ -687,12 +689,16 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 RuntimeCommandOutcome.Rejected());
         }
 
-        if (!EnsureWriterOwnershipForCommand())
+        var requestedConversationCommand = fields.TryGetValue("cmd", out var requestedName)
+            && requestedName is "conversation.new" or "conversation.resume";
+        if (!requestedConversationCommand && !EnsureWriterOwnershipForCommand())
             return new CommandAck(command.MessageId, "busy", "session_writer_owned",
                 RuntimeCommandOutcome.Deferred("session_writer_owned"));
 
         using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
         var commandName = fields.TryGetValue("cmd", out var c) ? c : null;
+        if (commandName is "conversation.new" or "conversation.resume" or "conversation.compact")
+            return HandleConversationCommand(command, fields, commandName, trustedUserAction, cancellationToken);
         if (commandName == UiLocalePreferencesProtocol.ConfigureCommand)
         {
             if (!trustedUserAction)
@@ -2684,6 +2690,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (name == "conversations") return new(name, ConversationJson.Encode(Conversations()));
         if (name == OpenRouterProtocol.StatusQuery)
         {
             var paths = _platformPathsFactory();
@@ -3153,6 +3160,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                         + ":" + descriptor.Source.Trust + ":" + descriptor.Source.Owner
                         + "@" + descriptor.Source.Version) + ","
                     + JsonObj.Field("effectClass", effect.ToString()) + ","
+                    + JsonObj.Field("risk", descriptor.Risk.ToString()) + ","
+                    + JsonObj.Field("protection", descriptor.Protection.ToString()) + ","
+                    + JsonObj.FieldRaw("tags", "[" + string.Join(",", descriptor.Tags.Select(tag => "\"" + JsonObj.Escape(tag) + "\"")) + "]") + ","
                     + JsonObj.Field("decision", decision) + ","
                     + JsonObj.FieldBool("visible", active && boundaryVisible && !modeRejected) + "}");
             }
@@ -3976,7 +3986,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     }
 
     internal (bool Authorized, InteractionId? Interaction, CommandAck Ack, Exception? Failure) AuthorizeModelRoute(
-        SessionId session, RunId run, ModelRoute route, BillingMode mode, bool requireConsent = false)
+        SessionId session, RunId run, ModelRoute route, BillingMode mode, bool requireConsent = false,
+        RouteConsentTurn? continuation = null)
     {
         var commandId = CommandId.New();
         var messageId = commandId.ToString();
@@ -4018,8 +4029,12 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             }
             var interaction = InteractionId.New();
             using var command = CausationScope.Begin(new CommandCausation(commandId));
+            var subject = SessionRoutingAuthorization.Context(offer);
+            if (continuation is not null)
+                subject = subject[..^1] + ",\"continuation\":"
+                    + System.Text.Json.JsonSerializer.Serialize(continuation, RouteConsentJsonContext.Default.RouteConsentTurn) + "}";
             var requestEvent = new InteractionRequested(interaction, InteractionKind.ModelRouteConsent,
-                SessionRoutingAuthorization.Context(offer),
+                subject,
                 "[{\"id\":\"deny\",\"intent\":\"deny\"},{\"id\":\"allow_route\",\"intent\":\"allow\"}]",
                 "deny", null, null, null, null, 0, 1);
             var runProjection = RunProjection.Replay(session, run, _codecs, events);
@@ -4289,7 +4304,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             : _lastRunId ?? throw new FormatException("falta runId y no hay un Run en curso");
 
     /// <summary>Crea una sesión nueva en el journal (primer input sin sesión previa).</summary>
-    private void StartSession(SessionId session)
+    private void StartSession(SessionId session, bool deferRouting = false)
     {
         // Hosts that explicitly configure a workspace root establish it durably with the
         // session. This gives delegated work and crash recovery the same verified authority
@@ -4307,8 +4322,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         {
             new SessionCreated(session, WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(workspace)).ToString(),
                 workspace, ProfileId.New(), DateTimeOffset.UtcNow),
-            new SessionRoutingPolicySet(session, _newSessionRoutingPolicy),
         };
+        if (!deferRouting) creation.Add(new SessionRoutingPolicySet(session, _newSessionRoutingPolicy));
         if (_workspaceRoot is { Length: > 0 })
         {
             var physicalRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspace);
@@ -4459,7 +4474,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     private static string ComputeContextPolicyHash(ContextManagementPolicy policy, long usableContext)
     {
         var canonical = string.Join("|",
-            "ctx-policy-v1",
+            "ctx-policy-v2-auto95",
             policy.ExternalizeAboveCharacters.ToString(CultureInfo.InvariantCulture),
             policy.CompressBodyCharacters.ToString(CultureInfo.InvariantCulture),
             policy.RecentTailItems.ToString(CultureInfo.InvariantCulture),

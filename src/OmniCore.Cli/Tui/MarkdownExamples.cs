@@ -2,7 +2,7 @@ using System.Text.RegularExpressions;
 
 namespace OmniCore.Cli;
 
-/// <summary>Presentation-only folding of Markdown source examples followed by their preview.
+/// <summary>Presentation-only previews of complete Markdown examples, folding repeated copies.
 /// The original assistant message remains available through /fuente and in the journal.</summary>
 internal static class MarkdownExamples
 {
@@ -30,14 +30,20 @@ internal static class MarkdownExamples
             }
             var first = index + 1;
             while (first < close && string.IsNullOrWhiteSpace(lines[first])) first++;
+            var last = close - 1;
+            while (last >= first && string.IsNullOrWhiteSpace(lines[last])) last--;
             var next = close + 1;
             while (next < lines.Length && string.IsNullOrWhiteSpace(lines[next])) next++;
-            // Only demo fences are foldable. A real code block (C#, HTML, etc.) is
-            // never removed, including Markdown-looking text nested inside it.
-            var repeated = language is "markdown" or "md"
-                && first < close && next < lines.Length
-                && PreviewKey(lines[first]) is { Length: > 0 } key && key == PreviewKey(lines[next]);
-            if (!repeated) result.AddRange(lines.Skip(index).Take(close - index + 1));
+            // Only explicit Markdown wrappers become previews. Other code stays literal,
+            // including Markdown-looking text nested inside a text/C#/HTML fence.
+            var markdown = language is "markdown" or "md";
+            // Compare the entire example. A shared heading must not discard different data.
+            var repeated = markdown && first <= last && next + (last - first) < lines.Length
+                && Enumerable.Range(0, last - first + 1).All(offset =>
+                    PreviewKey(lines[first + offset]) == PreviewKey(lines[next + offset]));
+            if (!repeated)
+                result.AddRange(markdown ? lines.Skip(index + 1).Take(close - index - 1)
+                    : lines.Skip(index).Take(close - index + 1));
             index = repeated ? next - 1 : close;
         }
         return string.Join('\n', result);

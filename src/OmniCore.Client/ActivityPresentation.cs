@@ -60,18 +60,27 @@ public sealed record AnimationPreferences(bool Enabled = true, bool ReducedMotio
 public readonly record struct AnimationCell(string Glyph, int Intensity);
 
 /// <summary>Deterministic native frames: no ANSI, I/O, random globals or terminal framework types.</summary>
-public static class AnimationCatalog
+public static partial class AnimationCatalog
 {
     // The compact braille cycle used by Pi's native Loader (not pi-animations).
     private static readonly string[] BrailleFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     private static readonly string[] AsciiSpinnerFrames = ["|", "/", "-", "\\"];
     public static IReadOnlyList<string> Names { get; } = Array.AsReadOnly(new[]
-        { "omega-pulse", "orbit-dots", "block-wave", "conveyor", "braille-spinner" });
+        { "omega-pulse", "orbit-dots", "block-wave", "conveyor", "braille-spinner",
+          "text-pulse", "text-scramble", "text-bounce", "neural-pulse", "glitch-text", "plasma-wave",
+          "pacman", "matrix", "pipeline", "starfield", "fire", "icon-morph", "brainstorm",
+          "dev-constellation", "crush", "pi-pulse", "shimmer", "typewriter", "neon-bounce",
+          "accordion", "square-snake", "infinity-track", "fire3", "matrix3", "starfield3", "aurora" });
 
     public static IReadOnlyList<AnimationCell> Render(string effect, long frame, int width,
         bool moving = true, bool ascii = false)
     {
         width = Math.Clamp(width, 0, 80);
+        if (Names.Contains(effect) && effect is not ("omega-pulse" or "orbit-dots" or "block-wave" or "conveyor" or "braille-spinner"))
+        {
+            var row = RenderFrame(effect, frame, width, label: "...", moving: moving, ascii: ascii)[0];
+            return row.Concat(Enumerable.Repeat(new AnimationCell(" ", 0), Math.Max(0, width - row.Count))).ToArray();
+        }
         var cells = new AnimationCell[width];
         var tick = (int)((frame % 120 + 120) % 120);
         for (var x = 0; x < width; x++)

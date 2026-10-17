@@ -30,6 +30,8 @@ public sealed class TuiGeneratedImage
 /// <summary>Production turns behind the Host boundary; the TUI never composes providers or credentials.</summary>
 public interface ITuiTurnHost
 {
+    /// <summary>Checks writer admission before the renderer clears a human draft; never submits input.</summary>
+    bool TryAcquireSessionWriter() => true;
     UsageSnapshot? CurrentUsage() => null;
     Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken);
     TuiAttachmentReference ImportAttachment(byte[] bytes, string fileName) => throw new NotSupportedException("Attachments are not supported by this turn host.");
@@ -48,6 +50,8 @@ public interface ITuiTurnHost
     Task<int> ResumeEscalationAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         System.Threading.Tasks.Task.FromResult(1);
     bool HasEscalationForInteraction(string interactionId) => false;
+    Task<int> ResumeModelRouteAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
+        ResumeEscalationAsync(interactionId, diagnostics, cancellationToken);
     Task<int> ResumeQuotaAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         System.Threading.Tasks.Task.FromResult(1);
     bool SetNextTurnReasoningBoost(string kind, int? budgetTokens) => false;
@@ -59,6 +63,7 @@ public interface ITuiTurnHost
 public sealed class TuiTurnHost : ITuiTurnHost
 {
     private readonly OmniCliRuntime _runtime;
+    public bool TryAcquireSessionWriter() => _runtime.TryAcquireSessionWriter();
     public UsageSnapshot? CurrentUsage() => _runtime.CurrentUsage();
     public TuiAttachmentReference ImportAttachment(byte[] bytes, string fileName) => new(_runtime.ImportTuiAttachment(bytes, fileName));
     public TuiAttachmentReference ImportAttachmentFromPath(string path) => new(_runtime.ImportTuiAttachmentFromPath(path));
@@ -112,6 +117,16 @@ public sealed class TuiTurnHost : ITuiTurnHost
         _runtime.ResumeEscalationAsync(new OmniCore.Domain.InteractionId(Guid.Parse(interactionId)), diagnostics, cancellationToken);
     public bool HasEscalationForInteraction(string interactionId) =>
         _runtime.HasEscalationForInteraction(new OmniCore.Domain.InteractionId(Guid.Parse(interactionId)));
+    public async Task<int> ResumeModelRouteAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken)
+    {
+        var boost = await ReserveBoostAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await _runtime.ResumeModelRouteAsync(new OmniCore.Domain.InteractionId(Guid.Parse(interactionId)),
+                diagnostics, cancellationToken, boost is null ? null : CompleteBoost).ConfigureAwait(false);
+        }
+        finally { ReleaseBoostReservation(boost); }
+    }
     public Task<int> ResumeQuotaAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         _runtime.ResumeQuotaAsync(new OmniCore.Domain.InteractionId(Guid.Parse(interactionId)), diagnostics, cancellationToken);
 

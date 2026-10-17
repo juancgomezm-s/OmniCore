@@ -74,7 +74,7 @@ public sealed partial class TuiWiringTests
         var description = Descendants(fx.App.Overlay!).OfType<Label>()
             .Single(view => view.Id == "preferences-description").Text.ToString()!;
         Assert.Contains(descriptionText, description, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("/animation", description, StringComparison.Ordinal);
+        Assert.DoesNotContain("/animation", description, StringComparison.Ordinal);
         Assert.Contains(actionLabel, Descendants(fx.App.Overlay!).OfType<Button>()
             .Single(view => view.Id == "preferences-animations-open").Text.ToString(), StringComparison.Ordinal);
 

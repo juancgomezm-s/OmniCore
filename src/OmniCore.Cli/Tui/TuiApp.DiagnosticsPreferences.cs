@@ -14,7 +14,9 @@ public sealed partial class TuiApp
     {
         if (_window is null || _overlay is not null || queryName != "diagnostics_data") return;
         var host = _diagnosticsPreferencesOverride ?? DiagnosticsPreferencesHost.Create(Environment.CurrentDirectory);
-        var snapshot = host.Read();
+        DiagnosticsPreferencesSnapshot snapshot;
+        try { snapshot = host.Read(); }
+        catch (Exception) { ShowPreferenceText(DiagnosticsPref("title"), DiagnosticsPref("operation_failed")); return; }
         var frame = OverlayFrame(DiagnosticsPref("title"), _window.Frame.Height - 3);
         frame.Id = "diagnostics-preferences"; frame.Width = Dim.Percent(92); frame.Height = Dim.Fill(2);
         var panel = new View { Id = "diagnostics-content", X = 2, Y = 2, Width = Dim.Fill(4), Height = Dim.Fill(9),
@@ -97,7 +99,7 @@ public sealed partial class TuiApp
     {
         if (_window is null) return;
         CloseOverlay(); var frame = OverlayFrame(DiagnosticsPref("confirm_title"), 12); frame.Id = "diagnostics-confirm";
-        frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(4), Height = 5, Text = description });
+        frame.Add(MenuIndent.Help(description, 2, 5, "diagnostics-confirm-help"));
         var cancel = new Button { X = 2, Y = Pos.AnchorEnd(2), Text = DiagnosticsPref("cancel") };
         cancel.Accepted += (_, _) => { CloseOverlay(); ShowDiagnosticsPreferences("diagnostics_data"); };
         var accept = new Button { X = Pos.Percent(35), Y = Pos.AnchorEnd(2), Width = Dim.Fill(2), Text = DiagnosticsPref("confirm_gc") };

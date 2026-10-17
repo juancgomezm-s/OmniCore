@@ -1,10 +1,45 @@
 # Cierre completo de OpenRouter — M8
 
-Requisito incorporado el 2026-10-13 por petición del usuario. Estado: **OR1–OR4
-integrados en main `3273026`; OR5 autenticado pendiente y verificación final M8 aprobada (4,505 correctas, 0 fallos, 11 omisiones)**.
+Requisito incorporado el 2026-10-13 por petición del usuario. Estado al 2026-10-16:
+**OR1–OR4 integrados inicialmente en main `3273026`; OR4 reabierto por aceptación
+manual y OR5 autenticado pendiente**. La verificación histórica M8 obtuvo 4,505
+correctas, 0 fallos y 11 omisiones; no sustituye la aceptación de esta revisión.
 Complementa [arquitectura §24](../architecture/arquitectura.md#24-roadmap-m1m10-fuente-de-verdad)
 y el [plan M8–M10](m8-m10-user-localization.md). El cierre pertenece a **M8**:
 conexión, interfaz, catálogo y créditos forman una sola entrega verificable.
+
+## Revisión de usabilidad del 2026-10-16
+
+La aceptación manual reabre OR4: el listado de comandos repetía idiomas, la ventana
+heredaba `NO_COLOR=1`/`TERM=dumb` del entorno del asistente y la entrada OpenRouter
+sólo mostraba estado. El primer ajuste que llevaba a otro listado de proveedores
+fue rechazado por el usuario: elegir un proveedor debe abrir directamente su formulario.
+
+La corrección conserva la TUI completa y su estilo aprobado. Cuentas y conexiones
+ofrece proveedores API por nombre; elegir OpenRouter o Anthropic muestra ahí mismo
+clave oculta, guardar, probar y sus acciones compatibles, con catálogo/créditos
+OpenRouter explícitos. Los errores no cierran Preferencias; Esc retorna un nivel y
+resize conserva el borrador sin persistirlo. Las consultas no se disparan al navegar.
+Los accesos `/openrouter` y login no se ofrecen en autocompletado ni catálogo TUI.
+Se conserva la CLI de automatización y el protocolo, sin modificar su autoridad.
+
+Windows usa entrada nativa del terminal cuando no existe un driver explícito; se
+conserva la selección de plataforma en Unix. Los clics se prueban pasando por el
+enrutador de mouse de la aplicación, además del teclado. La aceptación de mouse en
+la ventana real y OR5 con cuenta real se registran separadamente; no se atribuyen
+por un driver fixture. M8 permanece abierto hasta esa aceptación.
+
+Validación local de esta revisión: compilación de la solución sin errores ni
+advertencias, 284/284 pruebas de interfaz/OpenRouter y 62/62 de arquitectura,
+sin omisiones. Tras conservar la firma pública de autocompletado se repitió la
+compilación y pasaron 72/72 pruebas de presentación. La ventana de aceptación
+«OmniCore - Preferencias API» usa la versión publicada de esta revisión; los
+resultados locales no acreditan todavía CI remoto, Linux ni la conexión real.
+
+La auditoría posterior abarca las ocho categorías, elimina los comandos de
+funciones que ya pertenecen al menú, retira el segundo selector API y comprueba
+el retorno al proveedor exacto con sus fechas y avisos. [Inventario, cambios y
+validación de la revisión](../validation/tui-menu-audit-20261016.md).
 
 ## Base y alcance
 

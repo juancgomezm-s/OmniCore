@@ -347,6 +347,7 @@ internal static class RuntimeFingerprintFactory
         writer.WriteNumber("compressBodyCharacters", policy.CompressBodyCharacters);
         writer.WriteNumber("recentTailItems", policy.RecentTailItems);
         writer.WriteNumber("compactAfterItems", policy.CompactAfterItems);
+        writer.WriteNumber("autoCompactAtPercent", OmniCore.Context.ContextCompaction.AutoCompactAtPercent);
         writer.WriteNumber("maxCheckpointCharacters", policy.MaxCheckpointCharacters);
     }
 

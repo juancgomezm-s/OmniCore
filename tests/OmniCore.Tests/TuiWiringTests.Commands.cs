@@ -46,8 +46,10 @@ public sealed partial class TuiWiringTests
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "/help abre la ayuda");
         var help = Descendants(fx.App.Overlay!).OfType<TextView>().Single(view => view.Id == "preferences-inspection");
         var text = help.Text.ToString();
-        foreach (var command in new[] { "/runmode", "/mode", "/act", "/models", "/context" }) Assert.Contains(command, text);
+        foreach (var command in new[] { "/modo-ejecucion", "/modo", "/actuar", "/plan", "/delegar" }) Assert.Contains(command, text);
         Assert.Contains("Shift+Tab", text);
+        foreach (var command in new[] { "/models", "/context", "/modelos", "/contexto", "/openrouter", "/login" })
+            Assert.DoesNotContain(command, text);
         KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "Esc cierra la ayuda");
     });
 

@@ -26,6 +26,161 @@ namespace OmniCore.Tests;
 [Collection(nameof(ProcessEnvironmentCollection))]
 public sealed class CliEndToEndTests
 {
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(true, false, true)]
+    [InlineData(false, true, true)]
+    [InlineData(true, true, false)]
+    public async Task Normal_model_switch_consent_resumes_original_conversation_once(bool reopenRuntime,
+        bool existingActRun, bool includedQuota)
+    {
+        await InIsolatedCli(async (workspace, config, _, provider) =>
+        {
+            var reasoningBoost = existingActRun && !reopenRuntime;
+            if (includedQuota)
+            {
+                var file = Path.Combine(config, "providers.yaml");
+                File.WriteAllText(file, File.ReadAllText(file).Replace("billingMode: Local", "billingMode: IncludedQuota"));
+            }
+            if (reasoningBoost)
+            {
+                var file = Path.Combine(config, "providers.yaml");
+                File.WriteAllText(file, File.ReadAllText(file).Replace("family: OpenAiChatCompatible", "family: OpenAIResponses\n    profile: api"));
+            }
+            string? received = null;
+            provider.RespondWith((_, request) => { received = request; return reasoningBoost
+                ? ResponsesTextResponse("respuesta conservada") : TextResponse("respuesta conservada"); });
+            using (var preferences = new RunModePreferenceStore(OmniHost.CreatePlatformPaths().UserDatabasePath))
+                preferences.Set(existingActRun ? RunMode.Act : RunMode.Plan, 0);
+            var runtime = OmniCliRuntime.Create(workspace);
+            var client = runtime.Connect(CancellationToken.None);
+            var host = new TuiTurnHost(runtime);
+            Assert.Equal(0, await host.ExecuteAsync("primer mensaje de la conversación", _ => { }, TestContext.Current.CancellationToken));
+            Assert.Equal(existingActRun ? RunMode.Act : RunMode.Plan,
+                Assert.Single(ReadCurrentSessionEvents(workspace).OfType<RunCreated>()).Mode);
+            File.AppendAllText(Path.Combine(config, "models.yaml"),
+                "  target-model: { provider: scripted, context: 8192, maxOutput: 2048, reasoning: { supported: true, effortLevels: [high] } }\n");
+            Environment.SetEnvironmentVariable("OMNI_MODEL", "target-model");
+            if (reasoningBoost) Assert.True(host.SetNextTurnReasoningBoost("high", null));
+            Assert.Equal(3, await host.ExecuteAsync("petición original después del cambio", _ => { }, TestContext.Current.CancellationToken));
+            var before = ReadCurrentSessionEvents(workspace);
+            Assert.Empty(before.OfType<ModelEscalationRequested>());
+            var consent = Assert.Single(before.OfType<InteractionRequested>(), item => item.Kind == InteractionKind.ModelRouteConsent);
+            Assert.Contains("continuation", consent.SubjectJson);
+            Assert.Equal(1, provider.RequestCount);
+            Assert.Equal("ok", client.Send(WireEnvelope.Command(Ids.NewV7(),
+                "{\"cmd\":\"interaction.respond\",\"interactionId\":\"" + consent.InteractionId
+                + "\",\"optionId\":\"allow_route\"}"), CancellationToken.None).Status);
+            if (reopenRuntime)
+            {
+                runtime.Dispose();
+                runtime = OmniCliRuntime.Create(workspace);
+                client = runtime.Connect(CancellationToken.None);
+                host = new TuiTurnHost(runtime);
+            }
+            using (runtime)
+            {
+                var diagnostics = new List<string>();
+                Assert.True(await host.ResumeModelRouteAsync(consent.InteractionId.ToString(), diagnostics.Add,
+                    TestContext.Current.CancellationToken) == 0, string.Join("\n", diagnostics));
+                Assert.Equal(2, provider.RequestCount);
+                Assert.Contains("target-model", received!);
+                Assert.Contains("primer mensaje de la conversación", Regex.Unescape(received!));
+                Assert.Contains("petición original después del cambio", Regex.Unescape(received!));
+                var after = ReadCurrentSessionEvents(workspace);
+                Assert.Equal(before.OfType<UserInputReceived>().Count(), after.OfType<UserInputReceived>().Count());
+                Assert.Equal(before.OfType<RunCreated>().Count(), after.OfType<RunCreated>().Count());
+                Assert.Equal("target-model", after.OfType<ModelStepStarted>().Last().ModelId);
+                Assert.True(after.OfType<TurnStarted>().Last().InstructionSnapshot!.ConversationOnly);
+                Assert.Empty(after.OfType<ModelEscalationApproved>());
+                Assert.Equal(1, await host.ResumeModelRouteAsync(consent.InteractionId.ToString(), _ => { },
+                    TestContext.Current.CancellationToken));
+                Assert.Equal(2, provider.RequestCount);
+                if (reasoningBoost)
+                {
+                    Assert.Equal(ReasoningSelectionSource.TurnBoost, after.OfType<TurnStarted>().Last().ReasoningResolution!.Source);
+                    Assert.Equal(0, await host.ExecuteAsync("siguiente mensaje sin refuerzo", diagnostics.Add,
+                        TestContext.Current.CancellationToken));
+                    Assert.Equal(3, provider.RequestCount);
+                    Assert.Null(ReadCurrentSessionEvents(workspace).OfType<TurnStarted>().Last().ReasoningResolution!.TurnBoostId);
+                }
+            }
+        });
+    }
+
+    [Theory]
+    [InlineData("deny")]
+    [InlineData("endpoint")]
+    [InlineData("billing")]
+    [InlineData("new-input")]
+    public async Task Normal_route_resume_rejects_denied_changed_or_superseded_intent(string change)
+    {
+        await InIsolatedCli(async (workspace, config, _, provider) =>
+        {
+            using var runtime = OmniCliRuntime.Create(workspace);
+            var client = runtime.Connect(CancellationToken.None);
+            var host = new TuiTurnHost(runtime);
+            Assert.Equal(0, await host.ExecuteAsync("primer mensaje", _ => { }, TestContext.Current.CancellationToken));
+            File.AppendAllText(Path.Combine(config, "models.yaml"),
+                "  target-model: { provider: scripted, context: 8192, maxOutput: 2048 }\n");
+            Environment.SetEnvironmentVariable("OMNI_MODEL", "target-model");
+            Assert.Equal(3, await host.ExecuteAsync("mensaje pendiente", _ => { }, TestContext.Current.CancellationToken));
+            var consent = Assert.Single(ReadCurrentSessionEvents(workspace).OfType<InteractionRequested>(),
+                item => item.Kind == InteractionKind.ModelRouteConsent);
+            Assert.Equal("ok", client.Send(WireEnvelope.Command(Ids.NewV7(),
+                "{\"cmd\":\"interaction.respond\",\"interactionId\":\"" + consent.InteractionId
+                + "\",\"optionId\":\"" + (change == "deny" ? "deny" : "allow_route") + "\"}"), CancellationToken.None).Status);
+            if (change is "endpoint" or "billing")
+            {
+                var file = Path.Combine(config, "providers.yaml");
+                File.WriteAllText(file, File.ReadAllText(file).Replace(
+                    change == "endpoint" ? provider.BaseUrl : "billingMode: Local",
+                    change == "endpoint" ? "http://127.0.0.1:1/v1" : "billingMode: IncludedQuota"));
+            }
+            if (change == "new-input")
+                Assert.Equal("ok", client.Send(WireEnvelope.Command(Ids.NewV7(),
+                    "{\"cmd\":\"session.input\",\"text\":\"nueva intención\"}"), CancellationToken.None).Status);
+            var count = ReadCurrentSessionEvents(workspace).OfType<UserInputReceived>().Count();
+            Assert.Equal(1, await host.ResumeModelRouteAsync(consent.InteractionId.ToString(), _ => { },
+                TestContext.Current.CancellationToken));
+            Assert.Equal(1, provider.RequestCount);
+            Assert.Equal(count, ReadCurrentSessionEvents(workspace).OfType<UserInputReceived>().Count());
+        });
+    }
+
+    [Fact]
+    public async Task Occupied_session_rejects_input_without_provider_work_and_same_window_can_retry_after_owner_closes()
+    {
+        await InIsolatedCli(async (workspace, _, _, provider) =>
+        {
+            Assert.Equal(0, (await Run("ask", "seed writer ownership")).Code);
+            var original = ReadCurrentSessionEvents(workspace);
+            var requests = provider.RequestCount;
+            using var contender = OmniCliRuntime.Create(workspace);
+            contender.Localize = (key, values) => Localization.Spanish().Resolve(key, values);
+            _ = contender.Connect(TestContext.Current.CancellationToken);
+            var host = new TuiTurnHost(contender);
+            var diagnostics = new List<string>();
+            const string prompt = "mensaje conservado para reintentar";
+            var blocked = await host.ExecuteAsync(prompt, diagnostics.Add, TestContext.Current.CancellationToken);
+            Assert.True(blocked == TurnExitCodes.SessionBusy, string.Join("\n", diagnostics));
+            Assert.Equal(requests, provider.RequestCount);
+            Assert.Equal(original.Count, ReadCurrentSessionEvents(workspace).Count);
+            Assert.DoesNotContain("InvalidOperationException", string.Join("\n", diagnostics));
+            Assert.Contains("otra ventana", string.Join("\n", diagnostics), StringComparison.OrdinalIgnoreCase);
+
+            // Release the actual owner, not its lock file; keep the contender runtime alive.
+            CliApp.UseRuntimeForTests(OmniCliRuntime.Create(workspace)).Dispose();
+            diagnostics.Clear();
+            Assert.True(0 == await host.ExecuteAsync(prompt, diagnostics.Add, TestContext.Current.CancellationToken),
+                string.Join("\n", diagnostics));
+            Assert.Equal(requests + 1, provider.RequestCount);
+            var after = ReadCurrentSessionEvents(workspace);
+            Assert.Single(after.OfType<UserInputReceived>(), input => input.InputPartsJson.Contains(prompt, StringComparison.Ordinal));
+            Assert.Equal(original.OfType<SessionCreated>().Single().SessionId, after.OfType<SessionCreated>().Single().SessionId);
+        });
+    }
+
     [Fact]
     public async Task Explicit_project_skill_read_ceiling_is_applied_by_the_real_cli_runtime()
     {

@@ -104,7 +104,7 @@ public sealed partial class TuiApp
             new Label { X = MenuIndent.Level2, Y = 11, Width = 24, Height = 1, Text = SecurityPref("tool_id") }, tool,
             new Label { X = MenuIndent.Level2, Y = 12, Width = 24, Height = 1, Text = SecurityPref("decision_short") }, decision,
             pickTool, cycleDecision,
-            new Label { X = MenuIndent.Level2, Y = 15, Width = Dim.Fill(4), Height = 2, Text = SecurityPref("rule_note") });
+            MenuIndent.Help(SecurityPref("rule_note"), 15, 2, "security-rule-hint"));
         ruleList.ValueChanged += (_, _) =>
         {
             if (ruleList.SelectedItem is not int index || index < 0 || index >= snapshot.Rules.Count) return;
@@ -140,9 +140,8 @@ public sealed partial class TuiApp
             });
         };
         panel.Add(MenuIndent.Heading(SecurityPref("trust_heading"), 20));
-        panel.Add(new Label { X = MenuIndent.Level1, Y = 21, Width = Dim.Fill(4), Height = 1,
-            Text = SecurityPref("trust_state") + ": " + SecurityPref(snapshot.WorkspaceTrusted ? "trusted" : "untrusted") });
-        var trust = new Button { Id = "security-trust", X = MenuIndent.Level1, Y = 22, Text = SecurityPref(snapshot.WorkspaceTrusted ? "revoke_trust" : "trust_workspace") };
+        panel.Add(MenuIndent.Help(SecurityPref("trust_state") + ": " + SecurityPref(snapshot.WorkspaceTrusted ? "trusted" : "untrusted"), 21, 1, "security-trust-status"));
+        var trust = new Button { Id = "security-trust", X = MenuIndent.Level1, Y = 23, Text = SecurityPref(snapshot.WorkspaceTrusted ? "revoke_trust" : "trust_workspace") };
         trust.Accepted += (_, _) => ConfirmSecurityChange(SecurityPref("trust_title"), SecurityPref("trust_confirm"), () =>
         {
             try { _ = host.SetWorkspaceTrust(snapshot.WorkspaceTrusted, !snapshot.WorkspaceTrusted); CloseOverlay(); ShowSecurityPreferences("tools_security"); }
@@ -165,7 +164,7 @@ public sealed partial class TuiApp
         back.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("tools_security", categoryPage: true); };
         frame.KeyDown += (_, key) => { if (key.KeyCode == KeyCode.Esc) { key.Handled = true; CloseOverlay(); ShowPreferences("tools_security", categoryPage: true); } };
         panel.Add(addRule, trust, grants, revoke);
-        panel.Add(new Label { X = MenuIndent.Level0, Y = 33, Width = Dim.Fill(4), Height = 3, Text = SecurityPref("help") });
+        panel.Add(MenuIndent.Help(SecurityPref("help"), 33, 3, "security-help"));
         ConfigurePreferenceScroll(panel, 37);
         frame.Add(panel, save, back, note);
         ApplyTheme(frame); _overlay = frame; _window.Add(frame); levelButtons[0].SetFocus();
@@ -188,7 +187,7 @@ public sealed partial class TuiApp
             _retiredOverlays.Remove(draft);
             _overlay = draft; _window.Add(draft); draft.SetFocus();
         };
-        frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(4), Height = 4, Text = description });
+        frame.Add(MenuIndent.Help(description, 2, 4, "security-confirm-help"));
         var cancel = new Button { X = 2, Y = Pos.AnchorEnd(2), Text = SecurityPref("cancel") };
         cancel.Accepted += (_, _) => CancelSecurityConfirmation();
         var accept = new Button { X = Pos.AnchorEnd(14), Y = Pos.AnchorEnd(2), Text = SecurityPref("confirm") };

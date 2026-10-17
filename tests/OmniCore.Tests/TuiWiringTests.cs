@@ -59,9 +59,9 @@ public sealed partial class TuiWiringTests
         fx.Invoke(() => rows = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-command-helper")
             .SubViews.OfType<ListView>().Single().Source!.ToList().Cast<object>()
             .Select(item => item.ToString() ?? "").ToArray());
-        Assert.Contains(rows, row => row.Contains("orq-auth", StringComparison.Ordinal)
+        Assert.Contains(rows, row => row.Contains("autorizar-orq", StringComparison.Ordinal)
             && row.Contains("Deshabilitado", StringComparison.Ordinal)
-            && row.Contains("Orchestrate", StringComparison.Ordinal));
+            && row.Contains("orquestación", StringComparison.Ordinal));
     });
 
     [Fact]
@@ -82,34 +82,23 @@ public sealed partial class TuiWiringTests
         fx.StartTui(providerConnections: host);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
         ChoosePreferenceCategory(fx, "accounts_connections");
-        Click(fx, "Conexiones API");
-        fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Conexiones API") == true,
-            "conexiones API visibles");
-
-        ListView list = null!;
-        string[] rows = [];
-        fx.Invoke(() =>
-        {
-            list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
-            rows = list.Source!.ToList().Cast<object>().Select(item => item.ToString() ?? "").ToArray();
-        });
-        Assert.Contains(rows, row => row.Contains("anthropic", StringComparison.Ordinal)
-            && row.Contains("Sin configurar", StringComparison.Ordinal));
-        Assert.Contains(rows, row => row.Contains("custom", StringComparison.Ordinal)
-            && row.Contains("Conectado", StringComparison.Ordinal)
-            && row.Contains("verificada 2026-10-01 10:30 UTC", StringComparison.Ordinal)
-            && row.Contains("modelos 2026-10-02 11:45 UTC", StringComparison.Ordinal));
-        Assert.DoesNotContain(rows, row => row.Contains("quota", StringComparison.OrdinalIgnoreCase)
-            || row.Contains("cuota", StringComparison.OrdinalIgnoreCase));
-        Assert.True(fx.App.Overlay!.SubViews.OfType<Button>().Single(button => button.Id == "provider-connect").Enabled);
-        Assert.False(fx.App.Overlay.SubViews.OfType<Button>().Single(button => button.Id == "provider-test").Enabled);
-
-        fx.Invoke(() => list.SelectedItem = 1);
-        fx.Wait(() => fx.App.Overlay!.SubViews.OfType<Button>().Single(button => button.Id == "provider-test").Enabled,
-            "acciones del provider seleccionado actualizadas");
-        Assert.False(fx.App.Overlay!.SubViews.OfType<Button>().Single(button => button.Id == "provider-connect").Enabled);
-        Assert.True(fx.App.Overlay.SubViews.OfType<Button>().Single(button => button.Id == "provider-disconnect").Enabled);
-        Assert.True(fx.App.Overlay.SubViews.OfType<Button>().Single(button => button.Id == "provider-discover").Enabled);
+        ClickId(fx, "preferences-provider-open-anthropic");
+        Assert.True(Descendants(fx.App.Overlay!).OfType<Button>().Single(button => button.Id == "provider-key-save").Enabled);
+        Assert.False(Descendants(fx.App.Overlay!).OfType<Button>().Single(button => button.Id == "provider-test").Enabled);
+        Assert.Contains("Sin configurar", OverlayText(fx.App.Overlay!));
+        ClickId(fx, "provider-key-cancel");
+        ClickId(fx, "preferences-provider-open-custom");
+        var detail = OverlayText(fx.App.Overlay!);
+        Assert.Contains("custom", detail);
+        Assert.Contains("Conectado", detail);
+        Assert.Contains("verificada 2026-10-01 10:30 UTC", detail);
+        Assert.Contains("modelos 2026-10-02 11:45 UTC", detail);
+        Assert.DoesNotContain("quota", detail, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("cuota", detail, StringComparison.OrdinalIgnoreCase);
+        Assert.False(Descendants(fx.App.Overlay!).OfType<Button>().Single(button => button.Id == "provider-key-save").Enabled);
+        Assert.True(Descendants(fx.App.Overlay!).OfType<Button>().Single(button => button.Id == "provider-test").Enabled);
+        Assert.True(Descendants(fx.App.Overlay!).OfType<Button>().Single(button => button.Id == "provider-disconnect").Enabled);
+        Assert.True(Descendants(fx.App.Overlay!).OfType<Button>().Single(button => button.Id == "provider-discover").Enabled);
 
         Click(fx, "Descubrir modelos");
         fx.Wait(() => fx.App.Overlay is { } overlay
@@ -131,21 +120,12 @@ public sealed partial class TuiWiringTests
         fx.StartTui(providerConnections: host);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
         ChoosePreferenceCategory(fx, "accounts_connections");
-        Click(fx, "Conexiones API");
-        fx.Invoke(() =>
-        {
-            var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
-            var items = list.Source!.ToList().Cast<object>().Select(item => item.ToString() ?? "").ToArray();
-            var anthropic = Array.FindIndex(items, item => item.StartsWith("anthropic", StringComparison.Ordinal));
-            Assert.True(anthropic >= 0, "la fila Anthropic del Host debe estar disponible");
-            list.SelectedItem = anthropic;
-        });
-        Click(fx, "Conectar");
+        ClickId(fx, "preferences-provider-open-anthropic");
         var secret = "test-key-never-sent-over-network";
         TextField key = null!;
         fx.Invoke(() =>
         {
-            key = fx.App.Overlay!.SubViews.OfType<TextField>().Single(field => field.Id == "provider-api-key");
+            key = Descendants(fx.App.Overlay!).OfType<TextField>().Single(field => field.Id == "provider-api-key");
             Assert.True(key.Secret);
             key.Text = secret;
         });
@@ -176,9 +156,8 @@ public sealed partial class TuiWiringTests
         fx.StartTui(providerConnections: host);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
         ChoosePreferenceCategory(fx, "accounts_connections");
-        Click(fx, "Conexiones API");
-        Click(fx, "Conectar");
-        fx.Invoke(() => fx.App.Overlay!.SubViews.OfType<TextField>()
+        ClickId(fx, "preferences-provider-open-anthropic");
+        fx.Invoke(() => Descendants(fx.App.Overlay!).OfType<TextField>()
             .Single(field => field.Id == "provider-api-key").Text = "fixture-cancelled-key-12345");
         Click(fx, "Guardar");
         fx.Wait(() => host.ReceivedApiKey is not null, "operación de Host en espera");
@@ -186,7 +165,7 @@ public sealed partial class TuiWiringTests
 
         fx.InjectKey(new Key(KeyCode.Esc));
         fx.Wait(() => fx.App.Overlay is { } overlay
-            && Descendants(overlay).Any(view => view.Id == "preferences-back"),
+            && !Descendants(overlay).Any(view => view.Id == "provider-api-key"),
             "Esc cancela el formulario y vuelve a la categoría de preferencias");
         fx.Wait(() => host.ConnectCancellationObserved.Task.IsCompleted, "token del Host cancelado al cerrar");
         host.ConnectGate!.TrySetResult(new ProviderConnectionMenuResult(ProviderConnectionState.Connected, null, null));
@@ -222,17 +201,8 @@ public sealed partial class TuiWiringTests
         fx.StartTui(providerConnections: host);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
         ChoosePreferenceCategory(fx, "accounts_connections");
-        Click(fx, "Conexiones API");
-        fx.Invoke(() =>
-        {
-            var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
-            var items = list.Source!.ToList().Cast<object>().Select(item => item.ToString() ?? "").ToArray();
-            var anthropicB = Array.FindIndex(items, item => item.StartsWith("anthropic-b", StringComparison.Ordinal));
-            Assert.True(anthropicB >= 0, "el provider Anthropic seleccionado debe estar disponible");
-            list.SelectedItem = anthropicB;
-        });
-        Click(fx, "Conectar");
-        fx.Invoke(() => fx.App.Overlay!.SubViews.OfType<TextField>()
+        ClickId(fx, "preferences-provider-open-anthropic-b");
+        fx.Invoke(() => Descendants(fx.App.Overlay!).OfType<TextField>()
             .Single(field => field.Id == "provider-api-key").Text = apiKey);
         Click(fx, "Guardar");
         fx.Wait(() => fx.App.Overlay is { } overlay && OverlayText(overlay).Contains("Estado: Desconocido"),
@@ -245,8 +215,7 @@ public sealed partial class TuiWiringTests
         Click(fx, "Probar");
         fx.Wait(() => fx.App.Overlay is { } overlay && OverlayText(overlay).Contains("Estado: Conectado"),
             "test de conexión real contra handler aislado");
-        Assert.Contains(PickerItems(fx), row => row.StartsWith("anthropic-b", StringComparison.Ordinal)
-            && row.Contains("verificada 2026-10-08 12:00 UTC", StringComparison.Ordinal));
+        Assert.Contains("verificada 2026-10-08 12:00 UTC", Descendants(fx.App.Overlay!).Single(view => view.Id == "provider-metadata").Text.ToString());
 
         Click(fx, "Descubrir modelos");
         fx.Wait(() => fx.App.Overlay is { } overlay
@@ -255,8 +224,7 @@ public sealed partial class TuiWiringTests
             "discovery real registra catálogo y la única ventana reportada");
         Assert.Contains("claude-ui-test:", File.ReadAllText(Path.Combine(paths.ConfigDirectory, "models.yaml")),
             StringComparison.Ordinal);
-        Assert.Contains(PickerItems(fx), row => row.StartsWith("anthropic-b", StringComparison.Ordinal)
-            && row.Contains("modelos 2026-10-08 12:00 UTC", StringComparison.Ordinal));
+        Assert.Contains("modelos 2026-10-08 12:00 UTC", Descendants(fx.App.Overlay!).Single(view => view.Id == "provider-metadata").Text.ToString());
 
         Click(fx, "Desconectar");
         fx.Wait(() => fx.App.Overlay is { } confirm
@@ -268,8 +236,8 @@ public sealed partial class TuiWiringTests
             "disconnect vuelve al listado");
         Assert.Null(store.Load("credentials/anthropic-b", TestContext.Current.CancellationToken));
         Assert.Null(store.Load("credentials/anthropic-a", TestContext.Current.CancellationToken));
-        Assert.Contains(PickerItems(fx), row => row.StartsWith("anthropic-b", StringComparison.Ordinal)
-            && row.Contains("Sin configurar", StringComparison.Ordinal));
+        Assert.Contains("anthropic-b", OverlayText(fx.App.Overlay!));
+        Assert.Contains("Sin configurar", OverlayText(fx.App.Overlay!));
         Assert.Equal(2, handler.Requests.Count);
         Assert.All(handler.Requests, request =>
         {
@@ -473,8 +441,8 @@ public sealed partial class TuiWiringTests
         Type(fx, "/sidebar focus core.files");
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.SidebarComposition?.SelectedId == "core.files", "tab de archivos");
         fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("M file.txt +1 -1"), "efecto visible");
-        fx.Invoke(() => { fx.App.SidebarContent!.InsertionPoint = new Point(0, 1); fx.App.SidebarContent.SetFocus(); });
-        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "DiffPreview abierto por Enter");
+        ActivateSidebarAction(fx, "core.files", "diff.open");
+        fx.Wait(() => fx.App.Overlay is not null, "DiffPreview abierto por Enter");
         var diffText = fx.App.Overlay!.SubViews.OfType<OmniCore.Cli.SidebarView>().Single().Text.ToString();
         Assert.Contains("- anterior ñ", diffText); Assert.Contains("+ nuevo ñ", diffText);
         Assert.Contains("no incluye ediciones posteriores", OverlayText(fx.App.Overlay));
@@ -492,10 +460,12 @@ public sealed partial class TuiWiringTests
                 stream.Append(new ToolCallSucceeded(later, "{}") { AfterStateRef = OmniCore.Tools.FilesystemPreimage.CaptureAfter(fx.Artifacts, after) });
             }
         }
-        fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("último.txt"), "varias rutas con wrapping");
+        ActivateSidebarAction(fx, "core.files", "sidebar.expand");
+        fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("último.txt"), "Más muestra varias rutas con wrapping");
         fx.Invoke(() => { fx.App.SidebarContent!.MoveEnd(); fx.App.SidebarContent.SetFocus(); });
         Assert.True(fx.App.SidebarContent!.InsertionPoint.Y > 3); // preceding long path occupies several screen rows
-        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "diff correcto tras ruta envuelta");
+        ActivateSidebarAction(fx, "core.files", "diff.open", rowText: "último.txt");
+        fx.Wait(() => fx.App.Overlay is not null, "diff correcto tras ruta envuelta");
         Assert.Contains("Diff · último.txt", OverlayText(fx.App.Overlay!));
     });
 
@@ -508,7 +478,8 @@ public sealed partial class TuiWiringTests
         Assert.Null(fx.App.Overlay);
         Type(fx, "/sidebar focus core.context");
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.SidebarComposition?.SelectedId == "core.context", "widget oculto inspeccionable");
-        Assert.Equal("core.context", Assert.Single(fx.App.SidebarComposition!.Body).Widget.Id);
+        Assert.Contains(fx.App.SidebarComposition!.Body, section => section.Widget.Id == "core.context");
+        Assert.True(fx.App.SidebarComposition.Body.Count > 1);
         Assert.Equal("core.session", Assert.Single(fx.App.SidebarComposition.Pinned).Widget.Id);
         fx.Invoke(() => fx.App.Composer!.SetFocus());
         fx.Invoke(() => fx.Application.Driver!.SetScreenSize(120, 22));
@@ -556,14 +527,20 @@ public sealed partial class TuiWiringTests
         Assert.Contains("semilla de prueba", text);
         Assert.Contains("fixture/sidebar-model", text);
         Assert.Contains("Tokens: 100", text); Assert.Contains("Tokens sesión: 120", text);
-        Assert.Contains("Capacidad: ≈16,000", text); Assert.Contains("Presupuesto: ≈8,192", text);
+        Assert.Contains("Capacidad: ≈16,000", text);
+        ActivateSidebarAction(fx, "core.context", "sidebar.expand");
+        fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("Presupuesto: ≈8,192"), "Más muestra el presupuesto del contexto");
+        text = fx.App.SidebarSession!.Text.ToString() + "\n" + fx.App.SidebarContent!.Text.ToString();
+        Assert.Contains("Presupuesto: ≈8,192", text);
         Assert.Contains("Ocupación: ≈0.6%", text); Assert.DoesNotContain("Sin plan activo", text);
         Assert.DoesNotContain("Sin archivos modificados", text);
+        fx.Invoke(() => { fx.App.Composer!.SetFocus(); fx.App.SidebarContent!.ScrollTo(Point.Empty); });
         var frame = CaptureConversationFrame(fx, 120, 40, "PLAN 1/2");
         if (!noColor) Assert.Contains(frame.Cast<Terminal.Gui.Drawing.Cell>(), cell => cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#F1D58A"));
         else Assert.All(frame.Cast<Terminal.Gui.Drawing.Cell>().Where(cell => cell.Grapheme == "◐"), cell => Assert.Equal(Terminal.Gui.Drawing.Color.None, cell.Attribute?.Foreground));
-        fx.Invoke(() => fx.App.Sidebar!.SubViews.OfType<Button>().Single(b => b.Id == "sidebar-details").InvokeCommand(Command.Accept));
+        ActivateSidebarAction(fx, "core.consumption", "sidebar.expand");
         fx.Wait(() => fx.App.SidebarContent!.Text.ToString().Contains("Lectura de caché: 30"), "detalle de consumo desplegable");
+        ActivateSidebarAction(fx, "core.diagnostics", "sidebar.expand");
         Assert.Contains("Invocaciones: 1", fx.App.SidebarContent.Text.ToString());
         Assert.Contains(run.ToString(), fx.App.SidebarContent.Text.ToString());
         Assert.Contains("fixture/sidebar-model", fx.App.SidebarSession!.Text.ToString());
@@ -828,6 +805,11 @@ public sealed partial class TuiWiringTests
                         fx.Invoke(() => localList.SelectedItem = localIndex);
                         ClickId(fx, "local-engine-edit");
                     }
+                    else
+                    {
+                        fx.Wait(() => Descendants(fx.App.Overlay!).Single(view => view.Id == "local-engine-add").Frame.Height > 0, "local actions laid out");
+                        fx.Invoke(() => Descendants(fx.App.Overlay!).Single(view => view.Id == "local-engine-add").SetFocus());
+                    }
                 }
                 else if (scene.StartsWith("settings-", StringComparison.Ordinal))
                 {
@@ -835,7 +817,18 @@ public sealed partial class TuiWiringTests
                     if (scene == "settings-fr" || scene == "settings-it")
                     {
                         var language = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
-                        fx.Invoke(() => language.SelectedItem = scene == "settings-fr" ? 2 : 3);
+                        ChooseLocaleDraft(fx, scene == "settings-fr" ? 2 : 3);
+                        ClickId(fx, "preferences-save");
+                    }
+                    if (scene == "settings-override")
+                    {
+                        fx.Invoke(() =>
+                        {
+                            var language = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
+                            language.SelectedItem = 3; language.SetFocus();
+                        });
+                        KeyWithEffect(fx, KeyCode.CursorDown, () => Descendants(fx.App.Overlay!).Single(view => view.Id == "preferences-sidebar-open").HasFocus,
+                            "scrolling past languages reveals the effective source without choosing a language");
                     }
                 }
                 else
@@ -909,7 +902,7 @@ public sealed partial class TuiWiringTests
                 else if (scene == "picker")
                 {
                     Assert.Contains("Seleccionar modelo", text);
-                    Assert.DoesNotContain("Actualizar modelos", text);
+                    Assert.Contains("Actualizar modelos", text);
                     Assert.DoesNotContain("ObserveOnly", text);
                     Assert.DoesNotContain("🗑", text);
                 }
@@ -967,10 +960,12 @@ public sealed partial class TuiWiringTests
                 }
                 else if (scene == "commands")
                 {
-                    Assert.Contains("/help", text);
-                    Assert.Contains("/mode", text);
-                    Assert.Contains("/models", text);
-                    Assert.Contains("Seleccionar modelo", text);
+                    Assert.Contains("/actuar", text);
+                    Assert.DoesNotContain("/ayuda", text);
+                    Assert.Contains("/modo", text);
+                    Assert.Contains("/agentes", text);
+                    Assert.DoesNotContain("/modelos", text);
+                    Assert.Contains(new Localization("es").Resolve("shell.set_the_next_run_s_default_mode"), text);
                     Assert.Contains("Tab completar", text);
                     Assert.True(fx.App.Composer!.HasFocus);
                     var helper = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-command-helper");
@@ -1510,7 +1505,12 @@ public sealed partial class TuiWiringTests
         var preview = fx.App.Overlay!.SubViews.Single(v => v.Id == "animation-preview");
         Assert.Equal("✦", preview.SubViews.First().Text);
         Click(fx, "Razonamiento reportado");
+        fx.Wait(() => fx.App.Overlay?.Id == "animation-picker", "selector de animación visible");
+        var animationList = Descendants(fx.App.Overlay!).OfType<ListView>().Single();
+        fx.Invoke(() => animationList.SelectedItem = AnimationCatalog.Names.ToList().IndexOf("block-wave"));
+        ClickId(fx, "animation-choose");
         Assert.Equal("block-wave", new AnimationSettingsStore(Path.Combine(fx.Root, "tui-animations.json")).Load().Reasoning);
+        preview = fx.App.Overlay!.SubViews.Single(v => v.Id == "animation-preview");
         Click(fx, "Movimiento reducido");
         Assert.True(new AnimationSettingsStore(Path.Combine(fx.Root, "tui-animations.json")).Load().ReducedMotion);
         var frozen = preview.SubViews.Select(v => (v.Text, v.GetScheme().Normal)).ToArray();
@@ -1563,19 +1563,19 @@ public sealed partial class TuiWiringTests
         ChoosePreferenceCategory(fx, "general");
         AssertPreferencesGeneralLayoutFit(fx);
         var language = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
-        fx.Invoke(() => language.SelectedItem = 2);
-        fx.Wait(() => fx.App.PreferencesLocale == "fr", "vista previa francesa activa");
+        ChooseLocaleDraft(fx, 2);
+        Assert.Equal("es", fx.App.PreferencesLocale);
         Assert.True(Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale").HasFocus);
         Assert.Equal("keep this draft", fx.App.Composer!.Text?.ToString());
         Assert.Same(conversation, fx.App.Conversation);
         Assert.Equal(transcript, conversation.Text?.ToString());
-        Assert.Equal("fr", changed.Last());
+        Assert.Empty(changed);
 
         fx.InjectKey(new Key(KeyCode.Esc));
         fx.Wait(() => fx.App.PreferencesLocale == "es"
             && fx.App.Overlay?.SubViews.Any(view => view.Id == "preferences-categories") == true,
             "volver cancela el idioma no guardado");
-        Assert.Equal("es", changed.Last());
+        Assert.Empty(changed);
         ChoosePreferenceCategory(fx, "accounts_connections");
         fx.InjectKey(new Key(KeyCode.Esc));
         fx.Wait(() => fx.App.Overlay?.SubViews.Any(view => view.Id == "preferences-categories") == true,
@@ -1598,8 +1598,8 @@ public sealed partial class TuiWiringTests
             KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "Preferences abre");
             ChoosePreferenceCategory(fx, "general");
             var language = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
-            fx.Invoke(() => language.SelectedItem = 3);
-            fx.Wait(() => fx.App.PreferencesLocale == "it", "previsualización italiana");
+            ChooseLocaleDraft(fx, 3);
+            Assert.Equal("es", fx.App.PreferencesLocale);
 
             var snapshot = UiLocalePreferencesProtocol.Decode(fx.Server.Query(
                 UiLocalePreferencesProtocol.QueryName, CancellationToken.None)!.Json)!;
@@ -1607,7 +1607,7 @@ public sealed partial class TuiWiringTests
                 "User", "en", snapshot.Revision), CancellationToken.None);
             Assert.Equal("ok", external.Status);
             ClickId(fx, "preferences-save");
-            fx.Wait(() => fx.App.Overlay?.SubViews.OfType<Button>()
+            fx.Wait(() => fx.App.Overlay is { } frame && Descendants(frame).OfType<Button>()
                 .Single(button => button.Id == "preferences-reload").Enabled == true,
                 "revision stale ofrece recarga explícita");
             Assert.NotEmpty(Descendants(fx.App.Overlay!).OfType<Label>()
@@ -1642,7 +1642,7 @@ public sealed partial class TuiWiringTests
             KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "Preferences opens in the process locale");
             ChoosePreferenceCategory(fx, "general");
             var language = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
-            fx.Invoke(() => language.SelectedItem = 2);
+            ChooseLocaleDraft(fx, 2);
             Assert.Equal("en", fx.App.PreferencesLocale);
             Assert.Empty(changed);
             Assert.Contains("Command line", OverlayText(fx.App.Overlay!));
@@ -1977,13 +1977,13 @@ public sealed partial class TuiWiringTests
         KeyWithEffect(fx, KeyCode.Tab, () => fx.App.Composer.Text.ToString() == expected + " ", "Tab completa sin ejecutar");
         Assert.Null(fx.App.Overlay);
         Assert.DoesNotContain(fx.App.MainWindow.SubViews, view => view.Id == "omni-command-helper");
-        fx.Invoke(() => fx.App.Composer.Text = "/model");
+        fx.Invoke(() => fx.App.Composer.Text = "/deleg");
         fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "filtra prefijo");
-        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer.Text.ToString() == "/models ", "Enter completa prefijo sin ejecutarlo");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Composer.Text.ToString() == "/delegar ", "Enter completa el nombre localizado sin ejecutarlo");
         Assert.Null(fx.App.Overlay);
-        fx.Invoke(() => fx.App.Composer.Text = "/modelos");
+        fx.Invoke(() => fx.App.Composer.Text = "/delegar");
         fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "alias localizado exacto");
-        KeyWithEffect(fx, KeyCode.Tab, () => fx.App.Composer.Text.ToString() == "/modelos ", "conserva alias localizado sin ejecutarlo");
+        KeyWithEffect(fx, KeyCode.Tab, () => fx.App.Composer.Text.ToString() == "/delegar ", "conserva alias localizado sin ejecutarlo");
         Assert.Null(fx.App.Overlay);
         fx.Invoke(() => fx.App.Composer.Text = "/pl");
         fx.Wait(() => fx.App.MainWindow.SubViews.Any(view => view.Id == "omni-command-helper"), "helper reabierto");
@@ -2010,8 +2010,8 @@ public sealed partial class TuiWiringTests
         Assert.Contains("Consulta: no ejecuta ni activa/desactiva", OverlayText(fx.App.Overlay));
         var detail = fx.App.Overlay.SubViews.OfType<StyledTextPresenter>().Single();
         Assert.Contains("Te pide información", detail.Text);
-        Assert.Contains("permissions.yaml", detail.Text);
-        Assert.Contains("/permissions lista autorizaciones", detail.Text);
+        Assert.Contains("F4", detail.Text);
+        Assert.Contains("Permisos y confianza", detail.Text);
         Assert.True(list.HasFocus);
         var search = fx.App.Overlay.SubViews.OfType<TextField>().Single();
         KeyWithEffect(fx, KeyCode.F | KeyCode.CtrlMask, () => search.HasFocus, "filtro por descripción");
@@ -2189,8 +2189,9 @@ public sealed partial class TuiWiringTests
         KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "el Enter de /help no abre el overlay");
         var help = OverlayText(fx.App.Overlay!);
         Assert.Contains("Comandos disponibles", help);
-        Assert.Contains("/permissions", help);
-        Assert.Contains("/exit", help);
+        Assert.DoesNotContain("/permissions", help);
+        Assert.Contains("F4", help);
+        Assert.Contains("/salir", help);
         Assert.DoesNotContain("prompt_not_found", help);
         KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "Esc no cierra la ayuda");
         fx.Wait(() => fx.App.Composer!.HasFocus, "el foco vuelve al composer tras la ayuda");
@@ -2245,16 +2246,22 @@ public sealed partial class TuiWiringTests
         _ = session;
     });
 
-    [Fact]
-    public void Model_route_consent_allow_resumes_once_without_submitting_a_new_turn() => RunTuiTest(fx =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Model_route_consent_allow_resumes_once_without_submitting_a_new_turn(bool escalation) => RunTuiTest(fx =>
     {
         var host = new RouteResumeTurnHost();
-        var (interaction, route) = PublishRouteConsent(fx);
-        host.EscalationInteractionId = interaction.ToString();
+        var (interaction, route) = PublishRouteConsent(fx, escalation);
+        host.EscalationInteractionId = escalation ? interaction.ToString() : null;
         var inputCount = fx.Decoded<UserInputReceived>().Count();
         fx.StartTui(turnHost: host);
 
         fx.Wait(() => fx.App.Overlay is not null, "el consentimiento de ruta debe abrir el overlay real");
+        Assert.Contains("Cambiar de proveedor", OverlayText(fx.App.Overlay!));
+        Assert.Contains("cobra por uso", OverlayText(fx.App.Overlay!));
+        Assert.DoesNotContain("MeteredCurrency", OverlayText(fx.App.Overlay!));
+        ExportPreferenceFrame(fx, fx.App.MainWindow!.Frame.Width, fx.App.MainWindow.Frame.Height, "provider-switch", "Cambiar de proveedor");
         Assert.Equal(InteractionKind.ModelRouteConsent,
             Assert.Single(fx.Decoded<InteractionRequested>(), item => item.InteractionId == interaction).Kind);
         var buttons = fx.App.Overlay!.SubViews.OfType<Button>().ToArray();
@@ -2275,7 +2282,7 @@ public sealed partial class TuiWiringTests
         Assert.True(SessionRoutingAuthorization.Read(fx.Server.AcquireStore().ReadFrom(fx.Server.LastSessionId()!, 1),
             fx.Server.AcquireCodecs(), fx.Server.LastSessionId()!)!.Allows(route, BillingMode.MeteredCurrency));
         _ = revised;
-    });
+    }, noColor: false);
 
     [Fact]
     public void Model_route_consent_deny_never_resumes() => RunTuiTest(fx =>
@@ -2299,8 +2306,10 @@ public sealed partial class TuiWiringTests
         Assert.Equal(0, host.ExecuteCount);
     });
 
-    [Fact]
-    public void Model_route_consent_accepted_while_originating_invocation_finishes_is_not_lost() => RunTuiTest(fx =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Model_route_consent_accepted_while_originating_invocation_finishes_is_not_lost(bool escalation) => RunTuiTest(fx =>
     {
         var gate = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         var host = new RouteResumeTurnHost { InvocationGate = gate };
@@ -2309,11 +2318,13 @@ public sealed partial class TuiWiringTests
             fx.StartTui(turnHost: host);
             Type(fx, "solicitud que sigue terminando");
             KeyWithEffect(fx, KeyCode.Enter, () => host.ExecuteCount == 1, "invocación originaria aún activa");
-            var (interaction, _) = PublishRouteConsent(fx);
-            host.EscalationInteractionId = interaction.ToString();
+            var (interaction, _) = PublishRouteConsent(fx, escalation);
+            host.EscalationInteractionId = escalation ? interaction.ToString() : null;
             fx.Wait(() => fx.App.Overlay is not null, "el polling publica el permiso antes del return 3");
             var allow = fx.App.Overlay!.SubViews.OfType<Button>().Last();
-            fx.Invoke(() => allow.InvokeCommand(Command.Accept));
+            fx.Invoke(() => allow.SetFocus());
+            KeyWithEffect(fx, KeyCode.Enter,
+                () => fx.Decoded<InteractionResolved>().Any(item => item.InteractionId == interaction), "Enter acepta la ruta");
             fx.Wait(() => fx.Decoded<InteractionResolved>().Any(item => item.InteractionId == interaction), "respuesta persistida");
             Assert.Equal(0, host.ResumeCount);
             gate.SetResult(3);
@@ -2379,17 +2390,18 @@ public sealed partial class TuiWiringTests
         Assert.Equal("allow_quota", Assert.Single(fx.Decoded<InteractionResolved>()).OptionId);
     });
 
-    private static (InteractionId Interaction, ModelRoute Route) PublishRouteConsent(TuiFixture fixture)
+    private static (InteractionId Interaction, ModelRoute Route) PublishRouteConsent(TuiFixture fixture, bool escalation = true)
     {
         var session = fixture.Server.LastSessionId()!;
         var run = fixture.Server.LastRunId()!;
         Assert.Equal("ok", fixture.Server.EnsureSessionRoutingPolicy(session).Status);
         var route = ModelRoute.DefaultForModel("paid-model", "paid-provider", "https://paid.example/v1",
             ProviderFamily.OpenAiChatCompatible);
-        using (ExecutionScope.Begin(new ExecutionScopeState(RunId: run)))
-            new EventStream(fixture.Server.AcquireStore(), fixture.Server.AcquireCodecs(), session)
-                .Append(new ModelEscalationRequested(run, "local-worker", route.ProviderModelName,
-                    EscalationCause.ContextLimit));
+        if (escalation)
+            using (ExecutionScope.Begin(new ExecutionScopeState(RunId: run)))
+                new EventStream(fixture.Server.AcquireStore(), fixture.Server.AcquireCodecs(), session)
+                    .Append(new ModelEscalationRequested(run, "local-worker", route.ProviderModelName,
+                        EscalationCause.ContextLimit));
         var result = fixture.Server.AuthorizeModelRoute(session, run, route, BillingMode.MeteredCurrency,
             requireConsent: true);
         Assert.False(result.Authorized);
@@ -2802,7 +2814,7 @@ public sealed partial class TuiWiringTests
         var panel = frame.SubViews.Single(view => view.Id == "preferences-panel");
         var controls = panel.SubViews.Where(view => view.Id != "preferences-accent").ToArray();
         foreach (var control in controls)
-            Assert.True(control.Frame.Bottom <= panel.Viewport.Height, $"{control.Id} must fit in General: {control.Frame}");
+            Assert.True(control.Frame.Bottom <= panel.GetContentSize().Height, $"{control.Id} must fit in General's scrollable content: {control.Frame}");
         for (var left = 0; left < controls.Length; left++)
         for (var right = left + 1; right < controls.Length; right++)
         {
@@ -2882,7 +2894,7 @@ public sealed partial class TuiWiringTests
     {
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "configuración visible");
         ChoosePreferenceCategory(fx, "models_execution");
-        Click(fx, "Modelos y políticas");
+        Click(fx, "Rutas y límites de gasto");
         ClickId(fx, "policy-preferences-model-policies");
         fx.Wait(() => (fx.App.Overlay as FrameView)?.Title?.Contains("Modelos") == true, "mantenimiento de modelos visible");
     }

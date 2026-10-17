@@ -16,6 +16,31 @@ public sealed partial class TuiWiringTests
     }
 
     [Fact]
+    public void Local_HTML_report_opens_only_on_explicit_Enter_or_click_in_the_real_conversation() => RunTuiTest(fx =>
+    {
+        var report = Path.Combine(fx.Workspace, "informe local.html");
+        File.WriteAllText(report, "<!doctype html><title>Informe local</title>");
+        var uri = new Uri(report).AbsoluteUri;
+        var browser = new FakeBrowserLauncher();
+        fx.StartTui();
+        fx.Invoke(() =>
+        {
+            fx.App.LinkHost = new WebLinkHost(browser, fx.Workspace);
+            var view = fx.App.Conversation!;
+            view.WordWrap = false;
+            view.LoadStyled(MarkdownRenderer.Render("[Abrir informe](" + uri + ")"), 80, false);
+            Assert.Empty(browser.Launched);
+            view.SetFocus();
+            view.InsertionPoint = System.Drawing.Point.Empty;
+            view.NewKeyDownEvent(Key.Enter);
+            var point = view.ViewportToScreen(new System.Drawing.Point(2, 0));
+            view.NewMouseEvent(new Mouse { ScreenPosition = point, Flags = MouseFlags.LeftButtonClicked, View = view });
+            Assert.Equal(2, browser.Launched.Count);
+            Assert.All(browser.Launched, target => Assert.Equal(uri, target.AbsoluteUri));
+        });
+    });
+
+    [Fact]
     public void Hyperlink_Enter_and_click_use_the_production_view_and_host_wiring() => RunTuiTest(fx =>
     {
         fx.StartTui();

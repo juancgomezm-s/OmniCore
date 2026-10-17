@@ -123,8 +123,58 @@ public sealed class ActivityPresentationTests
     public void Preferences_accept_only_native_effects_and_bounded_speed()
     {
         Assert.True(new AnimationPreferences().IsValid);
-        Assert.False((new AnimationPreferences() with { Waiting = "pi-pulse" }).IsValid);
+        Assert.True((new AnimationPreferences() with { Waiting = "pi-pulse" }).IsValid);
+        Assert.False((new AnimationPreferences() with { Waiting = "unknown-effect" }).IsValid);
         Assert.False((new AnimationPreferences() with { IntervalMilliseconds = 0 }).IsValid);
         Assert.False((new AnimationPreferences() with { Reasoning = null! }).IsValid);
+    }
+
+    [Fact]
+    public void All_catalog_effects_have_bounded_native_frames_and_static_accessible_fallbacks()
+    {
+        Assert.Equal(31, AnimationCatalog.Names.Distinct().Count());
+        foreach (var effect in AnimationCatalog.Names)
+        foreach (var width in new[] { 0, 1, 11, 80, 1000 })
+        foreach (var tick in new[] { -1L, 0, 11, long.MaxValue })
+        {
+            var rows = AnimationCatalog.RenderFrame(effect, tick, width, 5, "Pensando...", ascii: true);
+            Assert.InRange(rows.Count, 1, 5);
+            Assert.All(rows, row =>
+            {
+                Assert.InRange(row.Count, 0, Math.Clamp(width, 0, 80));
+                Assert.All(row, cell =>
+                {
+                    Assert.InRange(cell.Intensity, 0, 5);
+                    Assert.All(cell.Glyph, ch => Assert.InRange((int)ch, 32, 126));
+                });
+            });
+            Assert.Equal(rows.SelectMany(row => row), AnimationCatalog.RenderFrame(effect, tick, width, 5, "Pensando...", ascii: true).SelectMany(row => row));
+            Assert.Equal(AnimationCatalog.RenderFrame(effect, 0, width, 5, "Pensando...", moving: false).SelectMany(row => row),
+                AnimationCatalog.RenderFrame(effect, 99, width, 5, "Pensando...", moving: false).SelectMany(row => row));
+        }
+    }
+
+    [Theory]
+    [InlineData("text-pulse")]
+    [InlineData("text-scramble")]
+    [InlineData("text-bounce")]
+    public void Three_character_pulse_restores_original_graphemes_as_it_advances(string effect)
+    {
+        const string text = "Pensando...";
+        var seen = new HashSet<int>();
+        for (var tick = 0; tick < 45; tick++)
+        {
+            var cells = AnimationCatalog.RenderText(effect, text, tick, 80);
+            var changed = cells.Select((cell, index) => (cell, index)).Where(pair => pair.cell.Glyph != text[pair.index].ToString()).ToArray();
+            Assert.InRange(changed.Length, 0, 1);
+            Assert.InRange(cells.Count(cell => cell.Intensity > 2), 0, 3);
+            foreach (var pair in changed) seen.Add(pair.index);
+            for (var index = 0; index < cells.Count; index++)
+                if (cells[index].Intensity == 2) Assert.Equal(text[index].ToString(), cells[index].Glyph);
+        }
+        Assert.Equal(text.Length, seen.Count);
+        Assert.Equal(text, string.Concat(AnimationCatalog.RenderText(effect, text, 3, 80, moving: false).Select(cell => cell.Glyph)));
+        var unicode = AnimationCatalog.RenderText(effect, "e\u0301界", 0, 80, moving: false);
+        Assert.Equal(new[] { "e\u0301", "界" }, unicode.Select(cell => cell.Glyph));
     }
 }

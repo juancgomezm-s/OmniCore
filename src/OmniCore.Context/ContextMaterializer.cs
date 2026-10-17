@@ -85,7 +85,7 @@ public sealed class ContextMaterializer
                     artifact = prepared.Reference;
                 }
                 else artifact = _artifacts.PutText(safeOutput, "text/plain", ArtifactKind.ToolOutput, sensitivity);
-                var preview = safeOutput[..Math.Min(240, safeOutput.Length)];
+                var preview = ToolTraceSummary.Extract(safeOutput);
                 var stub = "[tool output externalized; re-read with artifact.read using hash=\""
                     + artifact.Hash.Value + "\" (offset=0, limit=4096); repeat with next offset for more.]\nPreview: " + preview;
                 var provenance = candidate.Provenance with
@@ -113,6 +113,7 @@ public sealed class ContextMaterializer
         {
             var old = transformed[i];
             if (prunedIds.Contains(old.Id) && compressibleIds.Contains(old.Id)
+                && !pipelineDiagnostics.ContainsKey(old.Id)
                 && old.Content.Length > _policy.CompressBodyCharacters)
             {
                 var compressed = ContextCompaction.Compress(old, _policy.CompressBodyCharacters);

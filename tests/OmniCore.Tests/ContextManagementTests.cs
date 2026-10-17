@@ -9,6 +9,33 @@ namespace OmniCore.Tests;
 
 public sealed class ContextManagementTests
 {
+    [Fact]
+    public void Tool_excerpt_keeps_middle_error_final_result_and_recovers_complete_redacted_artifact()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-trace-" + Guid.NewGuid().ToString("N"));
+        var artifacts = new FileArtifactStore(root);
+        try
+        {
+            var content = "build solution\n" + string.Concat(Enumerable.Repeat("progress repeated\n", 500))
+                + "error CS1002: src/Worker.cs:42 missing semicolon\n"
+                + string.Concat(Enumerable.Repeat("progress repeated\n", 500)) + "exit code 1; 0 tests executed";
+            var item = new ContextItem("tool-log", ContextItemKind.ToolResult, content, 0,
+                ContextPriority.Normal, RetentionPolicy.ConversationWindow, Provenance(ContributionCategory.ToolObservations));
+            var snapshot = new ContextMaterializer(new FakeTokenCounter(), [new OneItemContributor(item)], artifacts)
+                .Materialize(new MaterializeRequest(SessionId.New(), RunId.New(), null, null, null, 0, Fingerprint),
+                    TestContext.Current.CancellationToken);
+            var excerpt = Assert.Single(snapshot.Items);
+            Assert.Contains("error CS1002: src/Worker.cs:42 missing semicolon", excerpt.Content);
+            Assert.Contains("exit code 1; 0 tests executed", excerpt.Content);
+            Assert.Contains("build solution", excerpt.Content);
+            Assert.True(excerpt.Content.Length < 1500);
+            var reference = Assert.Single(excerpt.Provenance.Refs!, value => value.StartsWith("artifact=", StringComparison.Ordinal));
+            Assert.Equal(content, new ContextArtifactReferenceResolver(artifacts).Read(reference));
+            Assert.Equal("short successful result", ToolTraceSummary.Extract("short successful result"));
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
     private static readonly ExecutionFingerprint Fingerprint = new("model", "harness", "tools", "policy",
         "overrides", "test");
 

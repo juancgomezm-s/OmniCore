@@ -93,7 +93,10 @@ public sealed class SkillLifecycleTests
             var catalog = new SkillSourceCatalog();
             var untrusted = catalog.Discover(project, user, workspaceData, session, workspaceTrusted: false);
             Assert.Equal(new[] { "session.skill", "user.skill", "workspace.skill" },
-                untrusted.Select(skill => skill.Manifest.Id).Order(StringComparer.Ordinal));
+                untrusted.Where(skill => skill.Scope != ScopeLevel.BuiltIn)
+                    .Select(skill => skill.Manifest.Id).Order(StringComparer.Ordinal));
+            Assert.All(untrusted.Where(skill => skill.Scope == ScopeLevel.BuiltIn),
+                skill => Assert.Equal(TrustLevel.Core, skill.Trust));
             var trusted = catalog.Discover(project, user, workspaceData, session, workspaceTrusted: true);
             Assert.Contains(trusted, skill => skill.Manifest.Id == "project.skill");
             Assert.Contains(trusted, skill => skill.Scope == ScopeLevel.Workspace
@@ -489,7 +492,10 @@ public sealed class SkillLifecycleTests
             using (var untrusted = JsonDocument.Parse(server.Query("skills", CancellationToken.None)!.Json))
             {
                 Assert.False(untrusted.RootElement.GetProperty("workspaceTrusted").GetBoolean());
-                Assert.Empty(untrusted.RootElement.GetProperty("skills").EnumerateArray());
+                var visible = untrusted.RootElement.GetProperty("skills").EnumerateArray().ToArray();
+                Assert.DoesNotContain(visible, skill => skill.GetProperty("scope").GetString() == "Project");
+                Assert.Contains(visible, skill => skill.GetProperty("id").GetString() == "visual-explainer"
+                    && skill.GetProperty("scope").GetString() == "BuiltIn");
             }
 
             var start = server.Send(WireEnvelope.Command(Ids.NewV7(),

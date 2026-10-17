@@ -62,10 +62,13 @@ son datos deterministas de prueba; los estados sin medición se muestran explíc
 | **Archivos y efectos** | Cambios registrados por la sesión y su atribución. El diff usa preimagen/postimagen conservadas, para no mezclar cambios posteriores de otra persona o proceso. |
 | **Diagnóstico** | Información disponible para detectar errores, recuperación y datos incompletos. |
 
-`F2` muestra u oculta el panel. En **General → Panel lateral y widgets** o
-`/sidebar settings` se configuran visibilidad, tamaño y prioridad. El layout se adapta
-al ancho mediante paneles apilados, pestañas u overlay; las preferencias indican su
-alcance y origen. El foco y la selección se conservan durante cambios de tamaño.
+`F2` muestra u oculta el panel. Cada categoría presenta un resumen con **Más…**
+para desplegar sus detalles y **Menos** para contraerlos de forma independiente.
+Los enlaces funcionan con clic y con Enter al enfocarlos. Las categorías se
+recorren en el mismo panel desplazable, también en ventanas estrechas.
+En **General → Panel lateral y widgets** se configuran visibilidad, tamaño y
+prioridad; las preferencias indican su alcance y origen. El foco y la selección
+se conservan durante cambios de tamaño.
 
 El panel se amplía conforme se conectan funciones del núcleo: los futuros controles de
 memoria entre sesiones, búsqueda e integraciones tendrán acciones sobre los mismos
@@ -194,7 +197,7 @@ La evidencia de cierre M5 documenta **2995 casos: 2991 correctos, 0 fallos y 4 o
 | **Local / llama.cpp** | Chat compatible, configuración y supervisión de host local | Quick real de Qwen en la configuración documentada; no cualifica automáticamente cualquier modelo local. |
 | **OpenAI Responses API** | Adapter nativo | Fixtures; aceptación con API de pago no acreditada en el cierre M5. |
 | **Anthropic Messages** | Adapter nativo y semántica del proveedor | Fixtures; aceptación autenticada de API pendiente. |
-| **OpenRouter** | Conexiones User, catálogo/registro de modelos, adapter compatible y créditos en CLI/TUI | OR1–OR4 integrados en `3273026`, con 21/21 pruebas focales offline. Aceptación autenticada OR5 pendiente según [el plan](docs/plans/openrouter-closure.md); M8 sigue abierto. |
+| **OpenRouter** | Conexiones User, catálogo/registro de modelos, adapter compatible y créditos en CLI/TUI | Base integrada en `3273026`; OR4 reabierto por aceptación de interfaz y OR5 autenticado pendiente. [Plan](docs/plans/openrouter-closure.md) y [auditoría del menú](docs/validation/tui-menu-audit-20261016.md); M8 sigue abierto. |
 
 Disponibilidad y cuotas dependen de la cuenta y del proveedor en el momento de la consulta. No hay una lista universal de modelos garantizados para todos los usuarios.
 
@@ -296,12 +299,16 @@ subcomando explícito, como `omni sim --json`.
 
 ### Configurar OpenRouter
 
-En la TUI abre Preferencias, la categoría de cuentas y conexiones y
-**Conexiones API…**. Selecciona OpenRouter y **Conectar…** para guardar la clave
-en el almacén de credenciales del usuario. **Probar** consulta su validez;
+En la TUI abre **F4 → Cuentas y conexiones → OpenRouter…**. El formulario
+muestra directamente el campo de clave; **Guardar** la almacena en las credenciales
+protegidas del usuario. **Probar** consulta su validez;
 **Descubrir modelos** abre el catálogo, cuyo refresh se solicita explícitamente.
 Registra sólo los modelos elegidos y luego selecciónalos mediante el selector
-de modelos habitual.
+de modelos habitual. **Consultar créditos…** muestra los límites de clave y el saldo
+disponible, con actualización explícita. Cada proveedor API abre su formulario dentro
+de Preferencias, sin volver a seleccionarlo. `/openrouter`, `/login` y sus variantes
+no se ofrecen en los comandos de la TUI. La lista muestra una sola grafía en el idioma de la interfaz;
+Los identificadores canónicos se conservan para la CLI de automatización.
 
 También puedes configurar la conexión por CLI:
 
@@ -316,6 +323,21 @@ argumentos. Usa el ID mostrado en `status` con `test`, `refresh`, `catalog`,
 Consultar conexión, catálogo y créditos no genera respuestas de modelos. El
 límite/uso de una clave y el saldo de cuenta se muestran por separado; un dato
 no disponible no se convierte en cero.
+
+### Elegir herramientas alternativas
+
+**F4 → Herramientas y seguridad → Herramientas alternativas…** permite preferir
+una herramienta aportada por una extensión. Es opcional: sin preferencias se usan las
+herramientas habituales. La pantalla ofrece las opciones del catálogo y describe
+la herramienta de la lista que estás recorriendo.
+
+Elige la herramienta que quieres sustituir, elige qué usar en su lugar y pulsa
+**Añadir preferencia**. **Guardar cambios** aplica las preferencias; **Volver**
+descarta las modificaciones pendientes. **Quitar preferencia** recupera el
+comportamiento habitual al guardar. Si el catálogo no contiene alternativas
+compatibles, la pantalla lo explica y puedes volver sin configurar nada.
+Las preferencias se aplican cuando ambas herramientas están disponibles en el
+turno, con los permisos y confirmaciones habituales.
 
 ### Explorar sin credenciales ni llamadas al modelo
 
@@ -332,7 +354,7 @@ dotnet run --project src/OmniCore.Cli -- tui --sim
 
 Configure proveedores y modelos en el directorio **del usuario**, tomando [docs/examples](docs/examples) como referencia. No almacene credenciales en el repositorio. Las reglas de conexión y almacenamiento se documentan en [los ADR](docs/adr/README.md), especialmente en ADR-0011.
 
-En la TUI, **F4 → Conexiones API de proveedores** permite guardar la clave de API de Anthropic, probar la conexión, descubrir modelos y desconectar. El Host conserva la credencial en su almacén protegido; si se guarda sin verificar, el estado se muestra como desconocido. Las fechas anteriores se identifican como históricas cuando la conexión actual no está validada. El acceso a la cuenta ChatGPT también se administra desde el menú de configuración.
+En la TUI, **F4 → Cuentas y conexiones → Anthropic…** abre directamente su formulario para guardar la clave, probar la conexión, descubrir modelos y desconectar. El Host conserva la credencial en su almacén protegido; si se guarda sin verificar, el estado se muestra como desconocido. Las fechas anteriores se identifican como históricas cuando la conexión actual no está validada. El acceso a la cuenta ChatGPT también se administra desde el menú de configuración.
 
 Los enlaces web de las respuestas se abren en el navegador predeterminado con un clic.
 También puede enfocar la conversación, situar el cursor sobre el enlace con las flechas
@@ -357,8 +379,168 @@ dotnet run --project src/OmniCore.Cli -- tui
 | `Enter` / `Shift+Enter` | Enviar / salto de línea |
 | `/` | Ayuda de comandos |
 | `F2` / `F3` / `F4` | Panel lateral / elegir modelo / ajustes |
+| `F6` | Buscar y retomar conversaciones del espacio de trabajo |
 | `↑` / `↓` en el selector | Navegación vertical y circular |
-| `Esc` en un menú | Cerrar el overlay |
+| `↑` / `↓` en categorías de Preferencias | Recorrer el menú en ciclo sin entrar a los campos |
+| `Enter` / `→` en categorías | Entrar al contenido seleccionado |
+| `←` en listas y botones de Preferencias | Volver a las categorías |
+| `Ctrl+F` | Buscar en el menú actual |
+| `Esc` en un menú | Volver al nivel anterior; desde la raíz, cerrar Preferencias |
+
+En **General y apariencia**, Recargar, Cancelar y Guardar pertenecen al contenido
+de esa categoría. En la vista integrada aparecen al entrar a editarla; Cancelar
+descarta el borrador de idioma y vuelve a las categorías sin cerrar Preferencias.
+Las flechas recorren las opciones dentro del submenú y vuelven a su inicio al
+llegar al final. Para regresar a categorías usa izquierda o el control de volver.
+En la lista de idiomas, las flechas sólo señalan una fila: clic o Enter elige el
+idioma pendiente y **Guardar** lo aplica. Pasar por una fila no cambia el idioma.
+Los textos informativos llevan más sangría, tono secundario y separación respecto
+de los controles.
+
+En **F4 → General y apariencia → Tema de colores…** hay **16 temas**:
+OmniCore, OpenCode, Claude Light, Claude Dark, Codex, OmniLlama, OmniLlama Light,
+Nord, Dracula, Catppuccin Mocha, Catppuccin Latte, Tokyo Night, Gruvbox,
+Solarized Dark, Solarized Light y Rosé Pine. Recorrer la lista con flechas o hacer
+clic previsualiza los colores inmediatamente en la TUI y en una muestra de texto,
+código y herramientas. **Guardar** conserva la elección para próximos inicios;
+**Cancelar**, **Esc** o **F4** restauran el tema anterior. La vista previa no escribe
+la preferencia ni altera la conversación o el borrador.
+
+Los temas cambian colores de la conversación, panel lateral, menús, campos y foco,
+manteniendo la distribución y los controles. Los temas claros también adaptan el
+resaltado de código, estados y texto de selección. `NO_COLOR` conserva la interfaz
+sin colores. OpenCode toma sus colores base del
+[tema público de OpenCode](https://github.com/anomalyco/opencode/blob/dev/packages/tui/src/theme/assets/opencode.json);
+Claude y Codex son paletas inspiradas en sus experiencias visuales. Las dos paletas
+OmniLlama adaptan los colores de nuestro [omni_llama](https://github.com/juancgomezm-s/omni_llama),
+sin incorporar su frontend ni dependencias web.
+
+En **F4 → General y apariencia → Animaciones de carga…** hay 31 efectos y una
+elección independiente para espera, razonamiento reportado, respuesta y herramientas.
+Al entrar en una fase se abre la lista con búsqueda y vista previa; recorrerla no
+guarda cambios. **Elegir** o Enter confirma la animación y Cancelar conserva la anterior.
+Los pulsos sobre texto resaltan tres caracteres y sustituyen temporalmente el central:
+estrella, símbolos cambiantes o recorrido de ida y vuelta. El texto original se
+restaura al avanzar y se conserva como etiqueta accesible de la actividad real.
+También hay fuego, lluvia Matrix, plasma, estrellas, figuras y ondas, con variantes
+de tres y cinco líneas que reservan espacio bajo el compositor mientras están activas.
+Movimiento reducido mantiene el estado sin animación; ASCII ofrece símbolos básicos.
+Los efectos, velocidad y preferencias se conservan para próximos inicios.
+
+En el selector puedes elegir con Enter un modelo ya registrado aunque falle la
+consulta del catálogo. **Actualizar modelos** permite reintentar sin cerrar el
+selector. La búsqueda y la fila señalada se conservan al actualizar; seleccionar
+no ejecuta el modelo. [Revisión de navegación y selección](docs/validation/tui-navigation-model-picker-20261016.md).
+
+Si al enviar un mensaje el modelo elegido requiere autorización, **Usar en esta
+conversación** concede el permiso y continúa esa misma petición. Enter confirma
+una sola acción; se conservan el historial y el mensaje original. El permiso no
+se reutiliza para conexiones modificadas ni para repetir una petición ya atendida.
+[Validación del cambio de modelo](docs/validation/model-route-resume-20261016.md).
+
+Las opciones disponibles en **F4** se administran desde su menú y no se repiten
+como comandos en el autocompletado, el catálogo o la ayuda de la TUI. Los comandos
+visibles se reservan para el trabajo de la conversación. Los nombres antiguos
+siguen siendo compatibles con la CLI y con automatizaciones existentes.
+
+En **Herramientas y seguridad** se encuentran la inspección de herramientas, sus
+preferencias de sustitución y los permisos/confianza. En **Extensiones y habilidades**
+están las extensiones, habilidades, automatizaciones, servidores MCP, alias y el
+catálogo de comandos. Los alias y las sustituciones se editan por filas; guardar
+aplica cambios y volver descarta el borrador. Modelos conserva selección, rutas,
+límites de gasto, catálogo y políticas propias de modelos.
+
+### Explicaciones visuales
+
+**F4 → Extensiones y habilidades → Habilidades** incluye **Visual explainer**.
+Actívala para la conversación y pide, por ejemplo: «Explícame este flujo con un
+diagrama en la terminal» o «Revisa estos cambios y crea un informe HTML local».
+Se distribuye con la aplicación; instalar o actualizar OmniCore incluye el paquete.
+
+En la TUI utiliza sus tablas, texto y diagramas verticales sin cambiar la interfaz
+ni requerir Python. Los informes HTML se guardan dentro del espacio de trabajo y
+se abren en el navegador predeterminado al activar su enlace con clic o Enter.
+Activar la habilidad no abre el navegador ni publica contenido. La generación
+desde JSON con Python 3 es opcional y no usa dependencias externas.
+[Formatos, límites y ejemplo](docs/visual-explainer-evaluation.md).
+
+### Conversaciones y contexto
+
+La conversación muestra encabezados, énfasis, listas y tablas Markdown con
+formato. Los ejemplos completos dentro de bloques `md` o `markdown` también se
+previsualizan, aunque el modelo no repita el resultado fuera del bloque.
+`/fuente` alterna con el original; el historial conserva el texto recibido.
+Los bloques de otros lenguajes y los mensajes del usuario siguen siendo literales.
+
+Una conversación admite una ventana de escritura a la vez. Si otra ventana la
+tiene abierta, la TUI explica cómo continuar y conserva el mensaje en el editor.
+Aceptar el aviso vuelve al chat. Tras cerrar la ventana anterior puedes reenviar
+desde la misma conversación; el intento rechazado no llama al proveedor ni
+duplica el mensaje en el historial.
+
+| Comando de la TUI en español | Acción |
+| --- | --- |
+| `/nuevo` | Crear una conversación vacía y conservar la anterior. |
+| `/retomar` | Abrir el selector de conversaciones; también funciona con `F6`. Permite buscar y elegir con Enter o con el botón Retomar. |
+| `/retomar <id>` | Abrir directamente una conversación del mismo espacio de trabajo. |
+| `/limpiar` | Limpiar la vista sin borrar el historial ni cambiar el contexto del modelo. Retomar la conversación recupera la vista completa. |
+| `/compactar` | Guardar un resumen extractivo del historial antiguo para el próximo turno, conservando el primer mensaje y las conversaciones recientes. |
+
+Los nombres visibles siguen el idioma de la interfaz. En inglés son `/new`,
+`/resume-session`, `/clear` y `/compact`. La CLI también admite `omni nuevo`,
+`omni sesiones`, `omni retomar <id>` y `omni compactar`.
+
+Cambiar de modelo conserva la conversación, su plan y las reglas de seguridad.
+El encabezado muestra la elección nueva hasta que exista una invocación posterior
+que informe el modelo utilizado; releer el historial no recupera como actual un
+modelo anterior. La ventana de contexto, las herramientas, las credenciales y
+el razonamiento se resuelven y validan para el modelo y proveedor de destino.
+Una petición de razonamiento incompatible no se transmite al proveedor.
+
+Los modelos **locales** y las **suscripciones** no quedan bloqueados por topes
+monetarios en USD, incluso si una conversación antigua conserva esos valores.
+El porcentaje de cuota restante es informativo para las preguntas del usuario:
+no se pide confirmar cada llamada por estar debajo del 10 %. Los límites reales
+del proveedor siguen aplicándose; una cuota baja puede omitir tareas auxiliares
+opcionales que consumirían más modelo.
+
+Los controles de gasto para proveedores que cobran por uso o créditos son
+opcionales. Los campos vacíos de la configuración actual no activan límites
+predeterminados de 5/20 USD. Los límites monetarios guardados en una sesión se
+conservan para rutas con facturación monetaria. Cambiar a un proveedor distinto
+puede pedir una autorización para esa conversación, con su nombre y forma de
+facturación. Las mediciones que el proveedor no informa permanecen desconocidas;
+no se convierten en consumo cero.
+
+La compactación automática revisa el contexto **antes de cada solicitud al
+modelo** y se activa al alcanzar el **95 % del presupuesto de entrada efectivo**.
+Ese presupuesto respeta la ventana declarada y reserva los tokens de salida;
+el contador mantiene su precisión exacta o estimada. La cadencia previa por
+cantidad de elementos sigue disponible como protección adicional del perfil:
+por defecto resume cada 24 elementos antiguos y conserva 12 recientes. Los
+elementos incluyen mensajes y resultados de herramientas, no sólo turnos completos.
+Si el contenido protegido no cabe, el turno se detiene con un desbordamiento
+explícito. El historial original permanece en el journal.
+
+El contexto reúne instrucciones, estado vigente del trabajo, contribuciones
+habilitadas, historial reciente y checkpoints. Las trazas de razonamiento
+visible no se convierten en prosa para los resúmenes. La continuidad nativa
+opaca conserva las restricciones de ruta, modelo y proveedor que exija el
+adaptador. Los contadores de la interfaz corresponden a las solicitudes
+efectivamente enviadas; compactar no inventa una medición nueva.
+
+Los resultados de herramientas de más de 4096 caracteres se guardan íntegros,
+redactados, en un artifact recuperable con `artifact.read`. Su vista acotada
+incluye el inicio, líneas de errores o verificaciones y el final; las líneas
+repetidas no ocupan varias veces esa vista. Los resultados cortos se conservan.
+Los resúmenes periódicos incorporan el checkpoint anterior y las novedades,
+priorizando instrucciones, decisiones, cambios, fallos, pruebas y pendientes.
+El resumen se envía una vez, sin repetir sus secciones como otro bloque.
+Un resumen es una representación limitada: el original permanece disponible;
+no se garantiza que todos sus detalles quepan en la siguiente solicitud.
+
+Al final de **Ayuda**, **Acerca de…** muestra el correo de contacto y el GitHub
+del proyecto. El enlace se abre sólo al activarlo.
 
 ### Pruebas focales
 

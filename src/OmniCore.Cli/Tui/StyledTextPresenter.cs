@@ -14,6 +14,7 @@ namespace OmniCore.Cli;
 internal class StyledTextPresenter : TextView
 {
     internal bool Dimmed { get; set; }
+    internal TuiTheme Theme { get; set; } = TuiTheme.All[0];
     private readonly Dictionary<(int Row, int Column), string> _links = new();
     private System.Drawing.Point _sourcePoint;
     private System.Drawing.Point? _mouseDown;
@@ -28,7 +29,7 @@ internal class StyledTextPresenter : TextView
         ReadOnly = true;
         WordWrap = true;
         ScrollBars = true;
-        ConversationScrollBarStyle.Attach(VerticalScrollBar, () => Dimmed);
+        ConversationScrollBarStyle.Attach(VerticalScrollBar, () => Dimmed, theme: () => Theme);
         AddCommand(Command.Copy, () => CopySelection());
         UnwrappedCursorPositionChanged += (_, point) => _sourcePoint = point;
         TextChanged += (_, _) => { if (!_loadingStyled) _links.Clear(); };
@@ -164,9 +165,9 @@ internal class StyledTextPresenter : TextView
     private void PaintAttribute(Terminal.Gui.Drawing.Attribute attribute)
     {
         var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
-        SetAttribute(new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : Dimmed ? new Color("#405666") : attribute.Foreground,
+        SetAttribute(Theme.Map(new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : Dimmed ? new Color("#405666") : attribute.Foreground,
             noColor ? Color.None : attribute.Background == AccentMarker ? new Color("#061822") : attribute.Background,
-            attribute.Style));
+            attribute.Style)));
     }
 }
 #pragma warning restore CS0618

@@ -39,6 +39,8 @@ jobs:
           global-json-file: global.json
       - run: dotnet restore OmniCore.slnx
       - run: dotnet build OmniCore.slnx --no-restore
+      - name: Validate bundled visual report formatter
+        run: python -m unittest discover -s tests -p test_visual_explainer_report.py
       - name: Windows crash recovery, Git, isolation and managed-server regression checks
         if: runner.os == 'Windows'
         shell: bash

@@ -28,7 +28,6 @@ public sealed partial class TuiApp
     private DateTimeOffset _sidebarSettingsPolledAt;
     private string? _sidebarSelection;
     private SidebarView? _sidebarSession;
-    private Label? _sidebarNavigation;
     private Label? _sidebarAttention;
     private ISidebarWidget[] _sidebarWidgets = [];
     private SidebarComposition? _sidebarComposition;
@@ -53,8 +52,6 @@ public sealed partial class TuiApp
     private Label? _status;
     private FrameView? _sidebar;
     private SidebarView? _sidebarContent;
-    private Button? _sidebarDetails;
-    private bool _sidebarExpanded;
     private Label? _completion;
     private FrameView? _commandHelper;
     private ListView? _commandList;
@@ -69,7 +66,6 @@ public sealed partial class TuiApp
     private CancellationTokenSource? _loginCancellation;
     private CancellationTokenSource? _catalogCancellation;
     private string? _catalogNotice;
-    private bool _catalogFresh;
     private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _uiActions = new();
     private readonly ITuiLocalEngineHost _localEngines;
     private readonly ITuiLocalEngineSupervisor? _localEngineSupervisor;
@@ -80,6 +76,8 @@ public sealed partial class TuiApp
     private string WorkspaceSelectionId => ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory);
     private string? _selectedModel;
     private string? _observedModel;
+    private string? _selectionObservationSession;
+    private long _selectionObservationAfterSequence;
     private bool _showMarkdownExamples;
     private readonly List<View> _retiredOverlays = new();
     private readonly List<View> _overlaysReadyForDisposal = new();
@@ -94,8 +92,9 @@ public sealed partial class TuiApp
     private string? _pendingEscalationResume;
     private string? _pendingQuotaResume;
     private ActivityView? _activity;
-    private Label? _activityLabel;
-    private int _activityPhase;
+    private ActivityView? _activityLabel;
+    private long _activityPhase;
+    private int _activityExtraRows;
     private int _activityTicks;
     private readonly AnimationSettingsStore _animationStore;
     private AnimationPreferences _animationPreferences;
@@ -147,10 +146,13 @@ public sealed partial class TuiApp
         _localEngines = localEngines ?? new TuiLocalEngineHost(supervisor: localEngineSupervisor);
         _claudeAccounts = claudeAccounts ?? TuiClaudeAccountHost.Create();
         _animationStore = new(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath());
+        _themeStore = new(Path.ChangeExtension(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath(), ".theme"));
+        _theme = _themeStore.Read();
         _animationPreferences = _animationStore.Load();
         RefreshSidebarPreferences();
         _selectedModel = _policies.CurrentSelection(WorkspaceSelectionId, CancellationToken.None)?.ModelId;
         _state = RefreshState();
+        if (_selectedModel is not null) MarkExplicitModelSelection();
     }
 
     public static string RenderNonInteractive(IOmniClient client, string locale = "es")
@@ -180,6 +182,10 @@ public sealed partial class TuiApp
         var app = new TuiApp(client, locale, turnHost: turnHost, localeSelection: localeSelection,
             localeChanged: localeChanged, claudeAccounts: claudeAccounts, localEngineSupervisor: localEngineSupervisor);
         using var application = Application.Create();
+        // Native Windows input avoids VT escape-sequence mouse/keyboard ambiguity.
+        // Preserve explicit driver configuration and the platform default on Unix.
+        if (OperatingSystem.IsWindows() && string.IsNullOrWhiteSpace(application.ForceDriver))
+            application.ForceDriver = DriverRegistry.Names.WINDOWS;
         application.Init();
         return app.RunWith(application);
     }
@@ -271,7 +277,7 @@ public sealed partial class TuiApp
             && ++_activityTicks >= _animationPreferences.IntervalMilliseconds / 100)
         {
             _activityTicks = 0;
-            _activityPhase = (_activityPhase + 1) % 120;
+            _activityPhase = _activityPhase == long.MaxValue ? 0 : _activityPhase + 1;
         }
         RenderActivity();
         RenderAnimationPreview();
@@ -288,15 +294,28 @@ public sealed partial class TuiApp
             roots.Length == 1 ? roots[0].LaneId : null, _observability.Activity,
             _turnBusy && (_localActivitySession is null || _localActivitySession == _cursorSession), pendingChildren);
         _activity.Visible = presentation.Visible && (_window?.Frame.Width ?? 80) - _mainColumnInset >= 30;
+        var effect = _animationPreferences.Effect(presentation.Phase);
+        var rows = _activity.Visible && _animationPreferences.Enabled && !_animationPreferences.ReducedMotion
+            && presentation.Moving && (_window?.Frame.Height ?? 25) >= 22 ? AnimationCatalog.Rows(effect) : 1;
+        if (_activityExtraRows != rows - 1)
+        {
+            _activityExtraRows = rows - 1; _activity.Height = rows; _activity.Y = Pos.AnchorEnd(rows + 2);
+            if (_activityLabel is not null) _activityLabel.Y = Pos.AnchorEnd(rows + 2);
+            UpdateComposerHeight();
+        }
         if (_activityLabel is not null) _activityLabel.Visible = _activity.Visible;
         if (_completion is not null) _completion.Visible = !_activity.Visible;
         if (!_activity.Visible) return;
         if (_activityLabel is not null)
         {
-            _activityLabel.Text = presentation.Label(_locale);
             _activityLabel.Width = Dim.Fill(_mainColumnInset + 2);
+            _activityLabel.Render(effect, _activityPhase,
+                presentation.Moving && _animationPreferences.Enabled && !_animationPreferences.ReducedMotion,
+                Environment.GetEnvironmentVariable("NO_COLOR") is not null,
+                presentation.Phase == ChatActivityPhase.WaitingForApproval, _animationPreferences.Ascii,
+                presentation.Label(_locale));
         }
-        _activity.Render(_animationPreferences.Effect(presentation.Phase), _activityPhase,
+        _activity.Render(effect, _activityPhase,
             presentation.Moving && _animationPreferences.Enabled && !_animationPreferences.ReducedMotion,
             Environment.GetEnvironmentVariable("NO_COLOR") is not null,
             presentation.Phase == ChatActivityPhase.WaitingForApproval, _animationPreferences.Ascii);
@@ -311,7 +330,13 @@ public sealed partial class TuiApp
         var code = key.KeyCode.ToString();
         if (code == "F2") { ToggleSidebar(); key.Handled = true; }
         else if (code == "F3") { ShowModelPicker(); key.Handled = true; }
-        else if (code == "F4") { ShowPreferences(); key.Handled = true; }
+        else if (code == "F4")
+        {
+            if (_overlay?.Id == "theme-preferences") ReturnFromPreferencesSubpage();
+            else ShowPreferences();
+            key.Handled = true;
+        }
+        else if (code == "F6") { ShowConversations(); key.Handled = true; }
         else if (key.KeyCode == (KeyCode.Tab | KeyCode.ShiftMask) && _overlay is null && _activeInteraction is null)
         { CycleMode(); key.Handled = true; }
         else if (code == "Esc" && _activeInteraction is { } interaction) { RespondDefault(interaction); key.Handled = true; }
@@ -328,6 +353,10 @@ public sealed partial class TuiApp
     {
         switch (_overlay?.Id)
         {
+            case "animation-picker":
+                ReturnFromAnimationPicker(); return true;
+            case "about-screen":
+                ShowHelp(); return true;
             case "policy-preferences":
                 CloseOverlay(); ShowPreferences("models_execution", categoryPage: true); return true;
             case "security-preferences":
@@ -372,25 +401,23 @@ public sealed partial class TuiApp
         ApplyTheme(_conversation);
         conversationFrame.Add(_conversation);
         _sidebar = new FrameView { Id = "omni-panel", X = Pos.AnchorEnd(31), Y = 0, Width = 31, Height = Dim.Fill(), Title = _localization.Resolve("shell.workspace_heading"), BorderStyle = LineStyle.None };
-        _sidebarContent = new SidebarView { X = 2, Y = 11, Width = Dim.Fill(1), Height = Dim.Fill(1) };
-        _sidebarContent.RowActivated += row => { if (row.Action == "diff.open" && row.Target is { } id) ShowFileDiff(id); };
-        _sidebarSession = new SidebarView { X = 2, Y = 3, Width = Dim.Fill(1), Height = 5, CanFocus = false, ScrollBars = false };
-        _sidebarDetails = new Button { Id = "sidebar-details", X = 2, Y = 1, Text = _localization.Resolve("shell.more_detail") };
-        _sidebarDetails.Accepted += (_, _) =>
+        _sidebarContent = new SidebarView { X = 2, Y = 10, Width = Dim.Fill(1), Height = Dim.Fill(1) };
+        _sidebarContent.RowActivated += row =>
         {
-            _sidebarExpanded = !_sidebarExpanded;
-            _sidebarDetails.Text = _sidebarExpanded ? _localization.Resolve("shell.less_detail") : _localization.Resolve("shell.more_detail");
-            RenderSidebar();
+            if (row.Action == "diff.open" && row.Target is { } file) ShowFileDiff(file);
+            else if (row.Action == "sidebar.expand" && row.Target is { } widget)
+            {
+                var expanded = _sidebarSettings.Preferences.Widgets?.GetValueOrDefault(widget)?.Expanded == true;
+                if (SaveSidebarSetting("Workspace", "widgets." + widget + ".expanded", expanded ? "false" : "true", true))
+                    _sidebarContent.SelectWidget(widget);
+            }
         };
+        _sidebarSession = new SidebarView { X = 2, Y = 3, Width = Dim.Fill(1), Height = 5, CanFocus = false, ScrollBars = false };
         var settings = new Button { Id = "sidebar-settings", X = Pos.AnchorEnd(9), Y = 1, Text = _localization.Resolve("shell.settings") };
         settings.Accepted += (_, _) => ShowSidebarSettings();
-        var previous = new Button { Id = "sidebar-prev", X = 1, Y = 8, Text = "‹" };
-        var next = new Button { Id = "sidebar-next", X = Pos.AnchorEnd(3), Y = 8, Text = "›" };
-        previous.Accepted += (_, _) => NavigateSidebar(-1); next.Accepted += (_, _) => NavigateSidebar(1);
-        _sidebarNavigation = new Label { Id = "omni-heading", X = 5, Y = 8, Width = Dim.Fill(5), Height = 1 };
-        _sidebarAttention = new Label { Id = "omni-help", X = 2, Y = 9, Width = Dim.Fill(1), Height = 1 };
-        _sidebar.Add(new Label { Id = "omni-heading", X = 2, Y = 0, Text = _localization.Resolve("shell.workspace_heading") }, _sidebarDetails, settings,
-            _sidebarSession, previous, next, _sidebarNavigation, _sidebarAttention, _sidebarContent);
+        _sidebarAttention = new Label { Id = "omni-help", X = 2, Y = 8, Width = Dim.Fill(1), Height = 1 };
+        _sidebar.Add(new Label { Id = "omni-heading", X = 2, Y = 0, Text = _localization.Resolve("shell.workspace_heading") }, settings,
+            _sidebarSession, _sidebarAttention, _sidebarContent);
         var composerFrame = _composerFrame = new FrameView { Id = "omni-composer", X = 1, Y = Pos.AnchorEnd(6), Width = Dim.Fill(1), Height = 3, BorderStyle = LineStyle.None };
         composerFrame.Add(new View { Id = "omni-composer-accent", X = 0, Y = 0, Width = 1, Height = Dim.Fill() });
         _attachmentChips = new Label { Id = "omni-attachments", X = 4, Y = 0, Width = Dim.Fill(2), Height = 1, Text = "", Visible = false };
@@ -425,7 +452,7 @@ public sealed partial class TuiApp
         _window.Add(_help, _sidebar);
         _activity = new ActivityView { Id = "omni-activity", X = 2, Y = Pos.AnchorEnd(3), Width = 12, Height = 1,
             CanFocus = false, Visible = false };
-        _activityLabel = new Label { Id = "omni-activity-label", X = 16, Y = Pos.AnchorEnd(3), Width = 14, Height = 1,
+        _activityLabel = new ActivityView { Id = "omni-activity-label", X = 16, Y = Pos.AnchorEnd(3), Width = 14, Height = 1,
             Text = _localization.Resolve("shell.processing"), CanFocus = false, Visible = false };
         _window.Add(_activity, _activityLabel);
         ApplyTheme(_window);
@@ -488,8 +515,8 @@ public sealed partial class TuiApp
         var attachmentRows = _pendingAttachments.Count == 0 ? 0 : 1;
         _composer.Height = _composerRows;
         _composerFrame.Height = _composerRows + 2 + attachmentRows;
-        _composerFrame.Y = Pos.AnchorEnd(_composerRows + 5 + attachmentRows);
-        if (_conversationFrame is not null) _conversationFrame.Height = Dim.Fill(_composerRows + 6 + attachmentRows);
+        _composerFrame.Y = Pos.AnchorEnd(_composerRows + 5 + attachmentRows + _activityExtraRows);
+        if (_conversationFrame is not null) _conversationFrame.Height = Dim.Fill(_composerRows + 6 + attachmentRows + _activityExtraRows);
         if (_commandHelper is not null) _commandHelper.Y = Pos.Top(_composerFrame) - _commandHelper.Frame.Height;
     }
 
@@ -500,18 +527,22 @@ public sealed partial class TuiApp
         if (draft.Length == 0 || draft[0] is not ('/' or '@')) { _completion.Text = ""; HideCommandHelper(); return; }
         var commandCatalogJson = _client.Query("commands", CancellationToken.None)?.Json;
         _disabledCommandReasons = ReadDisabledCommandReasons(commandCatalogJson);
+        var aliases = new UserCommandAliases((_policyPreferencesOverride ?? PolicyPreferencesHost.Create(Environment.CurrentDirectory))
+            .Read().CommandAliases);
         var names = ReadStringArray(commandCatalogJson, "commands")
             .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode", "reasoning",
-                "cancel", "interrupt", "preferences", "models", "login", "sidebar", "fuente", "agents", "delegate", "agent", "join", "fanout", "animation", "images" })
-            .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name));
+                "cancel", "interrupt", "preferences", "models", "sidebar", "agents", "delegate", "agent", "join", "fanout", "animation", "images",
+                "new", "sessions", "resume-session", "clear", "compact" })
+            .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name))
+            .Where(name => !TuiMenuCommands.IsMenuOwned(name, aliases));
         var suggestions = ComposerAutocomplete.Complete(draft,
-        new UserCommandAliases((_policyPreferencesOverride ?? PolicyPreferencesHost.Create(Environment.CurrentDirectory))
-            .Read().CommandAliases).CompletionNames(HumanCommandAliases.CompletionNames(names, _locale)),
-            ReadStringArray(_client.Query("complete:" + draft[1..], CancellationToken.None)?.Json, "paths"));
-        // Keep common entry points visible. For typed prefixes, exact names win and
-        // canonical spellings keep their established order ahead of translated aliases.
+        aliases.CompletionNames(names).Where(name => !TuiMenuCommands.IsMenuOwned(name, aliases)),
+            ReadStringArray(_client.Query("complete:" + draft[1..], CancellationToken.None)?.Json, "paths"),
+            name => HumanCommandAliases.DisplayName(name, _locale));
+        // Show one spelling in the effective UI language. Canonical commands remain accepted
+        // when typed explicitly, without duplicating the localized browsing surface.
         if (draft == "/") suggestions = suggestions.DistinctBy(suggestion => suggestion.Value)
-            .OrderBy(suggestion => suggestion.Value switch { "/help" => 0, "/act" => 1, "/mode" => 2, "/models" => 3, "/agents" => 4, _ => 5 }).ToArray();
+            .OrderBy(suggestion => HumanCommandAliases.NormalizeSlashHead(suggestion.Value) switch { "/help" => 0, "/act" => 1, "/mode" => 2, "/models" => 3, "/agents" => 4, _ => 5 }).ToArray();
         else if (draft[0] == '/') suggestions = suggestions
             .OrderBy(suggestion => suggestion.Value == draft ? 0
                 : HumanCommandAliases.NormalizeSlashHead(suggestion.Value) == suggestion.Value ? 1 : 2).ToArray();
@@ -544,6 +575,11 @@ public sealed partial class TuiApp
 
     private string CommandDescription(string command) => HumanCommandAliases.NormalizeSlashHead(command) switch
     {
+        "/new" => _localization.Resolve("shell.conversation.new"),
+        "/sessions" => _localization.Resolve("shell.conversation.title"),
+        "/resume-session" => _localization.Resolve("shell.conversation.resume"),
+        "/clear" => _localization.Resolve("shell.conversation.clear"),
+        "/compact" => _localization.Resolve("shell.conversation.compact"),
         "/agents" => _localization.Resolve("shell.inspect_run_agents_and_lanes"),
         "/delegate" => _localization.Resolve("shell.queue_bounded_read_only_work"),
         "/fanout" => _localization.Resolve("shell.group_queued_delegations_with_direct_or_aggregate_fan_in"),
@@ -567,7 +603,7 @@ public sealed partial class TuiApp
         "/interrupt" => _localization.Resolve("shell.interrupt_active_turn"),
         var head when ClientCommandRegistry.Default.Commands.FirstOrDefault(c => "/" + c.Name == head) is { } client =>
             _localization.Resolve(client.DescriptionKey),
-        _ when command.StartsWith('/') && _disabledCommandReasons.TryGetValue(command[1..], out var reason) =>
+        var head when head.StartsWith('/') && _disabledCommandReasons.TryGetValue(head[1..], out var reason) =>
             _localization.Resolve("shell.disabled") + DescribeDisabledCommand(reason),
         _ => _localization.Resolve("shell.workspace_command")
     };
@@ -633,6 +669,7 @@ public sealed partial class TuiApp
             .Read().CommandAliases);
         // Whitespace is grammar for commands, but remains literal in a conversation prompt.
         var input = HumanCommandAliases.NormalizeSlashSyntax(aliases.NormalizeSlashHead(rawInput.Trim()));
+        if (HandleConversationSlash(input)) return;
         if (input == "/attach" || input.StartsWith("/attach ", StringComparison.Ordinal))
         {
             if (input.Length == 7) PickAttachments();
@@ -843,6 +880,7 @@ public sealed partial class TuiApp
             _composer.Text = ""; PollEvents(); return;
         }
         if (input == "/preferences") { ShowPreferences(); _composer.Text = ""; return; }
+        if (input == "/openrouter") { ShowPreferences("accounts_connections", categoryPage: true); _composer.Text = ""; return; }
         if (input == "/login") { ShowAccount(fromPreferences: false); _composer.Text = ""; return; }
         if (input == "/models") { ShowModelPicker(); _composer.Text = ""; return; }
         if (input == "/sidebar") { ToggleSidebar(); _composer.Text = ""; return; }
@@ -1171,6 +1209,16 @@ public sealed partial class TuiApp
         { ShowMessage(_localization.Resolve("shell.attachment.act_unsupported")); return false; }
         if (delegationId is not null) return StartDelegationTurn(delegationId);
         if (_turnBusy) { ShowMessage(_localization.Resolve("shell.a_turn_is_already_processing_wait_or_use_cancel")); return false; }
+        try
+        {
+            if (!_turnHost.TryAcquireSessionWriter())
+            { ShowMessage(_localization.Resolve("session_writer_owned")); return false; }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            ShowMessage(_localization.Resolve("shell.turn_failed_check_omni_doctor") + "\n" + OmniCliRuntime.RedactSensitive(error.Message));
+            return false;
+        }
         _turnCancellation?.Dispose();
         var cancellation = _turnCancellation = new CancellationTokenSource();
         var submittedAttachments = attachments?.ToArray() ?? [];
@@ -1196,7 +1244,7 @@ public sealed partial class TuiApp
                     diagnostic, cancellation.Token)
                     : delegationId is not null ? _turnHost.ExecuteDelegationAsync(delegationId, diagnostic, cancellation.Token)
                     : resumeQuota is not null ? _turnHost.ResumeQuotaAsync(resumeQuota, diagnostic, cancellation.Token)
-                    : resumeEscalation is not null ? _turnHost.ResumeEscalationAsync(resumeEscalation, diagnostic, cancellation.Token)
+                    : resumeEscalation is not null ? _turnHost.ResumeModelRouteAsync(resumeEscalation, diagnostic, cancellation.Token)
                     : act ? _turnHost.ExecuteActAsync(input, diagnostic, cancellation.Token)
                     : submittedAttachments.Length > 0
                         ? _turnHost.ExecuteAsync(input, submittedAttachments, diagnostic, cancellation.Token)
@@ -1286,8 +1334,7 @@ public sealed partial class TuiApp
         {
             _cursorSession = session; _lastSequence = 0; _observedModel = null; _turnUsage = null;
             var empty = ClientState.Empty();
-            // Keep the visible transcript across fresh Runs; reset only session-local UI state.
-            _state = new ClientState(_state.Header, _state.Conversation, empty.Sidebar,
+            _state = new ClientState(_state.Header, empty.Conversation, empty.Sidebar,
                 _state.Composer, empty.StatusLine, empty.Overlays, empty.Connection);
         }
         foreach (var envelope in _client.SubscribeSince(_lastSequence + 1))
@@ -1369,7 +1416,12 @@ public sealed partial class TuiApp
         if (fields.GetValueOrDefault("conversationScope") is not ("child" or "ambiguous")
             && fields.GetValueOrDefault("type") == "model_step.started"
             && fields.GetValueOrDefault("modelId") is { Length: > 0 } model)
+        {
+            if (_selectionObservationSession == _cursorSession
+                && long.TryParse(fields.GetValueOrDefault("seq"), out var sequence)
+                && sequence <= _selectionObservationAfterSequence) return;
             _observedModel = model;
+        }
     }
 
     private void RenderState()
@@ -1516,42 +1568,21 @@ public sealed partial class TuiApp
             heading.Text = _sidebar.Title = _localization.Resolve("shell.workspace_heading");
         var widgets = SessionSidebarPresentation.Build(_sidebarProjection.Snapshot, _observability.Snapshot,
             _observedModel ?? _selectedModel ?? _localization.Resolve("shell.automatic_no_turn"),
-            _state.StatusLine.Mode, _locale, _sidebarExpanded).ToList();
-        if (!_sidebarExpanded && _sidebarSettings.Preferences.Widgets?.Any(p => p.Value.Expanded) == true)
-        {
-            var expanded = SessionSidebarPresentation.Build(_sidebarProjection.Snapshot, _observability.Snapshot,
-                _observedModel ?? _selectedModel ?? _localization.Resolve("shell.automatic_no_turn"), _state.StatusLine.Mode, _locale, true);
-            for (var index = 0; index < widgets.Count; index++)
-                if (_sidebarSettings.Preferences.Widgets.GetValueOrDefault(widgets[index].Id)?.Expanded == true)
-                    widgets[index] = expanded.First(w => w.Id == widgets[index].Id);
-        }
-        var agentWidget = AgentPresentation.Build(_agents.Snapshot, _locale, _sidebarExpanded
-            || _sidebarSettings.Preferences.Widgets?.GetValueOrDefault("core.agents")?.Expanded == true);
+            _state.StatusLine.Mode, _locale, true).ToList();
+        var agentWidget = AgentPresentation.Build(_agents.Snapshot, _locale, true);
         _sidebarWidgets = widgets.Concat(new[] { agentWidget, _files.Widget(_locale) }).ToArray();
         var layout = TuiLayoutModel.ForWidth(_window?.Frame.Width ?? 80, _sidebarOpen, _sidebarSettings.Preferences);
         _sidebarComposition = OmniCore.Client.SidebarComposition.Build(_sidebarWidgets, _state, _sidebarSettings.Preferences,
-            layout.Mode, Math.Max(1, (_window?.Frame.Height ?? 25) - 12), _sidebarSelection, _sidebarExpanded);
+            layout.Mode, Math.Max(1, (_window?.Frame.Height ?? 25) - 11), _sidebarSelection, summaryLinks: true, locale: _locale);
         _sidebarSelection = _sidebarComposition.SelectedId;
         var pinned = _sidebarComposition.Pinned.Select(item => (item.Widget, item.Model is ListWidgetModel list
             ? (WidgetModel)(list with { Rows = list.Rows.Select(row => row with
                 { Text = FitText(row.Text, Math.Max(1, layout.SidebarWidth - 6)) }).ToArray() }) : item.Model)).ToArray();
         _sidebarSession?.Render(pinned);
         _sidebarContent.Render(_sidebarComposition.Body);
-        if (_sidebarNavigation is not null) _sidebarNavigation.Text = (_sidebarComposition.Navigation.FirstOrDefault(w => w.Id == _sidebarSelection)?.Title ?? "")
-            + (layout.Mode == TuiLayoutMode.Tabbed ? " · tab" : "");
         if (_sidebarAttention is not null) _sidebarAttention.Text = _sidebarSettings.Diagnostics.Count > 0 ? _localization.Resolve("shell.invalid_settings")
             : _sidebarComposition.AttentionIds.Count > 0 ? "! " + string.Join(" · ", _sidebarComposition.AttentionIds.Select(id => id.Replace("core.", "")))
             : _sidebarComposition.Collapsed > 0 ? _localization.Resolve("shell.details_collapsed_inspect") : "";
-    }
-
-    private void NavigateSidebar(int delta)
-    {
-        var navigation = _sidebarComposition?.Navigation;
-        if (navigation is null || navigation.Count == 0) return;
-        var index = navigation.ToList().FindIndex(w => w.Id == _sidebarSelection);
-        _sidebarSelection = navigation[(index + delta + navigation.Count) % navigation.Count].Id;
-        // Navigation is an explicit inspection request, including widgets hidden by configuration.
-        RenderSidebar(); _sidebarContent?.SelectWidget(_sidebarSelection);
     }
 
     private void RefreshSidebarPreferences()
@@ -1578,6 +1609,7 @@ public sealed partial class TuiApp
         if (_window is null) return;
         CloseOverlay(); RefreshSidebarPreferences();
         var frame = OverlayFrame(_localization.Resolve("shell.sidebar_settings"), 22);
+        frame.Id = "sidebar-preferences";
         var scope = "Workspace";
         string ScopeLabel() => _localization.Resolve("shell.sidebar_scope") + UiCompletionResources.EnumLabel("scope", scope, _locale);
         string LayoutLabel() => _localization.Resolve("shell.sidebar_mode") + _localization.Resolve("shell." + _sidebarSettings.Preferences.Mode);
@@ -1586,8 +1618,8 @@ public sealed partial class TuiApp
         var heading = MenuIndent.Heading(_localization.Resolve("shell.widget_list_heading"), 4);
         var list = new ListView { Id = "omni-model-list", X = MenuIndent.Level1, Y = 5, Width = Dim.Fill(2), Height = Dim.Fill(10) };
         var description = new Label { Id = "omni-detail", X = MenuIndent.Level1, Y = Pos.AnchorEnd(9), Width = Dim.Fill(2), Height = 2 };
-        var help = new Label { Id = "omni-help", X = MenuIndent.Level1, Y = Pos.AnchorEnd(4), Width = Dim.Fill(2), Height = 2 };
-        var notice = new Label { Id = "omni-help", X = MenuIndent.Level0, Y = Pos.AnchorEnd(2), Width = Dim.Fill(2), Height = 1 };
+        var help = new Label { Id = "omni-help", X = MenuIndent.Level1, Y = Pos.AnchorEnd(5), Width = Dim.Fill(2), Height = 2 };
+        var notice = new Label { Id = "omni-help", X = MenuIndent.Level0, Y = Pos.AnchorEnd(3), Width = Dim.Fill(2), Height = 1 };
         var widgets = _sidebarWidgets.ToArray();
         var ids = widgets.Select(w => w.Id).ToArray();
         string DescriptionOf(string id) => _localization.Resolve(ShellUiResources.ContainsKey("shell.widget_desc." + id)
@@ -1644,7 +1676,9 @@ public sealed partial class TuiApp
         var down = new Button { X = Pos.Right(up) + 1, Y = Pos.AnchorEnd(6), Text = _localization.Resolve("shell.priority_67") };
         void Priority(int delta) { if (Selected() is { } id) Save("widgets." + id + ".priority", Math.Clamp((_sidebarSettings.Preferences.Widgets?.GetValueOrDefault(id)?.Priority ?? _sidebarWidgets.First(w => w.Id == id).DefaultPriority) + delta, -1000, 1000).ToString(System.Globalization.CultureInfo.InvariantCulture)); }
         up.Accepted += (_, _) => Priority(10); down.Accepted += (_, _) => Priority(-10);
-        frame.Add(scopeButton, mode, heading, list, description, visible, expand, reset, up, down, help, notice);
+        var back = new Button { Id = "sidebar-settings-back", X = Pos.AnchorEnd(14), Y = Pos.AnchorEnd(2), Text = Pref("back") };
+        back.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("general", categoryPage: true); };
+        frame.Add(scopeButton, mode, heading, list, description, visible, expand, reset, up, down, help, notice, back);
         Update(); ApplyTheme(frame); _overlay = frame; _window.Add(frame); list.SetFocus();
     }
 
@@ -1673,9 +1707,10 @@ public sealed partial class TuiApp
 
     private void ShowChoiceInteraction(InteractionOverlayModel interaction)
     {
-        var overlay = OverlayFrame(interaction.Title, 7 + interaction.Options.Count);
+        var bodyHeight = interaction.Kind == "ModelRouteConsent" ? 4 : 2;
+        var overlay = OverlayFrame(interaction.Title, 5 + bodyHeight + interaction.Options.Count);
         _activeInteraction = interaction;
-        overlay.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Height = 2,
+        overlay.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Height = bodyHeight,
             Text = interaction.Subject.Length == 0 ? interaction.Kind : interaction.Subject });
         Button? defaultButton = null;
         for (var index = 0; index < interaction.Options.Count; index++)
@@ -1685,12 +1720,12 @@ public sealed partial class TuiApp
             // cualquier otro botón del contenedor (Enter sobre «Permitir una vez» dispararía
             // «Denegar»), lo que traiciona la intención visible del foco. La opción segura llega
             // por el foco inicial y por Esc (OnApplicationKeyDown → RespondDefault), no por flag.
-            var button = new Button { X = 2, Y = 4 + index, Text = interaction.Options[index] };
-            button.Accepted += (_, _) => RespondChoice(interaction, optionId);
+            var button = new Button { X = 2, Y = 2 + bodyHeight + index, Text = interaction.Options[index] };
+            button.Accepted += (_, args) => { args.Handled = true; RespondChoice(interaction, optionId); };
             overlay.Add(button);
             if (optionId == interaction.DefaultOptionId) defaultButton = button;
         }
-        overlay.Add(new Label { Id = "omni-help", X = 2, Y = 5 + interaction.Options.Count, Text = _localization.Resolve("shell.escape_deny") });
+        overlay.Add(new Label { Id = "omni-help", X = 2, Y = 3 + bodyHeight + interaction.Options.Count, Text = _localization.Resolve("shell.escape_deny") });
         _overlay = overlay;
         ApplyTheme(overlay);
         _window!.Add(overlay);
@@ -1792,24 +1827,33 @@ public sealed partial class TuiApp
         return frame;
     }
 
-    // Menus (category lists and overlay title bars) use a violet slate so they never blend
-    // into the blue-slate panel surface they sit next to.
-    private const string MenuSurface = "#2E2647";
-    private const string PreferencesSurface = "#332B40";
+    // Blue surfaces remain distinct from the conversation (#061822) and sidebar (#202C3B).
+    private const string MenuSurface = "#182A38";
+    private const string PreferencesSurface = "#13222E";
 
-    private static void ApplyTheme(View view, string surface = "#061822", bool dimmed = false)
+    private void ApplyTheme(View view, string surface = "#061822", bool dimmed = false, bool preferences = false)
     {
+        preferences |= view is FrameView && view.Id is { } preferenceId
+            && (preferenceId.Contains("preferences", StringComparison.Ordinal) || preferenceId.StartsWith("model-catalog-", StringComparison.Ordinal)
+                || preferenceId.StartsWith("claude-account", StringComparison.Ordinal));
+        var information = preferences && view is Label && (view is MenuInformationLabel || view.Id is "omni-detail"
+            || view.Id is { } labelId && new[] { "-help", "-hint", "-notice", "-status", "-summary", "-intro", "-details", "-metadata", "-note", "-description", "-modes" }
+                .Any(suffix => labelId.EndsWith(suffix, StringComparison.Ordinal)));
+        if (information) { view.X = MenuIndent.Information; view.CanFocus = false; }
+        if (view is FrameView && preferences)
+            PreferenceNavigation.Attach(view.SubViews.FirstOrDefault(child => child.Id == "preferences-panel") ?? view);
         // Framework defaults invert whole titles and edit fields. Keep a quiet surface;
         // focus remains visible through the cursor and cyan hotkeys, never color alone.
         var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
         if (view.Id == "omni-composer") surface = "#293648";
         else if (view.Id == "omni-composer-accent") surface = "#B47CE7";
+        else if (preferences && view is FrameView) surface = PreferencesSurface;
         else if (view.Id == "preferences-center" || view is FrameView
             && (view.Id?.StartsWith("session-preferences", StringComparison.Ordinal) == true
                 || view.Id?.StartsWith("model-catalog-", StringComparison.Ordinal) == true
                 || view.Id is "policy-preferences" or "security-preferences" or "security-preferences-confirm"
-                    or "diagnostics-preferences" or "diagnostics-confirm" or "command-preferences")) surface = PreferencesSurface;
-        else if (view.Id == "omni-panel") surface = "#202C3B";
+                    or "diagnostics-preferences" or "diagnostics-confirm" or "command-preferences" or "mapping-preferences")) surface = PreferencesSurface;
+        else if (view.Id is "omni-panel" or "provider-connections" or "openrouter-credits") surface = "#202C3B";
         else if (view.Id == "omni-menu-title") surface = MenuSurface;
         else if (view.Id is "omni-model-list" or "tools-list" or "session-preferences-list" or "model-catalog-list"
             or "commands-list" or "security-rules" or "security-grants" or "diagnostics-configuration") surface = "#142636";
@@ -1822,7 +1866,7 @@ public sealed partial class TuiApp
         else if (view.Id == "omni-menu-action") surface = "#293E51";
         else if (view.Id == "omni-model-palette" || view.Id == "omni-palette-search" || view.Id == "omni-palette-action") surface = "#061822";
         var background = noColor ? Color.None : new Color(surface);
-        var foreground = view.Id == "omni-help" ? "#B9CBDF"
+        var foreground = information || view is MenuInformationLabel || view.Id == "omni-help" ? "#B9CBDF"
             : view.Id is "omni-heading" or "omni-activity-label" or "omni-section" or "preferences-account-heading" or "preferences-locale-label" ? "#85E6DF"
             : view.Id == "omni-detail" ? "#D6E2EE" : "#F4F7FB";
         if (dimmed) foreground = "#405666";
@@ -1840,9 +1884,18 @@ public sealed partial class TuiApp
             button.NoDecorations = true;
             button.ShadowStyle = ShadowStyles.None;
         }
-        view.SetScheme(new Scheme { Normal = primary, Focus = focus, Editable = primary,
-            HotNormal = accent, HotFocus = view is Button or ListView ? focus : accent });
-        foreach (var child in view.SubViews) ApplyTheme(child, surface, dimmed);
+        var mappedFocus = _theme.Map(focus);
+        if (!noColor && view is Button or ListView or TextField)
+        {
+            var fill = view.Id is "omni-model-list" or "tools-list" or "preferences-categories" ? _theme.Accent : _theme.Selection;
+            mappedFocus = new Terminal.Gui.Drawing.Attribute(TuiTheme.On(fill), new Color(fill), focus.Style);
+        }
+        view.SetScheme(new Scheme { Normal = _theme.Map(primary), Focus = mappedFocus, Editable = _theme.Map(primary),
+            HotNormal = _theme.Map(accent), HotFocus = view is Button or ListView ? mappedFocus : _theme.Map(accent) });
+        if (view is StyledTextPresenter styled) styled.Theme = _theme;
+        if (view is SidebarView sidebar) sidebar.Theme = _theme;
+        if (view is ActivityView activity) activity.Theme = _theme;
+        foreach (var child in view.SubViews) ApplyTheme(child, surface, dimmed, preferences);
     }
 
     private void RespondDefault(InteractionOverlayModel interaction)
@@ -1864,8 +1917,7 @@ public sealed partial class TuiApp
             if (_turnBusy) _pendingQuotaResume = interaction.Id;
             else StartModelTurn("", resumeQuota: interaction.Id);
         }
-        if (interaction.Kind == "ModelRouteConsent" && optionId == "allow_route"
-            && _turnHost?.HasEscalationForInteraction(interaction.Id) == true)
+        if (interaction.Kind == "ModelRouteConsent" && optionId == "allow_route")
         {
             // The overlay can be drawn by polling just before the originating task returns 3.
             // Defer the callback until that owned invocation reaches its checkpoint.
@@ -1898,11 +1950,12 @@ public sealed partial class TuiApp
             _account ??= _accountOverride ?? new TuiAccountHost();
             var status = _account.Status();
             var frame = OverlayFrame(AccountUi("title.chatgpt"), 14);
+            frame.Id = "account-preferences";
             frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Text = status.LoggedIn
                 ? status.AccountIdMasked + (status.Expired ? " · " + AccountUi("status.expired") : " · " + AccountUi("status.connected"))
                 : AccountUi("status.disconnected") });
             frame.Add(new Label { X = 2, Y = 3, Width = Dim.Fill(2), Text = AccountUi("account.noApiKey") });
-            var browser = new Button { X = 2, Y = 5, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = AccountUi("action.browserLogin") };
+            var browser = new Button { Id = "account-browser-login", X = 2, Y = 5, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = AccountUi("action.browserLogin") };
             browser.Accepted += (_, _) => StartLogin(false);
             var device = new Button { X = 2, Y = 7, Width = Dim.Fill(2), TextAlignment = Alignment.Start, Text = AccountUi("action.deviceLogin") };
             device.Accepted += (_, _) => StartLogin(true);
@@ -1919,7 +1972,11 @@ public sealed partial class TuiApp
             _returnToChatGptAccount = false;
             (status.LoggedIn ? (status.Expired ? browser : back) : browser).SetFocus();
         }
-        catch (Exception) { ShowMessage(AccountUi("error.readAccount")); }
+        catch (Exception)
+        {
+            if (_accountFromPreferences) ShowPreferenceText(AccountUi("title.chatgpt"), AccountUi("error.readAccount"));
+            else ShowMessage(AccountUi("error.readAccount"));
+        }
     }
 
     private void ConfirmLogout()
@@ -1969,11 +2026,10 @@ public sealed partial class TuiApp
         });
     }
 
-    private void ShowModelPicker(int page = 0, bool refreshCatalog = true, string query = "")
+    private void ShowModelPicker(int page = 0, bool refreshCatalog = true, string query = "", ModelPolicyKeyDto? highlighted = null)
     {
         if (_window is null || _overlay is not null) return;
         _policies.ReloadModels();
-        if (refreshCatalog) _catalogFresh = false;
         var available = _policies.Models.Where(m => _policies.IsVisibleInPicker(m.ProviderId, m.Id)).ToArray();
         var models = available;
         var frame = OverlayFrame(_localization.Resolve("shell.select_model"), Math.Clamp(available.Length + 9, 12, 20));
@@ -1981,7 +2037,7 @@ public sealed partial class TuiApp
         frame.Width = Dim.Percent(66);
         frame.ViewportSettings |= ViewportSettingsFlags.Transparent;
         frame.SubViews.Single(view => view.Id == "omni-menu-title").Width = Dim.Fill(10);
-        var feedback = new Label { X = 2, Y = 1, Width = Dim.Fill(4),
+        var feedback = new Label { Id = "omni-palette-feedback", X = 2, Y = 1, Width = Dim.Fill(4),
             Text = models.Length == 0 ? _localization.Resolve("shell.no_visible_models_check_f4_models")
                 : "" };
         frame.Add(feedback);
@@ -2055,33 +2111,42 @@ public sealed partial class TuiApp
             args.Handled = true;
             if (list.SelectedItem is not int index || index < 0 || index >= models.Length) return;
             var model = models[index];
-            if (!_catalogFresh && _policies.IsSubscriptionModel(model.Id)) return;
             var key = new ModelPolicyKeyDto(model.ProviderId, model.Id);
-            var safe = _policies.Get(key, CancellationToken.None) is null;
-            _policies.Select(WorkspaceSelectionId, key, model.Id, safe, CancellationToken.None);
-            _turnStatus = safe ? _localization.Resolve("shell.safe_mode_observeonly") : null;
-            RefreshSelectedModel(); CloseOverlay();
+            try
+            {
+                var safe = _policies.Get(key, CancellationToken.None) is null;
+                _policies.Select(WorkspaceSelectionId, key, model.Id, safe, CancellationToken.None);
+                _turnStatus = safe ? _localization.Resolve("shell.safe_mode_observeonly") : null;
+                RefreshSelectedModel(); MarkExplicitModelSelection(); CloseOverlay(); RenderState();
+            }
+            catch (Exception) { feedback.Text = _localization.Resolve("shell.could_not_select_model"); }
         };
+        ModelPolicyKeyDto? HighlightedModel() => list.SelectedItem is int at && at >= 0 && at < models.Length
+            ? new(models[at].ProviderId, models[at].Id) : null;
         FilterModels();
-        var initial = Array.FindIndex(models, model => model.Id == _selectedModel);
+        var initial = Array.FindIndex(models, model => highlighted is null ? model.Id == _selectedModel
+            : model.Id == highlighted.ModelId && model.ProviderId == highlighted.ProviderId);
+        if (initial < 0) initial = Array.FindIndex(models, model => model.Id == _selectedModel);
         if (models.Length > 0) list.SelectedItem = Math.Max(0, initial);
         UpdatePosition();
         var close = new Button { Id = "omni-palette-action", X = Pos.AnchorEnd(8), Y = 0, Width = 6, Text = "Esc" };
         close.Accepted += (_, _) => CloseOverlay();
         var manage = new Button { Id = "omni-palette-action", X = 2, Y = Pos.AnchorEnd(1), Text = _localization.Resolve("shell.manage_models_ctrl_m") };
         manage.Accepted += (_, _) => { CloseOverlay(); ShowModelPolicies(); };
+        var refresh = new Button { Id = "omni-palette-refresh", X = 2, Y = Pos.AnchorEnd(2),
+            Text = _localization.Resolve("shell.refresh_models"), Enabled = _policies.SupportsDiscovery };
+        refresh.Accepted += (_, _) => RefreshAccountModels(frame, feedback, page, picker: true, highlighted: HighlightedModel);
         ApplyTheme(_window, dimmed: true);
         if (_conversation is not null) _conversation.Dimmed = true;
-        frame.Add(searchLabel, search, searchHint, list, position, close, manage); ApplyTheme(frame); _overlay = frame; _window.Add(frame);
+        frame.Add(searchLabel, search, searchHint, list, position, close, manage, refresh); ApplyTheme(frame); _overlay = frame; _window.Add(frame);
         if (models.Length > 0) list.SetFocus(); else search.SetFocus();
-        if (refreshCatalog && _policies.SupportsDiscovery) RefreshAccountModels(frame, feedback, page, picker: true);
+        if (refreshCatalog && _policies.SupportsDiscovery) RefreshAccountModels(frame, feedback, page, picker: true, highlighted: HighlightedModel);
     }
 
     private void ShowModelPolicies(int page = 0, bool refreshCatalog = true, int focusIndex = -1, int focusColumn = 0)
     {
         if (_window is null || _overlay is not null) return;
         _policies.ReloadModels();
-        if (refreshCatalog) _catalogFresh = false;
         var frame = OverlayFrame(_localization.Resolve("shell.models_title"), 18);
         var pageSize = Math.Max(1, Math.Min(18, _window.Frame.Height - 2) - 7);
         var models = _policies.Models.ToArray();
@@ -2141,7 +2206,6 @@ public sealed partial class TuiApp
             var index = page + row - 2;
             var select = new Button { Id = "model-policy-" + descriptor.Id, X = 1, Y = row, Width = Dim.Fill(13), TextAlignment = Alignment.Start, Text = label };
             BindCell(select, index, 0);
-            if (!_catalogFresh && _policies.IsSubscriptionModel(descriptor.Id)) select.Enabled = false;
             select.Accepted += (_, _) =>
             {
                 CloseOverlay(); ShowModelPolicySetup(_policies.Draft(key, CancellationToken.None));
@@ -2386,8 +2450,9 @@ public sealed partial class TuiApp
         cancel.SetFocus();
     }
 
-    private void RefreshAccountModels(FrameView frame, Label feedback, int page, bool picker = false)
+    private void RefreshAccountModels(FrameView frame, Label feedback, int page, bool picker = false, Func<ModelPolicyKeyDto?>? highlighted = null)
     {
+        if (_catalogCancellation is not null) return;
         try
         {
             _account ??= _accountOverride ?? new TuiAccountHost();
@@ -2395,38 +2460,62 @@ public sealed partial class TuiApp
         }
         catch (Exception) { feedback.Text = _localization.Resolve("shell.could_not_read_the_chatgpt_session"); return; }
         feedback.Text = _localization.Resolve("shell.loading_available_models");
+        var retry = frame.SubViews.OfType<Button>().FirstOrDefault(view => view.Id == "omni-palette-refresh");
+        if (retry is not null) retry.Enabled = false;
         var cancellation = _catalogCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var token = cancellation.Token;
+        bool IsCurrent() => ReferenceEquals(_overlay, frame) && ReferenceEquals(_catalogCancellation, cancellation);
+        void Finish()
+        {
+            _catalogCancellation = null;
+            if (retry is not null) retry.Enabled = true;
+            cancellation.Dispose();
+        }
         _ = Task.Run(async () =>
         {
             try
             {
-                var catalog = await _account.ListModelsAsync(cancellation.Token).ConfigureAwait(false);
+                var catalog = await _account.ListModelsAsync(token).ConfigureAwait(false);
                 _uiActions.Enqueue(() =>
                 {
-                    if (cancellation.IsCancellationRequested || !ReferenceEquals(_overlay, frame)) return;
+                    if (!IsCurrent()) return;
                     try
                     {
-                        _catalogNotice = _policies.ApplyChatGptCatalog(catalog, WorkspaceSelectionId, cancellation.Token)
+                        var focusedModel = highlighted?.Invoke();
+                        var search = frame.SubViews.OfType<TextField>().FirstOrDefault(v => v.Id == "omni-palette-search");
+                        var query = search?.Text.ToString() ?? "";
+                        var editingSearch = search?.HasFocus == true;
+                        _catalogNotice = _policies.ApplyChatGptCatalog(catalog, WorkspaceSelectionId, token)
                             ?? _localization.Resolve("shell.catalog_refreshed");
-                        _catalogFresh = true;
-                        var query = frame.SubViews.OfType<TextField>().FirstOrDefault(v => v.Id == "omni-palette-search")?.Text.ToString() ?? "";
-                        RefreshSelectedModel(); CloseOverlay();
-                        if (picker) ShowModelPicker(page, false, query); else ShowModelPolicies(page, false);
+                        var fromPreferences = _preferencesReturnToCategory;
+                        Finish(); RefreshSelectedModel(); CloseOverlay();
+                        if (picker)
+                        {
+                            ShowModelPicker(page, false, query, focusedModel);
+                            if (editingSearch) FindPreferenceView(_overlay, "omni-palette-search")?.SetFocus();
+                        }
+                        else ShowModelPolicies(page, false);
+                        _preferencesReturnToCategory = fromPreferences;
                     }
-                    catch (Exception) { feedback.Text = _localization.Resolve("shell.could_not_save_catalog_selection_preserved"); }
+                    catch (Exception)
+                    {
+                        if (ReferenceEquals(_overlay, frame))
+                            feedback.Text = _localization.Resolve("shell.could_not_save_catalog_selection_preserved");
+                        if (IsCurrent()) Finish();
+                    }
                 });
             }
             catch (Exception)
             {
                 _uiActions.Enqueue(() =>
                 {
-                    if (!ReferenceEquals(_overlay, frame)) return;
+                    if (!IsCurrent()) return;
                     feedback.Text = picker
                         ? _localization.Resolve("shell.discovery_failed_selection_preserved_reopen_the_picker")
                         : _localization.Resolve("shell.discovery_failed_selection_preserved_retry_refresh");
+                    Finish();
                 });
             }
-            // The UI owns this CTS until it closes/replaces the panel.
         });
     }
 
@@ -2459,10 +2548,17 @@ public sealed partial class TuiApp
     private void RefreshSelectedModel()
     {
         var selection = _policies.CurrentSelection(WorkspaceSelectionId, CancellationToken.None)?.ModelId;
-        if (selection != _selectedModel) _observedModel = null;
+        if (selection != _selectedModel) MarkExplicitModelSelection();
         _selectedModel = selection;
         if (_header is not null) _header.Text = HeaderText();
         if (_status is not null) _status.Text = StatusText();
+    }
+
+    private void MarkExplicitModelSelection()
+    {
+        _observedModel = null;
+        _selectionObservationSession = _cursorSession;
+        _selectionObservationAfterSequence = _lastSequence;
     }
 
     /// <summary>Renders JSON as indented "label: value" lines with strings decoded (no \u escapes).</summary>
@@ -2539,12 +2635,13 @@ public sealed partial class TuiApp
         var frame = OverlayFrame(title, Math.Max(6, visible.Length + 5));
         frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Height = visible.Length, Text = string.Join("\n", visible) });
         var ok = new Button { X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2), Text = _localization.Resolve("shell.ok") };
-        ok.Accepted += (_, _) => CloseOverlay(); frame.Add(ok); ApplyTheme(frame); _overlay = frame; _window.Add(frame); frame.SetFocus();
+        ok.Accepted += (_, e) => { e.Handled = true; CloseOverlay(); }; frame.Add(ok); ApplyTheme(frame); _overlay = frame; _window.Add(frame); frame.SetFocus();
     }
 
     private void CloseOverlay()
     {
         if (_overlay is null || _window is null) return;
+        if (_themeBeforePreview is { } originalTheme) { _theme = originalTheme; _themeBeforePreview = null; }
         if (_suspendedSecurityForm is { } securityDraft)
         {
             _retiredOverlays.Add(securityDraft); _suspendedSecurityForm = null; _cancelSecurityConfirmation = null;
@@ -2709,9 +2806,7 @@ public sealed partial class TuiApp
         }
         if (action.ActionId == ClientActionIds.HelpShow)
         {
-            var context = new ClientContext(_client, _localization, CliApp.PermissionsListing);
-            var help = new ClientActionHandler().ExecuteAsync(action, context, CancellationToken.None).AsTask().GetAwaiter().GetResult();
-            _viewFromChat = true; ShowPreferenceText(_localization.Resolve("shell.help_title"), help.Text + "\n\n" + TuiHelpSection());
+            _viewFromChat = true; ShowHelp();
             return true;
         }
         if (action.ActionId == ClientActionIds.PermissionsList)
@@ -2738,11 +2833,17 @@ public sealed partial class TuiApp
 
     private string TuiHelpSection()
     {
-        var lines = new List<string> { _localization.Resolve("shell.help_tui_section") };
-        foreach (var name in new[] { "/act", "/mode", "/runmode", "/ultracode", "/reasoning", "/models", "/preferences",
-            "/login", "/sidebar", "/animation", "/agents", "/delegate", "/agent", "/join", "/fanout" })
-            lines.Add("  " + name + " — " + CommandDescription(name));
+        var lines = new List<string> { _localization.Resolve("client.help.title"), "", _localization.Resolve("shell.help_tui_section") };
+        var aliases = new UserCommandAliases((_policyPreferencesOverride ?? PolicyPreferencesHost.Create(Environment.CurrentDirectory)).Read().CommandAliases);
+        var rows = CommandCatalogPresentation.Read(_client.Query("commands", CancellationToken.None)?.Json, _localization)
+            .Where(row => !TuiMenuCommands.IsMenuOwned(row.Name, aliases));
+        var shown = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows)
+            if (shown.Add(row.Name)) lines.Add("  /" + row.DisplayName + " — " + row.Description);
+        foreach (var name in new[] { "new", "sessions", "resume-session", "clear", "compact", "act", "mode", "runmode", "ultracode", "reasoning", "agents", "delegate", "agent", "join", "fanout" })
+            if (shown.Add(name)) lines.Add("  /" + HumanCommandAliases.DisplayName(name, _locale) + " — " + CommandDescription("/" + name));
         lines.Add(_localization.Resolve("shell.help_keys"));
+        lines.Add("F6 — " + _localization.Resolve("shell.conversation.title"));
         return string.Join("\n", lines);
     }
 

@@ -75,13 +75,21 @@ public sealed record AutocompleteSuggestion(string Value, string Description, Th
 public static class ComposerAutocomplete
 {
     public static IReadOnlyList<AutocompleteSuggestion> Complete(string draft,
-        IEnumerable<string> commandNames, IEnumerable<string> workspacePaths)
+        IEnumerable<string> commandNames, IEnumerable<string> workspacePaths) =>
+        Complete(draft, commandNames, workspacePaths, null);
+
+    public static IReadOnlyList<AutocompleteSuggestion> Complete(string draft,
+        IEnumerable<string> commandNames, IEnumerable<string> workspacePaths,
+        Func<string, string>? commandDisplayName)
     {
         if (string.IsNullOrEmpty(draft)) return Array.Empty<AutocompleteSuggestion>();
         var marker = draft[0];
         var prefix = draft.Length > 1 ? draft[1..] : string.Empty;
         if (marker == '/')
-            return commandNames.Where(name => name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            return commandNames.Select(name => (Canonical: name, Display: commandDisplayName?.Invoke(name) ?? name))
+                .Where(name => name.Canonical.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                    || name.Display.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                .Select(name => name.Display).Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
                 .Select(name => new AutocompleteSuggestion("/" + name, "command", ThemeRole.Active)).ToArray();
         if (marker == '@')

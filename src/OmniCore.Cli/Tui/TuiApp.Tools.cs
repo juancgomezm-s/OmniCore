@@ -43,8 +43,8 @@ public sealed partial class TuiApp
             + "\n\nID: " + ToolDisplayText(row.ToolId)
             + "\n" + ToolUi("source") + ToolDisplayText(row.Source)
             + "\n" + ToolUi("effect") + ToolDisplayText(UiCompletionResources.EnumLabel("effect", row.EffectClass, _locale))
-            + "\n" + ToolUi("policy") + ToolInspectionPresentation.Decision(row, _localization)
-            + (string.IsNullOrWhiteSpace(row.Description) ? "" : "\n" + ToolUi("original") + ToolDisplayText(row.Description));
+            + (string.IsNullOrWhiteSpace(row.Description) || ToolDisplayText(row.Description) == Description(row)
+                ? "" : "\n" + ToolUi("original") + ToolDisplayText(row.Description));
         void UpdateDetail()
         {
             summary.Text = ToolUi("mode") + ToolDisplayText(snapshot.Mode is { } mode

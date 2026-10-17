@@ -41,9 +41,13 @@ public sealed partial class TuiApp
         if (_window is null || _overlay is not null
             || queryName is not ("context" or "extensions" or "skills" or "memory.session")) return;
         _sessionPreferencesQuery = queryName;
-        var json = _client.Query(queryName, CancellationToken.None)?.Json;
-        _sessionPreferencesData = json is null ? SessionPreferencesData.Unavailable(queryName)
-            : SessionPreferencesPresentation.Decode(queryName, json);
+        try
+        {
+            var json = _client.Query(queryName, CancellationToken.None)?.Json;
+            _sessionPreferencesData = json is null ? SessionPreferencesData.Unavailable(queryName)
+                : SessionPreferencesPresentation.Decode(queryName, json);
+        }
+        catch (Exception) { _sessionPreferencesData = SessionPreferencesData.Unavailable(queryName); }
         BuildSessionPreferenceRows();
         RenderSessionPreferences();
     }
@@ -162,7 +166,10 @@ public sealed partial class TuiApp
                 {
                     action.Text = SessionPref("skill.release"); action.Visible = true; action.Enabled = data.SessionId is not null;
                 }
-                else if (data.WorkspaceTrusted == true && skill.State is "Discovered" or "Eligible" or "Released")
+                else if ((skill.Scope is "BuiltIn" or "User" or "Workspace" or "Session"
+                        || skill.Scope == "Project" && data.WorkspaceTrusted == true)
+                    && skill.Trust is not ("Untrusted" or "ThirdParty")
+                    && skill.State is "Discovered" or "Eligible" or "Released")
                 {
                     action.Text = SessionPref("skill.activate"); action.Visible = true; action.Enabled = data.SessionId is not null;
                 }
@@ -211,7 +218,10 @@ public sealed partial class TuiApp
             if (data.SessionId is { Length: > 0 } session) lines.Add(SessionPref("session") + ": " + session);
             else lines.Add(SessionPref("no_session"));
         }
-        if (data.WorkspaceTrusted is { } trusted)
+        var selectedSkill = index >= 0 && index < _sessionPreferencesRows.Count
+            ? _sessionPreferencesRows[index].Value as SkillPresentation : null;
+        if (data.WorkspaceTrusted is { } trusted
+            && (data.QueryName != "skills" || selectedSkill?.Scope == "Project"))
             lines.Add(SessionPref("trust") + ": " + SessionPref(trusted ? "trusted" : "untrusted"));
         if (index < 0 || index >= _sessionPreferencesRows.Count)
             lines.Add(SessionPref(_sessionPreferencesRows.Count == 0 ? "empty" : "select"));
@@ -280,9 +290,11 @@ public sealed partial class TuiApp
     }
 
     private string SkillDetails(SkillPresentation skill) => string.Join(Environment.NewLine,
-        Safe(skill.DisplayName), SessionPref("id") + ": " + Safe(skill.Id), SessionPref("skill.version") + ": " + Safe(skill.Version ?? SessionPref("unknown")),
+        Safe(skill.DisplayName),
+        SessionPref("trust_level") + ": " + (skill.Scope == "BuiltIn" && skill.Trust == "Core"
+            ? SessionPref("skill.trusted_builtin") : EnumLabel("trust", skill.Trust)),
+        SessionPref("id") + ": " + Safe(skill.Id), SessionPref("skill.version") + ": " + Safe(skill.Version ?? SessionPref("unknown")),
         SessionPref("skill.state") + ": " + EnumLabel("skill.state", skill.State), SessionPref("scope") + ": " + EnumLabel("scope", skill.Scope),
-        SessionPref("trust_level") + ": " + EnumLabel("trust", skill.Trust),
         SessionPref("skill.tools") + ": " + (skill.Tools.Count == 0 ? SessionPref("unknown") : Safe(string.Join(", ", skill.Tools), 512)),
         SessionPref("skill.model_invocable") + ": " + Bool(skill.ModelInvocable),
         SessionPref("skill.sealed") + ": " + Bool(skill.Sealed), SessionPref("manifest_hash") + " " + Safe(skill.ManifestSha256, 128));
@@ -424,6 +436,7 @@ public sealed partial class TuiApp
     {
         var command = activate ? "skills.activate" : "skills.release";
         var payload = "{" + JsonObj.Field("cmd", command) + "," + JsonObj.Field("skillId", skill.Id)
+            + "," + JsonObj.Field("scope", skill.Scope)
             + "," + JsonObj.Field("expectedSessionId", data.SessionId ?? "")
             + "," + JsonObj.Field("expectedManifestSha256", skill.ManifestSha256) + "}";
         SendSessionPreferencePayload(data, payload);
@@ -455,6 +468,9 @@ public sealed partial class TuiApp
 
     private void SendSessionPreferencePayload(SessionPreferencesData data, string payload)
     {
+        var selectedIndex = CurrentSessionPreferenceIndex();
+        var selectedIdentity = selectedIndex >= 0 && selectedIndex < _sessionPreferencesRows.Count
+            ? PreferenceRowIdentity(_sessionPreferencesRows[selectedIndex]) : null;
         if (_client is not ITrustedUserActionClient trusted)
         {
             RenderSessionPreferences(CurrentSessionPreferenceIndex(), SessionPref("error.trusted_action_required"));
@@ -468,10 +484,20 @@ public sealed partial class TuiApp
             _sessionPreferencesData = query is null ? SessionPreferencesData.Unavailable(data.QueryName)
                 : SessionPreferencesPresentation.Decode(data.QueryName, query);
             BuildSessionPreferenceRows();
-            RenderSessionPreferences(0, notice);
+            var restored = _sessionPreferencesRows.FindIndex(row => PreferenceRowIdentity(row) == selectedIdentity);
+            RenderSessionPreferences(restored >= 0 ? restored : Math.Clamp(selectedIndex, 0, Math.Max(0, _sessionPreferencesRows.Count - 1)), notice);
         }
         else RenderSessionPreferences(CurrentSessionPreferenceIndex(), notice);
     }
+
+    private static string PreferenceRowIdentity(SessionPreferenceRow row) => row.Value switch
+    {
+        SkillPresentation skill => "skill:" + skill.Scope + ":" + skill.Id,
+        ExtensionPresentation extension => "extension:" + extension.Scope + ":" + extension.Id,
+        MemoryPresentation memory => "memory:" + memory.Id,
+        MemoryCandidatePresentation candidate => "candidate:" + candidate.Id,
+        _ => row.Label,
+    };
 
     private string SessionPreferenceError(string? error)
     {

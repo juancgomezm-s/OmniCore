@@ -55,7 +55,7 @@ public static class PreferenceCategoryCatalog
     private static readonly Dictionary<string, string> _es = new(StringComparer.Ordinal)
     {
         ["preferences.category.general.title"] = "General y apariencia",
-        ["preferences.category.general.description"] = "Idioma, panel lateral, widgets y animaciones de carga. Configúrelas aquí o con /animation.",
+        ["preferences.category.general.description"] = "Idioma, panel lateral, widgets y animaciones de carga.",
         ["preferences.category.general.help"] = "El idioma se guarda para el usuario; los ajustes del panel lateral indican su alcance y su origen.",
         ["preferences.category.accounts_connections.title"] = "Cuentas y conexiones",
         ["preferences.category.accounts_connections.description"] = "Cuentas por suscripción y conexiones de proveedores mediante API.",
@@ -64,14 +64,14 @@ public static class PreferenceCategoryCatalog
         ["preferences.category.local_engines.description"] = "Servidores locales existentes y motores administrados por OmniCore.",
         ["preferences.category.local_engines.help"] = "Un motor administrado solo se controla mientras este runtime sea su propietario.",
         ["preferences.category.models_execution.title"] = "Modelos y perfiles",
-        ["preferences.category.models_execution.description"] = "Modelos, rutas y preferencias para Runs futuros.",
-        ["preferences.category.models_execution.help"] = "Los cambios de preferencias no modifican un Run que ya está en curso.",
+        ["preferences.category.models_execution.description"] = "Modelos, rutas y preferencias para ejecuciones futuras.",
+        ["preferences.category.models_execution.help"] = "Los cambios de preferencias no modifican una ejecución que ya está en curso.",
         ["preferences.category.tools_security.title"] = "Herramientas y seguridad",
-        ["preferences.category.tools_security.description"] = "Herramientas disponibles, permisos y confianza del workspace.",
+        ["preferences.category.tools_security.description"] = "Herramientas disponibles, permisos y confianza del espacio de trabajo.",
         ["preferences.category.tools_security.help"] = "Consultar una capacidad no la activa ni concede permisos.",
-        ["preferences.category.extensions_skills.title"] = "Extensiones y skills",
-        ["preferences.category.extensions_skills.description"] = "Extensiones del proyecto y skills activables para esta sesión.",
-        ["preferences.category.extensions_skills.help"] = "La confianza del workspace y el consentimiento de capacidades son decisiones distintas.",
+        ["preferences.category.extensions_skills.title"] = "Extensiones y habilidades",
+        ["preferences.category.extensions_skills.description"] = "Extensiones del proyecto y habilidades activables para esta sesión.",
+        ["preferences.category.extensions_skills.help"] = "La confianza del espacio de trabajo y el consentimiento de capacidades son decisiones distintas.",
         ["preferences.category.context_sessions.title"] = "Contexto y sesiones",
         ["preferences.category.context_sessions.description"] = "Contexto, memoria y consumo medido de la sesión.",
         ["preferences.category.context_sessions.help"] = "Inspeccionar no hace inferencias ni cambia cuotas o memoria.",
@@ -83,7 +83,7 @@ public static class PreferenceCategoryCatalog
     private static readonly Dictionary<string, string> _en = new(StringComparer.Ordinal)
     {
         ["preferences.category.general.title"] = "General and appearance",
-        ["preferences.category.general.description"] = "Language, sidebar, widgets, and loading animations. Configure them here or with /animation.",
+        ["preferences.category.general.description"] = "Language, sidebar, widgets, and loading animations.",
         ["preferences.category.general.help"] = "The language is saved for the user; sidebar settings show their scope and source.",
         ["preferences.category.accounts_connections.title"] = "Accounts and connections",
         ["preferences.category.accounts_connections.description"] = "Subscription accounts and API provider connections.",
@@ -111,7 +111,7 @@ public static class PreferenceCategoryCatalog
     private static readonly Dictionary<string, string> _fr = new(StringComparer.Ordinal)
     {
         ["preferences.category.general.title"] = "Général et apparence",
-        ["preferences.category.general.description"] = "Langue, panneau latéral, widgets et animations de chargement. Configurez-les ici ou avec /animation.",
+        ["preferences.category.general.description"] = "Langue, panneau latéral, widgets et animations de chargement.",
         ["preferences.category.general.help"] = "La langue est enregistrée pour l’utilisateur ; les réglages du panneau latéral indiquent leur portée et leur source.",
         ["preferences.category.accounts_connections.title"] = "Comptes et connexions",
         ["preferences.category.accounts_connections.description"] = "Comptes par abonnement et connexions API aux fournisseurs.",
@@ -139,7 +139,7 @@ public static class PreferenceCategoryCatalog
     private static readonly Dictionary<string, string> _it = new(StringComparer.Ordinal)
     {
         ["preferences.category.general.title"] = "Generale e aspetto",
-        ["preferences.category.general.description"] = "Lingua, pannello laterale, widget e animazioni di caricamento. Configurale qui o con /animation.",
+        ["preferences.category.general.description"] = "Lingua, pannello laterale, widget e animazioni di caricamento.",
         ["preferences.category.general.help"] = "La lingua viene salvata per l’utente; le impostazioni del pannello laterale indicano ambito e origine.",
         ["preferences.category.accounts_connections.title"] = "Account e connessioni",
         ["preferences.category.accounts_connections.description"] = "Account in abbonamento e connessioni API ai provider.",

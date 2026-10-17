@@ -15,9 +15,10 @@ public sealed class SkillContextContributor(SessionId session, LoadedSkill loade
         var manifest = loaded.Skill.Manifest;
         var id = manifest.Id!;
         var priority = manifest.Priority >= 50 ? ContextPriority.High : ContextPriority.Normal;
+        var instructionText = "Instructions from skill " + id + " (" + manifest.Version + "):\nPackage directory: "
+            + Path.GetFullPath(loaded.Skill.Directory) + "\n" + loaded.Instructions;
         var items = new List<ContextItem> { new("skill." + id, ContextItemKind.Skill,
-            "Instructions from skill " + id + " (" + manifest.Version + "):\n" + loaded.Instructions,
-            Math.Max(1, (loaded.Instructions.Length + 3) / 4), priority, RetentionPolicy.RegenerateEachTurn,
+            instructionText, Math.Max(1, (instructionText.Length + 3) / 4), priority, RetentionPolicy.RegenerateEachTurn,
             new ContextProvenance("skills." + id, ContributionCategory.Skills,
                 "Skill:" + loaded.Skill.Scope + ":" + loaded.Skill.Trust + ":" + id + "@" + manifest.Version,
                 loaded.Skill.Scope, false, ["manifest-sha256=" + loaded.Skill.ManifestSha256,

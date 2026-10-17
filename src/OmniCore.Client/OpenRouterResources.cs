@@ -9,7 +9,7 @@ public static class OpenRouterResources
     [
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["openrouter.connection.validated"] = "La API key de OpenRouter fue aceptada por la API de cuenta.",
+            ["openrouter.connection.validated"] = "La clave API de OpenRouter fue aceptada por la API de cuenta.",
             ["openrouter.catalog.truncated"] = "El catálogo de OpenRouter llegó al límite local de 1000 modelos.",
             ["openrouter.credits.balanceUnavailable"] = "El saldo de cuenta no está disponible con esta credencial.",
             ["client.command.openrouter"] = "estado de conexión, catálogo y créditos OpenRouter",
@@ -17,12 +17,27 @@ public static class OpenRouterResources
             ["openrouter.status.title"] = "Conexión OpenRouter",
             ["openrouter.status.empty"] = "OpenRouter todavía no está configurado.",
             ["openrouter.status.models"] = "modelos registrados",
+
+
+
+
+
+
+
+
+
+
+
+
+            ["openrouter.credits.action"] = "Consultar créditos…",
+            ["openrouter.credits.loading"] = "Consultando créditos…",
+            ["openrouter.credits.failed"] = "No se pudieron consultar los créditos. Puedes reintentar.",
             ["openrouter.credits.title"] = "Mediciones OpenRouter (USD)",
             ["openrouter.credits.provider"] = "Proveedor",
             ["openrouter.credits.chooseProvider"] = "Indica el proveedor para consultar créditos",
-            ["openrouter.credits.keyLimit"] = "Límite de la key",
-            ["openrouter.credits.remaining"] = "Restante del límite de la key",
-            ["openrouter.credits.usage"] = "Uso de la key",
+            ["openrouter.credits.keyLimit"] = "Límite de la clave",
+            ["openrouter.credits.remaining"] = "Restante del límite de la clave",
+            ["openrouter.credits.usage"] = "Uso de la clave",
             ["openrouter.credits.accountBalance"] = "Saldo de cuenta",
             ["openrouter.credits.unknown"] = "desconocido",
             ["openrouter.catalog.help"] = "Filtra por id o nombre. Actualizar consulta el catálogo oficial; registrar añade solo el modelo seleccionado.",
@@ -58,6 +73,9 @@ public static class OpenRouterResources
             ["openrouter.status.title"] = "OpenRouter connection",
             ["openrouter.status.empty"] = "OpenRouter is not configured yet.",
             ["openrouter.status.models"] = "registered models",
+            ["openrouter.credits.action"] = "View credits…",
+            ["openrouter.credits.loading"] = "Reading credits…",
+            ["openrouter.credits.failed"] = "Could not read credits. You can retry.",
             ["openrouter.credits.title"] = "OpenRouter measurements (USD)",
             ["openrouter.credits.provider"] = "Provider",
             ["openrouter.credits.chooseProvider"] = "Specify a provider to query credits",
@@ -99,6 +117,9 @@ public static class OpenRouterResources
             ["openrouter.status.title"] = "Connexion OpenRouter",
             ["openrouter.status.empty"] = "OpenRouter n’est pas encore configuré.",
             ["openrouter.status.models"] = "modèles enregistrés",
+            ["openrouter.credits.action"] = "Consulter les crédits…",
+            ["openrouter.credits.loading"] = "Lecture des crédits…",
+            ["openrouter.credits.failed"] = "Impossible de lire les crédits. Réessayez.",
             ["openrouter.credits.title"] = "Mesures OpenRouter (USD)",
             ["openrouter.credits.provider"] = "Fournisseur",
             ["openrouter.credits.chooseProvider"] = "Indiquez le fournisseur pour consulter les crédits",
@@ -140,6 +161,9 @@ public static class OpenRouterResources
             ["openrouter.status.title"] = "Connessione OpenRouter",
             ["openrouter.status.empty"] = "OpenRouter non è ancora configurato.",
             ["openrouter.status.models"] = "modelli registrati",
+            ["openrouter.credits.action"] = "Consulta crediti…",
+            ["openrouter.credits.loading"] = "Lettura dei crediti…",
+            ["openrouter.credits.failed"] = "Impossibile leggere i crediti. Riprova.",
             ["openrouter.credits.title"] = "Misure OpenRouter (USD)",
             ["openrouter.credits.provider"] = "Provider",
             ["openrouter.credits.chooseProvider"] = "Indica il provider per consultare i crediti",

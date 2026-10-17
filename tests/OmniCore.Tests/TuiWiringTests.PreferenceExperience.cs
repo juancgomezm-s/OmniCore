@@ -51,8 +51,8 @@ public sealed partial class TuiWiringTests
         var saved = UiLocalePreferencesProtocol.Decode(fx.Server.Query(UiLocalePreferencesProtocol.QueryName, default)!.Json)!;
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "preferences open");
         var locales = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale");
-        fx.Invoke(() => locales.SelectedItem = 2);
-        fx.Wait(() => fx.App.PreferencesLocale == "fr", "French draft preview");
+        ChooseLocaleDraft(fx, 2);
+        Assert.Equal("es", fx.App.PreferencesLocale);
         var frame = fx.App.Overlay!;
         var search = Descendants(frame).OfType<TextField>().Single(view => view.Id == "preferences-search");
         var categoryNavigation = Descendants(frame).OfType<ListView>().Single(view => view.Id == "preferences-categories");
@@ -62,9 +62,9 @@ public sealed partial class TuiWiringTests
         Assert.False(categoryNavigation.Visible);
         Assert.Equal("fr", fx.App.PreferencesDraftLocale);
         fx.Invoke(() => search.Text = "");
-        ChoosePreferenceCategory(fx, "context_sessions", "fr");
-        ChoosePreferenceCategory(fx, "general", "fr");
-        Assert.Equal("fr", fx.App.PreferencesLocale);
+        ChoosePreferenceCategory(fx, "context_sessions");
+        ChoosePreferenceCategory(fx, "general");
+        Assert.Equal("es", fx.App.PreferencesLocale);
         Assert.Equal(2, Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "preferences-locale").SelectedItem);
         var afterNavigation = UiLocalePreferencesProtocol.Decode(fx.Server.Query(UiLocalePreferencesProtocol.QueryName, default)!.Json)!;
         Assert.Equal(saved.Revision, afterNavigation.Revision);
