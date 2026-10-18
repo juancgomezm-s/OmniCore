@@ -1519,13 +1519,15 @@ public sealed class OmniCliRuntime : IDisposable
 
     private static ReasoningResolution ResolveReasoningResolution(RunReasoningSelectionState? runSelection,
         RunModeAuthority? authority, ReasoningCapability capability, ReasoningRequest? turnBoost,
-        Guid? turnBoostId, long? outputLimit)
+        Guid? turnBoostId, long? outputLimit, ProviderFamily protocol)
     {
         if (turnBoost is not null)
         {
             if (turnBoostId is not { } boostId || boostId == Guid.Empty)
                 throw new InvalidOperationException("A Turn reasoning boost requires a durable identity.");
             capability.ValidateRequest(turnBoost);
+            if (!AdapterCanRepresentReasoning(protocol, turnBoost))
+                throw new InvalidOperationException("The selected reasoning request has no representation in the configured provider adapter.");
             return new ReasoningResolution(turnBoost, turnBoost, ReasoningSelectionSource.TurnBoost,
                 turnBoostId: boostId);
         }
@@ -1538,6 +1540,8 @@ public sealed class OmniCliRuntime : IDisposable
                 if (revision is not > 0)
                     throw new InvalidOperationException("Captured User reasoning preference is missing its durable revision.");
                 capability.ValidateRequest(runSelection.Request);
+                if (!AdapterCanRepresentReasoning(protocol, runSelection.Request))
+                    throw new InvalidOperationException("The selected reasoning request has no representation in the configured provider adapter.");
                 return new ReasoningResolution(runSelection.Request, runSelection.Request,
                     ReasoningSelectionSource.UserDefault, userPreferenceRevision: revision);
             }
@@ -1545,6 +1549,8 @@ public sealed class OmniCliRuntime : IDisposable
             if (runSelection.Source != "User" || runSelection.Revision <= 0)
                 throw new InvalidOperationException("Run reasoning preference has invalid provenance.");
             capability.ValidateRequest(runSelection.Request);
+            if (!AdapterCanRepresentReasoning(protocol, runSelection.Request))
+                throw new InvalidOperationException("The selected reasoning request has no representation in the configured provider adapter.");
             return new ReasoningResolution(runSelection.Request, runSelection.Request,
                 ReasoningSelectionSource.RunOverride, runPreferenceRevision: runSelection.Revision);
         }
@@ -1554,6 +1560,8 @@ public sealed class OmniCliRuntime : IDisposable
             if (runSelection.CapturedUserPreferenceRevision is not > 0)
                 throw new InvalidOperationException("Captured User reasoning preference is missing its durable revision.");
             capability.ValidateRequest(runSelection.CapturedUserDefault);
+            if (!AdapterCanRepresentReasoning(protocol, runSelection.CapturedUserDefault))
+                throw new InvalidOperationException("The selected reasoning request has no representation in the configured provider adapter.");
             return new ReasoningResolution(runSelection.CapturedUserDefault, runSelection.CapturedUserDefault,
                 ReasoningSelectionSource.UserDefault,
                 userPreferenceRevision: runSelection.CapturedUserPreferenceRevision);
@@ -1565,25 +1573,40 @@ public sealed class OmniCliRuntime : IDisposable
             throw new InvalidOperationException("UltraCode reasoning requires a durable mode-authority revision.");
 
         var high = new ReasoningRequest("high", null);
-        if (capability.Supported == true
+        if (protocol == ProviderFamily.AnthropicMessages
+            && capability.Supported == true
+            && capability.UltraCodeBudgetTokens is { } anthropicBudget
+            && capability.UltraCodeOutputReserveTokens is { } anthropicReserve)
+        {
+            var requestedBudget = new ReasoningRequest("budget", anthropicBudget);
+            var fits = outputLimit is { } limit && (long)anthropicBudget + anthropicReserve <= limit;
+            return new ReasoningResolution(high, fits ? requestedBudget : null, ReasoningSelectionSource.UltraCode,
+                modeAuthorityRevision: authority.Revision, outputReserveTokens: anthropicReserve,
+                reductions: fits
+                    ? [ReasoningReduction.Capability]
+                    : [ReasoningReduction.Capability, ReasoningReduction.OutputReserve]);
+        }
+
+        if (protocol == ProviderFamily.OpenAIResponses && capability.Supported == true
             && capability.EffortLevels?.Contains(high.Kind, StringComparer.Ordinal) == true)
             return new ReasoningResolution(high, high, ReasoningSelectionSource.UltraCode,
                 modeAuthorityRevision: authority.Revision);
 
-        if (capability.Supported == true
-            && capability.UltraCodeBudgetTokens is { } budget
-            && capability.UltraCodeOutputReserveTokens is { } reserve)
-        {
-            var requestedBudget = new ReasoningRequest("budget", budget);
-            var fits = outputLimit is { } limit && (long)budget + reserve <= limit;
-            return new ReasoningResolution(requestedBudget, fits ? requestedBudget : null,
-                ReasoningSelectionSource.UltraCode, modeAuthorityRevision: authority.Revision,
-                outputReserveTokens: reserve,
-                reductions: fits ? Array.Empty<ReasoningReduction>() : [ReasoningReduction.OutputReserve]);
-        }
-
         return new ReasoningResolution(high, null, ReasoningSelectionSource.UltraCode,
             modeAuthorityRevision: authority.Revision, reductions: [ReasoningReduction.Capability]);
+    }
+
+    private static bool AdapterCanRepresentReasoning(ProviderFamily protocol, ReasoningRequest? request)
+    {
+        if (request is null) return true;
+        return protocol switch
+        {
+            ProviderFamily.OpenAIResponses => request.BudgetTokens is null
+                && request.Kind is "none" or "minimal" or "low" or "medium" or "high" or "xhigh" or "max",
+            ProviderFamily.AnthropicMessages => request.Kind == "budget" && request.BudgetTokens is >= 1024,
+            ProviderFamily.OpenAiChatCompatible => false,
+            _ => false,
+        };
     }
 
     private static Action<TurnStarted>? BoostStartObserver(Guid? boostId, Action<Guid>? consumed)
@@ -2266,7 +2289,7 @@ public sealed class OmniCliRuntime : IDisposable
                 {
                     reasoningResolution = ResolveReasoningResolution(server.CurrentRunReasoningSelection(),
                         server.CurrentModeAuthority(), route.ReasoningCapability, turnBoost, turnBoostId,
-                        selectedMaxOutputTokens);
+                        selectedMaxOutputTokens, route.Protocol);
                     productReasoning = reasoningResolution.AppliedRequest;
                 }
                 catch (InvalidOperationException)
@@ -3121,7 +3144,8 @@ public sealed class OmniCliRuntime : IDisposable
                 try
                 {
                     var nextResolution = ResolveReasoningResolution(server.CurrentRunReasoningSelection(),
-                        server.CurrentModeAuthority(), route.ReasoningCapability, null, null, selectedMaxOutputTokens);
+                        server.CurrentModeAuthority(), route.ReasoningCapability, null, null, selectedMaxOutputTokens,
+                        route.Protocol);
                     route.ReasoningCapability.ValidateRequest(nextResolution.AppliedRequest);
                     return BuildTurn(nextResolution.AppliedRequest, nextResolution,
                         subsequentExecutor, subsequentCatalog);
@@ -3227,7 +3251,8 @@ public sealed class OmniCliRuntime : IDisposable
                         additionalBoundaries: extensionBoundaries,
                         acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission);
                     var approvedResolution = ResolveReasoningResolution(server.CurrentRunReasoningSelection(),
-                        server.CurrentModeAuthority(), route.ReasoningCapability, null, null, selectedMaxOutputTokens);
+                        server.CurrentModeAuthority(), route.ReasoningCapability, null, null, selectedMaxOutputTokens,
+                        route.Protocol);
                     route.ReasoningCapability.ValidateRequest(approvedResolution.AppliedRequest);
                     const string approvedInstruction = "You are executing the approved plan in the same Run. Use available tools safely and report verified results.";
                     var approvedSnapshot = new TurnInstructionSnapshot(false, approvedInstruction);
