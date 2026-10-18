@@ -132,7 +132,7 @@ public sealed partial class TuiWiringTests
                 with { FileName = Path.GetFileName(path) });
 
         public Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken) =>
-            Task.FromResult(1);
+            System.Threading.Tasks.Task.FromResult(1);
 
         public Task<int> ExecuteActAsync(string input, IReadOnlyList<TuiAttachmentReference> attachments,
             Action<string> diagnostics, CancellationToken cancellationToken)
@@ -142,7 +142,7 @@ public sealed partial class TuiWiringTests
             var outcome = _outcomes.TryDequeue(out var next) ? next : 1;
             if (outcome != 0) diagnostics("El turno ACT de fixture falló.");
             Interlocked.Increment(ref CompletedCalls);
-            return Task.FromResult(outcome);
+            return System.Threading.Tasks.Task.FromResult(outcome);
         }
     }
 
