@@ -93,13 +93,14 @@ public static class StdioProtocolHost
                 try
                 {
                     var result = Dispatch(client, request, bootstrapKey, actionNonce, conversation,
-                        runPersistedConversation is not null, eventStream);
+                        runPersistedConversation is not null, eventStream, out var acknowledgedReceiptCommandId);
                     var responseJson = WireEnvelope.Response(request.MessageId, result).ToJson();
                     var responseDelivered = Encoding.UTF8.GetByteCount(responseJson) <= StdioProtocol.MaximumFrameBytes;
                     if (!responseDelivered)
                         WriteFrame(output, Error(request.MessageId, "frame_too_large", "The query response exceeds the negotiated frame limit.").ToJson());
                     else WriteFrame(output, responseJson);
-                    if (responseDelivered) conversation.StartPendingAfterAck(request.MessageId);
+                    if (responseDelivered && acknowledgedReceiptCommandId is not null)
+                        conversation.StartPendingAfterAck(acknowledgedReceiptCommandId);
                     eventStream.StartIfConfigured();
                 }
                 catch (ReplayFrameTooLargeException)
@@ -131,8 +132,10 @@ public static class StdioProtocolHost
     }
 
     private static string Dispatch(IOmniClient client, WireEnvelope request, byte[]? bootstrapKey, string? actionNonce,
-        ConversationExecution conversation, bool conversationExecutionAvailable, EventStreamPump eventStream)
+        ConversationExecution conversation, bool conversationExecutionAvailable, EventStreamPump eventStream,
+        out string? acknowledgedReceiptCommandId)
     {
+        acknowledgedReceiptCommandId = null;
         using var document = JsonDocument.Parse(request.PayloadJson);
         var root = document.RootElement;
         if (!root.TryGetProperty("operation", out var operationElement)
@@ -295,6 +298,8 @@ public static class StdioProtocolHost
                 else if (commandName == "interaction.continue" && newlyExecuted
                     && ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted)
                     ack = conversation.ResumeRecoveredChoice(client, command, trustedScope!, ack);
+                if (newlyExecuted && ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted)
+                    acknowledgedReceiptCommandId = conversation.PendingCommandForAcknowledgement(command.MessageId);
                 var outcome = ack.Outcome is null ? "null" : "{\"kind\":"
                     + Quote(ack.Outcome.Kind.ToString()) + ",\"reason\":"
                     + (ack.Outcome.Reason is null ? "null" : Quote(ack.Outcome.Reason)) + "}";
@@ -1586,13 +1591,13 @@ public static class StdioProtocolHost
             return acknowledgement;
         }
 
-        public void StartPendingAfterAck(string acknowledgedCommandId)
+        public void StartPendingAfterAck(string acknowledgedReceiptCommandId)
         {
             PendingContinuation? pending;
             lock (_gate)
             {
                 pending = _pendingContinuation;
-                if (pending is null || pending.ReceiptCommandId != acknowledgedCommandId
+                if (pending is null || pending.ReceiptCommandId != acknowledgedReceiptCommandId
                     || runner is null || _task is { IsCompleted: false }) return;
                 _pendingContinuation = null;
                 _cancellation?.Dispose();
@@ -1625,6 +1630,12 @@ public static class StdioProtocolHost
                     return code;
                 });
             }
+        }
+
+        public string? PendingCommandForAcknowledgement(string commandId)
+        {
+            lock (_gate)
+                return _pendingContinuation?.ReceiptCommandId == commandId ? commandId : null;
         }
 
         public bool CancelAndJoin(TimeSpan timeout)
