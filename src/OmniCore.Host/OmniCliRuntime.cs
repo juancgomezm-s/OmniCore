@@ -345,7 +345,7 @@ public sealed class OmniCliRuntime : IDisposable
     /// <summary>Host-only turn configuration; trusted CLI/TUI entry points may explicitly defer an unanswered Ask.</summary>
     public Task<int> ActAsync(string objective, Action<string> writeLine, CancellationToken cancellationToken,
         ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null,
-        bool allowDeferredPermission = false)
+        bool allowDeferredPermission = false, IReadOnlyList<ArtifactRef>? attachments = null)
     {
         ArgumentNullException.ThrowIfNull(writeLine);
         if (string.IsNullOrWhiteSpace(objective))
@@ -354,8 +354,21 @@ public sealed class OmniCliRuntime : IDisposable
             return System.Threading.Tasks.Task.FromResult(2);
         }
 
-        return RunTurnAsync(objective, act: true, writeLine, cancellationToken, turnBoost: turnBoost,
+        var submittedAttachments = attachments ?? Array.Empty<ArtifactRef>();
+        if (submittedAttachments.Count > 0
+            && ValidateConversationAttachmentsBeforeAdmission(submittedAttachments) is { } rejection)
+        {
+            writeLine(AttachmentRejectionMessage(rejection));
+            return System.Threading.Tasks.Task.FromResult(1);
+        }
+
+        return RunTurnAsync(objective, act: true, writeLine, cancellationToken,
+            // ACT attachments are persisted as the current human input, then materialized by
+            // Explorer from the same canonical history used by conversation turns. This keeps
+            // the prompt and its attachment together without sending an unjournaled side channel.
+            conversationOnly: submittedAttachments.Count > 0, turnBoost: turnBoost,
             turnBoostId: turnBoostId, turnBoostConsumed: turnBoostConsumed,
+            attachments: submittedAttachments,
             // This is only an opt-in to leave a human decision pending; it records no answer
             // and cannot authorize an effect. CLI/TUI entry points with a follow-up surface opt in.
             allowDeferredNativePermission: allowDeferredPermission);
@@ -630,19 +643,20 @@ public sealed class OmniCliRuntime : IDisposable
     {
         if (ValidateConversationAttachmentsBeforeAdmission(attachments ?? Array.Empty<ArtifactRef>()) is { } rejection)
         {
-            var key = rejection switch
-            {
-                "session_model_route_unavailable" => "shell.model.session_route_unavailable",
-                "image_input_not_supported" => "shell.attachment.image_not_supported",
-                "document_text_input_not_supported" => "shell.attachment.document_not_supported",
-                _ => "shell.attachment.capability_unavailable",
-            };
-            writeLine(Text(LocalizedText.Of(key)));
+            writeLine(AttachmentRejectionMessage(rejection));
             return System.Threading.Tasks.Task.FromResult(1);
         }
         return RunTurnAsync(prompt, false, writeLine, cancellationToken, conversationOnly: true, turnBoost: turnBoost,
             turnBoostId: turnBoostId, turnBoostConsumed: turnBoostConsumed, attachments: attachments);
     }
+
+    private string AttachmentRejectionMessage(string rejection) => Text(LocalizedText.Of(rejection switch
+    {
+        "session_model_route_unavailable" => "shell.model.session_route_unavailable",
+        "image_input_not_supported" => "shell.attachment.image_not_supported",
+        "document_text_input_not_supported" => "shell.attachment.document_not_supported",
+        _ => "shell.attachment.capability_unavailable",
+    }));
 
     public ArtifactRef ImportTuiAttachment(byte[] bytes, string fileName) => Server().ImportUserAttachment(bytes, fileName);
 

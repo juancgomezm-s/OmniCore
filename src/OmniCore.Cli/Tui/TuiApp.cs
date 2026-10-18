@@ -777,8 +777,14 @@ public sealed partial class TuiApp
         HideCommandHelper();
         if (input.StartsWith("/act ", StringComparison.Ordinal))
         {
-            if (_pendingAttachments.Count > 0) { ShowMessage(_localization.Resolve("shell.attachment.act_unsupported")); return; }
-            if (StartModelTurn(input[5..], act: true)) { _composer.Text = ""; PollEvents(); } return;
+            if (StartModelTurn(input[5..], act: true, attachments: _pendingAttachments.ToArray()))
+            {
+                // Keep an attachment-backed ACT draft until the turn is confirmed. The shared
+                // completion path consumes both prompt and chips only after success.
+                if (_pendingAttachments.Count == 0) _composer.Text = "";
+                PollEvents();
+            }
+            return;
         }
         // Bare forms never reach the Host as unknown commands: they explain how to use them.
         if (input == "/act") { ShowMessage(_localization.Resolve("shell.act_usage")); _composer.Text = ""; return; }
@@ -1206,8 +1212,6 @@ public sealed partial class TuiApp
         string? extensionToolName = null, IReadOnlyList<TuiAttachmentReference>? attachments = null)
     {
         if (_turnHost is null) return false;
-        if (act && attachments is { Count: > 0 })
-        { ShowMessage(_localization.Resolve("shell.attachment.act_unsupported")); return false; }
         if (delegationId is not null) return StartDelegationTurn(delegationId);
         if (_turnBusy) { ShowMessage(_localization.Resolve("shell.a_turn_is_already_processing_wait_or_use_cancel")); return false; }
         try
@@ -1247,7 +1251,9 @@ public sealed partial class TuiApp
                     : delegationId is not null ? _turnHost.ExecuteDelegationAsync(delegationId, diagnostic, cancellation.Token)
                     : resumeQuota is not null ? _turnHost.ResumeQuotaAsync(resumeQuota, diagnostic, cancellation.Token)
                     : resumeEscalation is not null ? _turnHost.ResumeModelRouteAsync(resumeEscalation, diagnostic, cancellation.Token)
-                    : act ? _turnHost.ExecuteActAsync(input, diagnostic, cancellation.Token)
+                    : act ? submittedAttachments.Length > 0
+                        ? _turnHost.ExecuteActAsync(input, submittedAttachments, diagnostic, cancellation.Token)
+                        : _turnHost.ExecuteActAsync(input, diagnostic, cancellation.Token)
                     : submittedAttachments.Length > 0
                         ? _turnHost.ExecuteAsync(input, submittedAttachments, diagnostic, cancellation.Token)
                         : _turnHost.ExecuteAsync(input, diagnostic, cancellation.Token)).ConfigureAwait(false);

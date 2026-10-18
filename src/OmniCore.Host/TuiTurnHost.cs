@@ -48,6 +48,10 @@ public interface ITuiTurnHost
     Task<int> ExecuteExtensionCommandAsync(string prompt, string toolName, Action<string> diagnostics,
         CancellationToken cancellationToken) => System.Threading.Tasks.Task.FromResult(1);
     Task<int> ExecuteActAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken) => ExecuteAsync(input, diagnostics, cancellationToken);
+    Task<int> ExecuteActAsync(string input, IReadOnlyList<TuiAttachmentReference> attachments,
+        Action<string> diagnostics, CancellationToken cancellationToken) => attachments.Count == 0
+        ? ExecuteActAsync(input, diagnostics, cancellationToken)
+        : System.Threading.Tasks.Task.FromResult(1);
     Task<int> ResumeEscalationAsync(string interactionId, Action<string> diagnostics, CancellationToken cancellationToken) =>
         System.Threading.Tasks.Task.FromResult(1);
     bool HasEscalationForInteraction(string interactionId) => false;
@@ -106,12 +110,17 @@ public sealed class TuiTurnHost : ITuiTurnHost
     }
 
     public async Task<int> ExecuteActAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken)
+        => await ExecuteActAsync(input, Array.Empty<TuiAttachmentReference>(), diagnostics, cancellationToken).ConfigureAwait(false);
+
+    public async Task<int> ExecuteActAsync(string input, IReadOnlyList<TuiAttachmentReference> attachments,
+        Action<string> diagnostics, CancellationToken cancellationToken)
     {
         var boost = await ReserveBoostAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             return await _runtime.ActAsync(input, diagnostics, cancellationToken, boost?.Request, boost?.Id,
-                boost is null ? null : CompleteBoost, allowDeferredPermission: true).ConfigureAwait(false);
+                boost is null ? null : CompleteBoost, allowDeferredPermission: true,
+                attachments: attachments.Select(item => item.Artifact).ToArray()).ConfigureAwait(false);
         }
         finally { ReleaseBoostReservation(boost); }
     }
