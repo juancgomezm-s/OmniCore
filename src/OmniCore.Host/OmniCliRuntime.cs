@@ -2105,7 +2105,10 @@ public sealed class OmniCliRuntime : IDisposable
             else if (!act)
             {
                 workingState = ReadWorkingState(server, cancellationToken);
-                if (workingState.Length == 0)
+                // A native command already carries an exact Session/Run binding. An empty
+                // working-state projection is not permission to replace that scope with a
+                // fresh explore.start Run; the admitted root graph is the execution target.
+                if (workingState.Length == 0 && expectedSession is null && expectedRun is null)
                 {
                     var start = server.Send(WireEnvelope.Command(Ids.NewV7(), "{"
                         + JsonObj.Field("cmd", "explore.start") + ","
@@ -2121,7 +2124,7 @@ public sealed class OmniCliRuntime : IDisposable
                     workingState = ReadWorkingState(server, cancellationToken);
                 }
             }
-            else
+            else if (expectedSession is null && expectedRun is null)
             {
                 var ack = server.Send(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "act") + ","
                     + JsonObj.Field("objective", prompt) + "}"), cancellationToken);
