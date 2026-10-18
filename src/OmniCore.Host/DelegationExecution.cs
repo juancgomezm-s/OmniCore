@@ -660,7 +660,7 @@ public sealed partial class OmniServer
     private bool TryMatchOpenWeakSandboxCall(SessionId session, RunId run, Delegation delegation,
         IReadOnlyList<DomainEvent> events, WeakSandboxWorkflowContinuation continuation)
     {
-        if (continuation.OptionId != "consent_once"
+        if (continuation.OptionId is not ("consent_once" or "deny")
             || continuation.TaskId != delegation.ChildTaskId.ToString()
             || continuation.LaneId != delegation.ChildLaneId.ToString()
             || !Guid.TryParseExact(continuation.InvocationId, "D", out var invocationGuid)
@@ -686,24 +686,37 @@ public sealed partial class OmniServer
                 && codecs.Decode(evt) is InteractionRequested request
                 && request.InteractionId == interaction && request.Kind == InteractionKind.WeakSandboxConsent)
             .ToArray();
-        var resolvedEvents = scoped.Where(evt => codecs.Decode(evt) is InteractionResolved resolved
+        var resolvedEvents = scoped.Where(evt => evt.TaskId == delegation.ChildTaskId
+                && evt.LaneId == delegation.ChildLaneId && evt.TurnId == turn && evt.ToolCallId == toolCall
+                && codecs.Decode(evt) is InteractionResolved resolved
                 && resolved.InteractionId == interaction && !resolved.IsQuestionnaire
                 && resolved.Cause == InteractionCause.User && resolved.OptionId == continuation.OptionId)
             .ToArray();
-        var resumedEvents = scoped.Where(evt => codecs.Decode(evt) is RunInteractionResumed resumed
+        var resumedEvents = scoped.Where(evt => evt.TaskId == delegation.ChildTaskId
+                && evt.LaneId == delegation.ChildLaneId && evt.TurnId == turn && evt.ToolCallId == toolCall
+                && codecs.Decode(evt) is RunInteractionResumed resumed
                 && resumed.InteractionId == interaction && resumed.CommandId == continuation.ResponseCommandId)
             .ToArray();
         if (requestEvents.Length != 1 || resolvedEvents.Length != 1 || resumedEvents.Length != 1
             || !(requestEvents[0].Sequence < resolvedEvents[0].Sequence
                 && resolvedEvents[0].Sequence < resumedEvents[0].Sequence)
-            || requestEvents[0].Sequence < continuation.ResponseFirstSequence
+            || resolvedEvents[0].Sequence < continuation.ResponseFirstSequence
+            || resolvedEvents[0].Sequence > continuation.ResponseLastSequence
+            || resumedEvents[0].Sequence < continuation.ResponseFirstSequence
             || resumedEvents[0].Sequence > continuation.ResponseLastSequence
+            || requestEvents[0].ExecutionId is not { } executionId
+            || resolvedEvents[0].ExecutionId != executionId || resumedEvents[0].ExecutionId != executionId
+            || resolvedEvents[0].Causation is not CommandCausation resolvedCause
+            || resolvedCause.CommandId.ToString() != continuation.ResponseCommandId
+            || resumedEvents[0].Causation is not CommandCausation resumedCause
+            || resumedCause.CommandId.ToString() != continuation.ResponseCommandId
             || codecs.Decode(requestEvents[0]) is not InteractionRequested weakRequest
             || !ProtocolMapper.OptionIds(weakRequest.OptionsJson).SequenceEqual(["consent_once", "deny"], StringComparer.Ordinal))
             return false;
 
         var callEvents = scoped.Where(evt => evt.TaskId == delegation.ChildTaskId
-                && evt.LaneId == delegation.ChildLaneId && evt.TurnId == turn && evt.ToolCallId == toolCall)
+                && evt.LaneId == delegation.ChildLaneId && evt.TurnId == turn && evt.ToolCallId == toolCall
+                && evt.ExecutionId == executionId)
             .OrderBy(evt => evt.Sequence).Select(evt => (Event: evt, Payload: codecs.Decode(evt))).ToArray();
         var requested = callEvents.SingleOrDefault(item => item.Payload is ToolCallRequested);
         var prepared = callEvents.SingleOrDefault(item => item.Payload is ToolCallPrepared);
@@ -715,8 +728,19 @@ public sealed partial class OmniServer
                 && prepared.Event.Sequence < authorized.Event.Sequence
                 && authorized.Event.Sequence < requestEvents[0].Sequence)
             || callEvents.Any(item => item.Event.Sequence > requestEvents[0].Sequence
+                && item.Event.Sequence < resumedEvents[0].Sequence
                 && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallFailed
                     or ToolCallEffectUnknown or ToolCallReconciled)) return false;
+
+        var permissionDenials = callEvents.Where(item => item.Event.Sequence > resolvedEvents[0].Sequence
+                && item.Event.Sequence < resumedEvents[0].Sequence
+                && item.Payload is PermissionDenied denied && denied.ToolCallId == toolCall)
+            .ToArray();
+        if (continuation.OptionId == "deny"
+            ? permissionDenials.Length != 1
+                || permissionDenials[0].Event.Causation is not CommandCausation denialCause
+                || denialCause.CommandId.ToString() != continuation.ResponseCommandId
+            : permissionDenials.Length != 0) return false;
 
         var openToolCalls = scoped.Where(evt => evt.TaskId == delegation.ChildTaskId
                 && evt.LaneId == delegation.ChildLaneId && evt.TurnId == turn
