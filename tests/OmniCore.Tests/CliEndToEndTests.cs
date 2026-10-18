@@ -2764,6 +2764,7 @@ public sealed partial class CliEndToEndTests
             File.WriteAllBytes(imagePath, Convert.FromBase64String(
                 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/z/kAAAAASUVORK5CYII="));
             using var runtime = OmniCliRuntime.Create(workspace);
+            runtime.Localize = (key, values) => Localization.Spanish().Resolve(key, values);
             var host = new TuiTurnHost(runtime);
             var attachment = host.ImportAttachmentFromPath(imagePath);
 
