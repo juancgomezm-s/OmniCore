@@ -1780,7 +1780,7 @@ public static class StdioProtocolHost
                     {
                         lock (_gate)
                         {
-                            _deferredConversation = code == 3 ? pending.Binding : null;
+                            _deferredConversation = code == 3 ? continuation : null;
                         }
                     }
                     return code;

@@ -79,13 +79,13 @@ public sealed partial class OmniServer
         if (session is null || session.Value.ToString() != WireStringValue(root, "expectedSessionId"))
             return NativeCommandRejected(command.MessageId, "command.session_changed");
         var invocation = new CommandId(commandGuid);
-        var before = _store.CurrentSequence(session.Value);
+        var before = _store.CurrentSequence(session);
         try
         {
             lock (_modeAuthorityMutationGate)
             {
                 if (_lastSessionId != session || !EnsureWriterOwnershipForCommand()
-                    || !NativeCommandScopeMatches(session.Value, expectedRun, expectedMode, expectedPolicy,
+                    || !NativeCommandScopeMatches(session, expectedRun, expectedMode, expectedPolicy,
                         expectedSelection, expectedRouting, expectedCatalog))
                     return NativeCommandRejected(command.MessageId, "command.scope_changed");
                 var context = expectedRun is null
@@ -118,12 +118,12 @@ public sealed partial class OmniServer
                 var serialized = EncodeNativeCommandPayload(payload);
                 if (Encoding.UTF8.GetByteCount(serialized) > 92_000)
                     return NativeCommandRejected(command.MessageId, "command.payload_too_large");
-                var purpose = NativeCommandPurpose(session.Value, invocation);
+                var purpose = NativeCommandPurpose(session, invocation);
                 using var publication = (_artifacts as IArtifactPublicationLease)?.AcquirePublicationLease(cancellationToken);
                 var reference = protectedStore.PutProtectedText(serialized, purpose, "application/json", ArtifactKind.Other);
                 if (reference.Size is <= 0 or > 131_072)
                     return NativeCommandRejected(command.MessageId, "command.payload_too_large");
-                var security = ReadSessionSecurityPolicy(session.Value);
+                var security = ReadSessionSecurityPolicy(session);
                 if (security?.PolicyRevision != expectedPolicy)
                     return NativeCommandRejected(command.MessageId, "command.policy_changed");
                 if (expectedRun is null)
@@ -151,10 +151,10 @@ public sealed partial class OmniServer
                                 : null;
                         });
                     using var causation = CausationScope.Begin(new CommandCausation(invocation));
-                    var run = runControl.StartRun(session.Value, safeObjective, modePreference.Mode,
+                    var run = runControl.StartRun(session, safeObjective, modePreference.Mode,
                         runId => new DomainEventPayload[]
                         {
-                            new NativeCommandInvocationAdmitted(invocation, session.Value, runId, canonicalId,
+                            new NativeCommandInvocationAdmitted(invocation, session, runId, canonicalId,
                                 payload.Kind, expectedCatalog, fingerprint, expectedPolicy, 1, expectedSelection,
                                 expectedRouting, reference),
                         }, DurabilityClass.Barrier);
@@ -162,13 +162,13 @@ public sealed partial class OmniServer
                     _lastSnapshot = null;
                     _lastWorkingStateText = "";
                     SaveLastSession();
-                    DispatchRunStartLifecycle(session.Value, run);
+                    DispatchRunStartLifecycle(session, run);
                 }
                 else
                 {
                     using var execution = ExecutionScope.Begin(new ExecutionScopeState(RunId: expectedRun));
-                    new EventStream(_store, _codecs, session.Value).Append(new NativeCommandInvocationAdmitted(
-                        invocation, session.Value, expectedRun, canonicalId, payload.Kind, expectedCatalog, fingerprint,
+                    new EventStream(_store, _codecs, session).Append(new NativeCommandInvocationAdmitted(
+                        invocation, session, expectedRun, canonicalId, payload.Kind, expectedCatalog, fingerprint,
                         expectedPolicy, expectedMode, expectedSelection, expectedRouting, reference), DurabilityClass.Barrier);
                 }
                 return CommandOutcomeAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
@@ -178,7 +178,7 @@ public sealed partial class OmniServer
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException
             or InvalidDataException or IOException or UnauthorizedAccessException or JsonException)
         {
-            return before < _store.CurrentSequence(session.Value)
+            return before < _store.CurrentSequence(session)
                 ? FailedDurableCommandAck(command, session, before, "command.admission_unavailable")
                 : NativeCommandRejected(command.MessageId, "command.admission_rejected");
         }
@@ -275,13 +275,15 @@ public sealed partial class OmniServer
 
     private static string EncodeNativeCommandPayload(NativeCommandPayload payload)
     {
+        static string NullableField(string key, string? value) => value is null
+            ? JsonObj.FieldRaw(key, "null") : JsonObj.Field(key, value);
         var args = "[" + string.Join(",", payload.Arguments.Select(value => "\"" + JsonObj.Escape(value) + "\"")) + "]";
         var fields = new List<string>
         {
             JsonObj.Field("canonicalCommandId", payload.CanonicalCommandId), JsonObj.Field("kind", payload.Kind),
-            JsonObj.FieldRaw("arguments", args), JsonObj.Field("prompt", payload.Prompt),
-            JsonObj.Field("origin", payload.Origin), JsonObj.Field("forcedToolName", payload.ForcedToolName),
-            JsonObj.Field("workflowId", payload.WorkflowId), JsonObj.Field("workflowVersion", payload.WorkflowVersion),
+            JsonObj.FieldRaw("arguments", args), NullableField("prompt", payload.Prompt),
+            NullableField("origin", payload.Origin), NullableField("forcedToolName", payload.ForcedToolName),
+            NullableField("workflowId", payload.WorkflowId), NullableField("workflowVersion", payload.WorkflowVersion),
         };
         return "{" + string.Join(",", fields) + "}";
     }
