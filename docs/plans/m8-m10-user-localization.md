@@ -4,6 +4,21 @@ Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petici�
 
 ## Estado vigente (2026-10-18)
 
+Resumen de pendientes efectivos de M9; los checkpoints históricos inferiores no
+reabren capacidades ya integradas ni sustituyen estas aceptaciones:
+
+| Recorrido | Estado efectivo | Trabajo para aceptarlo |
+|---|---|---|
+| Explain nativo y recuperación previa a inicio | Integrado, con CI aprobada en el checkpoint publicado | Conservar recibos, scope y recuperación explícita al ampliar comandos. |
+| Workflow Explore/Implement/Verify desde OmniCoder | En construcción; Explore/Implement producen archivos reales, Verify queda bloqueado por consentimiento NoClient | Presentar consentimiento del child, continuar una sola llamada autorizada y acreditar proceso/gate reales, denegación y recuperación sin duplicar efectos. |
+| Extensiones con procesos escritores | Sin aceptación; falta atribución de mutaciones | Aislamiento, diff acotado, ledger/CAS durable y pruebas allow/deny con efecto real. No lo cubre el permiso del verificador. |
+| Controladores de plan/lanes/worktrees y procesos persistentes/ConPTY | Pendientes | Construir consumidores y operaciones efectivas, sin confundir DTOs/catálogos con acciones disponibles. |
+| Paridad restante TUI/medios e idiomas | Parcial | Adjuntos en ACT, WebP completo, preferencia efectiva/cambio de idioma y recorridos de aceptación pendientes en sus actas. |
+| Seguridad de conversaciones y cierre del hito | Abierto | Completar SEC-CONV-01–13 y aceptaciones live/manual/plataformas; una E2E local no cierra el hito global. |
+
+M8 permanece abierto hasta la aceptación manual pendiente del
+usuario; este avance de M9 no lo cierra.
+
 **Seguimiento de cierre M9 (2026-10-17):** el lifecycle de conversaciones y la
 respuesta/reanudación de cuestionarios ya están cableados en Core y OmniCoder.
 OmniCoder `2b4c0d2` elimina el grant global redundante, conserva controles
@@ -42,20 +57,37 @@ aprobó 2/2 casos seriales, Coder bundle `a8b9bd8` un E2E real 1/1 sin chat prev
 misma Session/Run y cierre durable. Las pruebas encontraron y corrigieron
 capability incorrecta, rechazo HMAC sin Run y recreación legacy de Session/Run.
 [Evidencia y límites](../validation/m9-native-command-handoff-20261018.md).
-Extensión con efecto/Ask y acceso/continuación workflow todavía no están
-aceptados: OmniCoder aún no habilita Orchestrate y un workflow iniciado que
-espera no tiene continuación nativa. Publicado y remoto comprobado: Core
+Extensión con efecto/Ask y workflow completo todavía no están aceptados.
+Orchestrate y sus continuaciones ya tienen consumidor en rama; falta acreditar
+el recorrido completo. Publicado y remoto comprobado: Core
 `768c92c`, Coder `9b0e24c`; sus nuevas CI
 [39113225326](https://github.com/juancgomezm-s/OmniCore/actions/runs/39113225326) /
 [39113234258](https://github.com/juancgomezm-s/OmniCode/actions/runs/39113234258)
-están en curso. El siguiente objetivo en construcción es autoridad Orchestrate
+terminaron completas aprobadas en ambos repositorios. El siguiente objetivo en construcción es autoridad Orchestrate
 y continuación workflow; no se declara construido hasta validar el recorrido.
 
-**Bloque detenido por impedimento de contrato (2026-10-18):** se conservan en
-rama Core `23e2fc3` (sobre `be2948f`/`3a6ff35`) y Coder `270126a`, tests Coder
-`fb0f62b`. SDK/adapter/transporte aprobaron 42/42 y un foco adicional de capability;
-compilaciones presentación/app y scanner 157/157/155 aprobaron. No existe todavía
-E2E del workflow nativo y no se publica ese slice.
+**Bloque reanudado tras el impedimento de contrato (2026-10-18):** fuentes en rama
+Core fuente funcional `c30d667` (tests guardados en `19be947`) y Coder fuente
+`482db45` (tests guardados en `9f36a2f`). SDK/adapter/transporte aprobaron 42/42 y un foco
+adicional de capability en el checkpoint previo. Se corrigieron el wire `orq`,
+la prueba HMAC del grant finito, la divulgación del catálogo compilado y la pérdida
+de controles del preset al añadir una nota. El modo ORQ pasó 1/1 y el preset
+con/sin nota 2/2. Recuperación de workflow anterior a Started tras corte ACK pasó
+1/1: consulta pasiva, continuación explícita y recibo duplicado sin relanzar.
+Coder conecta esa continuación y permite leer recuperación tras fallo del adapter;
+su app compila. La primera E2E admitió el hijo, pero éste abandonó antes de HTTP
+por razonamiento sin representación en el adaptador. La resolución por protocolo
+ya pasó un foco CLI real de 6/6. Recibos JSON/formato pasaron 2/2 y divulgación
+acotada de tools 1/1; la E2E posterior completa Explore/Implement con archivos
+reales en el worktree y llega a Verify. Allí pide WeakSandboxConsent, pero el
+Host stdio lo deniega con causa NoClient y el consumidor no presenta la decisión
+del child. Se construye suspensión/consentimiento de una sola ejecución con
+identidad exacta y continuación explícita; no se aprobará ni reintentará un
+launcher incierto. Una captura truncada había sugerido una espera del supervisor;
+el journal posterior la descarta. Toda la instrumentación temporal se retiró.
+El foco separado Coder de recuperación tras fallo operativo pasó 1/1.
+No se publica ni se declara aceptado el workflow completo. Evidencia y límites
+en [el acta](../validation/m9-native-command-handoff-20261018.md).
 
 La prueba de extensión con proceso Strong real descubrió primero falta de
 exposición explícita en Discovered y un boundary construido antes del catálogo
@@ -63,9 +95,9 @@ Extension/MCP; ambos cableados se corrigieron en fuente. Queda un límite de fon
 los procesos con claims de escritura no tienen atribución de mutaciones al ledger.
 `GeneralProcess` no puede eludir FileMutationMode ni el techo Session/modelo;
 la excepción estrecha de validadores no autoriza procesos arbitrarios. La prueba
-allow/deny con marker permanece sin aceptación. Se detiene integración por la
-instrucción del usuario de avisar ante un impedimento; no se amplían policies ni
-se simula el efecto. Para continuar se requiere diseño/implementación de ejecución
+allow/deny con marker permanece sin aceptación. La integración se detuvo y el
+usuario después pidió continuar M9; construcción y pruebas retoman el contrato
+pendiente, sin ampliar policies ni simular el efecto. Se requiere diseño/implementación de ejecución
 con cambios atribuibles y acotados (aislamiento/diff/ledger durable), además de
 la aceptación real de Orchestrate/workflow. M9 permanece abierto.
 

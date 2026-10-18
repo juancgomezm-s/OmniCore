@@ -5,7 +5,9 @@
 [CI 39113234258](https://github.com/juancgomezm-s/OmniCode/actions/runs/39113234258):
 Windows/Ubuntu y package-gate, incluida cancelación Git tras `2cbb325`.
 [Core 39113225326](https://github.com/juancgomezm-s/OmniCore/actions/runs/39113225326)
-aprobó Ubuntu, npm Windows/Ubuntu y paquete Linux; suite Windows aún en curso.
+terminó **completa aprobada**: tests Windows/Ubuntu, instalación npm Windows/Ubuntu
+y paquete Linux. La consulta posterior a GitHub confirmó los cinco jobs en success
+sobre el mismo SHA `768c92c`.
 No acredita las fuentes posteriores Orchestrate/workflow todavía en construcción.
 
 **Checkpoint anterior de publicación (2026-10-18):** Core `38b81f4` aprobó
