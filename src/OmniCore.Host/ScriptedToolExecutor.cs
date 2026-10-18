@@ -232,7 +232,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         var resolved = events.Where(evt => evt.RunId == run)
             .Select(evt => codecs.Decode(evt)).OfType<InteractionResolved>()
             .SingleOrDefault(item => item.InteractionId == interaction);
-        if (resolved is null || resolved.State != optionId)
+        if (resolved is null || resolved.IsQuestionnaire || resolved.OptionId != optionId)
             throw new InvalidOperationException("The durable Permission choice does not match this continuation.");
         var requestEvents = events.Where(evt => evt.RunId == run && evt.TurnId == turn && evt.LaneId == lane)
             .Select(evt => (Event: evt, Payload: codecs.Decode(evt)))

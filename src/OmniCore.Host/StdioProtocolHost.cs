@@ -1015,10 +1015,11 @@ public static class StdioProtocolHost
                     {
                         var request = (InteractionRequested)codecs.Decode(requestedEvent);
                         if (request.OptionsJson is null || requestedEvent.LaneId != rootLane
+                            || resolved.IsQuestionnaire
                             || request.Kind == InteractionKind.Permission
-                                && resolved.State is not ("allow_once" or "allow_run" or "allow_workspace")
+                                && resolved.OptionId is not ("allow_once" or "allow_run" or "allow_workspace")
                             || request.Kind == InteractionKind.PlanApproval
-                                && resolved.State is not ("approve_execute" or "continue_planning")) break;
+                                && resolved.OptionId is not ("approve_execute" or "continue_planning")) break;
                         var commandCause = evt.Causation as CommandCausation;
                         if (commandCause is null) break;
                         var responseReceipt = server.ReceiptStore?.ReadCommandReceipt(commandCause.CommandId.ToString());
@@ -1071,9 +1072,9 @@ public static class StdioProtocolHost
                             ContinuationCommandId: commandCause.CommandId.ToString(),
                             ContinuationRequestHash: responseReceipt.RequestHash,
                             ContinuationFirstSequence: responseFirst, ContinuationLastSequence: responseLast,
-                            ContinuationResponseType: "choice", ContinuationOptionId: resolved.State,
+                            ContinuationResponseType: "choice", ContinuationOptionId: resolved.OptionId,
                             ContinuationTurnId: turnId, NativeChoiceCapability: true, ExplicitChoiceRecovery: true);
-                        if (resolved.State is not { } chosenOption) break;
+                        var chosenOption = resolved.OptionId;
                         choices.Add(new ChoiceRecovery(binding, request.InteractionId.ToString(), run.ToString(),
                             policy.PolicyRevision, request.Kind.ToString(), chosenOption));
                         break;

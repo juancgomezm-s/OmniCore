@@ -946,7 +946,8 @@ public sealed class OmniCliRuntime : IDisposable
             && codecs.Decode(evt) is UserInputReceived item
             && RunControlService.IsNativeChoiceResponse(item, requested.Kind));
         if (resolved is null || input is null
-            || codecs.Decode(resolved) is not InteractionResolved response || response.State != optionId
+            || codecs.Decode(resolved) is not InteractionResolved response || response.IsQuestionnaire
+            || response.OptionId != optionId
             || RunProjection.Replay(session, run, codecs, events).State != RunState.Running)
         {
             diagnostics("native_choice.resume.response_events_or_run_state_invalid");
