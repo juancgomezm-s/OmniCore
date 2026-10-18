@@ -1051,7 +1051,8 @@ public sealed partial class OmniServer
         var toolCallId = new ToolCallId(toolCallGuid);
         lock (_modeAuthorityMutationGate)
         {
-            if (!WeakSandboxWorkflowAuthorizationIsCurrent(authorization)) return false;
+            if (!EnsureWriterOwnershipForCommand()
+                || !WeakSandboxWorkflowAuthorizationIsCurrent(authorization)) return false;
             ReconcileDurableMailboxReceipts(authorization.Session, authorization.Run);
             var journal = _store.ReadFrom(authorization.Session, 1);
             var found = FindWorkflowStage(ForStage(authorization, WorkflowStage.Verify, null),
@@ -1079,7 +1080,8 @@ public sealed partial class OmniServer
             var scope = new ExecutionScopeState(authorization.Run, taskId, laneId, turnId, toolCallId, executionId);
             return FailOwnedDelegationCore(authorization.Session, authorization.Run, stage.Delegation,
                 scope, stage.Delegation.ProfileId, cancelled: false, deniedTurn: turnId,
-                causeCommandId: new CommandId(responseCommandGuid));
+                causeCommandId: new CommandId(responseCommandGuid),
+                finishNativeInvocationId: authorization.InvocationCommand);
         }
     }
 
@@ -1089,13 +1091,14 @@ public sealed partial class OmniServer
         {
             ReconcileDurableMailboxReceipts(work.Session, work.Run);
             _ = FailOwnedDelegationCore(work.Session, work.Run, work.Delegation, work.Scope,
-                work.Profile.Id, cancelled, deniedTurn: null, causeCommandId: null);
+                work.Profile.Id, cancelled, deniedTurn: null, causeCommandId: null,
+                finishNativeInvocationId: null);
         }
     }
 
     private bool FailOwnedDelegationCore(SessionId session, RunId run, Delegation delegation,
         ExecutionScopeState scope, ProfileId profileId, bool cancelled, TurnId? deniedTurn,
-        CommandId? causeCommandId)
+        CommandId? causeCommandId, CommandId? finishNativeInvocationId)
     {
         var journal = _store.ReadFrom(session, 1);
         var records = PreM6RecordProjection.Replay(session, _codecs, journal);
@@ -1160,10 +1163,27 @@ public sealed partial class OmniServer
             cancelled ? "Explicit cancellation or elapsed limit" : "Child execution failed"));
         var scopes = batch.Take(batch.Count - 1)
             .Select(evt => (ExecutionScopeState?)(evt is TurnAbandoned or TurnSteeringDropped ? scope : childScope))
-            .Append(AgentScope(run, facts, delegation.ParentExecutionId)).ToArray();
-        using var cause = causeCommandId is { } commandId
-                ? CausationScope.Begin(new CommandCausation(commandId)) : null;
-        new EventStream(_store, _codecs, session).AppendBatch(batch, DurabilityClass.Barrier, scopes);
+            .Append(AgentScope(run, facts, delegation.ParentExecutionId)).ToList();
+        if (finishNativeInvocationId is { } finishedInvocation)
+        {
+            if (deniedTurn is null || causeCommandId is null
+                || !own.Any(evt => _codecs.Decode(evt) is NativeCommandInvocationStarted started
+                    && started.InvocationId == finishedInvocation && started.Kind == "compiledWorkflow")
+                || own.Any(evt => _codecs.Decode(evt) is NativeCommandInvocationFinished finished
+                    && finished.InvocationId == finishedInvocation))
+                throw new InvalidOperationException("Native weak denial finish is missing its exact authorization.");
+            batch.Add(new NativeCommandInvocationFinished(finishedInvocation, "failed",
+                new RunControlService(_store, _codecs).ActiveRun(session)));
+            scopes.Add(ExecutionScope.Current);
+            var responseCause = new CommandCausation(causeCommandId.Value);
+            var causes = Enumerable.Repeat<CausationId?>(responseCause, batch.Count).ToArray();
+            causes[^1] = new CommandCausation(finishedInvocation);
+            new EventStream(_store, _codecs, session).AppendBatch(batch, DurabilityClass.Barrier, scopes, causes);
+        }
+        else
+        {
+            new EventStream(_store, _codecs, session).AppendBatch(batch, DurabilityClass.Barrier, scopes);
+        }
         return true;
     }
 }
