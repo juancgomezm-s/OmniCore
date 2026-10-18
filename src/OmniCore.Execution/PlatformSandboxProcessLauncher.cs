@@ -47,10 +47,14 @@ public sealed class PlatformSandboxProcessLauncher : ISandboxProcessLauncher, IS
             throw new StrongSandboxLaunchOutcomeUnknownException(
                 "Strong process isolation availability could not be established before launch.",
                 new InvalidOperationException("sandbox_preflight_unknown"));
+        var strongLauncher = _strongLauncher;
+        if (strongLauncher is null)
+            throw new StrongSandboxUnavailableBeforeLaunchException(
+                "Strong process isolation is unavailable on this platform.");
 
         try
         {
-            return await _strongLauncher.StartAsync(launch, cancellationToken).ConfigureAwait(false);
+            return await strongLauncher.StartAsync(launch, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is not StrongSandboxUnavailableBeforeLaunchException
             and not StrongSandboxLaunchOutcomeUnknownException)
