@@ -14,6 +14,107 @@ namespace OmniCore.Tests;
 public sealed partial class StdioTransportTests
 {
     [Fact]
+    public async Task First_native_explain_admits_a_blank_session_and_stale_scopes_never_reach_the_provider()
+    {
+        var invocationId = Guid.NewGuid().ToString("D");
+        await using var fixture = await NativeCommandHandoffFixture.StartAsync(Guid.NewGuid().ToString("D"));
+        var sessionId = fixture.CreateEmptySession();
+        var before = fixture.QueryJson("command.catalog");
+        Assert.Equal(sessionId, before.GetProperty("sessionId").GetString());
+        Assert.Null(NullableJsonString(before.GetProperty("runId")));
+        Assert.Equal(JsonValueKind.Null, before.GetProperty("modeRevision").ValueKind);
+        var explain = Assert.Single(before.GetProperty("commands").EnumerateArray(),
+            item => item.GetProperty("canonicalCommandId").GetString() == "core:explain");
+        Assert.True(explain.GetProperty("enabled").GetBoolean());
+        Assert.Equal(0, fixture.ReadEvents(sessionId).Count(item => item.Payload is UserInputReceived));
+
+        WireEnvelope Invoke(string commandId, string expectedSessionId, long expectedPolicyRevision,
+            string sourceFingerprint)
+        {
+            var command = WireEnvelope.Command(commandId, JsonSerializer.Serialize(new
+            {
+                cmd = "command.invoke.user",
+                canonicalCommandId = "core:explain",
+                arguments = new[] { "README.md" },
+                expectedSessionId,
+                expectedRunId = (string?)null,
+                expectedModeRevision = (long?)null,
+                expectedPolicyRevision,
+                expectedSelectionRevision = before.GetProperty("selectionRevision").GetInt32(),
+                expectedRoutingPolicyRevision = NullableJsonInt64(before.GetProperty("routingPolicyRevision")),
+                catalogRevision = before.GetProperty("catalogRevision").GetString(),
+                sourceFingerprint,
+            }));
+            return fixture.ExchangeTrusted(command, expectedSessionId, null);
+        }
+
+        var stalePolicy = Ack(Invoke(Guid.NewGuid().ToString("D"), sessionId,
+            before.GetProperty("policyRevision").GetInt64() + 1, explain.GetProperty("sourceFingerprint").GetString()!));
+        Assert.NotEqual(RuntimeCommandOutcomeKind.Accepted, stalePolicy.Outcome?.Kind);
+
+        var staleFingerprint = Ack(Invoke(Guid.NewGuid().ToString("D"), sessionId,
+            before.GetProperty("policyRevision").GetInt64(), new string('c', 64)));
+        Assert.NotEqual(RuntimeCommandOutcomeKind.Accepted, staleFingerprint.Outcome?.Kind);
+
+        var otherSessionId = Guid.NewGuid().ToString("D");
+        var wrongSession = Ack(Invoke(Guid.NewGuid().ToString("D"), otherSessionId,
+            before.GetProperty("policyRevision").GetInt64(), explain.GetProperty("sourceFingerprint").GetString()!));
+        Assert.NotEqual(RuntimeCommandOutcomeKind.Accepted, wrongSession.Outcome?.Kind);
+
+        var nullRunContinue = WireEnvelope.Command(Guid.NewGuid().ToString("D"), JsonSerializer.Serialize(new
+        {
+            cmd = "command.continue",
+            invocationId = Guid.NewGuid().ToString("D"),
+            expectedSessionId = sessionId,
+            expectedRunId = (string?)null,
+            expectedModeRevision = (long?)null,
+            expectedPolicyRevision = before.GetProperty("policyRevision").GetInt64(),
+            expectedSelectionRevision = before.GetProperty("selectionRevision").GetInt32(),
+            expectedRoutingPolicyRevision = NullableJsonInt64(before.GetProperty("routingPolicyRevision")),
+            catalogRevision = before.GetProperty("catalogRevision").GetString(),
+            sourceFingerprint = explain.GetProperty("sourceFingerprint").GetString(),
+        }));
+        var invalidContinue = Ack(fixture.ExchangeTrusted(nullRunContinue, sessionId, null));
+        Assert.Equal("trusted_action_invalid", invalidContinue.Error);
+
+        Assert.DoesNotContain(fixture.ReadEvents(sessionId), item => item.Payload is NativeCommandInvocationAdmitted);
+        Assert.Equal(0, fixture.Provider.RequestCount);
+        Assert.Equal(0, fixture.ReadEvents(sessionId).Count(item => item.Payload is UserInputReceived));
+
+        var validInvoke = Ack(Invoke(invocationId, sessionId,
+            before.GetProperty("policyRevision").GetInt64(), explain.GetProperty("sourceFingerprint").GetString()!));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, validInvoke.Outcome?.Kind);
+        var admissions = fixture.ReadEvents(sessionId).Where(item => item.Payload is NativeCommandInvocationAdmitted).ToArray();
+        var admissionEnvelope = Assert.Single(admissions);
+        var admission = Assert.IsType<NativeCommandInvocationAdmitted>(admissionEnvelope.Payload);
+        Assert.Equal(invocationId, admission.InvocationId.ToString());
+        Assert.Equal(sessionId, admission.SessionId.ToString());
+        Assert.NotNull(admission.RunId);
+        Assert.Contains(admission.ProtectedPayload, admissionEnvelope.Envelope.ArtifactRefs);
+        Assert.DoesNotContain("README.md", admissionEnvelope.Envelope.PayloadJson, StringComparison.Ordinal);
+        var runId = admission.RunId!.Value.ToString();
+
+        await fixture.Provider.WaitForRequestAsync(1, TestContext.Current.CancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+        await fixture.WaitForInvocationAndTurnAsync(sessionId, runId, invocationId, minimumCompletedTurns: 1);
+
+        var events = fixture.ReadEvents(sessionId);
+        var graph = events.Where(item => item.Envelope.RunId?.ToString() == runId).ToArray();
+        Assert.Single(graph, item => item.Payload is RunCreated);
+        Assert.Single(graph, item => item.Payload is TaskCreated);
+        Assert.Single(graph, item => item.Payload is LaneCreated);
+        Assert.Single(graph, item => item.Payload is PlanCreated);
+        Assert.Single(graph, item => item.Payload is NativeCommandInvocationStarted started
+            && started.InvocationId.ToString() == invocationId);
+        Assert.Single(graph, item => item.Payload is NativeCommandInvocationFinished finished
+            && finished.InvocationId.ToString() == invocationId && finished.OutcomeCode == "completed");
+        Assert.Equal(1, events.Count(item => item.Payload is UserInputReceived input
+            && input.RunId.ToString() == runId));
+        Assert.Contains("Explain the repository content at the path README.md", fixture.ProviderBodies.Single(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Native_command_ack_cut_recovers_ready_invocation_only_after_explicit_continue()
     {
         var invocationId = Guid.NewGuid().ToString("D");
@@ -158,12 +259,14 @@ public sealed partial class StdioTransportTests
             _key = key;
             Provider = provider;
             ProviderBodies = new ConcurrentQueue<string>();
+            Diagnostics = new ConcurrentQueue<string>();
             CutStream = null!;
         }
 
         public string Workspace { get; }
         public CliEndToEndTests.ScriptedHttpProvider Provider { get; }
         public ConcurrentQueue<string> ProviderBodies { get; }
+        public ConcurrentQueue<string> Diagnostics { get; }
         public AckDeliveryCutStream CutStream { get; private set; }
         public string JournalPath => Path.Combine(OmniHost.WorkspaceDataDirectory(
             OmniHost.CreatePlatformPaths(), Workspace), "journal.db");
@@ -222,7 +325,7 @@ public sealed partial class StdioTransportTests
             }
         }
 
-        public async Task<string> CreateSessionAndQuiescentRunAsync()
+        public string CreateEmptySession()
         {
             var initialScope = QueryJson("humanActionScope");
             var create = WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"conversation.new\"}");
@@ -230,8 +333,14 @@ public sealed partial class StdioTransportTests
                 NullableJsonString(initialScope.GetProperty("runId"))));
             Assert.Equal(RuntimeCommandOutcomeKind.Accepted, createAck.Outcome?.Kind);
             var selection = QueryJson("session.model.selection");
-            var session = selection.GetProperty("sessionId").GetString()
+            return selection.GetProperty("sessionId").GetString()
                 ?? throw new InvalidOperationException("The new Session ID was not returned.");
+        }
+
+        public async Task<string> CreateSessionAndQuiescentRunAsync()
+        {
+            var session = CreateEmptySession();
+            var selection = QueryJson("session.model.selection");
             var start = WireEnvelope.Command(Ids.NewV7(), JsonSerializer.Serialize(new
             {
                 cmd = "conversation.start",
@@ -284,7 +393,8 @@ public sealed partial class StdioTransportTests
             return store.ReadCommandReceipt(commandId);
         }
 
-        public async Task WaitForInvocationAndTurnAsync(string sessionId, string runId, string invocationId)
+        public async Task WaitForInvocationAndTurnAsync(string sessionId, string runId, string invocationId,
+            int minimumCompletedTurns = 2)
         {
             var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
             while (DateTimeOffset.UtcNow < deadline)
@@ -301,11 +411,23 @@ public sealed partial class StdioTransportTests
                 var completedTurns = events.Where(item => item.Envelope.RunId == expectedRun
                         && item.Payload is TurnCompleted)
                     .Select(item => item.Envelope.TurnId).Where(id => id is not null).ToHashSet();
-                if (started && finished && turns.Intersect(completedTurns).Count() >= 2) return;
+                if (started && finished && turns.Intersect(completedTurns).Count() >= minimumCompletedTurns) return;
                 await Task.Delay(25, TestContext.Current.CancellationToken);
             }
-            throw new TimeoutException("The native command did not complete its durable Run Turn.");
+            var finalEvents = ReadEvents(sessionId);
+            var eventSummary = string.Join(",", finalEvents.Select(item =>
+                $"{item.Envelope.Sequence}:{item.Payload.GetType().Name}:run={item.Envelope.RunId?.ToString() ?? "-"}:turn={item.Envelope.TurnId?.ToString() ?? "-"}"));
+            var finalReceipt = ReadReceipt(invocationId);
+            throw new TimeoutException($"The native command did not complete its durable Run Turn. providerRequests={Provider.RequestCount}; "
+                + $"started={finalEvents.Any(item => item.Payload is NativeCommandInvocationStarted command && command.InvocationId.ToString() == invocationId)}; "
+                + $"finished={finalEvents.Any(item => item.Payload is NativeCommandInvocationFinished command && command.InvocationId.ToString() == invocationId)}; "
+                + $"receipt={finalReceipt?.State}/{finalReceipt?.OutcomeKind}/{finalReceipt?.ExecutionState}; "
+                + $"diagnostics={string.Join(",", Diagnostics)}; events={eventSummary}");
         }
+
+        private static string SafeDiagnostic(string value) => value.Length <= 160
+            && value.All(character => char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-' or ':')
+                ? value : "non_code_diagnostic";
 
         public async Task FailAckWriteAndStopHostAsync()
         {
@@ -358,7 +480,8 @@ public sealed partial class StdioTransportTests
             _hostTask = Task.Run(() => StdioProtocolHost.RunWithTrustedActions(client,
                 duplex.HostInput, output, TextWriter.Null, _key,
                 runPersistedConversation: async (admitted, token) =>
-                    await runtime.ExecutePersistedConversationAsync(admitted, _ => { }, token)));
+                    await runtime.ExecutePersistedConversationAsync(admitted,
+                        diagnostic => Diagnostics.Enqueue(SafeDiagnostic(diagnostic)), token)));
         }
 
         private void Negotiate()
