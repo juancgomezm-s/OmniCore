@@ -598,7 +598,11 @@ public sealed class OmniCliRuntime : IDisposable
         WorkflowStageDefinition stage)
     {
         var capabilities = policy.ToolPolicy.CapabilityCeiling.Intersect(stage.Capabilities).ToHashSet();
-        var tools = new ModelToolPolicy(policy.ToolPolicy.Mode, policy.ToolPolicy.MaxVisibleTools,
+        // A compiled workflow already receives an exact Host-composed stage catalog. Discovered
+        // mode would hide the stage's declared mutation/verifier tools because this catalog
+        // intentionally omits general control tools such as tool.search. Direct here means only
+        // that bounded stage catalog is disclosed; the original cap and capability ceiling remain.
+        var tools = new ModelToolPolicy(ToolMode.Direct, policy.ToolPolicy.MaxVisibleTools,
             policy.ToolPolicy.AllowToolDiscovery, capabilities);
         return new EffectiveModelPolicy(policy.Key, policy.Revision, policy.Category, tools,
             policy.MutationPolicy, policy.IsFallback, policy.MaxModelStepsPerTurn,

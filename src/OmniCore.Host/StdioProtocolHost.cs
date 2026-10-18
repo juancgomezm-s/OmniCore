@@ -944,6 +944,52 @@ public static class StdioProtocolHost
                 || !payload.RootElement.TryGetProperty("runId", out var runId) || runId.ValueKind != JsonValueKind.String
                 || runId.GetString() != expectedRun.Value) return false;
         }
+        else if (commandName == "run.mode.select")
+        {
+            if (!payload.RootElement.TryGetProperty("runId", out var runId)
+                || runId.ValueKind != JsonValueKind.String || runId.GetString() != expectedRun.Value
+                || !payload.RootElement.TryGetProperty("mode", out var mode)
+                || mode.ValueKind != JsonValueKind.String
+                || !payload.RootElement.TryGetProperty("expectedRevision", out var revision)
+                || revision.ValueKind != JsonValueKind.Number || !revision.TryGetInt64(out var parsedRevision)
+                || parsedRevision < 0) return false;
+
+            var modeText = mode.GetString();
+            var simpleModePayload = properties.Length == 4
+                && !properties.Except(["cmd", "runId", "mode", "expectedRevision"], StringComparer.Ordinal).Any()
+                && modeText is "plan" or "act";
+                "allowedModes", "maxAgents", "maxDepth", "maxTurns", "maxToolCalls", "maxElapsedSeconds",
+                "maxSpendUsd", "coverCurrentPlan" };
+            var adaptiveOrqPayload = modeText is "plan" or "act" or "orq"
+                && properties.Length is >= 12 and <= 14
+                && !properties.Except(["cmd", "runId", "mode", "expectedRevision", "effort", "adaptive",
+                    "allowedModes", "maxAgents", "maxDepth", "maxTurns", "maxToolCalls",
+                    "maxElapsedSeconds", "maxSpendUsd", "coverCurrentPlan"], StringComparer.Ordinal).Any()
+                && payload.RootElement.TryGetProperty("effort", out var effort) && effort.ValueKind == JsonValueKind.String
+                && effort.GetString() == "ultracode"
+                && payload.RootElement.TryGetProperty("adaptive", out var adaptive) && adaptive.ValueKind == JsonValueKind.True
+                && payload.RootElement.TryGetProperty("allowedModes", out var allowedModes)
+                && allowedModes.ValueKind == JsonValueKind.String
+                && allowedModes.GetString() is { Length: > 0 and <= 64 } allowedText
+                && allowedText.Split(',').Select(value => value.Trim()).Contains(modeText, StringComparer.Ordinal)
+                && NonNegativeInt("maxAgents") && NonNegativeInt("maxDepth")
+                && PositiveInt("maxTurns") && PositiveInt("maxToolCalls")
+                && PositiveInt("maxElapsedSeconds")
+                && (!payload.RootElement.TryGetProperty("maxSpendUsd", out var declaredSpend)
+                    || declaredSpend.ValueKind == JsonValueKind.Null
+                    || declaredSpend.ValueKind == JsonValueKind.Number && declaredSpend.TryGetDecimal(out var spend) && spend >= 0)
+                && (!payload.RootElement.TryGetProperty("coverCurrentPlan", out var coverage)
+                    || modeText == "plan" && coverage.ValueKind == JsonValueKind.True);
+
+            bool NonNegativeInt(string name) => payload.RootElement.TryGetProperty(name, out var value)
+                && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number) && number >= 0;
+            bool PositiveInt(string name) => payload.RootElement.TryGetProperty(name, out var value)
+                && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number) && number > 0;
+            if (!simpleModePayload && !adaptiveOrqPayload) return false;
+            scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, parsedRevision,
+                CheckRevision: true, RequirePlanRun: false, RequestedMode: modeText);
+            return true;
+        }
         else
         {
             if (properties.Length != 4 || properties.Except(["cmd", "runId", "mode", "expectedRevision"], StringComparer.Ordinal).Any()
