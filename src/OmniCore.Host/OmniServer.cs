@@ -4018,14 +4018,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                             throw new FormatException("weak_sandbox.invalid_scope");
                         outcomeSession = session;
                         outcomeSequenceBefore = _store.CurrentSequence(session);
-                        lock (_modeAuthorityMutationGate)
-                        {
-                            control.RespondNativeWeakSandboxConsent(session, new RunId(runGuid),
-                                new TaskId(taskGuid), new LaneId(laneGuid), new TurnId(turnGuid),
-                                new ToolCallId(toolCallGuid), new InteractionId(interactionGuid),
-                                fields.GetValueOrDefault("optionId") ?? "",
-                                command.MessageId);
-                        }
+                        RespondNativeWeakSandboxConsent(session, new RunId(runGuid),
+                            new TaskId(taskGuid), new LaneId(laneGuid), new TurnId(turnGuid),
+                            new ToolCallId(toolCallGuid), new InteractionId(interactionGuid),
+                            new CommandId(invocationGuid), fields.GetValueOrDefault("optionId") ?? "",
+                            policyRevision, command.MessageId);
                     }
                     else if (fields.TryGetValue("responseType", out responseType) && responseType == "choice")
                     {
