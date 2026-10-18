@@ -140,7 +140,8 @@ public sealed class EventStream
             throw new ArgumentException("Only the screened memory.propose request may carry an in-memory argument match.",
                 nameof(matchingArgumentsJson));
         var persisted = AppendAdmitted(request, DurabilityClass.Standard, admit);
-        if (_codecs.Decode(persisted) is not ToolCallRequested decoded || decoded != request)
+        if (_codecs.Decode(persisted) is not ToolCallRequested decoded
+            || !ToolCallRequestsMatch(decoded, request))
             throw new InvalidDataException("Tool request receipt does not match its canonical event.");
         return new ToolCallRequestReceipt(persisted, request, matchingArgumentsJson);
     }
@@ -162,10 +163,75 @@ public sealed class EventStream
                 || persisted.SessionId != receipt.SessionId || persisted.RunId != receipt.RunId
                 || persisted.TaskId != receipt.TaskId || persisted.LaneId != receipt.LaneId
                 || persisted.TurnId != receipt.TurnId || persisted.ExecutionId != receipt.ExecutionId
-                || _codecs.Decode(persisted) is not ToolCallRequested request || request != receipt.Request
+                || _codecs.Decode(persisted) is not ToolCallRequested request
+                || !ToolCallRequestsMatch(request, receipt.Request)
                 || _tracker.ToolCall(call.ToolCallId) != ToolCallState.Requested)
                 return false;
             return !journal.Any(evt => evt.Sequence > receipt.Sequence && evt.ToolCallId == call.ToolCallId);
+        }
+    }
+
+    // The event payload is redacted and serialized again before persistence. That may change
+    // JSON spelling inside ArgumentsJson (for example, `>` becomes `\\u003E`) without changing
+    // any requested argument. Compare JSON structure to tolerate serializer spelling only;
+    // changed values, property order, or shape remain a failed receipt.
+    private static bool ToolCallRequestsMatch(ToolCallRequested persisted, ToolCallRequested expected)
+    {
+        if (persisted.ToolCallId != expected.ToolCallId
+            || !string.Equals(persisted.ProviderCallId, expected.ProviderCallId, StringComparison.Ordinal)
+            || !string.Equals(persisted.ToolName, expected.ToolName, StringComparison.Ordinal))
+            return false;
+
+        try
+        {
+            using var persistedArguments = JsonDocument.Parse(persisted.ArgumentsJson);
+            using var expectedArguments = JsonDocument.Parse(expected.ArgumentsJson);
+            return JsonValuesMatch(persistedArguments.RootElement, expectedArguments.RootElement);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static bool JsonValuesMatch(JsonElement left, JsonElement right)
+    {
+        if (left.ValueKind != right.ValueKind) return false;
+        switch (left.ValueKind)
+        {
+            case JsonValueKind.Object:
+            {
+                var leftProperties = left.EnumerateObject().ToArray();
+                var rightProperties = right.EnumerateObject().ToArray();
+                if (leftProperties.Length != rightProperties.Length) return false;
+                for (var index = 0; index < leftProperties.Length; index++)
+                {
+                    if (!string.Equals(leftProperties[index].Name, rightProperties[index].Name,
+                            StringComparison.Ordinal)
+                        || !JsonValuesMatch(leftProperties[index].Value, rightProperties[index].Value))
+                        return false;
+                }
+                return true;
+            }
+            case JsonValueKind.Array:
+            {
+                var leftItems = left.EnumerateArray().ToArray();
+                var rightItems = right.EnumerateArray().ToArray();
+                if (leftItems.Length != rightItems.Length) return false;
+                for (var index = 0; index < leftItems.Length; index++)
+                    if (!JsonValuesMatch(leftItems[index], rightItems[index])) return false;
+                return true;
+            }
+            case JsonValueKind.String:
+                return string.Equals(left.GetString(), right.GetString(), StringComparison.Ordinal);
+            case JsonValueKind.Number:
+                return string.Equals(left.GetRawText(), right.GetRawText(), StringComparison.Ordinal);
+            case JsonValueKind.True:
+            case JsonValueKind.False:
+            case JsonValueKind.Null:
+                return true;
+            default:
+                return false;
         }
     }
 
