@@ -3268,9 +3268,10 @@ public sealed class OmniCliRuntime : IDisposable
                             && codecs.Decode(evt) is ToolCallStarted);
                     if (runState == RunState.AwaitingInput
                         && pendingWeak is not null
-                        && pendingWeak.TaskId == delegation.ChildTaskId
-                        && pendingWeak.LaneId == delegation.ChildLaneId
-                        && pendingWeak.TurnId is { } pendingTurn
+                        && pendingRequestEvent is not null
+                        && pendingRequestEvent.TaskId == delegation.ChildTaskId
+                        && pendingRequestEvent.LaneId == delegation.ChildLaneId
+                        && pendingRequestEvent.TurnId is { } pendingTurn
                         && pendingTurn == openChildTurn?.TurnId
                         && pendingRequestEvent?.ToolCallId is not null
                         && !startedAfterRequest)
