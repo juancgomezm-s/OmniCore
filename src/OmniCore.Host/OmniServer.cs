@@ -943,7 +943,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         }
 
         // Conversación ↔ Run, interrupción, cancelación e interacciones (ADR-0035, ADR-0034).
-        if (commandName is "session.input" or "run.interrupt" or "run.cancel" or "interaction.respond")
+        if (commandName is "session.input" or "run.interrupt" or "run.cancel" or "interaction.respond"
+            or "interaction.continue")
         {
             return RunControl(command, commandName, fields, trustedUserAction);
         }
@@ -3640,7 +3641,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         SessionId? outcomeSession = null;
         long outcomeSequenceBefore = 0;
         var explicitOutcome = commandName is "session.input" or "run.interrupt" or "run.cancel"
-            or "interaction.respond";
+            or "interaction.respond" or "interaction.continue";
         var commandId = new CommandId(Guid.Parse(command.MessageId));
         try
         {
@@ -3745,6 +3746,28 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                     outcomeSequenceBefore = _store.CurrentSequence(outcomeSession);
                     control.CancelRun(outcomeSession, RunFrom(fields));
                     break;
+                case "interaction.continue":
+                {
+                    if (!trustedUserAction) throw new FormatException("trusted interaction recovery required");
+                    var session = RequireSession();
+                    var expectedRun = fields.GetValueOrDefault("expectedRunId");
+                    var expectedPolicyRevision = fields.GetValueOrDefault("expectedPolicyRevision");
+                    outcomeSession = session;
+                    outcomeSequenceBefore = _store.CurrentSequence(session);
+                    lock (_modeAuthorityMutationGate)
+                    {
+                        if (expectedRun is null || !Guid.TryParseExact(expectedRun, "D", out var expectedRunGuid)
+                            || expectedRun != new RunId(expectedRunGuid).ToString()
+                            || control.ActiveRun(session)?.ToString() != expectedRun
+                            || !long.TryParse(expectedPolicyRevision,
+                                System.Globalization.NumberStyles.None,
+                                System.Globalization.CultureInfo.InvariantCulture, out var policyRevision)
+                            || policyRevision < 1
+                            || ReadSessionSecurityPolicy(session)?.PolicyRevision != policyRevision)
+                            throw new SessionSecurityRevisionConflictException();
+                    }
+                    break;
+                }
                 case "interaction.respond":
                 {
                     var interaction = fields.TryGetValue("interactionId", out var i) && Guid.TryParse(i, out var g)
@@ -3790,6 +3813,30 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                                     : result.UnknownInteraction ? "interacción desconocida"
                                     : "respuesta inválida: " + string.Join(",", (result.Errors ?? Array.Empty<QuestionnaireError>())
                                         .Select(e => e.Code.ToString())));
+                        }
+                    }
+                    else if (fields.TryGetValue("responseType", out responseType) && responseType == "choice")
+                    {
+                        if (!trustedUserAction) throw new FormatException("trusted choice response required");
+                        var session = RequireSession();
+                        var optionId = fields.GetValueOrDefault("optionId") ?? "";
+                        var expectedRun = fields.GetValueOrDefault("expectedRunId");
+                        var expectedPolicyRevision = fields.GetValueOrDefault("expectedPolicyRevision");
+                        outcomeSession = session;
+                        outcomeSequenceBefore = _store.CurrentSequence(session);
+                        lock (_modeAuthorityMutationGate)
+                        {
+                            if (expectedRun is null || !Guid.TryParseExact(expectedRun, "D", out var expectedRunGuid)
+                                || expectedRun != new RunId(expectedRunGuid).ToString()
+                                || control.ActiveRun(session)?.ToString() != expectedRun
+                                || !long.TryParse(expectedPolicyRevision,
+                                    System.Globalization.NumberStyles.None,
+                                    System.Globalization.CultureInfo.InvariantCulture, out var policyRevision)
+                                || policyRevision < 1
+                                || ReadSessionSecurityPolicy(session)?.PolicyRevision != policyRevision)
+                                throw new SessionSecurityRevisionConflictException();
+                            control.RespondNativeChoice(session, interaction, new RunId(expectedRunGuid),
+                                optionId, command.MessageId);
                         }
                     }
                     else

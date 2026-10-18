@@ -583,7 +583,8 @@ public sealed class ExplorerTurn
     /// </summary>
     public TurnResult Ask(string question, string instruction, SessionId sessionId, RunId runId,
         LaneId laneId, string workingStateText, CancellationToken cancellationToken, string? origin = null,
-        TurnInstructionSnapshot? instructionSnapshot = null, Action<TurnStarted>? turnStarted = null)
+        TurnInstructionSnapshot? instructionSnapshot = null, Action<TurnStarted>? turnStarted = null,
+        Func<bool>? resumePreflightPassed = null)
     {
         // Without a durable shared reservation ledger, keep finite-budget work serialized for
         // compatibility and fail-safe behavior. Production Host installs that ledger for the
@@ -608,7 +609,8 @@ public sealed class ExplorerTurn
                     deadline.CancelAfter(remaining);
             }
             var result = AskCore(question, instruction, sessionId, runId, laneId, workingStateText,
-                deadline.Token, origin, instructionSnapshot, start => { exactTurn = start.TurnId; turnStarted?.Invoke(start); });
+                deadline.Token, origin, instructionSnapshot, start => { exactTurn = start.TurnId; turnStarted?.Invoke(start); },
+                resumePreflightPassed);
             // ADR-0048 §1: el watchdog se evalúa al cerrar el Turn, aún dentro del gate de la Lane.
             var stall = exactTurn is { } finished ? ApplyStallWatchdog(sessionId, runId, laneId, finished) : null;
             return new TurnResult(result.FinalText, result.StopReason, result.Steps, result.Usage,
@@ -620,7 +622,8 @@ public sealed class ExplorerTurn
 
     private TurnResult AskCore(string question, string instruction, SessionId sessionId, RunId runId,
         LaneId laneId, string workingStateText, CancellationToken cancellationToken, string? origin,
-        TurnInstructionSnapshot? instructionSnapshot, Action<TurnStarted>? turnStarted)
+        TurnInstructionSnapshot? instructionSnapshot, Action<TurnStarted>? turnStarted,
+        Func<bool>? resumePreflightPassed)
     {
         try { _selection.Route?.ReasoningCapability.ValidateRequest(_selection.Reasoning); }
         catch (InvalidOperationException)
@@ -909,6 +912,25 @@ public sealed class ExplorerTurn
                 new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
         }
         messages = ProjectAssistantImagesForModelContext(messages);
+        if (isResume && resumePreflightPassed is not null)
+        {
+            // The continuation is an effect. First validate the durable Turn fingerprint,
+            // discovery plan, lane profile, active Run, pending interaction, and transcript above.
+            // Then apply the already-approved tool so its result is part of the rebuilt context.
+            if (!resumePreflightPassed())
+                return new TurnResult("Approved interaction could not be continued under the current effective policy.",
+                    StopReason.Error, 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
+            try
+            {
+                messages = ProjectAssistantImagesForModelContext(
+                    LoadConversation(stream, runId, turnId, laneId, messageOwners));
+            }
+            catch (InvalidDataException)
+            {
+                return new TurnResult("Persisted visible reasoning is invalid.", StopReason.Error, 0,
+                    new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
+            }
+        }
         var safeQuestion = isResume || queuedQuestion ? "" : _redaction.Redact(question ?? "");
         var pendingFollowUps = isResume || origin == "InteractionResponse(ModelRouteConsent)"
             ? Array.Empty<FollowUpQueue.Item>()
@@ -3157,7 +3179,8 @@ public sealed class ExplorerTurn
                     }));
                 }
             }
-            else if (type == "toolcall.succeeded" || type == "toolcall.failed" || type == "toolcall.rejected")
+            else if (type == "toolcall.succeeded" || type == "toolcall.failed" || type == "toolcall.rejected"
+                || _codecs.Decode(evt) is PermissionDenied)
             {
                 var payload = _codecs.Decode(evt);
                 var callId = payload switch
@@ -3165,6 +3188,7 @@ public sealed class ExplorerTurn
                     ToolCallSucceeded e => e.ToolCallId,
                     ToolCallFailed e => e.ToolCallId,
                     ToolCallRejected e => e.ToolCallId,
+                    PermissionDenied e => e.ToolCallId,
                     _ => (ToolCallId?)null,
                 };
                 if (callId is null) continue;
@@ -3181,6 +3205,7 @@ public sealed class ExplorerTurn
                         ToolCallSucceeded e => _redaction.Redact(e.ResultJson),
                         ToolCallFailed e => "error: " + _redaction.Redact(e.Cause),
                         ToolCallRejected e => "error: " + _redaction.Redact(e.Reason),
+                        PermissionDenied e => "error: " + _redaction.Redact(e.Cause),
                         _ => "error",
                     };
                 var resultBlocks = new List<ContentBlock> { new TextBlock(content) };

@@ -384,14 +384,16 @@ public sealed class OmniHost
         RunId? runId = null, AgentProfile? agentProfile = null,
         Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null,
         IReadOnlyList<IToolIntentBoundary>? additionalBoundaries = null, IArtifactStore? artifacts = null,
-        Func<IDisposable>? acquireSessionSecurityAdmission = null)
+        Func<IDisposable>? acquireSessionSecurityAdmission = null,
+        bool allowDeferredInteraction = false)
     {
         var policy = CreateGrantAwarePolicy(OmniCore.Domain.RunMode.Plan, projectRestrictions, workspaceRoot, runId);
         IPermissionPolicy effectivePolicy = agentProfile is null ? policy
             : new AgentProfilePermissionPolicy(policy, agentProfile, new PathBoundaryValidator(), workspaceRoot);
         return new ScriptedToolExecutor(catalog, effectivePolicy, workspaceRoot, boundary, null, null, false,
             artifacts: artifacts, receiveMailbox: receiveMailbox, additionalBoundaries: additionalBoundaries,
-            acquireSessionSecurityAdmission: acquireSessionSecurityAdmission);
+            acquireSessionSecurityAdmission: acquireSessionSecurityAdmission,
+            allowDeferredInteraction: allowDeferredInteraction);
     }
 
     public static ScriptedPermissionPolicy CreateProjectRestrictionPolicy(OmniCore.Domain.RunMode mode,
@@ -453,7 +455,8 @@ public sealed class OmniHost
         IArtifactStore? artifacts = null, AgentProfile? agentProfile = null,
         Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null,
         IReadOnlyList<IToolIntentBoundary>? additionalBoundaries = null,
-        Func<IDisposable>? acquireSessionSecurityAdmission = null)
+        Func<IDisposable>? acquireSessionSecurityAdmission = null,
+        bool allowDeferredInteraction = false)
     {
         ArgumentNullException.ThrowIfNull(boundary);
         var policy = CreateGrantAwarePolicy(OmniCore.Domain.RunMode.Act, projectRestrictions, workspaceRoot, runId, audit);
@@ -464,7 +467,8 @@ public sealed class OmniHost
             artifacts ?? CreateArtifactStore(WorkspaceDataDirectory(CreatePlatformPaths(), workspaceRoot)),
             receiveMailbox: receiveMailbox, workspaceWriteLeases: HostWorkspaceWriteLeases.Shared,
             additionalBoundaries: additionalBoundaries,
-            acquireSessionSecurityAdmission: acquireSessionSecurityAdmission);
+            acquireSessionSecurityAdmission: acquireSessionSecurityAdmission,
+            allowDeferredInteraction: allowDeferredInteraction);
     }
 
     /// <summary>Política de permisos con grants aislados por WorkspaceId y auditados en user data.</summary>

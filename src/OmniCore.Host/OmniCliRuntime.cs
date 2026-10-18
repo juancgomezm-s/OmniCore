@@ -799,7 +799,8 @@ public sealed class OmniCliRuntime : IDisposable
         var run = new RunId(runGuid);
         var receipt = server.ReceiptStore?.ReadCommandReceipt(admitted.CommandId);
         var expectedSession = session.ToString();
-        var isQuestionnaireContinuation = admitted.ContinuationInteractionId is not null;
+        var isChoiceContinuation = admitted.ContinuationResponseType == "choice";
+        var isQuestionnaireContinuation = admitted.ContinuationInteractionId is not null && !isChoiceContinuation;
         TurnId? continuationTurnId = null;
         if (server.LastSessionId() != session || server.LastRunId() != run
             || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(session) != run
@@ -832,6 +833,27 @@ public sealed class OmniCliRuntime : IDisposable
                 out continuationTurnId))
                 return 1;
         }
+        else if (isChoiceContinuation)
+        {
+            if (!admitted.ExplicitChoiceRecovery
+                    && (receipt is not { ExecutionState: "deferred", ExecutionCode: "input_required" }
+                        || !string.Equals(receipt.ExecutionRunId, run.ToString(), StringComparison.Ordinal))
+                || admitted.ContinuationCommandId is not { Length: > 0 } choiceCommandId
+                || admitted.ContinuationRequestHash is not { Length: 64 } choiceHash
+                || admitted.ContinuationFirstSequence is not { } choiceFirst
+                || admitted.ContinuationLastSequence is not { } choiceLast || choiceLast < choiceFirst
+                || admitted.ContinuationOptionId is not { Length: > 0 } optionId)
+                return 1;
+            var responseReceipt = server.ReceiptStore?.ReadCommandReceipt(choiceCommandId);
+            if (responseReceipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                    OutcomeKind: "Accepted" }
+                || !string.Equals(responseReceipt.RequestHash, choiceHash, StringComparison.Ordinal)
+                || !string.Equals(responseReceipt.SessionId, expectedSession, StringComparison.Ordinal)
+                || responseReceipt.FirstSequence != choiceFirst || responseReceipt.LastSequence != choiceLast
+                || !TryValidateChoiceContinuation(server, session, run, admitted.ContinuationInteractionId!,
+                    optionId, choiceCommandId, choiceFirst, choiceLast, out continuationTurnId))
+                return 1;
+        }
         else if (receipt.ExecutionState is not null)
         {
             return 1;
@@ -841,7 +863,9 @@ public sealed class OmniCliRuntime : IDisposable
         try
         {
             exitCode = await RunTurnAsync("", runIsAct, diagnostics, cancellationToken, conversationOnly: true,
-                inputAlreadyPersisted: true, expectedSession: session, expectedRun: run).ConfigureAwait(false);
+                inputAlreadyPersisted: true, expectedSession: session, expectedRun: run,
+                persistedContinuation: isChoiceContinuation ? admitted : null,
+                allowDeferredNativePermission: admitted.NativeChoiceCapability).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
@@ -849,7 +873,9 @@ public sealed class OmniCliRuntime : IDisposable
             diagnostics(RedactSensitive(ex.Message));
             return 1;
         }
-        var afterInput = admitted.LastSequence;
+        var afterInput = isChoiceContinuation
+            && admitted.ContinuationOptionId is "approve_execute" or "continue_planning"
+            ? admitted.ContinuationLastSequence : admitted.LastSequence;
         if (afterInput is null || afterInput < 1) return 1;
         var codecs = server.AcquireCodecs();
         var journal = server.AcquireStore().ReadFrom(session, afterInput.Value + 1)
@@ -872,6 +898,76 @@ public sealed class OmniCliRuntime : IDisposable
         }
         if (journal.Any(item => item.Payload is TurnInterrupted)) return 130;
         return exitCode == 130 ? 1 : exitCode;
+    }
+
+    private static bool TryValidateChoiceContinuation(OmniServer server, SessionId session, RunId run,
+        string interactionText, string optionId, string responseCommandText, long firstSequence, long lastSequence,
+        out TurnId? permissionTurnId)
+    {
+        permissionTurnId = null;
+        if (!Guid.TryParseExact(interactionText, "D", out var interactionGuid)
+            || interactionText != interactionGuid.ToString("D")
+            || !Guid.TryParseExact(responseCommandText, "D", out var responseGuid)
+            || responseCommandText != responseGuid.ToString("D")) return false;
+        var codecs = server.AcquireCodecs();
+        var events = server.AcquireStore().ReadFrom(session, 1);
+        var interaction = new InteractionId(interactionGuid);
+        var command = new CommandId(responseGuid);
+        var requestEvent = events.SingleOrDefault(evt => evt.RunId == run
+            && codecs.Decode(evt) is InteractionRequested request
+            && request.InteractionId == interaction
+            && request.Kind is InteractionKind.Permission or InteractionKind.PlanApproval);
+        if (requestEvent is null || codecs.Decode(requestEvent) is not InteractionRequested requested
+            || requested.OptionsJson is null || !OptionsContain(requested.OptionsJson, optionId)) return false;
+        var resolved = events.SingleOrDefault(evt => evt.Sequence >= firstSequence && evt.Sequence <= lastSequence
+            && evt.RunId == run && evt.Causation is CommandCausation cause && cause.CommandId == command
+            && codecs.Decode(evt) is InteractionResolved item && item.InteractionId == interaction);
+        var origin = requested.Kind == InteractionKind.Permission ? "InteractionResponse(Permission)"
+            : "InteractionResponse(PlanApproval)";
+        var input = events.SingleOrDefault(evt => evt.Sequence >= firstSequence && evt.Sequence <= lastSequence
+            && evt.RunId == run && evt.Causation is CommandCausation cause && cause.CommandId == command
+            && codecs.Decode(evt) is UserInputReceived item && item.Origin == origin);
+        if (resolved is null || input is null
+            || codecs.Decode(resolved) is not InteractionResolved response || response.State != optionId
+            || RunProjection.Replay(session, run, codecs, events).State != RunState.Running) return false;
+        if (requested.Kind == InteractionKind.Permission)
+        {
+            var permission = events.SingleOrDefault(evt => evt.RunId == run && evt.TurnId == requestEvent.TurnId
+                && codecs.Decode(evt) is PermissionRequested item && item.InteractionId == interaction);
+            if (permission?.TurnId is not { } turnId || !IsOpenPermissionTurn(events, codecs, run, turnId)) return false;
+            permissionTurnId = turnId;
+        }
+        return true;
+    }
+
+    private static bool OptionsContain(string optionsJson, string optionId)
+    {
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(optionsJson);
+            return document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array
+                && document.RootElement.EnumerateArray().Any(item => item.ValueKind == System.Text.Json.JsonValueKind.Object
+                    && item.TryGetProperty("id", out var id) && id.ValueKind == System.Text.Json.JsonValueKind.String
+                    && id.GetString() == optionId);
+        }
+        catch (System.Text.Json.JsonException) { return false; }
+    }
+
+    private static bool IsOpenPermissionTurn(IReadOnlyList<DomainEvent> events, IEventCodecRegistry codecs,
+        RunId runId, TurnId turnId)
+    {
+        var started = false;
+        foreach (var evt in events.Where(evt => evt.RunId == runId && evt.TurnId == turnId).OrderBy(evt => evt.Sequence))
+        {
+            switch (codecs.Decode(evt))
+            {
+                case TurnStarted: started = true; break;
+                case TurnCompleted completed when completed.TurnId == turnId:
+                case TurnAbandoned abandoned when abandoned.TurnId == turnId:
+                case TurnInterrupted interrupted when interrupted.TurnId == turnId: return false;
+            }
+        }
+        return started;
     }
 
     private static bool TryValidateQuestionnaireContinuation(OmniServer server, SessionId session, RunId run,
@@ -1485,7 +1581,8 @@ public sealed class OmniCliRuntime : IDisposable
         ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null,
         DelegationId? delegationId = null, string? forcedInitialToolName = null,
         bool inputAlreadyPersisted = false, SessionId? expectedSession = null, RunId? expectedRun = null,
-        IReadOnlyList<ArtifactRef>? attachments = null)
+        IReadOnlyList<ArtifactRef>? attachments = null, PersistedConversationCommand? persistedContinuation = null,
+        bool allowDeferredNativePermission = false)
     {
         if (delegationId is { } child)
         {
@@ -1498,7 +1595,8 @@ public sealed class OmniCliRuntime : IDisposable
             {
                 return await RunTurnCoreAsync(prompt, act, writeLine, cancellationToken, conversationOnly,
                     routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName,
-                    inputAlreadyPersisted, expectedSession, expectedRun, attachments).ConfigureAwait(false);
+                    inputAlreadyPersisted, expectedSession, expectedRun, attachments, persistedContinuation,
+                    allowDeferredNativePermission).ConfigureAwait(false);
             }
             finally { _activeDelegations.TryRemove(child, out _); }
         }
@@ -1512,7 +1610,8 @@ public sealed class OmniCliRuntime : IDisposable
         {
             return await RunTurnCoreAsync(prompt, act, writeLine, cancellationToken, conversationOnly,
                 routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName,
-                inputAlreadyPersisted, expectedSession, expectedRun, attachments).ConfigureAwait(false);
+                inputAlreadyPersisted, expectedSession, expectedRun, attachments, persistedContinuation,
+                allowDeferredNativePermission).ConfigureAwait(false);
         }
         finally
         {
@@ -1525,7 +1624,8 @@ public sealed class OmniCliRuntime : IDisposable
         ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null,
         DelegationId? delegationId = null, string? forcedInitialToolName = null,
         bool inputAlreadyPersisted = false, SessionId? expectedSession = null, RunId? expectedRun = null,
-        IReadOnlyList<ArtifactRef>? attachments = null)
+        IReadOnlyList<ArtifactRef>? attachments = null, PersistedConversationCommand? persistedContinuation = null,
+        bool allowDeferredNativePermission = false)
     {
         if (turnBoost is null && turnBoostId is not null)
             throw new ArgumentException("A reasoning boost id requires a boost request.", nameof(turnBoostId));
@@ -2214,10 +2314,12 @@ public sealed class OmniCliRuntime : IDisposable
             var executor = executingAct
                 ? OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
                     audit, interactionResponder, interactive, artifacts, agentProfile, receiveMailbox,
-                    extensionBoundaries, server.AcquireSessionSecurityAdmission)
+                    extensionBoundaries, server.AcquireSessionSecurityAdmission,
+                    allowDeferredInteraction: delegation is null && allowDeferredNativePermission)
                 : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
                     agentProfile, receiveMailbox, extensionBoundaries, artifacts,
-                    server.AcquireSessionSecurityAdmission);
+                    server.AcquireSessionSecurityAdmission,
+                    allowDeferredInteraction: delegation is null && allowDeferredNativePermission);
             var skillLimits = SkillSelectionLimits.FromHarness(harness,
                 (int)Math.Clamp(usableContext / 8, 1, 16_384));
             var skillSourceCatalog = new SkillSourceCatalog();
@@ -2452,6 +2554,40 @@ public sealed class OmniCliRuntime : IDisposable
             }
 
             var turn = BuildTurn(productReasoning, reasoningResolution);
+            Func<bool>? resumePreflightPassed = null;
+            if (persistedContinuation is { ContinuationResponseType: "choice",
+                    ContinuationOptionId: "allow_once" or "allow_run" or "allow_workspace",
+                    ContinuationInteractionId: { } continuationInteraction }
+                && Guid.TryParseExact(continuationInteraction, "D", out var permissionInteractionGuid))
+            {
+                if (executor is not ScriptedToolExecutor resumableExecutor)
+                    throw new InvalidOperationException("The configured executor cannot resume a native Permission call.");
+                var interaction = new InteractionId(permissionInteractionGuid);
+                var journal = server.AcquireStore().ReadFrom(sessionId, 1);
+                var codecs = server.AcquireCodecs();
+                var request = journal.SingleOrDefault(evt => evt.RunId == runId
+                    && codecs.Decode(evt) is PermissionRequested permission
+                    && permission.InteractionId == interaction);
+                if (request?.TurnId is not { } permissionTurn || request.LaneId is not { } permissionLane
+                    || codecs.Decode(request) is not PermissionRequested)
+                    throw new InvalidOperationException("The approved native Permission has no canonical call binding.");
+                var task = journal.Where(evt => evt.RunId == runId)
+                    .Select(codecs.Decode).OfType<LaneCreated>()
+                    .SingleOrDefault(created => created.LaneId == permissionLane)?.TaskId;
+                if (task is null) throw new InvalidOperationException("The approved Permission Lane is unavailable.");
+                if (permissionLane != laneId
+                    || !string.Equals(permissionTurn.ToString(), persistedContinuation.ContinuationTurnId,
+                        StringComparison.Ordinal))
+                    throw new InvalidOperationException("The approved Permission is not bound to the resumed root Turn.");
+                resumePreflightPassed = () =>
+                {
+                    var outcome = resumableExecutor.ResumeApprovedPermission(
+                        new EventStream(server.AcquireStore(), codecs, sessionId), codecs, interaction,
+                        persistedContinuation.ContinuationOptionId, cancellationToken);
+                    return outcome.Succeeded || outcome.Events.Any(item => item is ToolCallSucceeded
+                        || item is ToolCallFailed { EffectOutcome: not EffectOutcome.Unknown });
+                };
+            }
             if (delegationId is not null)
             {
                 var stageInstruction = workflowStage?.Definition.Instruction
@@ -2795,13 +2931,15 @@ public sealed class OmniCliRuntime : IDisposable
                     turnBoostConsumed: turnBoostConsumed, delegationId: delegation?.DelegationId,
                     escalateOnStall: delegation is null ? EscalateOnStall : null,
                     skillValidators: skillCompletionValidators,
-                    skillValidatorFactory: () => skillCompletionValidators);
+                    skillValidatorFactory: () => skillCompletionValidators,
+                    resumePreflightPassed: resumePreflightPassed);
             }
 
             var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
                 token => turn.Ask(prompt, instruction, sessionId, runId, laneId, workingState, token,
                     promptOrigin, instructionSnapshot,
-                    BoostStartObserver(turnBoostId ?? reasoningResolution?.TurnBoostId, turnBoostConsumed)),
+                    BoostStartObserver(turnBoostId ?? reasoningResolution?.TurnBoostId, turnBoostConsumed),
+                    resumePreflightPassed),
                 cancellationToken, readOnlyLane: true, delegationId: delegationId);
             if (askExecution.Failure is { } askFailure)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(askFailure);
@@ -3334,7 +3472,8 @@ public sealed class OmniCliRuntime : IDisposable
         TurnInstructionSnapshot? instructionSnapshot = null, Func<int, ExplorerTurn?>? subsequentTurnFactory = null,
         Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null, DelegationId? delegationId = null,
         Func<int?>? escalateOnStall = null, SkillCompletionValidator? skillValidators = null,
-        Func<SkillCompletionValidator?>? skillValidatorFactory = null)
+        Func<SkillCompletionValidator?>? skillValidatorFactory = null,
+        Func<bool>? resumePreflightPassed = null)
     {
         // Las mutaciones y las roturas de validación quedan completas solo al cerrar el bucle:
         // la evidencia de cada Turn usado (el inicial y los que cree la fábrica) se entrega entonces.
@@ -3350,7 +3489,8 @@ public sealed class OmniCliRuntime : IDisposable
             return RunActLoopCore(turn, writeLine, objective, instruction, sessionId, runId, laneId, workingState,
                 gateConfiguration, restrictions, server, artifacts, audit, interactionResponder, interactive, locale,
                 cancellationToken, origin, acceptanceResponder, instructionSnapshot, tracked, turnBoostId,
-                turnBoostConsumed, delegationId, escalateOnStall, skillValidators, skillValidatorFactory);
+                turnBoostConsumed, delegationId, escalateOnStall, skillValidators, skillValidatorFactory,
+                resumePreflightPassed);
         }
         finally
         {
@@ -3368,7 +3508,8 @@ public sealed class OmniCliRuntime : IDisposable
         TurnInstructionSnapshot? instructionSnapshot = null, Func<int, ExplorerTurn?>? subsequentTurnFactory = null,
         Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null, DelegationId? delegationId = null,
         Func<int?>? escalateOnStall = null, SkillCompletionValidator? skillValidators = null,
-        Func<SkillCompletionValidator?>? skillValidatorFactory = null)
+        Func<SkillCompletionValidator?>? skillValidatorFactory = null,
+        Func<bool>? resumePreflightPassed = null)
     {
         var hasExternalGates = gateConfiguration is { Build: not null } or { Test: not null };
         var hasAcceptance = gateConfiguration?.Acceptance == true;
@@ -3392,7 +3533,8 @@ public sealed class OmniCliRuntime : IDisposable
             var activeSkillValidators = skillValidatorFactory?.Invoke() ?? skillValidators;
             var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
                 token => activeTurn.Ask(nextPrompt, instruction, sessionId, runId, laneId, workingState,
-                    token, origin, instructionSnapshot, BoostStartObserver(turnBoostId, turnBoostConsumed)),
+                    token, origin, instructionSnapshot, BoostStartObserver(turnBoostId, turnBoostConsumed),
+                    attempt == 0 ? resumePreflightPassed : null),
                 cancellationToken, readOnlyLane: false, delegationId: delegationId, waitForCapacity: true);
             if (askExecution.Failure is { } askFailure)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(askFailure);

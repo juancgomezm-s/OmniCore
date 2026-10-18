@@ -122,6 +122,22 @@ public sealed class ToolRuntime
         => RunCore(validated, prepContext, execContext, userApprovesAsk, cancellationToken,
             approvalLifetime, requestReceipt: null);
 
+    /// <summary>Rehydrates one durable, explicitly approved Permission request. The original
+    /// request/prepared/interaction events remain authoritative; this path re-prepares and checks
+    /// the exact persisted arguments before recording grant/authorization and crossing Started.</summary>
+    public Outcome ResumeApprovedPermission(ValidatedToolCall validated, ToolPreparationContext prepContext,
+        ToolExecutionContext execContext, CancellationToken cancellationToken, InteractionId interaction,
+        string optionId, string expectedPreparedArguments, string expectedIntentFingerprint)
+    {
+        if (optionId is not ("allow_once" or "allow_run" or "allow_workspace"))
+            throw new InvalidOperationException("Only a server-defined allow choice can resume this Permission.");
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedPreparedArguments);
+        return RunCore(validated, prepContext, execContext, userApprovesAsk: false, cancellationToken,
+            GrantLifetime.Once, requestReceipt: null, resumedPermission: interaction,
+            resumedPermissionOption: optionId, expectedPreparedArguments: expectedPreparedArguments,
+            expectedIntentFingerprint: expectedIntentFingerprint);
+    }
+
     /// <summary>Consumes only a receipt for this exact attributed call; a prior request event
     /// with another id, arguments, or execution scope cannot authorize omission of the request.</summary>
     public Outcome Run(ValidatedToolCall validated, ToolPreparationContext prepContext,
@@ -137,16 +153,21 @@ public sealed class ToolRuntime
 
     private Outcome RunCore(ValidatedToolCall validated, ToolPreparationContext prepContext,
         ToolExecutionContext execContext, bool userApprovesAsk, CancellationToken cancellationToken,
-        GrantLifetime approvalLifetime, ToolCallRequestReceipt? requestReceipt)
+        GrantLifetime approvalLifetime, ToolCallRequestReceipt? requestReceipt,
+        InteractionId? resumedPermission = null, string? resumedPermissionOption = null,
+        string? expectedPreparedArguments = null, string? expectedIntentFingerprint = null)
     {
-        if (requestReceipt is null)
+        void RejectBeforeAuthorization(string reason, ToolErrorCode errorCode) =>
+            _emit(resumedPermission is not null
+                ? new PermissionDenied(validated.ToolCallId, reason)
+                : new ToolCallRejected(validated.ToolCallId, reason, errorCode));
+        if (requestReceipt is null && resumedPermission is null)
             _emit(new ToolCallRequested(validated.ToolCallId, validated.ProviderCallId,
                 validated.ToolId.ToString(), validated.NormalizedArgumentsJson));
         var tool = _catalog.Find(validated.ToolId);
         if (tool is null)
         {
-            _emit(new ToolCallRejected(validated.ToolCallId, "tool no encontrada: " + validated.ToolId,
-                ToolErrorCode.UnknownTool));
+            RejectBeforeAuthorization("tool no encontrada: " + validated.ToolId, ToolErrorCode.UnknownTool);
             return new Outcome(false, "tool no encontrada", ToolCallState.Rejected, EffectOutcome.None);
         }
 
@@ -158,7 +179,7 @@ public sealed class ToolRuntime
         if (schemaError is not null)
         {
             var reason = ToolSchemaValidator.InvalidArgumentsCode + ": " + schemaError;
-            _emit(new ToolCallRejected(validated.ToolCallId, reason, ToolErrorCode.InvalidArguments));
+            RejectBeforeAuthorization(reason, ToolErrorCode.InvalidArguments);
             return new Outcome(false, reason, ToolCallState.Rejected, EffectOutcome.None);
         }
 
@@ -173,8 +194,7 @@ public sealed class ToolRuntime
         }
         catch (Exception ex)
         {
-            _emit(new ToolCallRejected(validated.ToolCallId, "prepare falló: " + ex.Message,
-                ToolErrorCode.ToolFailure));
+            RejectBeforeAuthorization("prepare falló: " + ex.Message, ToolErrorCode.ToolFailure);
             return new Outcome(false, "prepare falló: " + ex.Message,
                 ToolCallState.Rejected, EffectOutcome.None);
         }
@@ -183,12 +203,18 @@ public sealed class ToolRuntime
             // Invariante de código tipado (spec §71): todo rechazo persistido lleva código. Una
             // tool que no fijó el suyo se clasifica TOOL_FAILURE al persistir, igual que
             // ToolResult.Error normaliza a falta de código.
-            _emit(new ToolCallRejected(validated.ToolCallId, rejected.Reason,
-                rejected.ErrorCode ?? ToolErrorCode.ToolFailure));
+            RejectBeforeAuthorization(rejected.Reason, rejected.ErrorCode ?? ToolErrorCode.ToolFailure);
             return new Outcome(false, rejected.Reason, ToolCallState.Rejected, EffectOutcome.None);
         }
 
         var intent = ((Prepared) preparation).Intent;
+        if (resumedPermission is not null
+            && !string.Equals(intent.NormalizedArgumentsJson, expectedPreparedArguments, StringComparison.Ordinal))
+        {
+            _emit(new PermissionDenied(validated.ToolCallId,
+                "The prepared tool arguments changed after the approval request."));
+            return new Outcome(false, "approved tool intent changed", ToolCallState.Rejected, EffectOutcome.None);
+        }
 
         // La resolución se realiza entre Prepare (puro) y la evaluación del Permission Engine,
         // para que Security autorice el ejecutable real, nunca el nombre solicitado (ADR-0015).
@@ -203,7 +229,7 @@ public sealed class ToolRuntime
                 if (!Path.IsPathRooted(processClaim.Executable))
                 {
                     const string reason = "Extension process claims must name the resolved package executable";
-                    _emit(new ToolCallRejected(validated.ToolCallId, reason, ToolErrorCode.PermissionDenied));
+                    RejectBeforeAuthorization(reason, ToolErrorCode.PermissionDenied);
                     return new Outcome(false, reason, ToolCallState.Rejected, EffectOutcome.None);
                 }
             }
@@ -212,7 +238,7 @@ public sealed class ToolRuntime
             if (_executableResolver is null)
             {
                 const string reason = "No hay resolver de ejecutables configurado; proceso rechazado por seguridad";
-                _emit(new ToolCallRejected(validated.ToolCallId, reason, ToolErrorCode.PermissionDenied));
+                RejectBeforeAuthorization(reason, ToolErrorCode.PermissionDenied);
                 return new Outcome(false, reason, ToolCallState.Rejected, EffectOutcome.None);
             }
             try
@@ -226,10 +252,24 @@ public sealed class ToolRuntime
             }
             catch (ExecutableNotFoundException ex)
             {
-                _emit(new ToolCallRejected(validated.ToolCallId, ex.Message, ToolErrorCode.ProcessFailure));
+                RejectBeforeAuthorization(ex.Message, ToolErrorCode.ProcessFailure);
                 return new Outcome(false, ex.Message, ToolCallState.Rejected, EffectOutcome.None);
             }
             }
+        }
+
+        // A durable Permission binds the effective intent after executable resolution, not
+        // merely the provider arguments. Catalog or resolver changes cannot substitute another
+        // process or resource target under an earlier human approval.
+        if (resumedPermission is not null
+            && (expectedIntentFingerprint is not { Length: 64 }
+                || !expectedIntentFingerprint.All(Uri.IsHexDigit)
+                || !string.Equals(IntentFingerprint(intent), expectedIntentFingerprint,
+                    StringComparison.OrdinalIgnoreCase)))
+        {
+            _emit(new PermissionDenied(validated.ToolCallId,
+                "The effective tool intent changed after the approval request."));
+            return new Outcome(false, "approved tool intent changed", ToolCallState.Rejected, EffectOutcome.None);
         }
 
         // 1b. Frontera de capacidad del modelo (ADR-0044 §5): antes del Permission Engine. Con
@@ -243,14 +283,15 @@ public sealed class ToolRuntime
             boundaryAsk |= boundaryDecision.RequiresAsk;
             if (!boundaryDecision.Allowed)
             {
-                _emit(new ToolCallRejected(validated.ToolCallId,
-                    "frontera de capacidad: " + boundaryDecision.Reason, ToolErrorCode.CapabilityRefused));
+                RejectBeforeAuthorization("frontera de capacidad: " + boundaryDecision.Reason,
+                    ToolErrorCode.CapabilityRefused);
                 return new Outcome(false, boundaryDecision.Reason, ToolCallState.Rejected,
                     EffectOutcome.None);
             }
         }
 
-        _emit(new ToolCallPrepared(validated.ToolCallId, intent.NormalizedArgumentsJson));
+        if (resumedPermission is null)
+            _emit(new ToolCallPrepared(validated.ToolCallId, intent.NormalizedArgumentsJson));
 
         // 2. Permission Engine (ADR-0037 §2): traza siempre; Ask según flujo de interacción.
         PermissionDecisionRecord decision;
@@ -291,6 +332,51 @@ public sealed class ToolRuntime
             return new Outcome(false, "denegado", ToolCallState.Rejected, EffectOutcome.None);
         }
 
+        if (resumedPermission is { } resumedInteraction)
+        {
+            // The human choice is already durable. Re-evaluate the current policy and Session
+            // boundary, then apply only the exact server option; never mint a new interaction or
+            // silently turn a prior approval into a broader grant.
+            var option = resumedPermissionOption!;
+            var lifetime = option switch
+            {
+                "allow_once" => GrantLifetime.Once,
+                "allow_run" => GrantLifetime.Run,
+                "allow_workspace" => GrantLifetime.Workspace,
+                _ => throw new InvalidOperationException("Unsupported Permission choice."),
+            };
+            GrantId? grant = null;
+            if (lifetime != GrantLifetime.Once)
+            {
+                if (_policy is not IGrantablePermissionPolicy grantable)
+                {
+                    _emit(new PermissionDenied(validated.ToolCallId,
+                        "The active policy does not allow persistent grants."));
+                    return new Outcome(false, "persistent grant unavailable", ToolCallState.Rejected, EffectOutcome.None);
+                }
+                try { grant = grantable.RecordApprovedGrant(intent, lifetime, cancellationToken); }
+                catch (Exception ex)
+                {
+                    _emit(new PermissionDenied(validated.ToolCallId,
+                        "The selected grant could not be recorded: " + ex.GetType().Name));
+                    return new Outcome(false, "grant unavailable", ToolCallState.Rejected, EffectOutcome.None);
+                }
+            }
+            _emit(new PermissionGranted(validated.ToolCallId, grant, lifetime));
+            try
+            {
+                var authorized = _policy.AuthorizeApproved(intent, grant);
+                _emit(new ToolCallAuthorized(validated.ToolCallId));
+                return Execute(validated, authorized, intent, tool, execContext, cancellationToken,
+                    boundaryAskApproved: decision.Final == PermissionDecision.Ask);
+            }
+            catch (OmniCore.Domain.PermissionDeniedException ex)
+            {
+                _emit(new PermissionDenied(validated.ToolCallId, ex.Reason));
+                return new Outcome(false, ex.Reason, ToolCallState.Rejected, EffectOutcome.None);
+            }
+        }
+
         if (decision.Final == PermissionDecision.Ask)
         {
             var interactionId = InteractionId.New();
@@ -313,7 +399,7 @@ public sealed class ToolRuntime
                     _ => "deny",
                 }
                 : execContext.IsInteractive ? execContext.ResolveInteraction?.Invoke(interaction) : null;
-            if (!execContext.IsInteractive && execContext.ResolveInteraction is not null && selectedOption is null)
+            if (!execContext.IsInteractive && execContext.AllowDeferredInteraction && selectedOption is null)
             {
                 // Headless callers must not invent a denial/approval: keep the server-owned
                 // interaction pending so the Run can surface InputRequired without a decision.
@@ -784,6 +870,7 @@ public sealed class ToolRuntime
             writer.WriteString("operation", intent.ToolId.ToString());
             writer.WriteString("risk", intent.Risk.ToString().ToLowerInvariant());
             writer.WriteString("reason", reason);
+            writer.WriteString("intentFingerprint", IntentFingerprint(intent));
             if (substitution is not null && substitution.SourceToolId != "mcp.first-effect")
             {
                 writer.WriteStartObject("toolPreferenceSubstitution");
@@ -802,6 +889,54 @@ public sealed class ToolRuntime
             writer.WriteEndObject();
         }
         return System.Text.Encoding.UTF8.GetString(output.ToArray());
+    }
+
+    private static string IntentFingerprint(ToolIntent intent)
+    {
+        using var output = new System.IO.MemoryStream();
+        using (var writer = new System.Text.Json.Utf8JsonWriter(output))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("toolId", intent.ToolId.ToString());
+            writer.WriteString("arguments", intent.NormalizedArgumentsJson);
+            writer.WriteString("effect", intent.Effect.ToString());
+            writer.WriteString("risk", intent.Risk.ToString());
+            WriteStrings(writer, "reads", intent.Claims.Reads);
+            WriteStrings(writer, "writes", intent.Claims.Writes);
+            writer.WriteStartArray("network");
+            foreach (var item in intent.Claims.Network)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("host", item.Host);
+                if (item.Port is { } port) writer.WriteNumber("port", port);
+                else writer.WriteNull("port");
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+            WriteStrings(writer, "secrets", intent.Claims.Secrets);
+            if (intent.Claims.Process is { } process)
+            {
+                writer.WriteStartObject("process");
+                writer.WriteString("executable", process.Executable);
+                WriteStrings(writer, "args", process.Args);
+                writer.WriteString("effectClass", process.EffectClass);
+                writer.WriteBoolean("networkRequired", process.NetworkRequired);
+                if (process.WorkingDirectory is { } cwd) writer.WriteString("workingDirectory", cwd);
+                else writer.WriteNull("workingDirectory");
+                writer.WriteEndObject();
+            }
+            else writer.WriteNull("process");
+            writer.WriteEndObject();
+        }
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(output.ToArray()));
+    }
+
+    private static void WriteStrings(System.Text.Json.Utf8JsonWriter writer, string name,
+        IReadOnlyList<string> values)
+    {
+        writer.WriteStartArray(name);
+        foreach (var value in values) writer.WriteStringValue(value);
+        writer.WriteEndArray();
     }
 
     /// <summary>Opciones decididas por el servidor; el default (más restrictiva) es Deny.</summary>

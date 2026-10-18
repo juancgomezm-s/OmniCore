@@ -46,6 +46,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     private readonly Func<ToolCallId, CancellationToken, Task<string?>>? _receiveMailbox;
     private readonly IWorkspaceWriteLeaseProvider? _workspaceWriteLeases;
     private readonly Func<IDisposable>? _acquireSessionSecurityAdmission;
+    private readonly bool _allowDeferredInteraction;
 
     public ScriptedToolExecutor(FakeCatalog catalog, IPermissionPolicy policy)
     {
@@ -87,7 +88,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null,
         IWorkspaceWriteLeaseProvider? workspaceWriteLeases = null,
         IReadOnlyList<IToolIntentBoundary>? additionalBoundaries = null,
-        Func<IDisposable>? acquireSessionSecurityAdmission = null)
+        Func<IDisposable>? acquireSessionSecurityAdmission = null,
+        bool allowDeferredInteraction = false)
     {
         _catalog = catalog;
         _policy = policy;
@@ -103,6 +105,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         _receiveMailbox = receiveMailbox;
         _workspaceWriteLeases = workspaceWriteLeases;
         _acquireSessionSecurityAdmission = acquireSessionSecurityAdmission;
+        _allowDeferredInteraction = allowDeferredInteraction;
     }
 
     public static ScriptedToolExecutor Default() =>
@@ -212,6 +215,66 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         return Run(validated, userApprovesAsk, cancellationToken, stream, null);
     }
 
+    internal ToolOutcome ResumeApprovedPermission(EventStream stream, IEventCodecRegistry codecs, InteractionId interaction,
+        string optionId, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        var scope = ExecutionScope.Current;
+        if (scope?.RunId is not { } run || scope.TurnId is not { } turn || scope.LaneId is not { } lane)
+            throw new InvalidOperationException("Permission continuation is missing its execution scope.");
+        var events = stream.EventsSince(1);
+        var permissionRequests = events.Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
+            .Where(item => item.Event.RunId == run && item.Event.TurnId == turn && item.Event.LaneId == lane
+                && item.Payload is PermissionRequested permission && permission.InteractionId == interaction)
+            .ToArray();
+        if (permissionRequests.Length != 1 || permissionRequests[0].Payload is not PermissionRequested requested)
+            throw new InvalidOperationException("The approved Permission request is not uniquely bound to this Turn.");
+        var resolved = events.Where(evt => evt.RunId == run)
+            .Select(evt => codecs.Decode(evt)).OfType<InteractionResolved>()
+            .SingleOrDefault(item => item.InteractionId == interaction);
+        if (resolved is null || resolved.State != optionId)
+            throw new InvalidOperationException("The durable Permission choice does not match this continuation.");
+        var requestEvents = events.Where(evt => evt.RunId == run && evt.TurnId == turn && evt.LaneId == lane)
+            .Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
+            .Where(item => item.Payload is ToolCallRequested call && call.ToolCallId == requested.ToolCallId).ToArray();
+        var prepared = events.Where(evt => evt.RunId == run && evt.TurnId == turn && evt.LaneId == lane)
+            .Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
+            .Where(item => item.Payload is ToolCallPrepared call && call.ToolCallId == requested.ToolCallId).ToArray();
+        if (requestEvents.Length != 1 || prepared.Length != 1
+            || requestEvents[0].Event.Sequence >= permissionRequests[0].Event.Sequence
+            || prepared[0].Event.Sequence >= permissionRequests[0].Event.Sequence
+            || events.Any(evt => evt.RunId == run && evt.ToolCallId == requested.ToolCallId
+                && evt.Sequence > permissionRequests[0].Event.Sequence
+                && codecs.Decode(evt) is ToolCallStarted or ToolCallSucceeded or ToolCallFailed
+                    or ToolCallEffectUnknown or ToolCallReconciled))
+            throw new InvalidOperationException("The original Permission call is not safe to resume.");
+        string? intentFingerprint;
+        try
+        {
+            var interactionEvents = events.Where(evt => evt.RunId == run
+                && codecs.Decode(evt) is InteractionRequested item && item.InteractionId == interaction).ToArray();
+            if (interactionEvents.Length != 1 || codecs.Decode(interactionEvents[0]) is not InteractionRequested request)
+                throw new InvalidOperationException("The approved Permission request has no unique interaction envelope.");
+            using var subject = System.Text.Json.JsonDocument.Parse(request.SubjectJson);
+            intentFingerprint = subject.RootElement.TryGetProperty("intentFingerprint", out var fingerprint)
+                && fingerprint.ValueKind == System.Text.Json.JsonValueKind.String
+                ? fingerprint.GetString() : null;
+        }
+        catch (System.Text.Json.JsonException) { intentFingerprint = null; }
+        if (intentFingerprint is null)
+            throw new InvalidOperationException("The approved Permission has no effective-intent fingerprint.");
+        var call = (ToolCallRequested)requestEvents[0].Payload;
+        var preparedCall = (ToolCallPrepared)prepared[0].Payload;
+        var providerCallId = call.ProviderCallId;
+        var validated = new ValidatedToolCall(requested.ToolCallId, new ToolId(call.ToolName),
+            providerCallId, call.ArgumentsJson);
+        var outcome = Run(validated, false, cancellationToken, stream, approvedPermission: interaction,
+            approvedOption: optionId, expectedPreparedArguments: preparedCall.ToolIntentJson,
+            expectedIntentFingerprint: intentFingerprint);
+        if (outcome.Events.Count > 0) stream.AppendBatch(outcome.Events, DurabilityClass.Standard);
+        return outcome;
+    }
+
     internal ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
         CancellationToken cancellationToken, EventStream stream, bool requiresSubstitutionAsk)
     {
@@ -275,7 +338,9 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     private ToolOutcome Run(ValidatedToolCall validated, bool userApprovesAsk,
         CancellationToken cancellationToken, EventStream? stream, ToolCallRequestReceipt? requestReceipt = null,
         bool requiresSubstitutionAsk = false, ProtectedToolSubstitution? protectedSubstitution = null,
-        bool recordReadRegistry = true)
+        bool recordReadRegistry = true, InteractionId? approvedPermission = null,
+        string? approvedOption = null, string? expectedPreparedArguments = null,
+        string? expectedIntentFingerprint = null)
     {
         // Buffer local a la llamada (evita estado compartido entre Runs). Sin flush, contiene
         // todos los eventos emitidos; tras un flush contiene solo los outcomes.
@@ -374,8 +439,12 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             isModelToolVisible: _boundary is null ? null : _boundary.IsToolVisible,
             requiresSubstitutionAsk: requiresSubstitutionAsk,
             protectedSubstitution: protectedSubstitution,
-            acquireSessionSecurityAdmission: _acquireSessionSecurityAdmission);
-        var outcome = requestReceipt is null
+            acquireSessionSecurityAdmission: _acquireSessionSecurityAdmission,
+            allowDeferredInteraction: _allowDeferredInteraction);
+        var outcome = approvedPermission is { } interaction
+            ? runtime.ResumeApprovedPermission(validated, prepContext, execContext, cancellationToken,
+                interaction, approvedOption!, expectedPreparedArguments!, expectedIntentFingerprint!)
+            : requestReceipt is null
             ? runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken)
             : runtime.Run(validated, prepContext, execContext, userApprovesAsk, cancellationToken, requestReceipt);
         var events = buffered.ToArray();

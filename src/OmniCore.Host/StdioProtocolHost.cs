@@ -12,7 +12,10 @@ using Task = System.Threading.Tasks.Task;
 internal sealed record PersistedConversationCommand(string CommandId, string RequestHash, string SessionId,
     string RunId, long? FirstSequence, long? LastSequence, string? ContinuationInteractionId = null,
     string? ContinuationCommandId = null, string? ContinuationRequestHash = null,
-    long? ContinuationFirstSequence = null, long? ContinuationLastSequence = null);
+    long? ContinuationFirstSequence = null, long? ContinuationLastSequence = null,
+    string? ContinuationResponseType = null, string? ContinuationOptionId = null,
+    string? ContinuationTurnId = null,
+    bool NativeChoiceCapability = false, bool ExplicitChoiceRecovery = false);
 
 /// <summary>Request/response stdio adapter over the same IOmniClient used by the in-process CLI.</summary>
 public static class StdioProtocolHost
@@ -69,11 +72,12 @@ public static class StdioProtocolHost
                 if (!negotiated)
                 {
                     if (!TryNegotiate(client, request, bootstrapKey, actionNonce, runPersistedConversation is not null,
-                        out var response, out var accepted))
+                        out var response, out var accepted, out var nativeChoiceCapability))
                     {
                         WriteFrame(output, response!.ToJson());
                         return 3;
                     }
+                    conversation.SetNativeChoiceCapability(nativeChoiceCapability);
                     negotiated = accepted;
                     WriteFrame(output, response!.ToJson());
                     continue;
@@ -91,9 +95,11 @@ public static class StdioProtocolHost
                     var result = Dispatch(client, request, bootstrapKey, actionNonce, conversation,
                         runPersistedConversation is not null, eventStream);
                     var responseJson = WireEnvelope.Response(request.MessageId, result).ToJson();
-                    if (Encoding.UTF8.GetByteCount(responseJson) > StdioProtocol.MaximumFrameBytes)
+                    var responseDelivered = Encoding.UTF8.GetByteCount(responseJson) <= StdioProtocol.MaximumFrameBytes;
+                    if (!responseDelivered)
                         WriteFrame(output, Error(request.MessageId, "frame_too_large", "The query response exceeds the negotiated frame limit.").ToJson());
                     else WriteFrame(output, responseJson);
+                    if (responseDelivered) conversation.StartPendingAfterAck(request.MessageId);
                     eventStream.StartIfConfigured();
                 }
                 catch (ReplayFrameTooLargeException)
@@ -193,7 +199,7 @@ public static class StdioProtocolHost
                 var commandName = nameElement.GetString()!;
                 var trustedOnly = commandName is "conversation.start" or "conversation.new" or "conversation.resume"
                     or "conversation.rename" or "conversation.compact" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
-                    or "external.memory.consent" or "interaction.respond"
+                    or "external.memory.consent" or "interaction.respond" or "interaction.continue"
                     or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish";
                 TrustedActionScope? trustedScope = null;
                 if (root.TryGetProperty("actionProof", out var proofElement))
@@ -207,22 +213,33 @@ public static class StdioProtocolHost
                 if (trustedOnly && trustedScope is null)
                     return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_user_action_required",
                         RuntimeCommandOutcome.Rejected()));
+                var responseType = payload.RootElement.TryGetProperty("responseType", out var responseTypeElement)
+                    && responseTypeElement.ValueKind == JsonValueKind.String ? responseTypeElement.GetString() : null;
                 if (commandName == "interaction.respond")
                 {
                     // A receipt replay must return the durable original ACK before consulting
                     // the in-memory runner or attempting an explicit post-restart recovery.
                     var prior = FindReceiptResult(client, command);
                     if (prior is not null) return EncodeAck(prior);
-                    if (trustedScope is null || !conversation.CanResumeQuestionnaire(client, trustedScope, command))
+                    if (trustedScope is null || !(responseType switch
+                    {
+                        "questionnaire" => conversation.CanResumeQuestionnaire(client, trustedScope, command),
+                        "choice" => conversation.CanResumeChoice(client, trustedScope, command),
+                        _ => false,
+                    }))
                         return EncodeAck(conversation.IsRunning
                             ? new CommandAck(command.MessageId, "busy", "conversation_turn_busy",
                                 RuntimeCommandOutcome.Deferred("conversation_turn_busy"))
                             : new CommandAck(command.MessageId, "error", "conversation_questionnaire_resume_unavailable",
                                 RuntimeCommandOutcome.Rejected()));
                 }
+                if (commandName == "interaction.continue"
+                    && (trustedScope is null || !conversation.CanRecoverChoice(client, trustedScope, command)))
+                    return EncodeAck(new CommandAck(command.MessageId, "error", "interaction_recovery_unavailable",
+                        RuntimeCommandOutcome.Rejected()));
                 if (trustedScope is not null && commandName is not ("session.input" or "conversation.start" or "conversation.new" or "conversation.resume"
                     or "conversation.rename" or "conversation.compact" or "session.security.set" or "session.security.default.set"
-                    or "run.interrupt" or "run.cancel" or "run.mode.select" or "external.memory.consent" or "interaction.respond" or "attachment.upload.begin"
+                    or "run.interrupt" or "run.cancel" or "run.mode.select" or "external.memory.consent" or "interaction.respond" or "interaction.continue" or "attachment.upload.begin"
                     or "attachment.upload.chunk" or "attachment.upload.finish"))
                     return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_action_not_supported",
                         RuntimeCommandOutcome.Rejected()));
@@ -265,7 +282,19 @@ public static class StdioProtocolHost
                     : DispatchCommand(client, command, trustedScope, out newlyExecuted);
                 if (commandName == "interaction.respond" && newlyExecuted
                     && ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted)
-                    ack = conversation.ResumeQuestionnaire(client, command, trustedScope!, ack);
+                {
+                    if (responseType == "choice")
+                    {
+                        using var choice = JsonDocument.Parse(command.PayloadJson);
+                        var option = choice.RootElement.GetProperty("optionId").GetString();
+                        if (option is not ("approve_only" or "reject"))
+                            ack = conversation.ResumeChoice(client, command, trustedScope!, ack);
+                    }
+                    else ack = conversation.ResumeQuestionnaire(client, command, trustedScope!, ack);
+                }
+                else if (commandName == "interaction.continue" && newlyExecuted
+                    && ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted)
+                    ack = conversation.ResumeRecoveredChoice(client, command, trustedScope!, ack);
                 var outcome = ack.Outcome is null ? "null" : "{\"kind\":"
                     + Quote(ack.Outcome.Kind.ToString()) + ",\"reason\":"
                     + (ack.Outcome.Reason is null ? "null" : Quote(ack.Outcome.Reason)) + "}";
@@ -325,7 +354,8 @@ public static class StdioProtocolHost
                 if (string.IsNullOrWhiteSpace(name) || !StdioProtocol.IsSupportedQuery(name))
                     throw new InvalidDataException();
                 if (StdioProtocol.TryGetQuery(name, out var descriptor)
-                    && !NegotiatedCapabilities(client, bootstrapKey, actionNonce, conversationExecutionAvailable)
+                    && !NegotiatedCapabilities(client, bootstrapKey, actionNonce, conversationExecutionAvailable,
+                        conversation.NativeChoiceCapability)
                         .Contains(descriptor.Capability, StringComparer.Ordinal))
                     throw new NotSupportedException();
                 if (name == "humanActionScope")
@@ -336,9 +366,18 @@ public static class StdioProtocolHost
                     return "{\"name\":\"humanActionScope\",\"json\":"
                         + Quote(trustedServer.TrustedActionScopeJson()) + "}";
                 }
+                if (name == "interaction.recovery")
+                {
+                    if (!conversation.NativeChoiceCapability || bootstrapKey is null || actionNonce is null
+                        || client is not OmniServer recoveryServer || recoveryServer.ReceiptStore is null)
+                        throw new NotSupportedException();
+                    return "{\"name\":\"interaction.recovery\",\"json\":"
+                        + Quote(conversation.EncodeChoiceRecoveryStatus(recoveryServer)) + "}";
+                }
                 if (name == "native.catalog")
                 {
-                    var capabilities = NegotiatedCapabilities(client, bootstrapKey, actionNonce, conversationExecutionAvailable);
+                    var capabilities = NegotiatedCapabilities(client, bootstrapKey, actionNonce, conversationExecutionAvailable,
+                        conversation.NativeChoiceCapability);
                     return "{\"name\":\"native.catalog\",\"json\":"
                         + Quote(StdioProtocol.EncodeNativeCatalog(capabilities)) + "}";
                 }
@@ -474,7 +513,7 @@ public static class StdioProtocolHost
         var commandName = cmd.GetString();
         if (commandName is not ("session.input" or "conversation.start" or "conversation.new" or "conversation.resume"
             or "conversation.rename" or "conversation.compact" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
-            or "external.memory.consent" or "interaction.respond"
+            or "external.memory.consent" or "interaction.respond" or "interaction.continue"
             or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish")) return false;
         if (commandName.StartsWith("attachment.upload.", StringComparison.Ordinal))
         {
@@ -490,11 +529,32 @@ public static class StdioProtocolHost
         {
             if (expectedSession.Value is null || expectedRun.Value is null
                 || properties.Distinct(StringComparer.Ordinal).Count() != properties.Length
+                || !payload.RootElement.TryGetProperty("responseType", out var responseType)
+                || responseType.ValueKind != JsonValueKind.String) return false;
+            if (responseType.GetString() == "choice")
+            {
+                if (properties.Except(["cmd", "responseType", "interactionId", "optionId", "expectedRunId",
+                    "expectedPolicyRevision"], StringComparer.Ordinal).Any() || properties.Length != 6
+                    || !payload.RootElement.TryGetProperty("interactionId", out var choiceInteraction)
+                    || choiceInteraction.ValueKind != JsonValueKind.String
+                    || !Guid.TryParseExact(choiceInteraction.GetString(), "D", out var choiceGuid)
+                    || choiceInteraction.GetString() != choiceGuid.ToString("D")
+                    || !payload.RootElement.TryGetProperty("optionId", out var option)
+                    || option.ValueKind != JsonValueKind.String || option.GetString() is not { Length: > 0 and <= 80 } optionId
+                    || optionId.Any(char.IsControl)
+                    || !payload.RootElement.TryGetProperty("expectedRunId", out var choiceRun)
+                    || choiceRun.ValueKind != JsonValueKind.String || choiceRun.GetString() != expectedRun.Value
+                    || !payload.RootElement.TryGetProperty("expectedPolicyRevision", out var choicePolicyRevision)
+                    || choicePolicyRevision.ValueKind != JsonValueKind.Number
+                    || !choicePolicyRevision.TryGetInt64(out var choiceRevision) || choiceRevision < 1) return false;
+                scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
+                    CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
+                return true;
+            }
+            if (responseType.GetString() != "questionnaire"
                 || properties.Except(["cmd", "responseType", "interactionId", "expectedRunId",
                     "expectedPolicyRevision", "answers", "cancelled"], StringComparer.Ordinal).Any()
                 || properties.Length != 7
-                || !payload.RootElement.TryGetProperty("responseType", out var responseType)
-                || responseType.ValueKind != JsonValueKind.String || responseType.GetString() != "questionnaire"
                 || !payload.RootElement.TryGetProperty("interactionId", out var interactionId)
                 || interactionId.ValueKind != JsonValueKind.String
                 || !Guid.TryParseExact(interactionId.GetString(), "D", out var parsedInteractionId)
@@ -508,6 +568,26 @@ public static class StdioProtocolHost
                 || answers.ValueKind != JsonValueKind.Array || answers.GetArrayLength() > 128
                 || !payload.RootElement.TryGetProperty("cancelled", out var cancelled)
                 || cancelled.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return false;
+            scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
+                CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
+            return true;
+        }
+        if (commandName == "interaction.continue")
+        {
+            if (expectedSession.Value is null || expectedRun.Value is null
+                || properties.Distinct(StringComparer.Ordinal).Count() != properties.Length
+                || properties.Except(["cmd", "interactionId", "expectedRunId", "expectedPolicyRevision"],
+                    StringComparer.Ordinal).Any() || properties.Length != 4
+                || !payload.RootElement.TryGetProperty("interactionId", out var recoveryInteraction)
+                || recoveryInteraction.ValueKind != JsonValueKind.String
+                || !Guid.TryParseExact(recoveryInteraction.GetString(), "D", out var recoveryGuid)
+                || recoveryInteraction.GetString() != recoveryGuid.ToString("D")
+                || !payload.RootElement.TryGetProperty("expectedRunId", out var recoveryRun)
+                || recoveryRun.ValueKind != JsonValueKind.String || recoveryRun.GetString() != expectedRun.Value
+                || !payload.RootElement.TryGetProperty("expectedPolicyRevision", out var recoveryRevision)
+                || recoveryRevision.ValueKind != JsonValueKind.Number
+                || !recoveryRevision.TryGetInt64(out var recoveryPolicyRevision) || recoveryPolicyRevision < 1)
+                return false;
             scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
                 CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
             return true;
@@ -770,17 +850,257 @@ public static class StdioProtocolHost
         Func<PersistedConversationCommand, CancellationToken, Task<int>>? runner,
         Func<string, string?>? validateAttachments) : IDisposable
     {
+        private sealed record ChoiceRecovery(PersistedConversationCommand Binding, string InteractionId,
+            string RunId, long PolicyRevision, string Kind, string OptionId);
+
         private readonly object _gate = new();
         private CancellationTokenSource? _cancellation;
         private Task<int>? _task;
+        private PendingContinuation? _pendingContinuation;
         private string? _commandId;
         private PersistedConversationCommand? _deferredConversation;
+        private bool _nativeChoiceCapability;
         private readonly AttachmentUploadManager _uploads = new();
+        private sealed record PendingContinuation(OmniServer Server, PersistedConversationCommand Binding,
+            string ReceiptCommandId, string ReceiptRequestHash);
 
-        public bool IsRunning { get { lock (_gate) return _task is { IsCompleted: false }; } }
+        public void SetNativeChoiceCapability(bool supported)
+        {
+            lock (_gate) _nativeChoiceCapability = supported;
+        }
+        public bool NativeChoiceCapability { get { lock (_gate) return _nativeChoiceCapability; } }
+
+        public bool IsRunning { get { lock (_gate) return _pendingContinuation is not null || _task is { IsCompleted: false }; } }
         public bool IsRunningFor(string commandId) { lock (_gate) return _commandId == commandId && _task is { IsCompleted: false }; }
         public (CommandAck Ack, ArtifactRef? Reference) Upload(WireEnvelope command, OmniServer server, string commandName) =>
             _uploads.Dispatch(server, command, commandName);
+
+        public string EncodeChoiceRecoveryStatus(OmniServer server)
+        {
+            lock (_gate)
+            {
+                if (_pendingContinuation is not null || _task is { IsCompleted: false })
+                    return "{\"state\":\"none\",\"choices\":[]}";
+            }
+            var recovery = ReadChoiceRecovery(server, null, null, null);
+            if (recovery is null)
+            {
+                var blocked = BlockedChoiceRecoveryReason(server);
+                return blocked is null ? "{\"state\":\"none\",\"choices\":[]}"
+                    : "{\"state\":\"blocked\",\"reason\":" + Quote(blocked)
+                        + ",\"runId\":" + Quote(server.LastRunId()?.ToString() ?? "")
+                        + ",\"policyRevision\":" + (server.LastSessionId() is { } session
+                            ? server.ReadSessionSecurityPolicy(session)?.PolicyRevision.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null"
+                            : "null") + ",\"choices\":[]}";
+            }
+            return "{\"state\":\"ready\",\"choices\":[{\"interactionId\":" + Quote(recovery.InteractionId)
+                + ",\"runId\":" + Quote(recovery.RunId) + ",\"policyRevision\":"
+                + recovery.PolicyRevision.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ",\"kind\":" + Quote(recovery.Kind) + ",\"optionId\":" + Quote(recovery.OptionId) + "}]}";
+        }
+
+        private static string? BlockedChoiceRecoveryReason(OmniServer server)
+        {
+            var session = server.LastSessionId();
+            var run = server.LastRunId();
+            if (session is null || run is null) return null;
+            var store = server.AcquireStore();
+            var codecs = server.AcquireCodecs();
+            var events = store.ReadFrom(session, 1);
+            if (RunProjection.Replay(session, run, codecs, events).State != RunState.Running) return null;
+            var requests = new Dictionary<InteractionId, DomainEvent>();
+            foreach (var evt in events.Where(evt => evt.RunId == run))
+            {
+                if (codecs.Decode(evt) is InteractionRequested request
+                    && request.Kind is InteractionKind.Permission or InteractionKind.PlanApproval)
+                {
+                    if (!requests.TryAdd(request.InteractionId, evt)) return "response_receipt_unknown";
+                }
+            }
+            foreach (var evt in events.Where(item => item.RunId == run).OrderBy(item => item.Sequence))
+            {
+                if (codecs.Decode(evt) is not InteractionResolved resolved || !requests.TryGetValue(resolved.InteractionId, out var requestEvent)
+                    || evt.Causation is not CommandCausation cause) continue;
+                var request = (InteractionRequested)codecs.Decode(requestEvent);
+                var receipt = server.ReceiptStore?.ReadCommandReceipt(cause.CommandId.ToString());
+                if (receipt is null || receipt.State != OmniCore.Infrastructure.CommandReceiptState.Completed
+                    || receipt.OutcomeKind != "Accepted" || receipt.ExecutionState is not (null or "cancelled"))
+                    return "response_receipt_unknown";
+                if (!HasStartedContinuation(events, codecs, run, requestEvent, request, evt.Sequence)) continue;
+                if (request.Kind == InteractionKind.Permission)
+                {
+                    var permission = events.FirstOrDefault(item => item.RunId == run && item.TurnId == requestEvent.TurnId
+                        && codecs.Decode(item) is PermissionRequested permissionRequest
+                        && permissionRequest.InteractionId == resolved.InteractionId);
+                    if (permission is not null && permission.ToolCallId is { } toolCall
+                        && events.Any(item => item.RunId == run && item.ToolCallId == toolCall
+                            && item.Sequence > permission.Sequence && codecs.Decode(item) is ToolCallEffectUnknown or ToolCallReconciled))
+                        return "effect_outcome_unknown";
+                }
+                return "continuation_already_started";
+            }
+            return null;
+        }
+
+        public bool CanRecoverChoice(IOmniClient client, TrustedActionScope scope, WireEnvelope command)
+        {
+            if (client is not OmniServer server || runner is null || !_nativeChoiceCapability
+                || scope.ExpectedSessionId is not { } session || scope.ExpectedRunId is not { } run) return false;
+            using var payload = JsonDocument.Parse(command.PayloadJson);
+            var root = payload.RootElement;
+            if (!CanonicalGuid(root, "interactionId", out var interaction)
+                || !CanonicalGuid(root, "expectedRunId", out var expectedRun)
+                || expectedRun != run
+                || !root.TryGetProperty("expectedPolicyRevision", out var revisionElement)
+                || !revisionElement.TryGetInt64(out var revision) || revision < 1) return false;
+            lock (_gate)
+            {
+                if (_pendingContinuation is not null || _task is { IsCompleted: false }) return false;
+                return ReadChoiceRecovery(server, session, run, revision) is { } candidate
+                    && candidate.InteractionId == interaction;
+            }
+        }
+
+        private ChoiceRecovery? ReadChoiceRecovery(OmniServer server, string? expectedSession,
+            string? expectedRun, long? expectedRevision)
+        {
+            var sessionId = server.LastSessionId();
+            var runId = server.LastRunId();
+            var policy = sessionId is { } session ? server.ReadSessionSecurityPolicy(session) : null;
+            if (sessionId is null || runId is null || policy is null
+                || expectedSession is not null && sessionId.ToString() != expectedSession
+                || expectedRun is not null && runId.ToString() != expectedRun
+                || expectedRevision is not null && policy.PolicyRevision != expectedRevision
+                || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(sessionId) != runId)
+                return null;
+            var codecs = server.AcquireCodecs();
+            var events = server.AcquireStore().ReadFrom(sessionId, 1);
+            var run = runId;
+            var projection = RunProjection.Replay(sessionId, run, codecs, events);
+            var rootLane = projection.RootTask is { } rootTask
+                ? LaneProjection.Replay(codecs, events).ForTask(rootTask).FirstOrDefault()?.Id : null;
+            if (projection.State != RunState.Running || rootLane is null) return null;
+            var pending = new Dictionary<InteractionId, DomainEvent>();
+            var choices = new List<ChoiceRecovery>();
+            foreach (var evt in events.Where(item => item.RunId == run).OrderBy(item => item.Sequence))
+            {
+                switch (codecs.Decode(evt))
+                {
+                    case InteractionRequested request when request.Kind is InteractionKind.Permission or InteractionKind.PlanApproval:
+                        pending[request.InteractionId] = evt;
+                        break;
+                    case InteractionResolved resolved when pending.Remove(resolved.InteractionId, out var requestedEvent):
+                    {
+                        var request = (InteractionRequested)codecs.Decode(requestedEvent);
+                        if (request.OptionsJson is null || requestedEvent.LaneId != rootLane
+                            || request.Kind == InteractionKind.Permission
+                                && resolved.State is not ("allow_once" or "allow_run" or "allow_workspace")
+                            || request.Kind == InteractionKind.PlanApproval
+                                && resolved.State is not ("approve_execute" or "continue_planning")) break;
+                        var commandCause = evt.Causation as CommandCausation;
+                        if (commandCause is null) break;
+                        var responseReceipt = server.ReceiptStore?.ReadCommandReceipt(commandCause.CommandId.ToString());
+                        if (responseReceipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                                OutcomeKind: "Accepted", FirstSequence: { } responseFirst,
+                                LastSequence: { } responseLast }
+                            || responseReceipt.ExecutionState is not (null or "cancelled")
+                            || responseReceipt.SessionId != sessionId.ToString()
+                            || evt.Sequence < responseFirst || evt.Sequence > responseLast) break;
+                        var responseInput = events.SingleOrDefault(item => item.Sequence >= responseFirst
+                            && item.Sequence <= responseLast && item.RunId == run && item.Causation is CommandCausation inputCause
+                            && inputCause.CommandId == commandCause.CommandId
+                            && codecs.Decode(item) is UserInputReceived input
+                            && input.Origin == (request.Kind == InteractionKind.Permission
+                                ? "InteractionResponse(Permission)" : "InteractionResponse(PlanApproval)"));
+                        if (responseInput is null || HasStartedContinuation(events, codecs, run,
+                            requestedEvent, request, responseInput.Sequence)) break;
+                        var sourceTurnStart = events.FirstOrDefault(item => item.RunId == run
+                            && item.TurnId == requestedEvent.TurnId && codecs.Decode(item) is TurnStarted);
+                        if (sourceTurnStart is null) break;
+                        var previousTurnTerminal = events.Where(item => item.RunId == run
+                                && item.Sequence < sourceTurnStart.Sequence && item.LaneId == rootLane)
+                            .Where(item => codecs.Decode(item) is TurnCompleted or TurnAbandoned or TurnInterrupted)
+                            .Select(item => item.Sequence).DefaultIfEmpty(0).Max();
+                        var sourceInput = events.Where(item => item.RunId == run
+                                && item.Sequence > previousTurnTerminal && item.Sequence < sourceTurnStart.Sequence
+                                && codecs.Decode(item) is UserInputReceived)
+                            .OrderBy(item => item.Sequence).LastOrDefault();
+                        if (sourceInput?.Causation is not CommandCausation sourceCause) break;
+                        var sourceReceipt = server.ReceiptStore?.ReadCommandReceipt(sourceCause.CommandId.ToString());
+                        if (sourceReceipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                                OutcomeKind: "Accepted", FirstSequence: { } sourceFirst, LastSequence: { } sourceLast }
+                            || sourceReceipt.SessionId != sessionId.ToString()
+                            || sourceInput.Sequence < sourceFirst || sourceInput.Sequence > sourceLast
+                            || sourceReceipt.ExecutionRunId is { } boundRun && boundRun != run.ToString()) break;
+                        string? turnId = null;
+                        if (request.Kind == InteractionKind.Permission)
+                        {
+                            if (requestedEvent.TurnId is not { } permissionTurn
+                                || !IsOpenTurn(events, codecs, run, permissionTurn)) break;
+                            turnId = permissionTurn.ToString();
+                        }
+                        var binding = new PersistedConversationCommand(sourceReceipt.CommandId,
+                            sourceReceipt.RequestHash, sessionId.ToString(), run.ToString(), sourceFirst, sourceLast,
+                            ContinuationInteractionId: request.InteractionId.ToString(),
+                            ContinuationCommandId: commandCause.CommandId.ToString(),
+                            ContinuationRequestHash: responseReceipt.RequestHash,
+                            ContinuationFirstSequence: responseFirst, ContinuationLastSequence: responseLast,
+                            ContinuationResponseType: "choice", ContinuationOptionId: resolved.State,
+                            ContinuationTurnId: turnId, NativeChoiceCapability: true, ExplicitChoiceRecovery: true);
+                        if (resolved.State is not { } chosenOption) break;
+                        choices.Add(new ChoiceRecovery(binding, request.InteractionId.ToString(), run.ToString(),
+                            policy.PolicyRevision, request.Kind.ToString(), chosenOption));
+                        break;
+                    }
+                    case InteractionExpired expired:
+                        pending.Remove(expired.InteractionId);
+                        break;
+                }
+            }
+            return choices.Count == 1 ? choices[0] : null;
+        }
+
+        private static bool HasStartedContinuation(IReadOnlyList<DomainEvent> events,
+            IEventCodecRegistry codecs, RunId run, DomainEvent requestEvent, InteractionRequested request,
+            long responseSequence)
+        {
+            if (request.Kind == InteractionKind.Permission)
+            {
+                var permission = events.SingleOrDefault(item => item.RunId == run && item.TurnId == requestEvent.TurnId
+                    && codecs.Decode(item) is PermissionRequested permissionRequest
+                    && permissionRequest.InteractionId == request.InteractionId);
+                if (permission is null || codecs.Decode(permission) is not PermissionRequested permissionRequest)
+                    return true;
+                return events.Any(item => item.RunId == run && item.ToolCallId == permissionRequest.ToolCallId
+                    && item.Sequence > permission.Sequence
+                    && codecs.Decode(item) is PermissionGranted or ToolCallAuthorized or ToolCallStarted or ToolCallSucceeded or ToolCallFailed
+                        or ToolCallEffectUnknown or ToolCallReconciled or PermissionDenied);
+            }
+            return events.Any(item => item.RunId == run && item.Sequence > responseSequence
+                && codecs.Decode(item) is TurnStarted or ModelStepStarted or ToolCallStarted);
+        }
+
+        public CommandAck ResumeRecoveredChoice(IOmniClient client, WireEnvelope command,
+            TrustedActionScope scope, CommandAck acknowledgement)
+        {
+            if (client is not OmniServer server || runner is null) return acknowledgement;
+            using var payload = JsonDocument.Parse(command.PayloadJson);
+            var root = payload.RootElement;
+            if (!CanonicalGuid(root, "interactionId", out var interaction)
+                || !CanonicalGuid(root, "expectedRunId", out var expectedRun)
+                || !root.TryGetProperty("expectedPolicyRevision", out var revisionElement)
+                || !revisionElement.TryGetInt64(out var revision)) return acknowledgement;
+            lock (_gate)
+            {
+                if (_task is { IsCompleted: false }
+                    || ReadChoiceRecovery(server, scope.ExpectedSessionId, expectedRun, revision) is not { } choice
+                    || choice.InteractionId != interaction) return acknowledgement;
+                var requestHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
+                _pendingContinuation = new PendingContinuation(server, choice.Binding,
+                    command.MessageId, requestHash);
+            }
+            return acknowledgement;
+        }
 
         public CommandAck Start(IOmniClient client, WireEnvelope command, TrustedActionScope? trustedScope)
         {
@@ -829,7 +1149,8 @@ public static class StdioProtocolHost
                     }
                     var requestHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
                     var binding = new PersistedConversationCommand(command.MessageId, requestHash,
-                        session.ToString(), run.ToString(), ack.FirstSeq, ack.LastSeq);
+                        session.ToString(), run.ToString(), ack.FirstSeq, ack.LastSeq,
+                        NativeChoiceCapability: _nativeChoiceCapability);
                     _deferredConversation = null;
                     _cancellation?.Dispose();
                     _cancellation = new CancellationTokenSource();
@@ -911,6 +1232,114 @@ public static class StdioProtocolHost
                 _deferredConversation = admitted;
                 return true;
             }
+        }
+
+        public bool CanResumeChoice(IOmniClient client, TrustedActionScope scope, WireEnvelope command)
+        {
+            if (client is not OmniServer server || runner is null || scope.ExpectedSessionId is not { } expectedSession
+                || scope.ExpectedRunId is not { } expectedRun || !_nativeChoiceCapability) return false;
+            using var payload = JsonDocument.Parse(command.PayloadJson);
+            var root = payload.RootElement;
+            if (!CanonicalGuid(root, "interactionId", out var interactionText)
+                || !root.TryGetProperty("optionId", out var optionElement)
+                || optionElement.ValueKind != JsonValueKind.String
+                || !root.TryGetProperty("expectedRunId", out var runElement)
+                || runElement.ValueKind != JsonValueKind.String || runElement.GetString() != expectedRun
+                || !root.TryGetProperty("expectedPolicyRevision", out var revisionElement)
+                || !revisionElement.TryGetInt64(out var expectedPolicyRevision)) return false;
+            var session = new SessionId(Guid.Parse(expectedSession));
+            var run = new RunId(Guid.Parse(expectedRun));
+            var interaction = new InteractionId(Guid.Parse(interactionText));
+            if (server.LastSessionId() != session || server.LastRunId() != run
+                || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(session) != run
+                || server.ReadSessionSecurityPolicy(session)?.PolicyRevision != expectedPolicyRevision) return false;
+            var codecs = server.AcquireCodecs();
+            var events = server.AcquireStore().ReadFrom(session, 1);
+            var requestEvent = events.SingleOrDefault(evt => evt.RunId == run
+                && codecs.Decode(evt) is InteractionRequested request
+                && request.InteractionId == interaction
+                && request.Kind is InteractionKind.Permission or InteractionKind.PlanApproval);
+            if (requestEvent is null || codecs.Decode(requestEvent) is not InteractionRequested requested
+                || !Options(requested.OptionsJson).Contains(optionElement.GetString()!, StringComparer.Ordinal)
+                || events.Any(evt => codecs.Decode(evt) is InteractionResolved resolved
+                    && resolved.InteractionId == interaction)
+                || events.Any(evt => codecs.Decode(evt) is InteractionExpired expired
+                    && expired.InteractionId == interaction)
+                || RunProjection.Replay(session, run, codecs, events).State != RunState.AwaitingInput) return false;
+            var projection = RunProjection.Replay(session, run, codecs, events);
+            var rootLane = projection.RootTask is { } rootTask
+                ? LaneProjection.Replay(codecs, events).ForTask(rootTask).FirstOrDefault()?.Id : null;
+            if (rootLane is null || requestEvent.LaneId != rootLane) return false;
+            if (requested.Kind == InteractionKind.Permission)
+            {
+                var permission = events.Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
+                    .SingleOrDefault(item => item.Event.RunId == run
+                        && item.Payload is PermissionRequested requestedPermission
+                        && requestedPermission.InteractionId == interaction);
+                if (permission.Event is null || permission.Event.TurnId != requestEvent.TurnId
+                    || permission.Payload is not PermissionRequested permissionRequested
+                    || events.Any(evt => evt.RunId == run && evt.ToolCallId == permissionRequested.ToolCallId
+                        && codecs.Decode(evt) is PermissionGranted or PermissionDenied or ToolCallAuthorized
+                            or ToolCallStarted or ToolCallSucceeded or ToolCallFailed or ToolCallEffectUnknown
+                            or ToolCallReconciled)) return false;
+                var turn = requestEvent.TurnId;
+                if (turn is null || !IsOpenTurn(events, codecs, run, turn)) return false;
+            }
+            var turnStart = requested.Kind == InteractionKind.Permission
+                ? events.FirstOrDefault(evt => evt.RunId == run && evt.TurnId == requestEvent.TurnId
+                    && codecs.Decode(evt) is TurnStarted)
+                : events.LastOrDefault(evt => evt.RunId == run && evt.Sequence < requestEvent.Sequence
+                    && codecs.Decode(evt) is TurnStarted);
+            if (turnStart is null) return false;
+            var optionId = optionElement.GetString();
+            if (requested.Kind == InteractionKind.PlanApproval
+                && optionId is ("approve_only" or "reject"))
+            {
+                // These choices are durable human decisions, but they do not dispatch another
+                // model turn. Do not pin an in-memory conversation admission that could later
+                // be mistaken for a resumable runner after this response is accepted.
+                lock (_gate) return _task is not { IsCompleted: false };
+            }
+            var admitted = FindDeferredConversationBinding(server, events, codecs, session, run, turnStart.Sequence);
+            if (admitted is null) return false;
+            admitted = admitted with
+            {
+                NativeChoiceCapability = true,
+                ContinuationTurnId = requested.Kind == InteractionKind.Permission
+                    ? requestEvent.TurnId?.ToString() : null,
+            };
+            lock (_gate)
+            {
+                if (_task is { IsCompleted: false }) return false;
+                _deferredConversation ??= admitted;
+                return _deferredConversation is { } deferred
+                    && deferred.SessionId == expectedSession && deferred.RunId == expectedRun
+                    && deferred.CommandId == admitted.CommandId && deferred.RequestHash == admitted.RequestHash;
+            }
+        }
+
+        private static bool CanonicalGuid(JsonElement root, string property, out string value)
+        {
+            value = string.Empty;
+            if (!root.TryGetProperty(property, out var element) || element.ValueKind != JsonValueKind.String
+                || !Guid.TryParseExact(element.GetString(), "D", out var parsed)
+                || element.GetString() != parsed.ToString("D")) return false;
+            value = parsed.ToString("D");
+            return true;
+        }
+
+        private static string[] Options(string optionsJson)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(optionsJson);
+                return document.RootElement.ValueKind == JsonValueKind.Array
+                    ? document.RootElement.EnumerateArray().Where(item => item.ValueKind == JsonValueKind.Object
+                        && item.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String)
+                        .Select(item => item.GetProperty("id").GetString()!).ToArray()
+                    : [];
+            }
+            catch (JsonException) { return []; }
         }
 
         private static PersistedConversationCommand? FindDeferredConversationBinding(OmniServer server,
@@ -1015,7 +1444,7 @@ public static class StdioProtocolHost
             TrustedActionScope scope, CommandAck acknowledgement)
         {
             if (client is not OmniServer server || runner is null
-                || acknowledgement.FirstSeq is not { } first || acknowledgement.LastSeq is not { } last)
+                || acknowledgement.FirstSeq is null || acknowledgement.LastSeq is null)
                 return new CommandAck(command.MessageId, "ok", "conversation_questionnaire_resume_recovery_required",
                     RuntimeCommandOutcome.Deferred("conversation_questionnaire_resume_recovery_required"),
                     acknowledgement.FirstSeq, acknowledgement.LastSeq);
@@ -1024,6 +1453,8 @@ public static class StdioProtocolHost
             var interactionId = root.GetProperty("interactionId").GetString()!;
             var sessionId = scope.ExpectedSessionId!;
             var runId = scope.ExpectedRunId!;
+            var first = acknowledgement.FirstSeq.Value;
+            var last = acknowledgement.LastSeq.Value;
             var requestHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
             lock (_gate)
             {
@@ -1072,6 +1503,84 @@ public static class StdioProtocolHost
                 });
             }
             return acknowledgement;
+        }
+
+        public CommandAck ResumeChoice(IOmniClient client, WireEnvelope command,
+            TrustedActionScope scope, CommandAck acknowledgement)
+        {
+            if (client is not OmniServer server || runner is null
+                || acknowledgement.FirstSeq is not { } first || acknowledgement.LastSeq is not { } last)
+                return acknowledgement;
+            using var payload = JsonDocument.Parse(command.PayloadJson);
+            var root = payload.RootElement;
+            var interactionId = root.GetProperty("interactionId").GetString()!;
+            var optionId = root.GetProperty("optionId").GetString()!;
+            var sessionId = scope.ExpectedSessionId!;
+            var runId = scope.ExpectedRunId!;
+            var requestHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
+            lock (_gate)
+            {
+                if (_pendingContinuation is not null || _task is { IsCompleted: false } || _deferredConversation is not { } deferred
+                    || !string.Equals(deferred.SessionId, sessionId, StringComparison.Ordinal)
+                    || !string.Equals(deferred.RunId, runId, StringComparison.Ordinal)
+                    || server.LastSessionId()?.ToString() != sessionId || server.LastRunId()?.ToString() != runId)
+                    return acknowledgement;
+
+                var continuation = deferred with
+                {
+                    ContinuationInteractionId = interactionId,
+                    ContinuationCommandId = command.MessageId,
+                    ContinuationRequestHash = requestHash,
+                    ContinuationFirstSequence = first,
+                    ContinuationLastSequence = last,
+                    ContinuationResponseType = "choice",
+                    ContinuationOptionId = optionId,
+                    ContinuationTurnId = deferred.ContinuationTurnId,
+                };
+                _pendingContinuation = new PendingContinuation(server, continuation, command.MessageId, requestHash);
+            }
+            return acknowledgement;
+        }
+
+        public void StartPendingAfterAck(string acknowledgedCommandId)
+        {
+            PendingContinuation? pending;
+            lock (_gate)
+            {
+                pending = _pendingContinuation;
+                if (pending is null || pending.ReceiptCommandId != acknowledgedCommandId
+                    || runner is null || _task is { IsCompleted: false }) return;
+                _pendingContinuation = null;
+                _cancellation?.Dispose();
+                _cancellation = new CancellationTokenSource();
+                var token = _cancellation.Token;
+                _commandId = pending.ReceiptCommandId;
+                _task = Task.Run(async () =>
+                {
+                    var code = 1;
+                    try { code = await runner(pending.Binding, token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested) { code = 130; }
+                    catch (Exception) { code = 1; }
+                    try
+                    {
+                        pending.Server.ReceiptStore?.CompleteCommandExecution(pending.ReceiptCommandId,
+                            pending.ReceiptRequestHash,
+                            code == 0 ? "completed" : code == 130 ? "cancelled" : code == 3 ? "deferred" : "failed",
+                            code == 0 ? "turn_completed" : code == 130 ? "turn_cancelled" : code == 3 ? "input_required"
+                                : code == 4 ? "model_tools_unsupported" : "runtime_failed",
+                            pending.Binding.SessionId, pending.Binding.RunId);
+                    }
+                    catch (Exception) { /* Accepted input is never resent when continuation status is unknown. */ }
+                    finally
+                    {
+                        lock (_gate)
+                        {
+                            if (code != 3) _deferredConversation = null;
+                        }
+                    }
+                    return code;
+                });
+            }
         }
 
         public bool CancelAndJoin(TimeSpan timeout)
@@ -1136,9 +1645,11 @@ public static class StdioProtocolHost
     }
 
     private static bool TryNegotiate(IOmniClient client, WireEnvelope request, byte[]? bootstrapKey,
-        string? actionNonce, bool conversationExecutionAvailable, out WireEnvelope? response, out bool accepted)
+        string? actionNonce, bool conversationExecutionAvailable, out WireEnvelope? response, out bool accepted,
+        out bool nativeChoiceCapability)
     {
         accepted = false;
+        nativeChoiceCapability = false;
         if (request.Version != ProtocolVersions.V1 || request.MessageType != MessageTypes.Hello)
         {
             response = Error(request.MessageId, "incompatible_protocol", "No common protocol version.");
@@ -1153,8 +1664,16 @@ public static class StdioProtocolHost
             response = Error(request.MessageId, "incompatible_protocol", "No common protocol version.");
             return false;
         }
-        var supported = NegotiatedCapabilities(client, bootstrapKey, actionNonce, conversationExecutionAvailable);
-        var trustedAvailable = supported.Contains("query.humanActionScope", StringComparer.Ordinal);
+        var baseCapabilities = NegotiatedCapabilities(client, bootstrapKey, actionNonce, conversationExecutionAvailable);
+        var trustedAvailable = baseCapabilities.Contains("query.humanActionScope", StringComparer.Ordinal);
+        nativeChoiceCapability = trustedAvailable
+            && document.RootElement.TryGetProperty("capabilities", out var requestedCapabilities)
+            && requestedCapabilities.ValueKind == JsonValueKind.Array
+            && requestedCapabilities.EnumerateArray().Any(value => value.ValueKind == JsonValueKind.String
+                && value.GetString() == "command.conversation.interaction.choice.respond.user");
+        var supported = nativeChoiceCapability
+            ? NegotiatedCapabilities(client, bootstrapKey, actionNonce, conversationExecutionAvailable, nativeChoiceCapability)
+            : baseCapabilities;
         var capabilities = "[" + string.Join(",", supported.Select(Quote)) + "]";
         response = WireEnvelope.Response(request.MessageId,
             "{\"protocolVersion\":\"1.0\",\"capabilities\":" + capabilities
@@ -1164,7 +1683,7 @@ public static class StdioProtocolHost
     }
 
     private static string[] NegotiatedCapabilities(IOmniClient client, byte[]? bootstrapKey,
-        string? actionNonce, bool conversationExecutionAvailable)
+        string? actionNonce, bool conversationExecutionAvailable, bool nativeChoiceCapability = false)
     {
         IEnumerable<string> supported = StdioProtocol.SupportedCapabilities;
         if (client is not OmniServer)
@@ -1185,7 +1704,10 @@ public static class StdioProtocolHost
         if (trustedAvailable)
             supported = supported.Concat(StdioProtocol.TrustedUserActionCapabilities.Where(capability =>
                 capability is not ("command.conversation.start.user"
-                    or "command.conversation.questionnaire.respond.user") || conversationExecutionAvailable));
+                    or "command.conversation.questionnaire.respond.user"
+                    or "command.conversation.interaction.choice.respond.user"
+                    or "command.conversation.interaction.continue.user") || conversationExecutionAvailable));
+        if (nativeChoiceCapability) supported = supported.Append("query.interactionRecovery");
         return supported.Distinct(StringComparer.Ordinal).ToArray();
     }
 

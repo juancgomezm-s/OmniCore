@@ -276,6 +276,25 @@ public sealed class RunControlService
     public void Respond(SessionId session, InteractionId interaction, string optionId, string? commandId = null)
         => ResolveInteraction(session, interaction, optionId, InteractionCause.User, noClient: false, commandId);
 
+    /// <summary>Authenticated native choice response for a pending Permission or PlanApproval.</summary>
+    public void RespondNativeChoice(SessionId session, InteractionId interaction, RunId expectedRun,
+        string optionId, string commandId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(commandId);
+        var events = _store.ReadFrom(session, 1);
+        var pending = PendingInteractionEnvelopes(events).Where(item =>
+            item.Request.InteractionId == interaction).ToArray();
+        if (pending.Length != 1 || pending[0].Envelope.RunId != expectedRun)
+            throw new InteractionNotPendingException(interaction);
+        var request = pending[0].Request;
+        if (request?.Kind is not (InteractionKind.Permission or InteractionKind.PlanApproval))
+            throw new InvalidInteractionOptionException(interaction, optionId);
+        if (request.Kind == InteractionKind.Permission)
+            ValidatePendingPermission(events, session, interaction);
+        ResolveInteraction(session, interaction, optionId, InteractionCause.User, noClient: false, commandId,
+            nativeChoice: true);
+    }
+
     /// <summary>Aplica el default deny de ADR-0003 a una interacción presupuestaria sin cliente.</summary>
     public void ResolveBudgetWithoutClient(SessionId session, InteractionId interaction)
         => ResolveInteraction(session, interaction, "deny", InteractionCause.NoClient, noClient: true);
@@ -290,7 +309,7 @@ public sealed class RunControlService
     }
 
     private void ResolveInteraction(SessionId session, InteractionId interaction, string optionId,
-        InteractionCause cause, bool noClient, string? commandId = null)
+        InteractionCause cause, bool noClient, string? commandId = null, bool nativeChoice = false)
     {
         ArgumentException.ThrowIfNullOrEmpty(optionId);
         var events = _store.ReadFrom(session, 1);
@@ -397,7 +416,27 @@ public sealed class RunControlService
         }
         else if (request.Kind == InteractionKind.PlanApproval && ActiveRun(session) is { } run)
         {
-            batch.AddRange(PlanApprovalEffect(events, session, run, optionId));
+            batch.AddRange(PlanApprovalEffect(events, session, run, optionId, nativeChoice));
+        }
+        else if (nativeChoice && request.Kind == InteractionKind.Permission)
+        {
+            var source = events.Single(evt => _codecs.Decode(evt) is PermissionRequested permission
+                && permission.InteractionId == interaction);
+            var permissionRun = RunAtEvent(events, source)
+                ?? throw new InvalidInteractionOptionException(interaction, optionId);
+            var projection = RunProjection.Replay(session, permissionRun, _codecs, events);
+            var rootLane = RootLane(events, projection);
+            if (projection.State != RunState.AwaitingInput || rootLane is null || source.LaneId != rootLane
+                || PendingInteractionEnvelopes(events).Any(pending => pending.Envelope.RunId == permissionRun
+                    && pending.Envelope.LaneId == rootLane && pending.Request.InteractionId != interaction))
+                throw new InteractionNotPendingException(interaction);
+            if (optionId is not ("allow_once" or "allow_run" or "allow_workspace"))
+            {
+                var permission = (PermissionRequested)_codecs.Decode(source);
+                batch.Add(new PermissionDenied(permission.ToolCallId, "Human denied the pending tool call."));
+            }
+            batch.Add(new UserInputReceived(permissionRun, InputParts(string.Empty), null,
+                "InteractionResponse(Permission)"));
         }
         else if (request.Kind == InteractionKind.AcceptanceConfirmation && ActiveRun(session) is { } acceptanceRun)
         {
@@ -501,6 +540,40 @@ public sealed class RunControlService
         return target.RunId;
     }
 
+    private void ValidatePendingPermission(IReadOnlyList<DomainEvent> events, SessionId session,
+        InteractionId interaction)
+    {
+        var requests = events.Where(evt => evt.SessionId == session)
+            .Select(evt => (Event: evt, Payload: _codecs.Decode(evt)))
+            .Where(item => item.Payload is PermissionRequested permission
+                && permission.InteractionId == interaction)
+            .ToArray();
+        if (requests.Length != 1) throw new InteractionNotPendingException(interaction);
+        var source = requests[0].Event;
+        var permission = (PermissionRequested)requests[0].Payload;
+        var run = RunAtEvent(events, source);
+        if (run is null || source.TurnId is null) throw new InteractionNotPendingException(interaction);
+        var request = events.Where(evt => evt.SessionId == session && evt.RunId == run
+                && evt.TurnId == source.TurnId)
+            .Select(evt => (Event: evt, Payload: _codecs.Decode(evt)))
+            .SingleOrDefault(item => item.Payload is ToolCallRequested requested
+                && requested.ToolCallId == permission.ToolCallId);
+        if (request.Event is null) throw new InteractionNotPendingException(interaction);
+        var callEvents = events.Where(evt => evt.SessionId == session && evt.RunId == run
+                && evt.ToolCallId == permission.ToolCallId && evt.Sequence >= source.Sequence)
+            .Select(evt => _codecs.Decode(evt)).ToArray();
+        if (!events.Any(evt => evt.SessionId == session && evt.RunId == run && evt.TurnId == source.TurnId
+                && evt.Sequence < source.Sequence && _codecs.Decode(evt) is ToolCallPrepared prepared
+                && prepared.ToolCallId == permission.ToolCallId)
+            || callEvents.Any(payload => payload is PermissionGranted or PermissionDenied or ToolCallAuthorized
+                or ToolCallStarted or ToolCallSucceeded or ToolCallFailed or ToolCallEffectUnknown or ToolCallReconciled)
+            || events.Any(evt => _codecs.Decode(evt) is InteractionResolved resolved
+                && resolved.InteractionId == interaction)
+            || events.Any(evt => _codecs.Decode(evt) is InteractionExpired expired
+                && expired.InteractionId == interaction))
+            throw new InteractionNotPendingException(interaction);
+    }
+
     private RunId AddBudgetDenialLifecycle(IReadOnlyList<DomainEvent> events, DomainEvent requestEnvelope,
         InteractionRequested request, List<DomainEventPayload> batch)
     {
@@ -597,14 +670,14 @@ public sealed class RunControlService
 
     /// <summary>Efecto de la respuesta a un PlanApproval (ADR-0035 §4).</summary>
     public IReadOnlyList<DomainEventPayload> PlanApprovalEffect(IReadOnlyList<DomainEvent> events, SessionId session,
-        RunId run, string optionId)
+        RunId run, string optionId, bool nativeChoice = false)
     {
         var projection = RunProjection.Replay(session, run, _codecs, events);
         // Responder una InteractionRequest es input humano. ADR-0036 define que la única
         // transición AwaitingInput → Running es UserInputReceived; el optionId se conserva
         // como input canónico además de InteractionResolved.
         var resume = projection.State == RunState.AwaitingInput
-            ? new UserInputReceived(run, InputParts("PlanApproval: " + optionId), null,
+            ? new UserInputReceived(run, InputParts(nativeChoice ? string.Empty : "PlanApproval: " + optionId), null,
                 "InteractionResponse(PlanApproval)")
             : null;
         switch (optionId)
@@ -672,7 +745,8 @@ public sealed class RunControlService
                 var rootLane = RootLane(events, projection);
                 if (rootLane is null) return Array.Empty<DomainEventPayload>();
                 if (resume is not null)
-                    return new DomainEventPayload[] { resume, new RunAwaitingInput(run, rootLane) };
+                    return nativeChoice && optionId == "continue_planning"
+                        ? [resume] : [resume, new RunAwaitingInput(run, rootLane)];
                 return projection.State == RunState.Running
                     ? new DomainEventPayload[] { new RunAwaitingInput(run, rootLane) }
                     : Array.Empty<DomainEventPayload>();

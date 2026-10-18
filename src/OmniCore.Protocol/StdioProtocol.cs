@@ -66,6 +66,8 @@ public static class StdioProtocol
         "command.conversation.rename.user",
         "command.conversation.compact.user",
         "command.conversation.questionnaire.respond.user",
+        "command.conversation.interaction.choice.respond.user",
+        "command.conversation.interaction.continue.user",
         "command.session.security.set.user",
         "command.session.security.default.set.user",
         "command.run.interrupt.user",
@@ -86,6 +88,7 @@ public static class StdioProtocol
         new("sessionIdentity", "query.sessionIdentity", "Current Session and Run identity", "session", "session-read", true),
         new("sessionSecurity", "query.sessionSecurity", "Durable Session security ceiling and revision", "session", "session-read", true),
         new("sessionSecurityDefault", "query.sessionSecurityDefault", "Configured default ceiling for new Sessions", "user", "configuration-read", true),
+        new("interaction.recovery", "query.interactionRecovery", "Explicitly recoverable accepted native choices", "trusted-session", "session-read", false),
         new("workingState", "query.workingState", "Current plan and working state", "session", "session-read", true),
         new("commands", "query.commands", "Effective human command catalog", "session", "workspace-read", true),
         new("sessionSidebar", "query.sessionSidebar", "Session sidebar and persisted artifacts", "session", "session-read", true),
@@ -138,6 +141,8 @@ public static class StdioProtocol
             + ",\"safeToRefreshAutomatically\":" + (query.SafeToRefreshAutomatically ? "true" : "false")
             + ",\"availability\":" + Q(capabilities.Contains(query.Capability) ? "available" : "unsupported") + "}"));
         var commands = string.Join(",", NativeCommands.Select(command => "{\"id\":" + Q(command.Name)
+            + ",\"wireName\":" + Q(command.WireName ?? command.Name)
+            + (command.Variant is null ? string.Empty : ",\"variant\":" + Q(command.Variant))
             + ",\"capability\":" + Q(command.Capability) + ",\"authority\":" + Q(command.Authority)
             + ",\"receipt\":" + Q(command.Receipt) + ",\"summary\":" + Q(command.Summary)
             + ",\"availability\":" + Q(capabilities.Contains(command.Capability) ? "available" : "unsupported") + "}"));
@@ -161,7 +166,7 @@ public static class StdioProtocol
         or "conversation.start" or "conversation.new" or "conversation.resume" or "conversation.rename" or "conversation.compact"
         or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
         or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish"
-        or "external.memory.consent" or "interaction.respond";
+        or "external.memory.consent" or "interaction.respond" or "interaction.continue";
 
     public static IReadOnlyList<NativeCommandDescriptor> NativeCommands { get; } =
     [
@@ -173,7 +178,11 @@ public static class StdioProtocol
         new("conversation.resume", "command.conversation.resume.user", "native-confirmation+hmac+workspace-session-scope+lease+receipt", "command.result.lookup", "Resume a Session in the current workspace"),
         new("conversation.rename", "command.conversation.rename.user", "native-confirmation+hmac+session-sequence-cas+receipt", "command.result.lookup", "Set the current Session title with compare-and-set"),
         new("conversation.compact", "command.conversation.compact.user", "native-confirmation+hmac+session-scope+receipt", "command.result.lookup", "Compact the current Session context while retaining history"),
-        new("interaction.respond", "command.conversation.questionnaire.respond.user", "native-confirmation+hmac+session-run-interaction-scope+policy-revision+receipt+resume", "command.result.lookup", "Answer a pending questionnaire and continue its existing Run"),
+        new("interaction.respond", "command.conversation.questionnaire.respond.user", "native-confirmation+hmac+session-run-interaction-scope+policy-revision+receipt+resume", "command.result.lookup", "Answer a pending questionnaire and continue its existing Run")
+            { WireName = "interaction.respond", Variant = "questionnaire" },
+        new("interaction.respond.choice", "command.conversation.interaction.choice.respond.user", "native-confirmation+hmac+session-run-interaction-option+policy-revision+receipt+resume", "command.result.lookup", "Choose a server-defined option for a pending Permission or PlanApproval and continue its existing Run")
+            { WireName = "interaction.respond", Variant = "choice" },
+        new("interaction.continue", "command.conversation.interaction.continue.user", "native-confirmation+hmac+session-run-interaction-policy-revision+accepted-receipt+explicit-resume", "command.result.lookup", "Explicitly resume an accepted choice whose continuation was not started") ,
         new("session.security.set", "command.session.security.set.user", "native-confirmation+hmac+session-revision", "command.result.lookup", "Set a revision-checked Session capability ceiling"),
         new("session.security.default.set", "command.session.security.default.set.user", "native-confirmation+hmac+user-revision", "command.result.lookup", "Set the configured security ceiling for new Sessions"),
         new("run.interrupt", "command.run.interrupt.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Interrupt the active Run"),
@@ -199,4 +208,8 @@ public sealed record NativeQueryDescriptor(string Name, string Capability, strin
 
 /// <summary>Metadata for a Host command; authority remains enforced by Host policy and proof checks.</summary>
 public sealed record NativeCommandDescriptor(string Name, string Capability, string Authority,
-    string Receipt, string Summary);
+    string Receipt, string Summary)
+{
+    public string? WireName { get; init; }
+    public string? Variant { get; init; }
+}

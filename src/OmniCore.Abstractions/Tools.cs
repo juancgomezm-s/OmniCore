@@ -256,6 +256,10 @@ public sealed class ToolExecutionContext
 
     public bool IsInteractive { get; }
 
+    /// <summary>True only for a trusted native conversation connection that negotiated the
+    /// server-defined Permission choice contract. Legacy/headless callers retain NoClient Deny.</summary>
+    public bool AllowDeferredInteraction { get; }
+
     /// <summary>Host durability hook after authorization, before any tool effect; never authorizes.</summary>
     public Action<ToolIntent>? BeforeEffect { get; }
 
@@ -293,7 +297,8 @@ public sealed class ToolExecutionContext
         Func<string, bool>? isModelToolVisible = null,
         bool requiresSubstitutionAsk = false,
         ProtectedToolSubstitution? protectedSubstitution = null,
-        Func<IDisposable>? acquireSessionSecurityAdmission = null)
+        Func<IDisposable>? acquireSessionSecurityAdmission = null,
+        bool allowDeferredInteraction = false)
     {
         WorkspaceRoot = workspaceRoot;
         ReadRegistry = readRegistry;
@@ -308,6 +313,7 @@ public sealed class ToolExecutionContext
         WorkspaceWriteLeases = workspaceWriteLeases;
         IsModelToolVisible = isModelToolVisible;
         AcquireSessionSecurityAdmission = acquireSessionSecurityAdmission;
+        AllowDeferredInteraction = allowDeferredInteraction;
         ProtectedSubstitution = protectedSubstitution;
         RequiresSubstitutionAsk = requiresSubstitutionAsk || protectedSubstitution is not null;
     }
