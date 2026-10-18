@@ -342,9 +342,10 @@ public sealed class OmniCliRuntime : IDisposable
     public Task<int> ActAsync(string objective, Action<string> writeLine, CancellationToken cancellationToken) =>
         ActAsync(objective, writeLine, cancellationToken, null, null, null);
 
-    /// <summary>Host-only turn configuration; CLI callers use the provider-neutral three-argument overload.</summary>
+    /// <summary>Host-only turn configuration; trusted CLI/TUI entry points may explicitly defer an unanswered Ask.</summary>
     public Task<int> ActAsync(string objective, Action<string> writeLine, CancellationToken cancellationToken,
-        ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null)
+        ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null,
+        bool allowDeferredPermission = false)
     {
         ArgumentNullException.ThrowIfNull(writeLine);
         if (string.IsNullOrWhiteSpace(objective))
@@ -354,7 +355,10 @@ public sealed class OmniCliRuntime : IDisposable
         }
 
         return RunTurnAsync(objective, act: true, writeLine, cancellationToken, turnBoost: turnBoost,
-            turnBoostId: turnBoostId, turnBoostConsumed: turnBoostConsumed);
+            turnBoostId: turnBoostId, turnBoostConsumed: turnBoostConsumed,
+            // This is only an opt-in to leave a human decision pending; it records no answer
+            // and cannot authorize an effect. CLI/TUI entry points with a follow-up surface opt in.
+            allowDeferredNativePermission: allowDeferredPermission);
     }
 
     /// <summary>Diagnóstico de componentes de runtime en DTOs de texto para el CLI.</summary>

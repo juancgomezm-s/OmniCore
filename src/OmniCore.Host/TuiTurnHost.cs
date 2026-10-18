@@ -111,7 +111,7 @@ public sealed class TuiTurnHost : ITuiTurnHost
         try
         {
             return await _runtime.ActAsync(input, diagnostics, cancellationToken, boost?.Request, boost?.Id,
-                boost is null ? null : CompleteBoost).ConfigureAwait(false);
+                boost is null ? null : CompleteBoost, allowDeferredPermission: true).ConfigureAwait(false);
         }
         finally { ReleaseBoostReservation(boost); }
     }
