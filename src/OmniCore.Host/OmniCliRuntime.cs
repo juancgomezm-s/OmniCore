@@ -2997,61 +2997,6 @@ public sealed class OmniCliRuntime : IDisposable
                         || item is ToolCallFailed { EffectOutcome: not EffectOutcome.Unknown });
                 };
             }
-            if (weakSandboxContinuation is { } weakContinuation)
-            {
-                if (workflowStage?.Definition.Stage != WorkflowStage.Verify || delegation is null
-                    || weakContinuation.TaskId != delegation.ChildTaskId.ToString()
-                    || weakContinuation.LaneId != delegation.ChildLaneId.ToString()
-                    || weakContinuation.TurnId != FindOpenTurnContinuation(server, delegation.ChildLaneId)
-                        ?.Started.TurnId.ToString()
-                    || executor is not ScriptedToolExecutor weakResumableExecutor
-                    || !Guid.TryParseExact(weakContinuation.InteractionId, "D", out var weakInteractionGuid))
-                    throw new InvalidOperationException("The Weak sandbox continuation is not bound to the exact Verify child Turn.");
-                var weakInteraction = new InteractionId(weakInteractionGuid);
-                if (weakContinuation.OptionId == "deny")
-                {
-                    // The authenticated response already recorded PermissionDenied before ACK.
-                    // Stop this child without dispatching another provider step or effect.
-                    resumePreflightPassed = () => false;
-                }
-                else if (weakContinuation.OptionId == "consent_once")
-                {
-                    resumePreflightPassed = () =>
-                    {
-                        var scope = ExecutionScope.Current;
-                        if (scope?.RunId != runId || scope.TaskId?.ToString() != weakContinuation.TaskId
-                            || scope.LaneId?.ToString() != weakContinuation.LaneId
-                            || scope.TurnId?.ToString() != weakContinuation.TurnId
-                            || !Guid.TryParseExact(weakContinuation.TaskId, "D", out var weakTaskGuid)
-                            || !Guid.TryParseExact(weakContinuation.LaneId, "D", out var weakLaneGuid)
-                            || !Guid.TryParseExact(weakContinuation.TurnId, "D", out var weakTurnGuid)
-                            || !Guid.TryParseExact(weakContinuation.ToolCallId, "D", out var weakCallGuid))
-                            return false;
-                        var weakTaskId = new TaskId(weakTaskGuid);
-                        var weakLaneId = new LaneId(weakLaneGuid);
-                        var weakTurnId = new TurnId(weakTurnGuid);
-                        var weakCallId = new ToolCallId(weakCallGuid);
-                        var weakEvents = server.AcquireStore().ReadFrom(sessionId, 1).Where(evt => evt.RunId == runId
-                                && evt.TaskId == weakTaskId && evt.LaneId == weakLaneId && evt.TurnId == weakTurnId
-                                && evt.ToolCallId == weakCallId)
-                            .Select(evt => (Event: evt, Payload: server.AcquireCodecs().Decode(evt))).ToArray();
-                        var weakRequest = weakEvents.SingleOrDefault(item => item.Payload is InteractionRequested request
-                            && request.InteractionId == weakInteraction && request.Kind == InteractionKind.WeakSandboxConsent);
-                        var weakToolRequest = weakEvents.SingleOrDefault(item => item.Payload is ToolCallRequested);
-                        if (weakRequest.Event is null || weakToolRequest.Event is null
-                            || weakToolRequest.Event.ExecutionId is not { } weakExecutionId
-                            || weakToolRequest.Event.Sequence >= weakRequest.Event.Sequence)
-                            return false;
-                        using var weakCallScope = ExecutionScope.Begin(new ExecutionScopeState(runId,
-                            weakTaskId, weakLaneId, weakTurnId, weakCallId, weakExecutionId));
-                        var outcome = weakResumableExecutor.ResumeWeakSandboxConsent(
-                            new EventStream(server.AcquireStore(), server.AcquireCodecs(), sessionId),
-                            server.AcquireCodecs(), weakInteraction, weakContinuation.OptionId, cancellationToken);
-                        return outcome.Succeeded && outcome.Events.Any(item => item is ToolCallSucceeded);
-                    };
-                }
-                else throw new InvalidOperationException("The Weak sandbox continuation option is not supported.");
-            }
             if (delegationId is not null)
             {
                 var stageInstruction = workflowStage?.Definition.Instruction
@@ -3165,6 +3110,62 @@ public sealed class OmniCliRuntime : IDisposable
                             acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission,
                             allowDeferredWeakSandboxConsent: allowNativeWeakSandboxConsent
                                 && workflowStage?.Definition.Stage == WorkflowStage.Verify);
+                    var childResumePreflightPassed = resumePreflightPassed;
+                    if (weakSandboxContinuation is { } weakContinuation)
+                    {
+                        if (workflowStage?.Definition.Stage != WorkflowStage.Verify
+                            || weakContinuation.TaskId != work.Delegation.ChildTaskId.ToString()
+                            || weakContinuation.LaneId != work.Delegation.ChildLaneId.ToString()
+                            || weakContinuation.TurnId != FindOpenTurnContinuation(server, work.Delegation.ChildLaneId)
+                                ?.Started.TurnId.ToString()
+                            || childExecutor is not ScriptedToolExecutor weakResumableExecutor
+                            || !Guid.TryParseExact(weakContinuation.InteractionId, "D", out var weakInteractionGuid))
+                            throw new InvalidOperationException("The Weak sandbox continuation is not bound to the exact Verify child Turn.");
+                        var weakInteraction = new InteractionId(weakInteractionGuid);
+                        if (weakContinuation.OptionId == "deny")
+                        {
+                            // The authenticated response already recorded PermissionDenied before ACK.
+                            // Stop this child without dispatching another provider step or effect.
+                            childResumePreflightPassed = () => false;
+                        }
+                        else if (weakContinuation.OptionId == "consent_once")
+                        {
+                            childResumePreflightPassed = () =>
+                            {
+                                var scope = ExecutionScope.Current;
+                                if (scope?.RunId != runId || scope.TaskId?.ToString() != weakContinuation.TaskId
+                                    || scope.LaneId?.ToString() != weakContinuation.LaneId
+                                    || scope.TurnId?.ToString() != weakContinuation.TurnId
+                                    || !Guid.TryParseExact(weakContinuation.TaskId, "D", out var weakTaskGuid)
+                                    || !Guid.TryParseExact(weakContinuation.LaneId, "D", out var weakLaneGuid)
+                                    || !Guid.TryParseExact(weakContinuation.TurnId, "D", out var weakTurnGuid)
+                                    || !Guid.TryParseExact(weakContinuation.ToolCallId, "D", out var weakCallGuid))
+                                    return false;
+                                var weakTaskId = new TaskId(weakTaskGuid);
+                                var weakLaneId = new LaneId(weakLaneGuid);
+                                var weakTurnId = new TurnId(weakTurnGuid);
+                                var weakCallId = new ToolCallId(weakCallGuid);
+                                var weakEvents = server.AcquireStore().ReadFrom(sessionId, 1).Where(evt => evt.RunId == runId
+                                        && evt.TaskId == weakTaskId && evt.LaneId == weakLaneId && evt.TurnId == weakTurnId
+                                        && evt.ToolCallId == weakCallId)
+                                    .Select(evt => (Event: evt, Payload: server.AcquireCodecs().Decode(evt))).ToArray();
+                                var weakRequest = weakEvents.SingleOrDefault(item => item.Payload is InteractionRequested request
+                                    && request.InteractionId == weakInteraction && request.Kind == InteractionKind.WeakSandboxConsent);
+                                var weakToolRequest = weakEvents.SingleOrDefault(item => item.Payload is ToolCallRequested);
+                                if (weakRequest.Event is null || weakToolRequest.Event is null
+                                    || weakToolRequest.Event.ExecutionId is not { } weakExecutionId
+                                    || weakToolRequest.Event.Sequence >= weakRequest.Event.Sequence)
+                                    return false;
+                                using var weakCallScope = ExecutionScope.Begin(new ExecutionScopeState(runId,
+                                    weakTaskId, weakLaneId, weakTurnId, weakCallId, weakExecutionId));
+                                var outcome = weakResumableExecutor.ResumeWeakSandboxConsent(
+                                    new EventStream(server.AcquireStore(), server.AcquireCodecs(), sessionId),
+                                    server.AcquireCodecs(), weakInteraction, weakContinuation.OptionId, cancellationToken);
+                                return outcome.Succeeded && outcome.Events.Any(item => item is ToolCallSucceeded);
+                            };
+                        }
+                        else throw new InvalidOperationException("The Weak sandbox continuation option is not supported.");
+                    }
                     var childMaterializer = new ContextMaterializer(tokenCounter,
                         [new WorkingStateContributor(childWorkingState)]);
                     var childTurn = BuildTurn(productReasoning, reasoningResolution, childExecutor,
@@ -3172,7 +3173,7 @@ public sealed class OmniCliRuntime : IDisposable
                     var childResult = childTurn.Ask(openTurn is null ? childObjective : "", childInstruction,
                         work.Session, work.Run, work.Delegation.ChildLaneId, childWorkingState, token, "TrustedDelegation",
                         openTurn?.Started.InstructionSnapshot ?? childSnapshot,
-                        resumePreflightPassed: resumePreflightPassed);
+                        resumePreflightPassed: childResumePreflightPassed);
                     var laneGates = workspaceConfig.Settings?.Gates;
                     if (childResult.StopReason == StopReason.EndTurn && laneGates is not null
                         && (laneGates.Build is not null || laneGates.Test is not null || laneGates.Acceptance))
@@ -3242,6 +3243,45 @@ public sealed class OmniCliRuntime : IDisposable
                 if (ack.Error is not null) writeLine(CommandError(ack.Error, "cli.runtime.workflow.stopped"));
                 if (ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Deferred)
                     writeLine(Text(Localized("cli.runtime.outcome.deferred", ("reason", ExternalDiagnostic(ack.Outcome.Reason)))));
+                if (allowNativeWeakSandboxConsent
+                    && workflowStage?.Definition.Stage == WorkflowStage.Verify
+                    && delegation is not null
+                    && ack.Status == "ok"
+                    && ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted)
+                {
+                    var journal = server.AcquireStore().ReadFrom(sessionId, 1);
+                    var runEvents = journal.Where(evt => evt.RunId == runId).ToArray();
+                    var childEvents = runEvents.Where(evt => evt.TaskId == delegation.ChildTaskId
+                        && evt.LaneId == delegation.ChildLaneId).ToArray();
+                    var codecs = server.AcquireCodecs();
+                    var pendingWeak = FindPendingInteraction(childEvents, codecs,
+                        InteractionKind.WeakSandboxConsent);
+                    var pendingRequestEvent = pendingWeak is null ? null : childEvents.SingleOrDefault(evt =>
+                        codecs.Decode(evt) is InteractionRequested request
+                        && request.InteractionId == pendingWeak.InteractionId
+                        && request.Kind == InteractionKind.WeakSandboxConsent);
+                    var openChildTurn = FindOpenTurnStart(runEvents, codecs, runId, delegation.ChildLaneId);
+                    var runState = RunProjection.Replay(sessionId, runId, codecs, runEvents).State;
+                    var startedAfterRequest = pendingRequestEvent?.ToolCallId is { } pendingToolCall
+                        && childEvents.Any(evt => evt.ToolCallId == pendingToolCall
+                            && evt.Sequence > pendingRequestEvent.Sequence
+                            && codecs.Decode(evt) is ToolCallStarted);
+                    if (runState == RunState.AwaitingInput
+                        && pendingWeak is not null
+                        && pendingWeak.TaskId == delegation.ChildTaskId
+                        && pendingWeak.LaneId == delegation.ChildLaneId
+                        && pendingWeak.TurnId is { } pendingTurn
+                        && pendingTurn == openChildTurn?.TurnId
+                        && pendingRequestEvent?.ToolCallId is not null
+                        && !startedAfterRequest)
+                    {
+                        // ExecuteDelegation acknowledges a child InputRequired as Accepted.
+                        // Preserve that durable pending interaction as the command's deferred
+                        // result instead of reconciling or finishing the workflow invocation.
+                        writeLine(InputRequiredJson(pendingWeak.InteractionId, "WeakSandboxConsent"));
+                        return 3;
+                    }
+                }
                 if (workflowStage is null && ack.Status == "ok"
                     && ack.Outcome?.Kind is RuntimeCommandOutcomeKind.Accepted or RuntimeCommandOutcomeKind.NoOp)
                 {
