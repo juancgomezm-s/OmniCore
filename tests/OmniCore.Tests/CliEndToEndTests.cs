@@ -2700,7 +2700,7 @@ public sealed partial class CliEndToEndTests
     [Fact]
     public async Task Act_image_attachment_uses_the_real_act_run_and_reaches_the_http_request()
     {
-        await InIsolatedCli(async (workspace, _, config, provider) =>
+        await InIsolatedCli(async (workspace, config, _, provider) =>
         {
             File.WriteAllText(Path.Combine(config, "models.yaml"), "models:\n  scripted-model: { provider: scripted, context: 8192, maxOutput: 2048, inputModalities: [text, image] }\n");
             string? requestBody = null;
@@ -2714,8 +2714,12 @@ public sealed partial class CliEndToEndTests
             var host = new TuiTurnHost(runtime);
             var attachment = host.ImportAttachmentFromPath(imagePath);
             var diagnostics = new List<string>();
-            Assert.Equal(0, await host.ExecuteActAsync("Describe esta imagen.", [attachment], diagnostics.Add,
-                TestContext.Current.CancellationToken));
+            var exitCode = await host.ExecuteActAsync("Describe esta imagen.", [attachment], diagnostics.Add,
+                TestContext.Current.CancellationToken);
+            var eventTypes = ReadAllSessionEvents(workspace).Select(item => item.GetType().Name).ToArray();
+            Assert.True(exitCode == 0, "ACT image turn failed before or during provider execution; diagnostics="
+                + string.Join(" | ", diagnostics) + "; requests=" + provider.RequestCount
+                + "; events=" + string.Join(",", eventTypes));
 
             Assert.Equal(1, provider.RequestCount);
             Assert.NotNull(requestBody);
@@ -2747,7 +2751,7 @@ public sealed partial class CliEndToEndTests
             Assert.Equal<RunId?>(run.RunId, turnStarted.RunId);
             Assert.False(Assert.IsType<TurnStarted>(codecs.Decode(turnStarted))
                 .InstructionSnapshot!.ConversationOnly);
-        });
+        }, preserveOnFailure: true);
     }
 
     [Fact]
@@ -3442,7 +3446,8 @@ public sealed partial class CliEndToEndTests
         });
     }
 
-    private static async Task InIsolatedCli(Func<string, string, string, ScriptedHttpProvider, Task> run)
+    private static async Task InIsolatedCli(Func<string, string, string, ScriptedHttpProvider, Task> run,
+        bool preserveOnFailure = false)
     {
         var root = Path.Combine(Path.GetTempPath(), "omnicore-cli-e2e-gap-" + Guid.NewGuid().ToString("N"));
         var workspace = Path.Combine(root, "workspace");
@@ -3458,6 +3463,7 @@ public sealed partial class CliEndToEndTests
         var priorModel = Environment.GetEnvironmentVariable("OMNI_MODEL");
         var priorBaseUrl = Environment.GetEnvironmentVariable("OMNI_BASE_URL");
         OmniCliRuntime? previousRuntime = null;
+        var completed = false;
         try
         {
             Environment.CurrentDirectory = workspace;
@@ -3477,6 +3483,7 @@ public sealed partial class CliEndToEndTests
             runtime.Localize = (key, values) => Localization.Spanish().Resolve(key, values);
             previousRuntime = CliApp.UseRuntimeForTests(runtime);
             await run(workspace, config, data, provider);
+            completed = true;
         }
         finally
         {
@@ -3487,7 +3494,10 @@ public sealed partial class CliEndToEndTests
             Environment.SetEnvironmentVariable("OMNI_BASE_URL", priorBaseUrl);
             if (previousRuntime is not null) CliApp.UseRuntimeForTests(previousRuntime).Dispose();
             Environment.CurrentDirectory = previousDirectory;
-            try { Directory.Delete(root, true); } catch (IOException) { }
+            if (preserveOnFailure && !completed)
+                Console.Error.WriteLine("Preserved isolated ACT attachment fixture at " + root);
+            else
+                try { Directory.Delete(root, true); } catch (IOException) { }
         }
     }
 
