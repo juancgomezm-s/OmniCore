@@ -424,7 +424,7 @@ public sealed class ProtocolMapper
         }
     }
 
-    private static IEnumerable<string> OptionIds(string optionsJson)
+    internal static IEnumerable<string> OptionIds(string optionsJson)
     {
         var ids = new List<string>();
         try

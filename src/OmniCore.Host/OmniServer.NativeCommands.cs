@@ -265,7 +265,7 @@ public sealed partial class OmniServer
                 && _codecs.Decode(evt) is InteractionRequested request
                 && request.InteractionId == interaction && request.Kind == InteractionKind.WeakSandboxConsent);
             if (requestEvent is null || _codecs.Decode(requestEvent) is not InteractionRequested weakRequest
-                || !OptionIds(weakRequest.OptionsJson).Contains(optionId, StringComparer.Ordinal)) return false;
+                || !ProtocolMapper.OptionIds(weakRequest.OptionsJson).Contains(optionId, StringComparer.Ordinal)) return false;
             var call = history.Where(evt => evt.RunId == run && evt.TaskId == task && evt.LaneId == lane
                     && evt.TurnId == turn && evt.ToolCallId == toolCall)
                 .Select(evt => (Event: evt, Payload: _codecs.Decode(evt))).ToArray();

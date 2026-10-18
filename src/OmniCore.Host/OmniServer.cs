@@ -4024,7 +4024,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                                 new TaskId(taskGuid), new LaneId(laneGuid), new TurnId(turnGuid),
                                 new ToolCallId(toolCallGuid), new InteractionId(interactionGuid),
                                 new CommandId(invocationGuid), fields.GetValueOrDefault("optionId") ?? "",
-                                policyRevision, command.MessageId);
+                                command.MessageId);
                         }
                     }
                     else if (fields.TryGetValue("responseType", out responseType) && responseType == "choice")

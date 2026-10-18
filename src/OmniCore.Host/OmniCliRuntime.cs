@@ -3022,8 +3022,28 @@ public sealed class OmniCliRuntime : IDisposable
                         if (scope?.RunId != runId || scope.TaskId?.ToString() != weakContinuation.TaskId
                             || scope.LaneId?.ToString() != weakContinuation.LaneId
                             || scope.TurnId?.ToString() != weakContinuation.TurnId
-                            || scope.ToolCallId?.ToString() != weakContinuation.ToolCallId)
+                            || !Guid.TryParseExact(weakContinuation.TaskId, "D", out var weakTaskGuid)
+                            || !Guid.TryParseExact(weakContinuation.LaneId, "D", out var weakLaneGuid)
+                            || !Guid.TryParseExact(weakContinuation.TurnId, "D", out var weakTurnGuid)
+                            || !Guid.TryParseExact(weakContinuation.ToolCallId, "D", out var weakCallGuid))
                             return false;
+                        var weakTaskId = new TaskId(weakTaskGuid);
+                        var weakLaneId = new LaneId(weakLaneGuid);
+                        var weakTurnId = new TurnId(weakTurnGuid);
+                        var weakCallId = new ToolCallId(weakCallGuid);
+                        var weakEvents = server.AcquireStore().ReadFrom(sessionId, 1).Where(evt => evt.RunId == runId
+                                && evt.TaskId == weakTaskId && evt.LaneId == weakLaneId && evt.TurnId == weakTurnId
+                                && evt.ToolCallId == weakCallId)
+                            .Select(evt => (Event: evt, Payload: server.AcquireCodecs().Decode(evt))).ToArray();
+                        var weakRequest = weakEvents.SingleOrDefault(item => item.Payload is InteractionRequested request
+                            && request.InteractionId == weakInteraction && request.Kind == InteractionKind.WeakSandboxConsent);
+                        var weakToolRequest = weakEvents.SingleOrDefault(item => item.Payload is ToolCallRequested);
+                        if (weakRequest.Event is null || weakToolRequest.Event is null
+                            || weakToolRequest.Event.ExecutionId is not { } weakExecutionId
+                            || weakToolRequest.Event.Sequence >= weakRequest.Event.Sequence)
+                            return false;
+                        using var weakCallScope = ExecutionScope.Begin(new ExecutionScopeState(runId,
+                            weakTaskId, weakLaneId, weakTurnId, weakCallId, weakExecutionId));
                         var outcome = weakResumableExecutor.ResumeWeakSandboxConsent(
                             new EventStream(server.AcquireStore(), server.AcquireCodecs(), sessionId),
                             server.AcquireCodecs(), weakInteraction, weakContinuation.OptionId, cancellationToken);

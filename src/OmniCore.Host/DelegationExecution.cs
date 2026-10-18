@@ -699,7 +699,7 @@ public sealed partial class OmniServer
             || requestEvents[0].Sequence < continuation.ResponseFirstSequence
             || resumedEvents[0].Sequence > continuation.ResponseLastSequence
             || codecs.Decode(requestEvents[0]) is not InteractionRequested weakRequest
-            || !OptionIds(weakRequest.OptionsJson).SequenceEqual(["consent_once", "deny"], StringComparer.Ordinal))
+            || !ProtocolMapper.OptionIds(weakRequest.OptionsJson).SequenceEqual(["consent_once", "deny"], StringComparer.Ordinal))
             return false;
 
         var callEvents = scoped.Where(evt => evt.TaskId == delegation.ChildTaskId
@@ -721,7 +721,7 @@ public sealed partial class OmniServer
             .Select(evt => evt.ToolCallId).Where(id => id is not null).Distinct().ToArray();
         if (openToolCalls.Length != 1 || openToolCalls[0] != toolCall) return false;
 
-        var responseReceipt = _receiptStore?.ReadCommandReceipt(continuation.ResponseCommandId);
+        var responseReceipt = ReceiptStore?.ReadCommandReceipt(continuation.ResponseCommandId);
         return responseReceipt is { State: CommandReceiptState.Completed, OutcomeKind: "Accepted",
                 FirstSequence: not null, LastSequence: not null }
             && responseReceipt.FirstSequence == continuation.ResponseFirstSequence
