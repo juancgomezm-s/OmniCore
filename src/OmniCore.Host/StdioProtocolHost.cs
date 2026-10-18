@@ -1231,21 +1231,135 @@ public static class StdioProtocolHost
                 if (_pendingContinuation is not null || _task is { IsCompleted: false })
                     return "{\"state\":\"none\",\"choices\":[]}";
             }
+            var weakField = NativeWeakSandboxCapability
+                ? ",\"weakSandbox\":" + EncodeWeakSandboxRecovery(server)
+                : string.Empty;
             var recovery = ReadChoiceRecovery(server, null, null, null);
             if (recovery is null)
             {
                 var blocked = BlockedChoiceRecoveryReason(server);
-                return blocked is null ? "{\"state\":\"none\",\"choices\":[]}"
+                return blocked is null ? "{\"state\":\"none\",\"choices\":[]" + weakField + "}"
                     : "{\"state\":\"blocked\",\"reason\":" + Quote(blocked)
                         + ",\"runId\":" + Quote(server.LastRunId()?.ToString() ?? "")
                         + ",\"policyRevision\":" + (server.LastSessionId() is { } session
                             ? server.ReadSessionSecurityPolicy(session)?.PolicyRevision.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null"
-                            : "null") + ",\"choices\":[]}";
+                            : "null") + ",\"choices\":[]" + weakField + "}";
             }
             return "{\"state\":\"ready\",\"choices\":[{\"interactionId\":" + Quote(recovery.InteractionId)
                 + ",\"runId\":" + Quote(recovery.RunId) + ",\"policyRevision\":"
                 + recovery.PolicyRevision.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + ",\"kind\":" + Quote(recovery.Kind) + ",\"optionId\":" + Quote(recovery.OptionId) + "}]}";
+                + ",\"kind\":" + Quote(recovery.Kind) + ",\"optionId\":" + Quote(recovery.OptionId) + "}]"
+                + weakField + "}";
+        }
+
+        private static string EncodeWeakSandboxRecovery(OmniServer server)
+        {
+            var session = server.LastSessionId();
+            var run = server.LastRunId();
+            var revision = session is { } selectedSession ? server.ReadSessionSecurityPolicy(selectedSession)?.PolicyRevision : null;
+            if (session is null || run is null || revision is null || revision < 1)
+                return "{\"state\":\"none\"}";
+            var codecs = server.AcquireCodecs();
+            var events = server.AcquireStore().ReadFrom(session, 1);
+            var weakRequests = events.Where(evt => evt.RunId == run && codecs.Decode(evt) is InteractionRequested request
+                    && request.Kind == InteractionKind.WeakSandboxConsent)
+                .Select(evt => (Event: evt, Request: (InteractionRequested)codecs.Decode(evt)))
+                .Where(item => !events.Any(other => other.RunId == run
+                    && codecs.Decode(other) is InteractionResolved resolved
+                    && resolved.InteractionId == item.Request.InteractionId)
+                    && !events.Any(other => other.RunId == run
+                    && codecs.Decode(other) is InteractionExpired expired
+                    && expired.InteractionId == item.Request.InteractionId))
+                .ToArray();
+            if (weakRequests.Length == 0)
+                return EncodeAcceptedWeakSandboxRecovery(events, codecs, server, session, run);
+            if (weakRequests.Length != 1 || weakRequests[0].Event.TaskId is not { } task
+                || weakRequests[0].Event.LaneId is not { } lane || weakRequests[0].Event.TurnId is not { } turn
+                || weakRequests[0].Event.ToolCallId is not { } toolCall)
+                return "{\"state\":\"blocked\",\"reasonCode\":\"weak_consent_binding_unavailable\"}";
+
+            var request = weakRequests[0].Request;
+            if (!ProtocolMapper.OptionIds(request.OptionsJson).SequenceEqual(["consent_once", "deny"], StringComparer.Ordinal)
+                || request.SubjectJson.Length > 8_192)
+                return "{\"state\":\"blocked\",\"reasonCode\":\"weak_consent_request_invalid\"}";
+            string? executable = null;
+            string? workingDirectory = null;
+            try
+            {
+                using var subject = JsonDocument.Parse(request.SubjectJson);
+                var root = subject.RootElement;
+                if (root.ValueKind == JsonValueKind.Object
+                    && root.TryGetProperty("operation", out var operation) && operation.ValueKind == JsonValueKind.String
+                    && operation.GetString() == "sandbox.weak_consent"
+                    && root.TryGetProperty("risk", out var risk) && risk.ValueKind == JsonValueKind.String
+                    && risk.GetString() == "high"
+                    && root.TryGetProperty("executable", out var executableNode) && executableNode.ValueKind == JsonValueKind.String
+                    && root.TryGetProperty("workingDirectory", out var directoryNode) && directoryNode.ValueKind == JsonValueKind.String)
+                {
+                    executable = executableNode.GetString();
+                    workingDirectory = directoryNode.GetString();
+                }
+            }
+            catch (JsonException) { }
+            if (string.IsNullOrWhiteSpace(executable) || executable.Length > 2_048
+                || executable.Any(char.IsControl) || string.IsNullOrWhiteSpace(workingDirectory)
+                || workingDirectory.Length > 2_048 || workingDirectory.Any(char.IsControl))
+                return "{\"state\":\"blocked\",\"reasonCode\":\"weak_consent_subject_unavailable\"}";
+
+            var invocationCandidates = events.Where(evt => evt.RunId == run
+                    && codecs.Decode(evt) is NativeCommandInvocationAdmitted admitted
+                    && admitted.SessionId == session && admitted.RunId == run && admitted.Kind == "compiledWorkflow")
+                .Select(evt => ((NativeCommandInvocationAdmitted)codecs.Decode(evt)).InvocationId)
+                .Distinct().Where(invocation => server.CanResolveNativeWeakSandboxConsent(session, run, task, lane, turn,
+                    toolCall, request.InteractionId, invocation, "consent_once", revision.Value))
+                .Take(2).ToArray();
+            if (invocationCandidates.Length != 1)
+                return "{\"state\":\"blocked\",\"reasonCode\":\"weak_consent_scope_unavailable\"}";
+
+            return "{\"state\":\"pending\",\"sessionId\":" + Quote(session.ToString())
+                + ",\"runId\":" + Quote(run.ToString()) + ",\"policyRevision\":"
+                + revision.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + ",\"invocationId\":" + Quote(invocationCandidates[0].ToString())
+                + ",\"interactionId\":" + Quote(request.InteractionId.ToString())
+                + ",\"taskId\":" + Quote(task.ToString()) + ",\"laneId\":" + Quote(lane.ToString())
+                + ",\"turnId\":" + Quote(turn.ToString()) + ",\"toolCallId\":" + Quote(toolCall.ToString())
+                + ",\"executable\":" + Quote(executable) + ",\"workingDirectory\":" + Quote(workingDirectory)
+                + ",\"optionIds\":[\"consent_once\",\"deny\"]}";
+        }
+
+        private static string EncodeAcceptedWeakSandboxRecovery(IReadOnlyList<DomainEvent> events,
+            IEventCodecRegistry codecs, OmniServer server, SessionId session, RunId run)
+        {
+            foreach (var requestEvent in events.Where(evt => evt.RunId == run
+                         && codecs.Decode(evt) is InteractionRequested request
+                         && request.Kind == InteractionKind.WeakSandboxConsent))
+            {
+                if (codecs.Decode(requestEvent) is not InteractionRequested request) continue;
+                var resolvedEvent = events.SingleOrDefault(evt => evt.RunId == run
+                    && codecs.Decode(evt) is InteractionResolved resolved
+                    && resolved.InteractionId == request.InteractionId);
+                if (resolvedEvent is null || codecs.Decode(resolvedEvent) is not InteractionResolved choice
+                    || choice.Cause != InteractionCause.User || choice.IsQuestionnaire || choice.OptionId != "consent_once"
+                    || resolvedEvent.Causation is not CommandCausation responseCause) continue;
+                var receipt = server.ReceiptStore?.ReadCommandReceipt(responseCause.CommandId.ToString());
+                if (receipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                        OutcomeKind: "Accepted", ExecutionState: null or "cancelled",
+                        FirstSequence: { } first, LastSequence: { } last }
+                    || receipt.SessionId != session.ToString() || resolvedEvent.Sequence < first || resolvedEvent.Sequence > last
+                    || !events.Any(evt => evt.RunId == run && codecs.Decode(evt) is RunInteractionResumed resumed
+                        && resumed.InteractionId == request.InteractionId && resumed.CommandId == responseCause.CommandId.ToString()
+                        && evt.Sequence >= first && evt.Sequence <= last)) continue;
+                var toolEvents = events.Where(evt => evt.RunId == run && evt.TaskId == requestEvent.TaskId
+                        && evt.LaneId == requestEvent.LaneId && evt.TurnId == requestEvent.TurnId
+                        && evt.ToolCallId == requestEvent.ToolCallId && evt.Sequence > resolvedEvent.Sequence)
+                    .Select(evt => codecs.Decode(evt)).ToArray();
+                if (toolEvents.Any(item => item is ToolCallSucceeded or ToolCallFailed)) continue;
+                var reason = toolEvents.Any(item => item is ToolCallStarted or ToolCallEffectUnknown
+                    or ToolCallReconciled { Outcome: ReconciliationOutcome.Conflict or ReconciliationOutcome.Unresolvable })
+                    ? "weak_consent_effect_outcome_unknown" : "weak_consent_response_not_resumed";
+                return "{\"state\":\"blocked\",\"reasonCode\":" + Quote(reason) + "}";
+            }
+            return "{\"state\":\"none\"}";
         }
 
         private static string? BlockedChoiceRecoveryReason(OmniServer server)
