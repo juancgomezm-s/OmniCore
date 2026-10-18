@@ -4023,7 +4023,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                             control.RespondNativeWeakSandboxConsent(session, new RunId(runGuid),
                                 new TaskId(taskGuid), new LaneId(laneGuid), new TurnId(turnGuid),
                                 new ToolCallId(toolCallGuid), new InteractionId(interactionGuid),
-                                new CommandId(invocationGuid), fields.GetValueOrDefault("optionId") ?? "",
+                                fields.GetValueOrDefault("optionId") ?? "",
                                 command.MessageId);
                         }
                     }
