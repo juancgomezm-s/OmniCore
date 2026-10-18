@@ -176,6 +176,7 @@ public sealed partial class OmniServer
         AgentCapacity.Lease? capacity = null;
         IDisposable? taskPacketPublicationLease = null;
         DelegationWork? work = null;
+        WorkflowStage? traceWorkflowStage = null;
         string physicalRepositoryRoot;
         string workspaceDataRoot;
         string plannedLaneDestination;
@@ -216,6 +217,7 @@ public sealed partial class OmniServer
             var initialTask = initialFacts.OfType<TaskCreated>()
                 .Single(evt => evt.TaskId == initialDelegation.ChildTaskId);
             var workflowStage = ReadWorkflowStageForTask(session, run, initialTask.TaskId);
+            traceWorkflowStage = workflowStage?.Definition.Stage;
             VerifiedImplementationSource? verifiedImplementation = null;
             if (workflowStage?.Definition.Stage == WorkflowStage.Verify
                 && admittedProfile.Executor == AgentExecutorKind.ClaudeCode)
@@ -642,6 +644,9 @@ public sealed partial class OmniServer
         }
         catch (Exception failure)
         {
+            if (traceWorkflowStage is { } traceStage)
+                OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.GuardExit, traceStage,
+                    reason: OmniCliRuntime.TraceWorkflowExceptionReason(failure));
             if (work is not null)
             {
                 try { FailOwnedDelegation(work, capacity?.Cancellation.IsCancellationRequested == true || token.IsCancellationRequested); }
@@ -706,13 +711,21 @@ public sealed partial class OmniServer
         IReadOnlyList<DomainEventPayload> facts, string physicalRepositoryRoot, string workspaceDataRoot,
         CancellationToken cancellationToken)
     {
-        if (verifyContract.Definition.Stage != WorkflowStage.Verify) return null;
+        static VerifiedImplementationSource? Reject(OmniCliRuntime.WorkflowTraceReason reason)
+        {
+            OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.GuardExit,
+                WorkflowStage.Verify, reason: reason);
+            return null;
+        }
+
+        if (verifyContract.Definition.Stage != WorkflowStage.Verify)
+            return Reject(OmniCliRuntime.WorkflowTraceReason.VerifySourceWrongStage);
         var plan = PlanProjection.Replay(_codecs, journal);
         var verifyItem = plan.Items().SingleOrDefault(item => WorkflowStageContract.TryFromPlanItem(item, out var parsed)
             && parsed!.Task == verifyContract.Task);
         if (verifyItem is null || verifyItem.DependsOn.Count != 1
             || !WorkflowStageContract.IsCanonicalAdmission(verifyContract, verifyItem, session, run,
-                journal, _codecs, _artifacts)) return null;
+                journal, _codecs, _artifacts)) return Reject(OmniCliRuntime.WorkflowTraceReason.VerifyItemInvalid);
         var implementItem = plan.Item(verifyItem.DependsOn[0]);
         if (implementItem is null || implementItem.State != PlanItemState.Completed
             || !WorkflowStageContract.TryFromPlanItem(implementItem, out var implementContract)
@@ -721,11 +734,11 @@ public sealed partial class OmniServer
             || implementContract.Instance != verifyContract.Instance
             || implementContract.Execution is not { } implementExecution
             || !WorkflowStageContract.IsCanonicalAdmission(implementContract, implementItem, session, run,
-                journal, _codecs, _artifacts)) return null;
+                journal, _codecs, _artifacts)) return Reject(OmniCliRuntime.WorkflowTraceReason.ImplementItemInvalid);
 
         var sources = facts.OfType<LaneWorktreeCreated>()
             .Where(value => value.LaneId == implementContract.Lane && value.TaskId == implementContract.Task).ToArray();
-        if (sources.Length != 1) return null;
+        if (sources.Length != 1) return Reject(OmniCliRuntime.WorkflowTraceReason.VerifySourceEventInvalid);
         var sourceEvent = sources[0];
         var completed = journal.Select(evt => (Event: evt, Payload: _codecs.Decode(evt)))
             .Where(pair => pair.Payload is TaskCompleted item && item.TaskId == implementContract.Task).ToArray();
@@ -733,16 +746,39 @@ public sealed partial class OmniServer
             && created == sourceEvent);
         if (completed.Length != 1 || sourceEvent.ExecutionId != implementExecution
             || sourceEnvelope is null || sourceEnvelope.Sequence >= completed[0].Event.Sequence)
-            return null;
-        var loaded = new GitWorktreeStore(SystemProcessRuntime.Instance())
-            .LoadIdentityAsync(physicalRepositoryRoot, workspaceDataRoot, sourceEvent.OwnershipId,
-                cancellationToken).GetAwaiter().GetResult();
+            return Reject(OmniCliRuntime.WorkflowTraceReason.VerifySourceEventInvalid);
+        WorktreeCreateOutcome loaded;
+        try
+        {
+            loaded = new GitWorktreeStore(SystemProcessRuntime.Instance())
+                .LoadIdentityAsync(physicalRepositoryRoot, workspaceDataRoot, sourceEvent.OwnershipId,
+                    cancellationToken).GetAwaiter().GetResult();
+        }
+        catch (Exception failure) when (failure is InvalidOperationException or InvalidDataException
+            or ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.GuardExit,
+                WorkflowStage.Verify, reason: OmniCliRuntime.TraceWorkflowExceptionReason(failure));
+            throw;
+        }
         if (!loaded.Succeeded || loaded.Worktree is not { } identity || !MatchesCreatedEvent(sourceEvent, identity))
-            return null;
-        var preview = new GitWorktreeStore(SystemProcessRuntime.Instance())
-            .PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(identity), cancellationToken)
-            .GetAwaiter().GetResult();
-        if (!preview.Succeeded || preview.Preview is not { } capture) return null;
+            return Reject(OmniCliRuntime.WorkflowTraceReason.WorktreeIdentityUnavailable);
+        WorktreeIntegrationPreviewOutcome preview;
+        try
+        {
+            preview = new GitWorktreeStore(SystemProcessRuntime.Instance())
+                .PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(identity), cancellationToken)
+                .GetAwaiter().GetResult();
+        }
+        catch (Exception failure) when (failure is InvalidOperationException or InvalidDataException
+            or ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.GuardExit,
+                WorkflowStage.Verify, reason: OmniCliRuntime.TraceWorkflowExceptionReason(failure));
+            throw;
+        }
+        if (!preview.Succeeded || preview.Preview is not { } capture)
+            return Reject(OmniCliRuntime.WorkflowTraceReason.WorktreePreviewUnavailable);
         var binding = new WorkflowImplementationBinding(verifyContract.Workflow.Id,
             verifyContract.Workflow.Version, verifyContract.Instance,
             implementContract.Task, implementContract.Lane, implementExecution, identity.OwnershipId,
