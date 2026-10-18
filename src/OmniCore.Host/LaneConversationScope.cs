@@ -52,7 +52,7 @@ internal sealed class LaneConversationScope
         if (evt.RunId is not { } run) return false;
         if (_codecs.Decode(evt) is not (UserInputReceived or AssistantMessageRecorded or ModelCompleted
             or TurnStarted or ModelStepStarted or ModelStepCompleted or ToolCallRequested
-            or ToolCallSucceeded or ToolCallFailed or ToolCallRejected or TurnSteeringReceived
+            or ToolCallSucceeded or ToolCallFailed or ToolCallRejected or PermissionDenied or TurnSteeringReceived
             or TurnSteeringApplied or TurnSteeringDropped or InteractionRequested or InteractionResolved
             or ContextCheckpointRecorded)) return false;
         if (run == _run)
@@ -77,7 +77,8 @@ internal sealed class LaneConversationScope
         };
         var call = payload switch {
             ToolCallRequested e => e.ToolCallId, ToolCallSucceeded e => e.ToolCallId,
-            ToolCallFailed e => e.ToolCallId, ToolCallRejected e => e.ToolCallId, _ => evt.ToolCallId,
+            ToolCallFailed e => e.ToolCallId, ToolCallRejected e => e.ToolCallId,
+            PermissionDenied e => e.ToolCallId, _ => evt.ToolCallId,
         };
         var fromTurn = turn is not null && _turns.TryGetValue((run, turn), out var turnLane) ? turnLane : null;
         var fromCall = call is not null && _calls.TryGetValue((run, call), out var callLane) ? callLane : null;
