@@ -55,7 +55,7 @@ public sealed partial class StdioTransportTests
                     baseUrl: {{provider.BaseUrl}}
                     auth: none
                     billingMode: MeteredCurrency
-                """;
+                """.Replace("\r\n", "\n", StringComparison.Ordinal);
             File.WriteAllText(Path.Combine(config, "providers.yaml"), providersYaml, new UTF8Encoding(false));
             var modelsPath = Path.Combine(config, "models.yaml");
             var modelsYaml = """
