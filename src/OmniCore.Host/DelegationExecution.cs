@@ -728,7 +728,6 @@ public sealed partial class OmniServer
                 && prepared.Event.Sequence < authorized.Event.Sequence
                 && authorized.Event.Sequence < requestEvents[0].Sequence)
             || callEvents.Any(item => item.Event.Sequence > requestEvents[0].Sequence
-                && item.Event.Sequence < resumedEvents[0].Sequence
                 && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallFailed
                     or ToolCallEffectUnknown or ToolCallReconciled)) return false;
 
