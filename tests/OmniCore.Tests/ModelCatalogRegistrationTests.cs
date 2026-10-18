@@ -20,6 +20,69 @@ public sealed class ModelCatalogRegistrationTests
             loaded.Registry.Provider("chatgpt")));
     }
 
+    [Theory]
+    [InlineData("FullAgent", true)]
+    [InlineData("ObserveOnly", false)]
+    public void Setting_a_note_preserves_all_controls_of_the_selected_preset(string category,
+        bool expectedAllowOrchestration)
+    {
+        using var withoutNoteDirectory = new CatalogDirectory();
+        using var withNoteDirectory = new CatalogDirectory();
+        using var withoutNoteHost = ModelPolicyHost.Create(withoutNoteDirectory.Root);
+        using var withNoteHost = ModelPolicyHost.Create(withNoteDirectory.Root);
+        var cancellationToken = TestContext.Current.CancellationToken;
+        var key = new ModelPolicyKeyDto("local", "workflow-test-model");
+
+        var withoutNote = withoutNoteHost.Set(key, 0, category, null, cancellationToken);
+        var withNote = withNoteHost.Set(key, 0, category, "explicit user note", cancellationToken);
+
+        Assert.Equal("explicit user note", withNote.Note);
+        Assert.Null(withoutNote.Note);
+        Assert.Equal(expectedAllowOrchestration, withoutNote.AllowOrchestration);
+        Assert.Equal(expectedAllowOrchestration, withNote.AllowOrchestration);
+        Assert.Equal(new
+        {
+            withoutNote.Category,
+            withoutNote.ToolMode,
+            withoutNote.MaxVisibleTools,
+            withoutNote.AllowToolDiscovery,
+            CapabilityCeiling = string.Join(",", withoutNote.CapabilityCeiling),
+            withoutNote.MutationMode,
+            withoutNote.DeletePolicy,
+            withoutNote.MoveOrRenamePolicy,
+            withoutNote.MaxFilesPerTurn,
+            withoutNote.MaxChangedLinesPerTurn,
+            withoutNote.MaxRewriteRatio,
+            withoutNote.MaxModelStepsPerTurn,
+            withoutNote.MaxToolCallsPerTurn,
+            withoutNote.RequirePriorRead,
+            withoutNote.RequireExpectedVersionToken,
+            withoutNote.RequirePostEditValidation,
+            withoutNote.AllowOrchestration,
+            withoutNote.MaxGenerationSeconds,
+        }, new
+        {
+            withNote.Category,
+            withNote.ToolMode,
+            withNote.MaxVisibleTools,
+            withNote.AllowToolDiscovery,
+            CapabilityCeiling = string.Join(",", withNote.CapabilityCeiling),
+            withNote.MutationMode,
+            withNote.DeletePolicy,
+            withNote.MoveOrRenamePolicy,
+            withNote.MaxFilesPerTurn,
+            withNote.MaxChangedLinesPerTurn,
+            withNote.MaxRewriteRatio,
+            withNote.MaxModelStepsPerTurn,
+            withNote.MaxToolCallsPerTurn,
+            withNote.RequirePriorRead,
+            withNote.RequireExpectedVersionToken,
+            withNote.RequirePostEditValidation,
+            withNote.AllowOrchestration,
+            withNote.MaxGenerationSeconds,
+        });
+    }
+
     [Fact]
     public void Discovery_preserves_an_existing_explicit_output_limit()
     {

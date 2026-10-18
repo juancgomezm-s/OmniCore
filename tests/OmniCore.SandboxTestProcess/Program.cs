@@ -55,6 +55,33 @@ if (args.Length == 1 && args[0] == "extension-rpc")
     return 0;
 }
 
+if (args.Length == 3 && args[0] == "extension-rpc-write-marker")
+{
+    var request = Console.ReadLine();
+    if (request is null) return 41;
+    using var document = System.Text.Json.JsonDocument.Parse(request);
+    var rpc = document.RootElement;
+    if (rpc.GetProperty("jsonrpc").GetString() != "2.0"
+        || rpc.GetProperty("method").GetString() != "tools/call"
+        || rpc.GetProperty("id").GetString() != "1"
+        || rpc.GetProperty("params").GetProperty("name").GetString() != "mutate") return 42;
+
+    // ExtensionRpcProcessInvoker intentionally starts children in the package directory.
+    // The fixture passes the test workspace explicitly so the support process can verify
+    // and write only the exact pre-created workspace marker authorized by its manifest.
+    var workspace = Path.GetFullPath(args[1]);
+    if (!string.Equals(args[2], "m9-extension-marker.txt", StringComparison.Ordinal)) return 44;
+    var marker = Path.GetFullPath(args[2], workspace);
+    var workspacePrefix = workspace.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+        + Path.DirectorySeparatorChar;
+    if (!marker.StartsWith(workspacePrefix, OperatingSystem.IsWindows()
+        ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) return 43;
+
+    await File.WriteAllTextAsync(marker, "extension-applied");
+    Console.WriteLine("{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"extension-applied\"}]}}");
+    return 0;
+}
+
 if (args.Length == 1 && args[0] == "stdin-echo")
 {
     Console.Write(Console.ReadLine());
