@@ -1226,14 +1226,14 @@ public static class StdioProtocolHost
 
         public string EncodeChoiceRecoveryStatus(OmniServer server)
         {
-            lock (_gate)
-            {
-                if (_pendingContinuation is not null || _task is { IsCompleted: false })
-                    return "{\"state\":\"none\",\"choices\":[]}";
-            }
             var weakField = NativeWeakSandboxCapability
                 ? ",\"weakSandbox\":" + EncodeWeakSandboxRecovery(server)
                 : string.Empty;
+            lock (_gate)
+            {
+                if (_pendingContinuation is not null || _task is { IsCompleted: false })
+                    return "{\"state\":\"none\",\"choices\":[]" + weakField + "}";
+            }
             var recovery = ReadChoiceRecovery(server, null, null, null);
             if (recovery is null)
             {
