@@ -3204,10 +3204,12 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             });
             var activations = active.OrderBy(pair => pair.Key).Select(pair =>
             {
-                var current = discovered.SingleOrDefault(skill => skill.Scope == pair.Key.Scope
-                    && string.Equals(skill.Manifest.Id, pair.Key.Id, StringComparison.Ordinal));
+                var matchingSources = discovered.Where(skill => skill.Scope == pair.Key.Scope
+                    && string.Equals(skill.Manifest.Id, pair.Key.Id, StringComparison.Ordinal)).Take(2).ToArray();
+                var current = matchingSources.Length == 1 ? matchingSources[0] : null;
                 var currentPackageHash = current is null ? null : packageHashes.GetValueOrDefault(pair.Key);
-                var sourceState = current is null ? "missing"
+                var sourceState = matchingSources.Length > 1 ? "unavailable"
+                    : current is null ? "missing"
                     : currentPackageHash is null ? "unavailable"
                     : string.Equals(current.ManifestSha256, pair.Value.ManifestSha256, StringComparison.Ordinal)
                         && FixedHashEquals(currentPackageHash, pair.Value.PackageContentSha256) ? "current" : "changed";
