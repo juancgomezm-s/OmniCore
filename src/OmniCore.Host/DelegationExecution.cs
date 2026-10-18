@@ -886,8 +886,7 @@ public sealed partial class OmniServer
     {
         try
         {
-            bool RejectBinding(string code)
-                => false;
+            static bool RejectBinding(string _) => false;
             if (verifyContract.Definition.Stage != WorkflowStage.Verify
                 || verifyContract.Execution is not { } verifyExecution) return RejectBinding("stage-or-execution");
             var plan = PlanProjection.Replay(_codecs, journal.Where(evt => evt.RunId == run).ToArray());
