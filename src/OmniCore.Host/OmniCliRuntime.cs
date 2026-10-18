@@ -20,156 +20,6 @@ using System.Text.Json;
 /// <summary>Fachada tipada del runtime usada por el CLI; oculta composición y tipos internos.</summary>
 public sealed class OmniCliRuntime : IDisposable
 {
-    internal enum WorkflowTracePoint
-    {
-        ChildRunStarted,
-        RouteValidated,
-        ProfileComposed,
-        VerifyToolRegistered,
-        BeforeExecuteDelegation,
-        DelegationAck,
-        ChildRunExit,
-        WorkflowAuthorized,
-        StageFound,
-        BeforeWorkflowDelegation,
-        WorkflowAdmissionAck,
-        WorkflowDelegationExit,
-        WorkflowExit,
-        GuardExit,
-    }
-
-    internal enum WorkflowTracePhase
-    {
-        None,
-        Created,
-        Accepted,
-        Returned,
-        Resolved,
-        Failed,
-        Recorded,
-    }
-
-    internal enum WorkflowTraceReason
-    {
-        None,
-        CoordinationLimitsUnavailable,
-        DelegationUnavailable,
-        ModelProfileOrchestrationRevoked,
-        AgentOrDepthLimit,
-        ChildProfileUnavailable,
-        WorkspaceRootUnavailable,
-        WorkspaceIdentityUnavailable,
-        WorkflowVerifierRequiresNativeToolPipeline,
-        WorkflowVerifyMustBeReadOnly,
-        WorkflowImplementationOwnershipUnavailable,
-        LaneProvisioningRecoveryRequired,
-        RunNotRunning,
-        WaitingForCapacity,
-        QueuePredecessor,
-        LaneOwnershipUnavailable,
-        WorkflowImplementationChanged,
-        LaneWorktreeProvisioningFailed,
-        SupervisorUnavailable,
-        ExecutionBoundaryRequired,
-        ExecutionOwnershipUnavailable,
-        CancellationRecoveryRequired,
-        ExternalLaneRecoveryRequiresManualResolution,
-        ExecutionRecoveryRequired,
-        ChildPermissionCeilingExceedsParent,
-        ResultPublicationUnavailable,
-        CoordinationLimitsExpired,
-        WorkflowJournalInvalid,
-        WorkflowAuthorizationUnavailable,
-        WorkflowChildPending,
-        WorkflowStageFailed,
-        WorkflowStageStateUncertain,
-        VerifySourceWrongStage,
-        VerifyItemInvalid,
-        ImplementItemInvalid,
-        VerifySourceEventInvalid,
-        WorktreeIdentityUnavailable,
-        WorktreePreviewUnavailable,
-        InvalidOperationException,
-        InvalidDataException,
-        IOException,
-        UnauthorizedAccessException,
-        ArgumentException,
-        JsonException,
-        AckErrorOther,
-        Other,
-    }
-
-    [System.Diagnostics.Conditional("DEBUG")]
-    internal static void TraceWorkflow(WorkflowTracePoint point, WorkflowStage? stage = null,
-        RuntimeCommandOutcomeKind? outcome = null, WorkflowTraceReason reason = WorkflowTraceReason.None,
-        int? exitCode = null, WorkflowTracePhase phase = WorkflowTracePhase.None)
-    {
-#if DEBUG
-        if (!string.Equals(Environment.GetEnvironmentVariable("OMNICORE_WORKFLOW_TRACE"), "1",
-                StringComparison.Ordinal)) return;
-        try
-        {
-            Console.Error.WriteLine("OMNICORE_WORKFLOW_TRACE"
-                + " point=" + point.ToString()
-                + " stage=" + (stage?.ToString() ?? "None")
-                + " outcome=" + (outcome?.ToString() ?? "None")
-                + " reason=" + reason.ToString()
-                + " phase=" + phase.ToString()
-                + " exit=" + (exitCode?.ToString(CultureInfo.InvariantCulture) ?? "None"));
-            Console.Error.Flush();
-        }
-        catch (IOException) { }
-#endif
-    }
-
-    internal static WorkflowTraceReason TraceWorkflowReason(string? reason) => reason switch
-    {
-        "CoordinationLimitsUnavailable" => WorkflowTraceReason.CoordinationLimitsUnavailable,
-        "DelegationUnavailable" => WorkflowTraceReason.DelegationUnavailable,
-        "ModelProfileOrchestrationRevoked" => WorkflowTraceReason.ModelProfileOrchestrationRevoked,
-        "AgentOrDepthLimit" => WorkflowTraceReason.AgentOrDepthLimit,
-        "ChildProfileUnavailable" => WorkflowTraceReason.ChildProfileUnavailable,
-        "WorkspaceRootUnavailable" => WorkflowTraceReason.WorkspaceRootUnavailable,
-        "WorkspaceIdentityUnavailable" => WorkflowTraceReason.WorkspaceIdentityUnavailable,
-        "WorkflowVerifierRequiresNativeToolPipeline" => WorkflowTraceReason.WorkflowVerifierRequiresNativeToolPipeline,
-        "WorkflowVerifyMustBeReadOnly" => WorkflowTraceReason.WorkflowVerifyMustBeReadOnly,
-        "WorkflowImplementationOwnershipUnavailable" => WorkflowTraceReason.WorkflowImplementationOwnershipUnavailable,
-        "LaneProvisioningRecoveryRequired" => WorkflowTraceReason.LaneProvisioningRecoveryRequired,
-        "RunNotRunning" => WorkflowTraceReason.RunNotRunning,
-        "WaitingForCapacity" => WorkflowTraceReason.WaitingForCapacity,
-        "QueuePredecessor" => WorkflowTraceReason.QueuePredecessor,
-        "LaneOwnershipUnavailable" => WorkflowTraceReason.LaneOwnershipUnavailable,
-        "WorkflowImplementationChanged" => WorkflowTraceReason.WorkflowImplementationChanged,
-        "LaneWorktreeProvisioningFailed" => WorkflowTraceReason.LaneWorktreeProvisioningFailed,
-        "SupervisorUnavailable" => WorkflowTraceReason.SupervisorUnavailable,
-        "ExecutionBoundaryRequired" => WorkflowTraceReason.ExecutionBoundaryRequired,
-        "ExecutionOwnershipUnavailable" => WorkflowTraceReason.ExecutionOwnershipUnavailable,
-        "CancellationRecoveryRequired" => WorkflowTraceReason.CancellationRecoveryRequired,
-        "ExternalLaneRecoveryRequiresManualResolution" => WorkflowTraceReason.ExternalLaneRecoveryRequiresManualResolution,
-        "ExecutionRecoveryRequired" => WorkflowTraceReason.ExecutionRecoveryRequired,
-        "ChildPermissionCeilingExceedsParent" => WorkflowTraceReason.ChildPermissionCeilingExceedsParent,
-        "ResultPublicationUnavailable" => WorkflowTraceReason.ResultPublicationUnavailable,
-        "CoordinationLimitsExpired" => WorkflowTraceReason.CoordinationLimitsExpired,
-        "workflow.journal_invalid" => WorkflowTraceReason.WorkflowJournalInvalid,
-        "workflow.authorization_unavailable" => WorkflowTraceReason.WorkflowAuthorizationUnavailable,
-        "workflow.child_pending" => WorkflowTraceReason.WorkflowChildPending,
-        "workflow.stage_failed" => WorkflowTraceReason.WorkflowStageFailed,
-        "workflow.stage_state_uncertain" => WorkflowTraceReason.WorkflowStageStateUncertain,
-        null => WorkflowTraceReason.None,
-        _ => WorkflowTraceReason.Other,
-    };
-
-    internal static WorkflowTraceReason TraceWorkflowExceptionReason(Exception exception) => exception switch
-    {
-        InvalidOperationException => WorkflowTraceReason.InvalidOperationException,
-        InvalidDataException => WorkflowTraceReason.InvalidDataException,
-        IOException => WorkflowTraceReason.IOException,
-        UnauthorizedAccessException => WorkflowTraceReason.UnauthorizedAccessException,
-        ArgumentException => WorkflowTraceReason.ArgumentException,
-        JsonException => WorkflowTraceReason.JsonException,
-        _ => WorkflowTraceReason.Other,
-    };
-
     public sealed record ProjectExtensionConsentResult(bool Granted, string ExtensionId,
         IReadOnlyList<string> Capabilities);
     private readonly string _workspaceRoot;
@@ -241,17 +91,6 @@ public sealed class OmniCliRuntime : IDisposable
             throw new LocalServerConfigurationChangedException(selectedProvider.Id);
         }
     }
-
-    internal static WorkflowTracePhase TraceWorkflowPhase(PreM6RecordPhase? phase) => phase switch
-    {
-        PreM6RecordPhase.Created => WorkflowTracePhase.Created,
-        PreM6RecordPhase.Accepted => WorkflowTracePhase.Accepted,
-        PreM6RecordPhase.Returned => WorkflowTracePhase.Returned,
-        PreM6RecordPhase.Resolved => WorkflowTracePhase.Resolved,
-        PreM6RecordPhase.Failed => WorkflowTracePhase.Failed,
-        PreM6RecordPhase.Recorded => WorkflowTracePhase.Recorded,
-        _ => WorkflowTracePhase.None,
-    };
 
     private static bool SameProviderConfiguration(ProviderDescriptor selected, ProviderDescriptor current)
     {
@@ -1402,7 +1241,7 @@ public sealed class OmniCliRuntime : IDisposable
         if (Interlocked.CompareExchange(ref _turnExecutionActive, 1, 0) != 0)
         {
             diagnostics(Text(LocalizedText.Of("cli.runtime.workflow.busy")));
-            return TraceWorkflowExit(1, WorkflowTraceReason.Other);
+            return 1;
         }
         try
         {
@@ -1413,7 +1252,6 @@ public sealed class OmniCliRuntime : IDisposable
             server.EnsureWorkflowCompletionGate(authorization);
             server.ReconcileWorkflowPlanProgress(authorization.Session, authorization.Run);
             var context = server.ReadWorkflowContext(authorization);
-            TraceWorkflow(WorkflowTracePoint.WorkflowAuthorized);
             PlanItemId? previousPlanItem = null;
             long previousCompletionSequence = 0;
             var stages = Enum.GetValues<WorkflowStage>();
@@ -1434,7 +1272,7 @@ public sealed class OmniCliRuntime : IDisposable
                     if (tokenBudget < 8_448)
                     {
                         diagnostics(Text(LocalizedText.Of("cli.runtime.workflow.budget")));
-                        return TraceWorkflowExit(1, WorkflowTraceReason.Other, stage);
+                        return 1;
                     }
                     var selected = ContextInheritanceService.SelectableItems(server.AcquireArtifacts(),
                         server.AcquireCodecs(), context.Journal.Single(evt => evt.EventId == context.RootSnapshotEvent))
@@ -1445,21 +1283,18 @@ public sealed class OmniCliRuntime : IDisposable
                     var wire = WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"delegation.create\",\"request\":"
                         + AgentsJson.EncodeRequest(delegationRequest) + "}");
                     var ack = server.CreateWorkflowClient(stageAuthorization).Send(wire, token);
-                    TraceWorkflow(WorkflowTracePoint.WorkflowAdmissionAck, stage, ack.Outcome?.Kind,
-                        TraceWorkflowReason(ack.Outcome?.Reason ?? ack.Error));
                     if (ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted)
                     {
                         diagnostics(Text(Localized("cli.runtime.workflow.admission", ("reason",
                             ExternalDiagnostic(ack.Error is null ? ack.Outcome?.Reason
                                 ?? "authority, capacity, permission, route, or budget unavailable" : ResolveWire(ack.Error))))));
-                        return TraceWorkflowExit(1, TraceWorkflowReason(ack.Outcome?.Reason ?? ack.Error), stage);
+                        return 1;
                     }
                     found = server.FindWorkflowStage(stageAuthorization, stage);
                     if (found is null) throw new InvalidDataException("Workflow admission returned without a durable Plan stage.");
                 }
 
                 var (planItem, delegation, phase) = found.Value;
-                TraceWorkflow(WorkflowTracePoint.StageFound, stage, phase: TraceWorkflowPhase(phase));
                 if (planItem.State == PlanItemState.Completed
                     && phase is PreM6RecordPhase.Resolved or PreM6RecordPhase.Recorded)
                 {
@@ -1474,7 +1309,7 @@ public sealed class OmniCliRuntime : IDisposable
                         diagnostics(Text(Localized("cli.runtime.workflow.invalid_phase",
                             ("stage", WorkflowStageLabel(stage.ToString())),
                             ("phase", WorkflowPhaseLabel(phase.ToString())))));
-                        return TraceWorkflowExit(1, WorkflowTraceReason.WorkflowStageStateUncertain, stage);
+                        return 1;
                     }
                     previousPlanItem = planItem.Id;
                     previousCompletionSequence = completion.Sequence;
@@ -1483,15 +1318,13 @@ public sealed class OmniCliRuntime : IDisposable
                 if (phase == PreM6RecordPhase.Failed)
                 {
                     diagnostics(Text(Localized("cli.runtime.workflow.failed_phase", ("stage", WorkflowStageLabel(stage.ToString())))));
-                    return TraceWorkflowExit(1, WorkflowTraceReason.WorkflowStageFailed, stage);
+                    return 1;
                 }
                 if (phase == PreM6RecordPhase.Created)
                 {
-                    TraceWorkflow(WorkflowTracePoint.BeforeWorkflowDelegation, stage);
                     var code = await DelegationAsync(delegation.DelegationId.ToString(), diagnostics, token)
                         .ConfigureAwait(false);
-                    TraceWorkflow(WorkflowTracePoint.WorkflowDelegationExit, stage, exitCode: code);
-                    if (code != 0) return TraceWorkflowExit(code, WorkflowTraceReason.Other, stage);
+                    if (code != 0) return code;
                     server.ReconcileWorkflowPlanProgress(authorization.Session, authorization.Run);
                     found = server.FindWorkflowStage(stageAuthorization, stage);
                     if (found is null) throw new InvalidDataException("Workflow stage disappeared after dispatch.");
@@ -1500,13 +1333,13 @@ public sealed class OmniCliRuntime : IDisposable
                 if (phase == PreM6RecordPhase.Accepted)
                 {
                     diagnostics(Text(Localized("cli.runtime.workflow.accepted_wait", ("stage", WorkflowStageLabel(stage.ToString())))));
-                    return TraceWorkflowExit(3, WorkflowTraceReason.WorkflowChildPending, stage);
+                    return 3;
                 }
                 if (phase != PreM6RecordPhase.Returned)
                 {
                     diagnostics(Text(Localized("cli.runtime.workflow.invalid_phase", ("stage", WorkflowStageLabel(stage.ToString())),
                         ("phase", WorkflowPhaseLabel(phase.ToString())))));
-                    return TraceWorkflowExit(1, WorkflowTraceReason.WorkflowStageStateUncertain, stage);
+                    return 1;
                 }
 
                 var supervisor = new InProcessSupervisor(
@@ -1515,7 +1348,7 @@ public sealed class OmniCliRuntime : IDisposable
                 if (stageContract.Execution is not { } returnedExecution)
                 {
                     diagnostics(Text(Localized("cli.runtime.workflow.binding_wait", ("stage", WorkflowStageLabel(stage.ToString())))));
-                    return TraceWorkflowExit(3, WorkflowTraceReason.WorkflowChildPending, stage);
+                    return 3;
                 }
                 supervisor.ReviewReturnedResults(token, returnedExecution);
                 server.ReconcileWorkflowPlanProgress(authorization.Session, authorization.Run);
@@ -1531,7 +1364,7 @@ public sealed class OmniCliRuntime : IDisposable
                 if (dispositions.Length == 0)
                 {
                     diagnostics(Text(Localized("cli.runtime.workflow.disposition_wait", ("stage", WorkflowStageLabel(stage.ToString())))));
-                    return TraceWorkflowExit(3, WorkflowTraceReason.WorkflowChildPending, stage);
+                    return 3;
                 }
                 var disposition = dispositions[^1].Disposition;
                 if (disposition.Outcome != ResultDispositionOutcome.Accepted || planItem.State != PlanItemState.Completed)
@@ -1539,7 +1372,7 @@ public sealed class OmniCliRuntime : IDisposable
                     diagnostics(Text(Localized("cli.runtime.workflow.disposition_failed", ("stage", WorkflowStageLabel(stage.ToString())),
                         ("outcome", DispositionLabel(disposition.Outcome.ToString())),
                         ("reason", ExternalDiagnostic(disposition.Reason)))));
-                    return TraceWorkflowExit(1, WorkflowTraceReason.WorkflowStageFailed, stage);
+                    return 1;
                 }
                 var evidence = WorkflowStageEvidenceEvaluator.Evaluate(contract, authorization.Session,
                     authorization.Run, contract.Task, contract.Lane, contract.Execution!, own,
@@ -1549,7 +1382,7 @@ public sealed class OmniCliRuntime : IDisposable
                     server.RecordWorkflowGateEvidenceDebt(authorization, contract, contract.Execution!);
                     diagnostics(Text(Localized("cli.runtime.workflow.evidence_failed", ("stage", WorkflowStageLabel(stage.ToString())),
                         ("reason", ExternalDiagnostic(evidence.Reason)))));
-                    return TraceWorkflowExit(1, WorkflowTraceReason.WorkflowStageFailed, stage);
+                    return 1;
                 }
                 if (contract.Definition.Stage == WorkflowStage.Verify
                     && !server.VerifyAcceptedImplementationBinding(contract, authorization.Session,
@@ -1557,7 +1390,7 @@ public sealed class OmniCliRuntime : IDisposable
                 {
                     server.RecordWorkflowGateEvidenceDebt(authorization, contract, contract.Execution!);
                     diagnostics(Text(Localized("host.workflow.verify_binding", [])));
-                    return TraceWorkflowExit(1, WorkflowTraceReason.WorkflowStageFailed, stage);
+                    return 1;
                 }
                 if (contract.Definition.Stage == WorkflowStage.Implement)
                 {
@@ -1567,14 +1400,14 @@ public sealed class OmniCliRuntime : IDisposable
                     if (implementationWorktree is null)
                     {
                         diagnostics(Text(Localized("host.workflow.implementation_owner", [])));
-                        return TraceWorkflowExit(1, WorkflowTraceReason.WorkflowStageStateUncertain, stage);
+                        return 1;
                     }
                     var preview = await WorktreePreviewHost.PreviewAsync(_workspaceRoot,
                         implementationWorktree.OwnershipId, token).ConfigureAwait(false);
                     if (!preview.Succeeded)
                     {
                         diagnostics(Text(Localized("host.workflow.manual_recovery", [])));
-                        return TraceWorkflowExit(3, WorkflowTraceReason.WorkflowChildPending, stage);
+                        return 3;
                     }
                 }
                 previousPlanItem = planItem.Id;
@@ -1584,34 +1417,20 @@ public sealed class OmniCliRuntime : IDisposable
             BeforeWorkflowCompletionGateForTests?.Invoke(server, authorization);
             server.CompleteWorkflowCompletionGate(authorization);
             diagnostics(Text(Localized("host.workflow.completed", [])));
-            return TraceWorkflowExit(0, WorkflowTraceReason.None);
+            return 0;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
             diagnostics(Text(LocalizedText.Of("cli.runtime.workflow.cancelled")));
-            return TraceWorkflowExit(130, WorkflowTraceReason.Other);
+            return 130;
         }
         catch (Exception failure) when (failure is InvalidOperationException or InvalidDataException
             or ArgumentException or KeyNotFoundException)
         {
             diagnostics(Text(Localized("cli.runtime.workflow.stopped", ("diagnostic", ExternalDiagnostic(failure.Message)))));
-            return TraceWorkflowExit(1, TraceWorkflowExceptionReason(failure));
+            return 1;
         }
         finally { Volatile.Write(ref _turnExecutionActive, 0); }
-    }
-
-    private static int TraceWorkflowExit(int exitCode, WorkflowTraceReason reason, WorkflowStage? stage = null)
-    {
-        TraceWorkflow(WorkflowTracePoint.WorkflowExit, stage, reason: reason, exitCode: exitCode);
-        return exitCode;
-    }
-
-    private static int TraceWorkflowGuardExit(WorkflowStage? stage, int exitCode)
-    {
-        if (stage is not null)
-            TraceWorkflow(WorkflowTracePoint.GuardExit, stage, reason: WorkflowTraceReason.Other,
-                exitCode: exitCode);
-        return exitCode;
     }
 
     private static long? WorkflowStageTokenBudget(OmniServer server, RunId run,
@@ -2032,7 +1851,6 @@ public sealed class OmniCliRuntime : IDisposable
         IReadOnlyList<ArtifactRef>? attachments = null, PersistedConversationCommand? persistedContinuation = null,
         bool allowDeferredNativePermission = false, bool exposeForcedInitialToolInDiscoveredMode = false)
     {
-        WorkflowStage? traceStage = null;
         if (turnBoost is null && turnBoostId is not null)
             throw new ArgumentException("A reasoning boost id requires a boost request.", nameof(turnBoostId));
         if (turnBoost is not null && turnBoostId is null) turnBoostId = Guid.NewGuid();
@@ -2044,7 +1862,7 @@ public sealed class OmniCliRuntime : IDisposable
         catch (ConfigValidationException ex)
         {
             WriteDiagnostics(ex.Diagnostics, writeLine);
-            return TraceWorkflowGuardExit(traceStage, 1);
+            return 1;
         }
         var registry = loaded.Registry;
         // Un permissions.yaml inválido falla cerrado antes de cualquier Turn, con su línea y columna.
@@ -2052,7 +1870,7 @@ public sealed class OmniCliRuntime : IDisposable
         catch (ConfigValidationException ex)
         {
             WriteDiagnostics(ex.Diagnostics, writeLine);
-            return TraceWorkflowGuardExit(traceStage, 1);
+            return 1;
         }
         var trust = new WorkspaceTrustStore(paths).IsTrusted(workspaceRoot);
         using var policyService = OmniHost.CreateModelPolicyService(null);
@@ -2072,7 +1890,7 @@ public sealed class OmniCliRuntime : IDisposable
         catch (ConfigValidationException ex)
         {
             WriteDiagnostics(ex.Diagnostics, writeLine);
-            return TraceWorkflowGuardExit(traceStage, 1);
+            return 1;
         }
         var locale = UiLocaleCodes.NormalizeOrDefault(UiLocale);
         if (!_providerDeprecationShown && loaded.DeprecationNotices is { Count: > 0 } notices)
@@ -2092,7 +1910,7 @@ public sealed class OmniCliRuntime : IDisposable
         {
             writeLine(Text(LocalizedText.Of(server.SessionSecurityRecoveryBlocked
                 ? "session_security.recovery_blocked" : "session_writer_owned")));
-            return TraceWorkflowGuardExit(traceStage, TurnExitCodes.SessionBusy);
+            return TurnExitCodes.SessionBusy;
         }
         var delegation = delegationId is null ? null : server.ReadCurrentDelegation(delegationId);
         var principalSourceStep = delegation is null ? null : server.SourceModelStepForDelegation(delegation);
@@ -2102,9 +1920,6 @@ public sealed class OmniCliRuntime : IDisposable
                 == AgentExecutorKind.ClaudeCode;
         WorkflowStageContract? workflowStage = delegation is null ? null
             : server.ReadWorkflowStageForTask(server.LastSessionId()!, server.LastRunId()!, delegation.ChildTaskId);
-        traceStage = workflowStage?.Definition.Stage;
-        if (workflowStage is not null)
-            TraceWorkflow(WorkflowTracePoint.ChildRunStarted, workflowStage.Definition.Stage);
         // Explicit resume handlers (quota/route consent) own their semantics. Otherwise, only
         // restore the snapshot when the engine itself will continue an exact open Turn.
         var openTurn = routingResume is null && !externalDelegation
@@ -2138,7 +1953,7 @@ public sealed class OmniCliRuntime : IDisposable
             if (modelDefinition is null)
             {
                 writeLine(Text(LocalizedText.Of("cli.runtime.model.unregistered")));
-                return TraceWorkflowGuardExit(traceStage, 1);
+                return 1;
             }
         }
         else if (explicitModel is null)
@@ -2158,7 +1973,7 @@ public sealed class OmniCliRuntime : IDisposable
             {
                 writeLine(Text(Localized("cli.routing.none", ("reasons",
                     string.Join(", ", ex.Rejected.Select(r => r.ModelId + " [" + r.RouteId.Value + "]: " + r.Reason))))));
-                return TraceWorkflowGuardExit(traceStage, 1);
+                return 1;
             }
         }
         var providerDescription = modelDefinition is null ? null : registry.Provider(modelDefinition.ProviderId);
@@ -2178,14 +1993,14 @@ public sealed class OmniCliRuntime : IDisposable
                     explicitModel = storedSelection.ModelId;
                 if (!catalog.Any(m => m.Id == (explicitModel ?? modelDefinition?.Id)))
                 {
-                    writeLine(Text(LocalizedText.Of("cli.runtime.model.none"))); return TraceWorkflowGuardExit(traceStage, 1);
+                    writeLine(Text(LocalizedText.Of("cli.runtime.model.none"))); return 1;
                 }
                 loaded = OmniHost.LoadUserConfiguration(paths); registry = loaded.Registry;
                 modelDefinition = registry.Model(explicitModel ?? modelDefinition!.Id);
                 providerDescription = modelDefinition is null ? null : registry.Provider(modelDefinition.ProviderId);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception) { writeLine(Text(LocalizedText.Of("cli.runtime.model.catalog_failed"))); return TraceWorkflowGuardExit(traceStage, 1); }
+            catch (Exception) { writeLine(Text(LocalizedText.Of("cli.runtime.model.catalog_failed"))); return 1; }
         }
         var secretRef = providerDescription?.Auth.SecretRef ?? "qwen";
         var model = modelDefinition?.Id ?? explicitModel;
@@ -2197,7 +2012,7 @@ public sealed class OmniCliRuntime : IDisposable
             if (!exactPrincipalRoute.Id.Equals(principalRouteId))
             {
                 writeLine(Text(LocalizedText.Of("cli.runtime.resume.route_mismatch")));
-                return TraceWorkflowGuardExit(traceStage, 1);
+                return 1;
             }
             selectedRoute = exactPrincipalRoute;
         }
@@ -2206,21 +2021,21 @@ public sealed class OmniCliRuntime : IDisposable
             var unsupported = new ProviderFamilyNotSupportedException(providerDescription.Family);
             writeLine(Text(Localized("cli.runtime.command.error", ("command", act ? "act" : "ask"),
                 ("message", Text(unsupported.UserMessage)))));
-            return TraceWorkflowGuardExit(traceStage, 1);
+            return 1;
         }
         if (openTurn?.LastStep is { } priorStep)
         {
             if (modelDefinition is null || modelDefinition.Id != priorStep.ModelId)
             {
                 writeLine(Text(LocalizedText.Of("cli.runtime.resume.model_mismatch")));
-                return TraceWorkflowGuardExit(traceStage, 1);
+                return 1;
             }
 
             var priorRoute = selectedRoute ?? ModelRoutingHost.RouteFor(modelDefinition, providerDescription, baseUrl);
             if (priorStep.RouteId is { } priorRouteId && !priorRoute.Id.Equals(priorRouteId))
             {
                 writeLine(Text(LocalizedText.Of("cli.runtime.resume.route_mismatch")));
-                return TraceWorkflowGuardExit(traceStage, 1);
+                return 1;
             }
             selectedRoute = priorRoute;
         }
@@ -2237,13 +2052,13 @@ public sealed class OmniCliRuntime : IDisposable
             {
                 writeLine(Text(Localized("cli.runtime.command.error", ("command", act ? "act" : "ask"),
                     ("message", Text(ex.UserMessage)))));
-                return TraceWorkflowGuardExit(traceStage, 1);
+                return 1;
             }
             if (key is null)
             {
                 writeLine(Text(Localized("cli.runtime.credential.missing",
                     ("command", act ? "act" : "ask"))));
-                return TraceWorkflowGuardExit(traceStage, 1);
+                return 1;
             }
         }
 
@@ -2277,12 +2092,12 @@ public sealed class OmniCliRuntime : IDisposable
             {
                 writeLine(Text(Localized("cli.runtime.command.error", ("command", act ? "act" : "ask"),
                     ("message", Text(ex.UserMessage)))));
-                return TraceWorkflowGuardExit(traceStage, 1);
+                return 1;
             }
             catch (LocalServerConfigurationChangedException ex)
             {
                 writeLine(Text(Localized("localServer.configurationChanged", ("provider", ex.ProviderId))));
-                return TraceWorkflowGuardExit(traceStage, 1);
+                return 1;
             }
         }
 
@@ -2295,7 +2110,7 @@ public sealed class OmniCliRuntime : IDisposable
             {
                 writeLine(Text(Localized("cli.runtime.command.error", ("command", act ? "act" : "ask"),
                     ("message", Text(noModel?.UserMessage ?? LocalizedText.Of("models.noneConfigured"))))));
-                return TraceWorkflowGuardExit(traceStage, 1);
+                return 1;
             }
 
             // ADR-0044 §6: sin TTY ni cliente interactivo no hay onboarding posible. Un modelo sin clasificar
@@ -2322,7 +2137,7 @@ public sealed class OmniCliRuntime : IDisposable
                     var required = new ModelPolicyRequiredException(externalKey, ModelToolCapability.PatchExisting);
                     writeLine(Text(Localized("cli.runtime.command.error", ("command", "act"),
                         ("message", Text(required.UserMessage)))));
-                    return TraceWorkflowGuardExit(traceStage, 1);
+                    return 1;
                 }
             }
             if ((act && delegation is null || delegatedWriter)
@@ -2333,7 +2148,7 @@ public sealed class OmniCliRuntime : IDisposable
                     ModelPolicyKey.For(modelDefinition?.ProviderId ?? "local", model), ModelToolCapability.PatchExisting);
                 writeLine(Text(Localized("cli.runtime.command.error", ("command", "act"),
                     ("message", Text(required.UserMessage)))));
-                return TraceWorkflowGuardExit(traceStage, 1);
+                return 1;
             }
 
             server.ConfigureNewSessionRoutingPolicy(ModelRoutingHost.InitialSessionPolicy(loaded,
@@ -2345,7 +2160,7 @@ public sealed class OmniCliRuntime : IDisposable
                     || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(exactSession) != exactRun)
                 {
                     writeLine(Text(LocalizedText.Of("cli.runtime.resume.session_changed")));
-                    return TraceWorkflowGuardExit(traceStage, 1);
+                    return 1;
                 }
             }
             string workingState = "";
@@ -2354,7 +2169,7 @@ public sealed class OmniCliRuntime : IDisposable
                 && server.AcquireStore().ReadFrom(routingResume.Session, pendingInput + 1)
                     .Any(evt => evt.RunId == routingResume.Run
                         && server.AcquireCodecs().Decode(evt) is TurnStarted or UserInputReceived or ModelEscalationRequested or FollowUpQueued))
-            { writeLine(Text(LocalizedText.Of("cli.runtime.resume.no_consent"))); return TraceWorkflowGuardExit(traceStage, 1); }
+            { writeLine(Text(LocalizedText.Of("cli.runtime.resume.no_consent"))); return 1; }
             if (delegation is not null)
             {
                 // No root conversation input, working-state copy or new Run when dispatching a child.
@@ -2366,7 +2181,7 @@ public sealed class OmniCliRuntime : IDisposable
                 var resumeRun = routingResume?.Run ?? openTurn!.Run;
                 if (server.LastSessionId() != resumeSession || server.LastRunId() != resumeRun
                     || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(resumeSession) != resumeRun)
-                { writeLine(Text(LocalizedText.Of("cli.runtime.resume.session_changed"))); return TraceWorkflowGuardExit(traceStage, 1); }
+                { writeLine(Text(LocalizedText.Of("cli.runtime.resume.session_changed"))); return 1; }
                 workingState = ReadWorkingState(server, cancellationToken);
             }
             else if (conversationOnly)
@@ -2401,7 +2216,7 @@ public sealed class OmniCliRuntime : IDisposable
                         writeLine(Text(Localized("cli.runtime.run.startFailed", ("error",
                             start.Error is null ? Text(LocalizedText.Of("cli.runtime.run.startFailed.fallback"))
                                 : ResolveWire(start.Error)))));
-                        return TraceWorkflowGuardExit(traceStage, 1);
+                        return 1;
                     }
 
                     workingState = ReadWorkingState(server, cancellationToken);
@@ -2416,7 +2231,7 @@ public sealed class OmniCliRuntime : IDisposable
                     writeLine(Text(Localized("cli.runtime.run.actCreateFailed", ("error",
                         ack.Error is null ? Text(LocalizedText.Of("cli.runtime.run.actCreateFailed.fallback"))
                             : ResolveWire(ack.Error)))));
-                    return TraceWorkflowGuardExit(traceStage, 1);
+                    return 1;
                 }
             }
 
@@ -2434,7 +2249,7 @@ public sealed class OmniCliRuntime : IDisposable
                 || followUp.Ack.Outcome?.Kind is not (RuntimeCommandOutcomeKind.Accepted or RuntimeCommandOutcomeKind.NoOp))
             {
                 writeLine(CommandError(followUp.Ack.Error, "cli.runtime.followup.rejected"));
-                return TraceWorkflowGuardExit(traceStage, 1);
+                return 1;
             }
 
             if (followUp.Queued)
@@ -2452,10 +2267,8 @@ public sealed class OmniCliRuntime : IDisposable
                 || route.Profile != providerDescription?.Profile)
             {
                 writeLine(Text(LocalizedText.Of("cli.runtime.route.mismatch")));
-                return TraceWorkflowGuardExit(traceStage, 1);
+                return 1;
             }
-            if (workflowStage is not null)
-                TraceWorkflow(WorkflowTracePoint.RouteValidated, workflowStage.Definition.Stage);
             var selectedMaxOutputTokens = ModelRoutingHost.OutputTokenLimit(runtimeModel, providerDescription);
             usableContext = ContextCompaction.EffectiveInputBudget(usableContext, runtimeModel.ContextWindow, selectedMaxOutputTokens);
             if (usableContext <= 0) throw new InvalidOperationException("The model output reservation leaves no input context.");
@@ -2482,7 +2295,7 @@ public sealed class OmniCliRuntime : IDisposable
                 catch (InvalidOperationException)
                 {
                     writeLine(Text(Localized("host.reasoning.route_conflict", [])));
-                    return TraceWorkflowGuardExit(traceStage, 1);
+                    return 1;
                 }
             }
             var modeAuthority = server.CurrentModeAuthority();
@@ -2493,7 +2306,7 @@ public sealed class OmniCliRuntime : IDisposable
             catch (InvalidOperationException)
             {
                 writeLine(Text(Localized("host.reasoning.route_conflict", [])));
-                return TraceWorkflowGuardExit(traceStage, 1);
+                return 1;
             }
             if (reasoningResolution?.Source == ReasoningSelectionSource.UltraCode
                 && reasoningResolution.AppliedRequest is null)
@@ -2505,7 +2318,7 @@ public sealed class OmniCliRuntime : IDisposable
                 var pending = ModelEscalationConsentReplay.FindGrantedPending(server.AcquireStore().ReadFrom(sessionId, 1),
                     server.AcquireCodecs(), sessionId, runId, model, route, providerDescription?.BillingMode ?? BillingMode.Unknown);
                 if (pending?.InteractionId != routingResume.Interaction)
-                { writeLine(Text(LocalizedText.Of("cli.runtime.resume.consent_stale"))); return TraceWorkflowGuardExit(traceStage, 1); }
+                { writeLine(Text(LocalizedText.Of("cli.runtime.resume.consent_stale"))); return 1; }
                 EnsureEscalationRecorded(server.RecordModelEscalationApproved(sessionId,
                     new ModelEscalationApproved(runId, model, "interaction:" + pending.InteractionId,
                         pending.Request.TurnId, pending.Request.LaneId)));
@@ -2514,7 +2327,7 @@ public sealed class OmniCliRuntime : IDisposable
                     server.AcquireCodecs(), sessionId)?.Allows(route, providerDescription?.BillingMode ?? BillingMode.Unknown) != true)
             {
                 writeLine(Text(LocalizedText.Of("cli.runtime.route.child_deferred")));
-                return TraceWorkflowGuardExit(traceStage, 1);
+                return 1;
             }
             var admittedInput = conversationOnly && routingResume is null && openTurn is null
                 ? server.AcquireStore().ReadFrom(sessionId, 1).LastOrDefault(evt => evt.RunId == runId
@@ -2524,7 +2337,7 @@ public sealed class OmniCliRuntime : IDisposable
             if (delegation is null && AuthorizeRouteForInvocation(server, sessionId, runId, route,
                     providerDescription?.BillingMode ?? BillingMode.Unknown, writeLine, locale,
                     continuation: routeContinuation) is { } routeCode)
-                return TraceWorkflowGuardExit(traceStage, routeCode);
+                return routeCode;
             var routingPolicy = SessionRoutingAuthorization.Read(server.AcquireStore().ReadFrom(sessionId, 1),
                 server.AcquireCodecs(), sessionId)!;
             var hasSessionSpendCap = loaded.Settings?.Budget?.Session is not null
@@ -2583,16 +2396,16 @@ public sealed class OmniCliRuntime : IDisposable
                 if (selected is null)
                 {
                     writeLine(InputRequiredJson(pendingApproval));
-                    return TraceWorkflowGuardExit(traceStage, 3);
+                    return 3;
                 }
                 var ack = server.RespondToInteraction(pendingApproval, selected);
                 if (ack.Status != "ok")
                 {
                     writeLine(Text(Localized("cli.runtime.interaction.error", ("kind", "PlanApproval"),
                         ("error", ack.Error ?? Text(LocalizedText.Of("cli.runtime.interaction.fallback"))))));
-                    return TraceWorkflowGuardExit(traceStage, 1);
+                    return 1;
                 }
-                if (selected is "approve_only" or "reject") return TraceWorkflowGuardExit(traceStage, 0);
+                if (selected is "approve_only" or "reject") return 0;
             }
             var artifacts = OmniHost.CreateArtifactStore(workspaceData);
             if (!act && _localServers.IsManagedRunning(providerDescription?.Id))
@@ -2650,7 +2463,7 @@ public sealed class OmniCliRuntime : IDisposable
                 {
                     writeLine(Text(Localized("cli.runtime.extension.compose_failed",
                         ("diagnostic", ExternalDiagnostic(failure.Message)))));
-                    return TraceWorkflowGuardExit(traceStage, 1);
+                    return 1;
                 }
             }
             if (delegation is null && executingAct && _workspaceRoot is not null)
@@ -2670,7 +2483,7 @@ public sealed class OmniCliRuntime : IDisposable
                 {
                     writeLine(Text(Localized("cli.runtime.extension.compose_failed",
                         ("diagnostic", ExternalDiagnostic(failure.Message)))));
-                    return TraceWorkflowGuardExit(traceStage, 1);
+                    return 1;
                 }
             }
             if (delegation is null)
@@ -2693,7 +2506,7 @@ public sealed class OmniCliRuntime : IDisposable
                 {
                     writeLine(Text(Localized("cli.runtime.mcp.compose_failed",
                         ("diagnostic", ExternalDiagnostic(failure.Message)))));
-                    return TraceWorkflowGuardExit(traceStage, 1);
+                    return 1;
                 }
             }
             if (workflowStage?.Definition.Stage == WorkflowStage.Verify)
@@ -2702,7 +2515,7 @@ public sealed class OmniCliRuntime : IDisposable
                 if (processTool is null)
                 {
                     writeLine(Text(LocalizedText.Of("cli.runtime.workflow.process_permission")));
-                    return TraceWorkflowGuardExit(traceStage, 1);
+                    return 1;
                 }
                 try
                 {
@@ -2711,13 +2524,12 @@ public sealed class OmniCliRuntime : IDisposable
                         workflowStage.VerifyExecutable!, JsonDocument.Parse(workflowStage.VerifyArgvJson!)
                             .RootElement.EnumerateArray().Select(value => value.GetString()!).ToArray(),
                         workflowStage.VerifyCwd!);
-                    TraceWorkflow(WorkflowTracePoint.VerifyToolRegistered, workflowStage.Definition.Stage);
                 }
                 catch (Exception failure) when (failure is ArgumentException or InvalidOperationException)
                 {
                     writeLine(Text(Localized("cli.runtime.workflow.verifier_failed",
                         ("diagnostic", ExternalDiagnostic(failure.Message)))));
-                    return TraceWorkflowGuardExit(traceStage, 1);
+                    return 1;
                 }
             }
             // Dynamic extension/MCP tools are registered above. Build the per-Run capability
@@ -2726,8 +2538,6 @@ public sealed class OmniCliRuntime : IDisposable
             // which registered capabilities are eligible.
             var boundary = CreateBoundary(effectivePolicy, workspaceRoot, hostTools.Catalog(),
                 () => server.ReadSessionSecurityPolicy(sessionId));
-            if (workflowStage is not null)
-                TraceWorkflow(WorkflowTracePoint.ProfileComposed, workflowStage.Definition.Stage);
             if (delegation is null) server.ConfigureToolDiagnostics(hostTools.Catalog(), boundary, effectiveMode);
             var restrictions = workspaceConfig.Settings?.PermissionRestrictions;
             var audit = new FileAuditSink(paths.DataDirectory);
@@ -3114,12 +2924,9 @@ public sealed class OmniCliRuntime : IDisposable
                             workflowStage.VerifyExecutable!, JsonDocument.Parse(workflowStage.VerifyArgvJson!)
                                 .RootElement.EnumerateArray().Select(value => value.GetString()!).ToArray(),
                             workflowStage.VerifyCwd!, verifyCwd);
-                        TraceWorkflow(WorkflowTracePoint.VerifyToolRegistered, workflowStage.Definition.Stage);
                         childBoundary = CreateBoundary(effectivePolicy, laneRoot, childTools.Catalog(),
                             () => server.ReadSessionSecurityPolicy(work.Session));
                     }
-                    if (workflowStage is not null)
-                        TraceWorkflow(WorkflowTracePoint.ProfileComposed, workflowStage.Definition.Stage);
                     var childExecutor = childRequiresActTools
                         ? OmniHost.CreateActExecutor(childTools.Catalog(), laneRoot, childBoundary,
                             restrictions, work.Run, audit, interactionResponder, interactive, artifacts,
@@ -3135,10 +2942,6 @@ public sealed class OmniCliRuntime : IDisposable
                     var childResult = childTurn.Ask(openTurn is null ? childObjective : "", childInstruction,
                         work.Session, work.Run, work.Delegation.ChildLaneId, childWorkingState, token, "TrustedDelegation",
                         openTurn?.Started.InstructionSnapshot ?? childSnapshot);
-                    if (workflowStage is not null)
-                        TraceWorkflow(WorkflowTracePoint.ChildRunExit, workflowStage.Definition.Stage,
-                            exitCode: childResult.StopReason == StopReason.EndTurn ? 0
-                                : childResult.StopReason == StopReason.InputRequired ? 3 : 1);
                     var laneGates = workspaceConfig.Settings?.Gates;
                     if (childResult.StopReason == StopReason.EndTurn && laneGates is not null
                         && (laneGates.Build is not null || laneGates.Test is not null || laneGates.Acceptance))
@@ -3177,13 +2980,8 @@ public sealed class OmniCliRuntime : IDisposable
                                 ?? childResult.FailureDiagnostic ?? "no diagnostic was returned"))))));
                     return childResult;
                 }
-                if (workflowStage is not null)
-                    TraceWorkflow(WorkflowTracePoint.BeforeExecuteDelegation, workflowStage.Definition.Stage);
                 var ack = server.ExecuteDelegation(delegationId, ExecuteLane,
                     cancellationToken, waitForCapacity: true);
-                if (workflowStage is not null)
-                    TraceWorkflow(WorkflowTracePoint.DelegationAck, workflowStage.Definition.Stage,
-                        ack.Outcome?.Kind, TraceWorkflowReason(ack.Outcome?.Reason ?? ack.Error));
                 if (ack.Status == "ok" && ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted
                     && FindPendingLaneAcceptance(server.AcquireStore(), server.AcquireCodecs(), sessionId, runId,
                         server.ReadCurrentDelegation(delegationId).ChildTaskId,
@@ -3192,26 +2990,23 @@ public sealed class OmniCliRuntime : IDisposable
                     if (!interactive)
                     {
                         writeLine(InputRequiredJson(laneAcceptance.InteractionId, "AcceptanceConfirmation"));
-                        return TraceWorkflowGuardExit(traceStage, 3);
+                        return 3;
                     }
                     var selected = ReadAcceptanceOption(writeLine, locale);
                     if (selected is null)
                     {
                         writeLine(InputRequiredJson(laneAcceptance.InteractionId, "AcceptanceConfirmation"));
-                        return TraceWorkflowGuardExit(traceStage, 3);
+                        return 3;
                     }
                     var response = server.RespondToInteraction(laneAcceptance.InteractionId, selected);
                     if (response.Status != "ok")
                     {
                         writeLine(Text(Localized("cli.runtime.interaction.error", ("kind", "AcceptanceConfirmation"),
                             ("error", response.Error ?? Text(LocalizedText.Of("cli.runtime.interaction.fallback"))))));
-                        return TraceWorkflowGuardExit(traceStage, 1);
+                        return 1;
                     }
                     ack = server.ExecuteDelegation(delegationId, ExecuteLane,
                         cancellationToken, waitForCapacity: true);
-                    if (workflowStage is not null)
-                        TraceWorkflow(WorkflowTracePoint.DelegationAck, workflowStage.Definition.Stage,
-                            ack.Outcome?.Kind, TraceWorkflowReason(ack.Outcome?.Reason ?? ack.Error));
                 }
                 if (ack.Error is not null) writeLine(CommandError(ack.Error, "cli.runtime.workflow.stopped"));
                 if (ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Deferred)
@@ -3308,7 +3103,7 @@ public sealed class OmniCliRuntime : IDisposable
                         {
                             writeLine(Text(Localized("cli.runtime.outcome.deferred",
                                 ("reason", ExternalDiagnostic(continuationExecution.Ack.Outcome.Reason)))));
-                            return TraceWorkflowGuardExit(traceStage, 1);
+                            return 1;
                         }
                         if (continuationExecution.Failure is { } continuationFailure)
                             throw continuationFailure;
@@ -3323,11 +3118,10 @@ public sealed class OmniCliRuntime : IDisposable
                             ? "DelegationReturnPendingOrUncertain" : "DelegationReturnContinuationFailed";
                         writeLine(Text(Localized("cli.runtime.outcome.deferred",
                             ("reason", ExternalDiagnostic(reason)))));
-                        return TraceWorkflowGuardExit(traceStage, 1);
+                        return 1;
                     }
                 }
-                return TraceWorkflowGuardExit(traceStage,
-                    ack.Status == "ok" && ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Deferred ? 0 : 1);
+                return ack.Status == "ok" && ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Deferred ? 0 : 1;
             }
             var instructionSnapshot = routingResume?.InstructionSnapshot ?? openTurn?.Started.InstructionSnapshot;
             instructionSnapshot?.Validate();
@@ -3343,7 +3137,7 @@ public sealed class OmniCliRuntime : IDisposable
                     || QuestionnaireResponder(pendingQuestion.InteractionId, pendingSchema!) is null)
                 {
                     writeLine(InputRequiredJson(pendingQuestion.InteractionId, "Question"));
-                    return TraceWorkflowGuardExit(traceStage, 3);
+                    return 3;
                 }
             }
             ExplorerTurn? BuildSubsequentActTurn(int _, IToolExecutor? subsequentExecutor = null,
@@ -3398,11 +3192,11 @@ public sealed class OmniCliRuntime : IDisposable
 
             var result = askExecution.Result;
             if (HandlePendingBudget(server, sessionId, runId, interactive, writeLine) is { } budgetCode)
-                return TraceWorkflowGuardExit(traceStage, budgetCode);
+                return budgetCode;
             if (result.StopReason == StopReason.InputRequired && result.PendingInteractionId is { } questionId)
             {
                 writeLine(InputRequiredJson(questionId, "Question"));
-                return TraceWorkflowGuardExit(traceStage, 3);
+                return 3;
             }
             foreach (ExplorerTurn.ToolUseTrace trace in result.ToolCalls)
             {
@@ -3420,33 +3214,33 @@ public sealed class OmniCliRuntime : IDisposable
                 ("tokens", (result.Usage.Input + result.Usage.Output).ToString()))));
             if (HandleStallOutcome(server, sessionId, result.Stall, interactionResponder, interactive, writeLine)
                 is { } stallCode)
-                return TraceWorkflowGuardExit(traceStage, stallCode);
+                return stallCode;
             if (result.StopReason == StopReason.ContextOverflow &&
                 await TryEscalateAsync(loaded, model!, route.Id, usableContext, prompt, act, writeLine, cancellationToken) is { } escalatedCode)
-                return TraceWorkflowGuardExit(traceStage, escalatedCode);
+                return escalatedCode;
 
-            if (!ReportModePolicyTransition(askExecution.PolicyTransition, writeLine)) return TraceWorkflowGuardExit(traceStage, 1);
+            if (!ReportModePolicyTransition(askExecution.PolicyTransition, writeLine)) return 1;
 
             if (!executingAct && OmniServer.RequirePlanApprovalInteraction(server.RequestPlanApprovalCommand()) is { } approvalId)
             {
                 if (Console.IsInputRedirected)
                 {
                     writeLine(InputRequiredJson(approvalId));
-                    return TraceWorkflowGuardExit(traceStage, 3);
+                    return 3;
                 }
 
                 var optionId = ReadPlanApprovalOption(writeLine, locale);
                 if (optionId is null)
                 {
                     writeLine(InputRequiredJson(approvalId));
-                    return TraceWorkflowGuardExit(traceStage, 3);
+                    return 3;
                 }
                 var response = server.RespondToInteraction(approvalId, optionId);
                 if (response.Status != "ok")
                 {
                     writeLine(Text(Localized("cli.runtime.interaction.error", ("kind", "PlanApproval"),
                         ("error", response.Error ?? Text(LocalizedText.Of("cli.runtime.interaction.fallback"))))));
-                    return TraceWorkflowGuardExit(traceStage, 1);
+                    return 1;
                 }
                 if (optionId == "approve_execute")
                 {
@@ -3468,7 +3262,7 @@ public sealed class OmniCliRuntime : IDisposable
                         actExecutor, actTools.Catalog());
                     var approvedState = ReadWorkingState(server, cancellationToken);
                     stallEscalationLoop = true;
-                    return TraceWorkflowGuardExit(traceStage, RunActLoop(actTurn, writeLine, "Execute the approved plan for: " + prompt,
+                    return RunActLoop(actTurn, writeLine, "Execute the approved plan for: " + prompt,
                         approvedInstruction,
                         sessionId, runId, laneId, approvedState, workspaceConfig.Settings?.Gates, restrictions,
                         server, artifacts, audit, interactionResponder, interactive, locale, cancellationToken,
@@ -3477,7 +3271,7 @@ public sealed class OmniCliRuntime : IDisposable
                         skillValidators: skillCompletionValidators,
                         skillValidatorFactory: () => skillCompletionValidators,
                         subsequentTurnFactory: attempt => BuildSubsequentActTurn(attempt,
-                            actExecutor, actTools.Catalog())));
+                            actExecutor, actTools.Catalog()));
                 }
             }
 
@@ -3486,15 +3280,11 @@ public sealed class OmniCliRuntime : IDisposable
                 writeLine(Text(LocalizedText.Of("cli.runtime.act.noResponse")));
             }
 
-            if (result.StopReason is StopReason.Error or StopReason.Cancelled) return TraceWorkflowGuardExit(traceStage, 1);
-            return TraceWorkflowGuardExit(traceStage,
-                act && (result.StopReason != StopReason.EndTurn || result.FinalText is null) ? 1 : 0);
+            if (result.StopReason is StopReason.Error or StopReason.Cancelled) return 1;
+            return act && (result.StopReason != StopReason.EndTurn || result.FinalText is null) ? 1 : 0;
         }
         catch (Exception ex)
         {
-            if (workflowStage is not null)
-                TraceWorkflow(WorkflowTracePoint.ChildRunExit, workflowStage.Definition.Stage,
-                    reason: TraceWorkflowExceptionReason(ex), exitCode: 1);
             writeLine(Text(Localized("cli.runtime.error", ("command", act ? "act" : "ask"),
                 ("message", RedactSensitive(ex.Message ?? "?")), ("type", ex.GetType().Name))));
             if (!act && ex.StackTrace is not null)
@@ -3503,7 +3293,7 @@ public sealed class OmniCliRuntime : IDisposable
                     ("frames", string.Join("|", ex.StackTrace.Take(6))))));
             }
 
-            return TraceWorkflowGuardExit(traceStage, 1);
+            return 1;
         }
     }
 
