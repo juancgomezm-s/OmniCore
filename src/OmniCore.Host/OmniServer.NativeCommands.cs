@@ -560,9 +560,19 @@ public sealed partial class OmniServer
         if (started is null) return false;
 
         var runEvents = history.Where(evt => evt.RunId == run).ToArray();
-        var runProjection = RunProjection.Replay(admission.SessionId, run, _codecs, runEvents);
-        if (runProjection.RootTask is not { } rootTask) return false;
-        var rootLane = LaneProjection.Replay(_codecs, runEvents).ForTask(rootTask).SingleOrDefault()?.Id;
+        LaneId? rootLane;
+        try
+        {
+            var runProjection = RunProjection.Replay(admission.SessionId, run, _codecs, runEvents);
+            if (runProjection.RootTask is not { } rootTask) return false;
+            var rootLanes = LaneProjection.Replay(_codecs, runEvents).ForTask(rootTask);
+            if (rootLanes.Count != 1) return false;
+            rootLane = rootLanes[0].Id;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
         if (rootLane is null) return false;
         var turnStarted = runEvents.FirstOrDefault(evt => evt.Sequence > started.Sequence
             && evt.LaneId == rootLane && _codecs.Decode(evt) is TurnStarted turn
