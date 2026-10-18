@@ -791,7 +791,8 @@ public static class StdioProtocolHost
             if (!payload.RootElement.TryGetProperty("sessionId", out var selectedSession)
                 || selectedSession.ValueKind != JsonValueKind.String || selectedSession.GetString() != expectedSession.Value
                 || !Revision("expectedSelectionRevision", out _)
-                || !Revision("expectedRoutingPolicyRevision", out var routingRevision) || routingRevision < 1
+                || !Revision("expectedRoutingPolicyRevision", out var routingRevision)
+                || (commandName == "session.model.route.respond" && routingRevision < 1)
                 || !Revision("expectedSessionPolicyRevision", out var securityRevision) || securityRevision < 1
                 || !payload.RootElement.TryGetProperty("catalogRevision", out var catalogRevision)
                 || catalogRevision.ValueKind != JsonValueKind.String

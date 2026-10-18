@@ -2769,13 +2769,13 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 ?? throw new InvalidOperationException(candidates.Length == 0
                     ? "No eligible skill has that id in the selected scope."
                     : "Skill activation is ambiguous or shadowed by a sealed or more trusted source.");
-            if (fields.ContainsKey("expectedRevision") || fields.ContainsKey("expectedManifestSha256"))
+            if ((fields.ContainsKey("expectedRevision") || fields.ContainsKey("expectedManifestSha256"))
                 && (!fields.TryGetValue("expectedManifestSha256", out var expectedHash)
                     || !string.Equals(expectedHash, selected.ManifestSha256, StringComparison.Ordinal)))
                 return new CommandAck(command.MessageId, "error", "sessionPreferences.error.selection_changed",
                     RuntimeCommandOutcome.Rejected());
             var loadedSkill = loader.Activate(selected); // Explicit activation validates the bounded package.
-            if (fields.ContainsKey("expectedRevision") || fields.ContainsKey("expectedPackageContentSha256"))
+            if ((fields.ContainsKey("expectedRevision") || fields.ContainsKey("expectedPackageContentSha256"))
                 && (!fields.TryGetValue("expectedPackageContentSha256", out var expectedPackageHash)
                     || !FixedHashEquals(expectedPackageHash,
                         loadedSkill.PackageContentSha256 ?? loadedSkill.ContentSha256)))
