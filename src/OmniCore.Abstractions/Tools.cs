@@ -35,6 +35,22 @@ public interface IReconcilableTool
 /// must stop before the durable start barrier, never fall through to an untracked effect.</summary>
 public interface IRequiresReconciliationTool : IReconcilableTool { }
 
+/// <summary>
+/// A process-backed tool may request one explicit, per-call sandbox downgrade before the
+/// durable effect-start barrier. Implementations must return a request only when they can prove
+/// that Strong is unavailable before any launcher was invoked. This interface never grants the
+/// downgrade; the host still needs a native, scope-bound human choice.
+/// </summary>
+public interface IWeakSandboxConsentPreflightTool
+{
+    WeakSandboxConsentPreflight? CheckWeakSandboxConsentPreflight(ToolIntent intent,
+        ToolPreparationContext preparation, CancellationToken cancellationToken);
+}
+
+/// <summary>Bounded display details for a pre-effect, one-call Weak sandbox choice.</summary>
+public sealed record WeakSandboxConsentPreflight(string Executable, string WorkingDirectory,
+    string ReasonCode);
+
 /// <summary>Workspace-scoped exclusion for every authorized tool that declares write claims.
 /// Host implementations key by the canonical physical workspace root and share across sessions.</summary>
 public interface IWorkspaceWriteLeaseProvider
@@ -260,6 +276,14 @@ public sealed class ToolExecutionContext
     /// server-defined Permission choice contract. Legacy/headless callers retain NoClient Deny.</summary>
     public bool AllowDeferredInteraction { get; }
 
+    /// <summary>Only a trusted native workflow Verify lane may suspend a proven Strong-unavailable
+    /// launch before ToolCallStarted and expose a one-call Weak consent interaction.</summary>
+    public bool AllowDeferredWeakSandboxConsent { get; }
+
+    /// <summary>Set only by rehydrating the exact accepted WeakSandboxConsent interaction for this
+    /// ToolCall. It authorizes one launch attempt and is never persisted as a grant.</summary>
+    public bool WeakSandboxConsentForThisCall { get; }
+
     /// <summary>Host durability hook after authorization, before any tool effect; never authorizes.</summary>
     public Action<ToolIntent>? BeforeEffect { get; }
 
@@ -298,7 +322,9 @@ public sealed class ToolExecutionContext
         bool requiresSubstitutionAsk = false,
         ProtectedToolSubstitution? protectedSubstitution = null,
         Func<IDisposable>? acquireSessionSecurityAdmission = null,
-        bool allowDeferredInteraction = false)
+        bool allowDeferredInteraction = false,
+        bool allowDeferredWeakSandboxConsent = false,
+        bool weakSandboxConsentForThisCall = false)
     {
         WorkspaceRoot = workspaceRoot;
         ReadRegistry = readRegistry;
@@ -314,6 +340,8 @@ public sealed class ToolExecutionContext
         IsModelToolVisible = isModelToolVisible;
         AcquireSessionSecurityAdmission = acquireSessionSecurityAdmission;
         AllowDeferredInteraction = allowDeferredInteraction;
+        AllowDeferredWeakSandboxConsent = allowDeferredWeakSandboxConsent;
+        WeakSandboxConsentForThisCall = weakSandboxConsentForThisCall;
         ProtectedSubstitution = protectedSubstitution;
         RequiresSubstitutionAsk = requiresSubstitutionAsk || protectedSubstitution is not null;
     }

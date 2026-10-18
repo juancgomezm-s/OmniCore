@@ -385,7 +385,7 @@ public sealed class OmniHost
         Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null,
         IReadOnlyList<IToolIntentBoundary>? additionalBoundaries = null, IArtifactStore? artifacts = null,
         Func<IDisposable>? acquireSessionSecurityAdmission = null,
-        bool allowDeferredInteraction = false)
+        bool allowDeferredInteraction = false, bool allowDeferredWeakSandboxConsent = false)
     {
         var policy = CreateGrantAwarePolicy(OmniCore.Domain.RunMode.Plan, projectRestrictions, workspaceRoot, runId);
         IPermissionPolicy effectivePolicy = agentProfile is null ? policy
@@ -393,7 +393,8 @@ public sealed class OmniHost
         return new ScriptedToolExecutor(catalog, effectivePolicy, workspaceRoot, boundary, null, null, false,
             artifacts: artifacts, receiveMailbox: receiveMailbox, additionalBoundaries: additionalBoundaries,
             acquireSessionSecurityAdmission: acquireSessionSecurityAdmission,
-            allowDeferredInteraction: allowDeferredInteraction);
+            allowDeferredInteraction: allowDeferredInteraction,
+            allowDeferredWeakSandboxConsent: allowDeferredWeakSandboxConsent);
     }
 
     public static ScriptedPermissionPolicy CreateProjectRestrictionPolicy(OmniCore.Domain.RunMode mode,
@@ -456,7 +457,7 @@ public sealed class OmniHost
         Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null,
         IReadOnlyList<IToolIntentBoundary>? additionalBoundaries = null,
         Func<IDisposable>? acquireSessionSecurityAdmission = null,
-        bool allowDeferredInteraction = false)
+        bool allowDeferredInteraction = false, bool allowDeferredWeakSandboxConsent = false)
     {
         ArgumentNullException.ThrowIfNull(boundary);
         var policy = CreateGrantAwarePolicy(OmniCore.Domain.RunMode.Act, projectRestrictions, workspaceRoot, runId, audit);
@@ -468,7 +469,8 @@ public sealed class OmniHost
             receiveMailbox: receiveMailbox, workspaceWriteLeases: HostWorkspaceWriteLeases.Shared,
             additionalBoundaries: additionalBoundaries,
             acquireSessionSecurityAdmission: acquireSessionSecurityAdmission,
-            allowDeferredInteraction: allowDeferredInteraction);
+            allowDeferredInteraction: allowDeferredInteraction,
+            allowDeferredWeakSandboxConsent: allowDeferredWeakSandboxConsent);
     }
 
     /// <summary>Política de permisos con grants aislados por WorkspaceId y auditados en user data.</summary>

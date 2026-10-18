@@ -8,7 +8,7 @@ using OmniCore.Sandbox;
 /// Weak/None. Strong is never silently downgraded: when unavailable the caller must obtain the
 /// session's WeakSandboxConsent and explicitly retry with Weak.
 /// </summary>
-public sealed class PlatformSandboxProcessLauncher : ISandboxProcessLauncher
+public sealed class PlatformSandboxProcessLauncher : ISandboxProcessLauncher, IStrongSandboxPreflight
 {
     private readonly ISandboxProcessLauncher _basicLauncher;
     private readonly ISandboxProcessLauncher? _strongLauncher;
@@ -36,26 +36,48 @@ public sealed class PlatformSandboxProcessLauncher : ISandboxProcessLauncher
         if (launch.RequestedStrength != SandboxStrength.Strong)
             return await _basicLauncher.StartAsync(launch, cancellationToken).ConfigureAwait(false);
 
-        var capabilities = _capabilities.Probe();
-        if (!capabilities.StrongAvailable || _strongLauncher is null)
+        var preflight = CheckStrongAvailability(launch);
+        if (preflight == StrongSandboxPreflightResult.UnavailableBeforeLaunch)
         {
+            var capabilities = _capabilities.Probe();
             var reason = capabilities.StrongUnavailableReason ?? "Strong process isolation is unavailable on this platform.";
-            throw new NotSupportedException(reason);
+            throw new StrongSandboxUnavailableBeforeLaunchException(reason);
         }
+        if (preflight == StrongSandboxPreflightResult.Unknown)
+            throw new StrongSandboxLaunchOutcomeUnknownException(
+                "Strong process isolation availability could not be established before launch.",
+                new InvalidOperationException("sandbox_preflight_unknown"));
 
         try
         {
             return await _strongLauncher.StartAsync(launch, cancellationToken).ConfigureAwait(false);
         }
-        catch (UnauthorizedAccessException exception)
+        catch (Exception exception) when (exception is not StrongSandboxUnavailableBeforeLaunchException
+            and not StrongSandboxLaunchOutcomeUnknownException)
         {
-            throw new NotSupportedException(
-                "Strong process isolation cannot grant the required filesystem access on this system.", exception);
+            // Once the platform launcher has been called, even a security error can happen after
+            // process creation. Do not turn that ambiguous boundary into a Weak fallback.
+            throw new StrongSandboxLaunchOutcomeUnknownException(
+                "Strong process launch was attempted but its outcome could not be established.", exception);
         }
-        catch (System.Security.SecurityException exception)
+    }
+
+    public StrongSandboxPreflightResult CheckStrongAvailability(SandboxLaunchSpec launch)
+    {
+        ArgumentNullException.ThrowIfNull(launch);
+        if (launch.RequestedStrength != SandboxStrength.Strong) return StrongSandboxPreflightResult.Available;
+        try
         {
-            throw new NotSupportedException(
-                "Strong process isolation cannot grant the required filesystem access on this system.", exception);
+            var capabilities = _capabilities.Probe();
+            if (!capabilities.StrongAvailable || _strongLauncher is null)
+                return StrongSandboxPreflightResult.UnavailableBeforeLaunch;
+            return _strongLauncher is IStrongSandboxPreflight pathPreflight
+                ? pathPreflight.CheckStrongAvailability(launch)
+                : StrongSandboxPreflightResult.Available;
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException and not StackOverflowException)
+        {
+            return StrongSandboxPreflightResult.Unknown;
         }
     }
 }

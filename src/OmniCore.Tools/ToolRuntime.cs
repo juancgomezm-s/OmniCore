@@ -138,6 +138,22 @@ public sealed class ToolRuntime
             expectedIntentFingerprint: expectedIntentFingerprint);
     }
 
+    /// <summary>Consumes a server-validated, exact one-call Weak sandbox choice. This choice is
+    /// not a Permission grant: current policy must still return Allow and the prepared intent
+    /// must remain byte-for-byte/fingerprint identical before the same call can execute.</summary>
+    public Outcome ResumeWeakSandboxConsent(ValidatedToolCall validated, ToolPreparationContext prepContext,
+        ToolExecutionContext execContext, CancellationToken cancellationToken, InteractionId interaction,
+        string optionId, string expectedPreparedArguments, string expectedIntentFingerprint)
+    {
+        if (optionId is not ("consent_once" or "deny"))
+            throw new InvalidOperationException("Only the server-defined one-call Weak sandbox choice can be resumed.");
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedPreparedArguments);
+        return RunCore(validated, prepContext, execContext, userApprovesAsk: false, cancellationToken,
+            GrantLifetime.Once, requestReceipt: null, resumedWeakSandboxConsent: interaction,
+            resumedWeakSandboxOption: optionId, expectedPreparedArguments: expectedPreparedArguments,
+            expectedIntentFingerprint: expectedIntentFingerprint);
+    }
+
     /// <summary>Consumes only a receipt for this exact attributed call; a prior request event
     /// with another id, arguments, or execution scope cannot authorize omission of the request.</summary>
     public Outcome Run(ValidatedToolCall validated, ToolPreparationContext prepContext,
@@ -155,13 +171,14 @@ public sealed class ToolRuntime
         ToolExecutionContext execContext, bool userApprovesAsk, CancellationToken cancellationToken,
         GrantLifetime approvalLifetime, ToolCallRequestReceipt? requestReceipt,
         InteractionId? resumedPermission = null, string? resumedPermissionOption = null,
+        InteractionId? resumedWeakSandboxConsent = null, string? resumedWeakSandboxOption = null,
         string? expectedPreparedArguments = null, string? expectedIntentFingerprint = null)
     {
         void RejectBeforeAuthorization(string reason, ToolErrorCode errorCode) =>
-            _emit(resumedPermission is not null
+            _emit(resumedPermission is not null || resumedWeakSandboxConsent is not null
                 ? new PermissionDenied(validated.ToolCallId, reason)
                 : new ToolCallRejected(validated.ToolCallId, reason, errorCode));
-        if (requestReceipt is null && resumedPermission is null)
+        if (requestReceipt is null && resumedPermission is null && resumedWeakSandboxConsent is null)
             _emit(new ToolCallRequested(validated.ToolCallId, validated.ProviderCallId,
                 validated.ToolId.ToString(), validated.NormalizedArgumentsJson));
         var tool = _catalog.Find(validated.ToolId);
@@ -208,7 +225,7 @@ public sealed class ToolRuntime
         }
 
         var intent = ((Prepared) preparation).Intent;
-        if (resumedPermission is not null
+        if ((resumedPermission is not null || resumedWeakSandboxConsent is not null)
             && !string.Equals(intent.NormalizedArgumentsJson, expectedPreparedArguments, StringComparison.Ordinal))
         {
             _emit(new PermissionDenied(validated.ToolCallId,
@@ -261,7 +278,7 @@ public sealed class ToolRuntime
         // A durable Permission binds the effective intent after executable resolution, not
         // merely the provider arguments. Catalog or resolver changes cannot substitute another
         // process or resource target under an earlier human approval.
-        if (resumedPermission is not null
+        if ((resumedPermission is not null || resumedWeakSandboxConsent is not null)
             && (expectedIntentFingerprint is not { Length: 64 }
                 || !expectedIntentFingerprint.All(Uri.IsHexDigit)
                 || !string.Equals(IntentFingerprint(intent), expectedIntentFingerprint,
@@ -290,7 +307,7 @@ public sealed class ToolRuntime
             }
         }
 
-        if (resumedPermission is null)
+        if (resumedPermission is null && resumedWeakSandboxConsent is null)
             _emit(new ToolCallPrepared(validated.ToolCallId, intent.NormalizedArgumentsJson));
 
         // 2. Permission Engine (ADR-0037 §2): traza siempre; Ask según flujo de interacción.
@@ -330,6 +347,34 @@ public sealed class ToolRuntime
         {
             _emit(new PermissionDenied(validated.ToolCallId, "deny por política"));
             return new Outcome(false, "denegado", ToolCallState.Rejected, EffectOutcome.None);
+        }
+
+        if (resumedWeakSandboxConsent is { } weakInteraction)
+        {
+            if (resumedWeakSandboxOption == "deny")
+            {
+                _emit(new PermissionDenied(validated.ToolCallId, "Weak sandbox consent was denied."));
+                return new Outcome(false, "Weak sandbox consent denied", ToolCallState.Rejected, EffectOutcome.None);
+            }
+            if (resumedWeakSandboxOption != "consent_once" || decision.Final != PermissionDecision.Allow)
+            {
+                _emit(new PermissionDenied(validated.ToolCallId,
+                    "The authorized tool policy changed before the one-call sandbox choice was resumed."));
+                return new Outcome(false, "Weak sandbox consent is no longer applicable", ToolCallState.Rejected,
+                    EffectOutcome.None);
+            }
+            try
+            {
+                var authorized = _policy.Authorize(intent);
+                _emit(new ToolCallAuthorized(validated.ToolCallId));
+                return Execute(validated, authorized, intent, tool, execContext, cancellationToken,
+                    boundaryAskApproved: false);
+            }
+            catch (OmniCore.Domain.PermissionDeniedException ex)
+            {
+                _emit(new PermissionDenied(validated.ToolCallId, ex.Reason));
+                return new Outcome(false, ex.Reason, ToolCallState.Rejected, EffectOutcome.None);
+            }
         }
 
         if (resumedPermission is { } resumedInteraction)
@@ -471,7 +516,7 @@ public sealed class ToolRuntime
         {
             var authorized = _policy.Authorize(intent);
             _emit(new ToolCallAuthorized(validated.ToolCallId));
-            return Execute(validated, authorized, intent, tool, execContext, cancellationToken,
+        return Execute(validated, authorized, intent, tool, execContext, cancellationToken,
                 boundaryAskApproved: boundaryAsk);
         }
         catch (OmniCore.Domain.PermissionDeniedException ex)
@@ -496,6 +541,51 @@ public sealed class ToolRuntime
                     ToolErrorCode.CapabilityRefused));
                 return new Outcome(false, boundaryDecision.Reason, null, ToolCallState.Failed,
                     EffectOutcome.None);
+            }
+        }
+
+        // A native child lane may suspend only when the registered process tool proves Strong is
+        // unavailable before invoking any launcher. The interaction is durable while the call is
+        // still Authorized; no ToolCallStarted or process effect has occurred.
+        if (execContext.AllowDeferredWeakSandboxConsent && !execContext.WeakSandboxConsentForThisCall
+            && tool is IWeakSandboxConsentPreflightTool preflightTool)
+        {
+            WeakSandboxConsentPreflight? preflight;
+            try
+            {
+                preflight = preflightTool.CheckWeakSandboxConsentPreflight(intent,
+                    new ToolPreparationContext(execContext.WorkspaceRoot, DateTimeOffset.UtcNow), cancellationToken);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception)
+            {
+                // An inconclusive preflight is not permission to downgrade. The normal Strong
+                // attempt will remain subject to the started/unknown path below.
+                preflight = null;
+            }
+            if (preflight is { } requestDetails)
+            {
+                using var payloadBuffer = new System.IO.MemoryStream();
+                using (var payloadWriter = new System.Text.Json.Utf8JsonWriter(payloadBuffer))
+                {
+                    payloadWriter.WriteStartObject();
+                    payloadWriter.WriteString("operation", "sandbox.weak_consent");
+                    payloadWriter.WriteString("reason", requestDetails.ReasonCode);
+                    payloadWriter.WriteString("risk", "high");
+                    payloadWriter.WriteString("executable", requestDetails.Executable);
+                    payloadWriter.WriteString("workingDirectory", requestDetails.WorkingDirectory);
+                    payloadWriter.WriteString("intentFingerprint", IntentFingerprint(intent));
+                    payloadWriter.WriteEndObject();
+                }
+                var interaction = new InteractionRequested(InteractionId.New(),
+                    InteractionKind.WeakSandboxConsent,
+                    System.Text.Encoding.UTF8.GetString(payloadBuffer.ToArray()),
+                    "[{\"id\":\"consent_once\",\"intent\":\"allow\",\"lifetime\":\"once\"},"
+                        + "{\"id\":\"deny\",\"intent\":\"deny\"}]",
+                    "deny", null, null, null, null, 0, 1);
+                _emit(interaction);
+                return new Outcome(false, "awaiting input", null, ToolCallState.Authorized,
+                    EffectOutcome.None, interaction.InteractionId);
             }
         }
 
@@ -891,7 +981,7 @@ public sealed class ToolRuntime
         return System.Text.Encoding.UTF8.GetString(output.ToArray());
     }
 
-    private static string IntentFingerprint(ToolIntent intent)
+    internal static string IntentFingerprint(ToolIntent intent)
     {
         using var output = new System.IO.MemoryStream();
         using (var writer = new System.Text.Json.Utf8JsonWriter(output))

@@ -309,6 +309,57 @@ public sealed class RunControlService
             nativeChoice: true);
     }
 
+    /// <summary>Resolves one pre-launch Weak sandbox choice for the exact child ToolCall. This is
+    /// not a permission grant: it only resumes the Run after the native Host has authenticated the
+    /// workflow invocation and the exact task/lane/turn/call binding.</summary>
+    public void RespondNativeWeakSandboxConsent(SessionId session, RunId expectedRun, TaskId expectedTask,
+        LaneId expectedLane, TurnId expectedTurn, ToolCallId expectedToolCall, InteractionId interaction,
+        string optionId, string commandId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(commandId);
+        if (optionId is not ("consent_once" or "deny"))
+            throw new InvalidInteractionOptionException(interaction, optionId);
+        var events = _store.ReadFrom(session, 1);
+        var requests = events.Where(evt => evt.RunId == expectedRun
+                && _codecs.Decode(evt) is InteractionRequested request
+                && request.InteractionId == interaction)
+            .ToArray();
+        if (requests.Length != 1 || requests[0].TaskId != expectedTask || requests[0].LaneId != expectedLane
+            || requests[0].TurnId != expectedTurn || requests[0].ToolCallId != expectedToolCall
+            || _codecs.Decode(requests[0]) is not InteractionRequested weakRequest
+            || weakRequest.Kind != InteractionKind.WeakSandboxConsent
+            || !OptionIds(weakRequest.OptionsJson).SequenceEqual(["consent_once", "deny"], StringComparer.Ordinal))
+            throw new InteractionNotPendingException(interaction);
+
+        var call = events.Where(evt => evt.RunId == expectedRun && evt.TaskId == expectedTask
+                && evt.LaneId == expectedLane && evt.TurnId == expectedTurn && evt.ToolCallId == expectedToolCall)
+            .OrderBy(evt => evt.Sequence)
+            .Select(evt => (Event: evt, Payload: _codecs.Decode(evt))).ToArray();
+        var requested = call.SingleOrDefault(item => item.Payload is ToolCallRequested);
+        var prepared = call.SingleOrDefault(item => item.Payload is ToolCallPrepared);
+        var authorized = call.LastOrDefault(item => item.Payload is ToolCallAuthorized);
+        if (requested.Event is null || prepared.Event is null || authorized.Event is null
+            || requested.Event.Sequence >= prepared.Event.Sequence || prepared.Event.Sequence >= requests[0].Sequence
+            || authorized.Event.Sequence >= requests[0].Sequence
+            || call.Any(item => item.Event.Sequence > requests[0].Sequence
+                && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallFailed
+                    or ToolCallEffectUnknown or ToolCallReconciled)
+            || ActiveRun(session) != expectedRun
+            || RunProjection.Replay(session, expectedRun, _codecs, events).State != RunState.AwaitingInput
+            || PendingInteractionEnvelopes(events).Any(item => item.Envelope.RunId == expectedRun
+                && item.Request.InteractionId != interaction))
+            throw new InteractionNotPendingException(interaction);
+
+        var scope = new ExecutionScopeState(expectedRun, expectedTask, expectedLane, expectedTurn,
+            expectedToolCall, requests[0].ExecutionId);
+        var batch = new List<DomainEventPayload> { new InteractionResolved(interaction, optionId, InteractionCause.User) };
+        if (optionId == "deny")
+            batch.Add(new PermissionDenied(expectedToolCall, "Human denied the Weak sandbox launch."));
+        batch.Add(new RunInteractionResumed(expectedRun, interaction, commandId));
+        var scopes = batch.Select(_ => (ExecutionScopeState?)scope).ToArray();
+        new EventStream(_store, _codecs, session).AppendBatch(batch, DurabilityClass.Standard, scopes);
+    }
+
     /// <summary>Aplica el default deny de ADR-0003 a una interacción presupuestaria sin cliente.</summary>
     public void ResolveBudgetWithoutClient(SessionId session, InteractionId interaction)
         => ResolveInteraction(session, interaction, "deny", InteractionCause.NoClient, noClient: true);

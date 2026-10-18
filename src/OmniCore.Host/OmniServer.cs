@@ -3997,6 +3997,36 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                                         .Select(e => e.Code.ToString())));
                         }
                     }
+                    else if (fields.TryGetValue("responseType", out responseType)
+                        && responseType == "weakSandboxConsent")
+                    {
+                        if (!trustedUserAction) throw new FormatException("trusted Weak sandbox response required");
+                        var session = RequireSession();
+                        var expectedRun = fields.GetValueOrDefault("expectedRunId");
+                        var expectedPolicyRevision = fields.GetValueOrDefault("expectedPolicyRevision");
+                        if (!Guid.TryParseExact(expectedRun, "D", out var runGuid)
+                            || expectedRun != new RunId(runGuid).ToString()
+                            || !Guid.TryParseExact(fields.GetValueOrDefault("taskId"), "D", out var taskGuid)
+                            || !Guid.TryParseExact(fields.GetValueOrDefault("laneId"), "D", out var laneGuid)
+                            || !Guid.TryParseExact(fields.GetValueOrDefault("turnId"), "D", out var turnGuid)
+                            || !Guid.TryParseExact(fields.GetValueOrDefault("toolCallId"), "D", out var toolCallGuid)
+                            || !Guid.TryParseExact(fields.GetValueOrDefault("invocationId"), "D", out var invocationGuid)
+                            || !Guid.TryParseExact(fields.GetValueOrDefault("interactionId"), "D", out var interactionGuid)
+                            || !long.TryParse(expectedPolicyRevision, System.Globalization.NumberStyles.None,
+                                System.Globalization.CultureInfo.InvariantCulture, out var policyRevision)
+                            || policyRevision < 1)
+                            throw new FormatException("weak_sandbox.invalid_scope");
+                        outcomeSession = session;
+                        outcomeSequenceBefore = _store.CurrentSequence(session);
+                        lock (_modeAuthorityMutationGate)
+                        {
+                            control.RespondNativeWeakSandboxConsent(session, new RunId(runGuid),
+                                new TaskId(taskGuid), new LaneId(laneGuid), new TurnId(turnGuid),
+                                new ToolCallId(toolCallGuid), new InteractionId(interactionGuid),
+                                new CommandId(invocationGuid), fields.GetValueOrDefault("optionId") ?? "",
+                                policyRevision, command.MessageId);
+                        }
+                    }
                     else if (fields.TryGetValue("responseType", out responseType) && responseType == "choice")
                     {
                         if (!trustedUserAction) throw new FormatException("trusted choice response required");

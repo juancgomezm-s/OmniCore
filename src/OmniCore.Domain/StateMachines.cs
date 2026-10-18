@@ -181,6 +181,10 @@ public sealed class StateMachines
         // prepared intent. Keep the call awaiting the human decision until a durable
         // PermissionGranted/PermissionDenied event records that decision.
         if (evt is PermissionEvaluated && from == ToolCallState.AwaitingPermission) return ToolCallState.AwaitingPermission;
+        // A one-call pre-effect Weak sandbox choice is separate from Permission and does not
+        // authorize the tool. Re-evaluating current policy after that choice keeps Authorized
+        // intact only long enough to execute the same already-authorized call or fail closed.
+        if (evt is PermissionEvaluated && from == ToolCallState.Authorized) return ToolCallState.Authorized;
         if (evt is PermissionRequested && from == ToolCallState.Prepared) return ToolCallState.AwaitingPermission;
         if (evt is PermissionGranted
             && (from == ToolCallState.AwaitingPermission || from == ToolCallState.Prepared))

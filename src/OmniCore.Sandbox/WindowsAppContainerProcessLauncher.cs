@@ -16,10 +16,104 @@ using System.Runtime.Versioning;
 /// tree with a kill-on-close Job Object. Weak and None are intentionally not handled here.
 /// </summary>
 [SupportedOSPlatform("windows")]
-public sealed class WindowsAppContainerProcessLauncher : ISandboxProcessLauncher
+public sealed class WindowsAppContainerProcessLauncher : ISandboxProcessLauncher, IStrongSandboxPreflight
 {
     private static readonly ConcurrentDictionary<string, Semaphore> ProfileLeases = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, string> QuarantinedProfiles = new(StringComparer.Ordinal);
+
+    public StrongSandboxPreflightResult CheckStrongAvailability(SandboxLaunchSpec launch)
+    {
+        ArgumentNullException.ThrowIfNull(launch);
+        try
+        {
+            if (launch.RequestedStrength != SandboxStrength.Strong
+                || launch.AllowedPaths is null
+                || launch.Network is null
+                || launch.Network.Mode is not (SandboxNetworkMode.Deny or SandboxNetworkMode.AllowAll)
+                || launch.AllowedPaths.Any(path => path.Access == SandboxPathAccess.None
+                    || (path.Access & ~(SandboxPathAccess.Read | SandboxPathAccess.Write)) != 0))
+                return StrongSandboxPreflightResult.Unknown;
+
+            var executable = ResolveExistingPhysicalPath(launch.Executable);
+            var workingDirectory = ResolveExistingPhysicalPath(launch.WorkingDirectory ?? Path.GetDirectoryName(executable)!);
+            if (!File.Exists(executable) || !Directory.Exists(workingDirectory))
+                return StrongSandboxPreflightResult.Unknown;
+
+            var workspacePath = launch.AllowedPaths
+                .Where(path => (path.Access & SandboxPathAccess.Write) != 0 && Directory.Exists(path.Path))
+                .Select(path => ResolveExistingPhysicalPath(path.Path))
+                .OrderBy(path => path.Length)
+                .FirstOrDefault() ?? workingDirectory;
+            var profileName = GetProfileName(workspacePath);
+            if (QuarantinedProfiles.ContainsKey(profileName))
+                return StrongSandboxPreflightResult.Unknown;
+
+            // Deriving the deterministic SID is read-only; creating a profile here would make a
+            // query/preflight mutate OS state. If the SID cannot be established, do not infer
+            // that a later launch failure is safely downgradeable.
+            var sid = AppContainerNative.DeriveProfileSid(profileName);
+            var executableDirectory = Path.GetDirectoryName(executable);
+            if (string.IsNullOrEmpty(executableDirectory)) return StrongSandboxPreflightResult.Unknown;
+
+            var result = CheckGrant(executableDirectory, true, FileSystemRights.ReadAndExecute, sid);
+            if (result != StrongSandboxPreflightResult.Available) return result;
+
+            foreach (var allowed in launch.AllowedPaths)
+            {
+                var path = ResolveExistingPhysicalPath(allowed.Path);
+                var canRead = (allowed.Access & SandboxPathAccess.Read) != 0;
+                var canWrite = (allowed.Access & SandboxPathAccess.Write) != 0;
+                var rights = canRead && canWrite
+                    ? FileSystemRights.ReadAndExecute | FileSystemRights.Modify
+                    : canRead ? FileSystemRights.ReadAndExecute
+                    : Directory.Exists(path)
+                        ? FileSystemRights.Traverse | FileSystemRights.CreateFiles | FileSystemRights.CreateDirectories
+                            | FileSystemRights.WriteAttributes | FileSystemRights.WriteExtendedAttributes
+                        : FileSystemRights.WriteData | FileSystemRights.AppendData | FileSystemRights.WriteAttributes
+                            | FileSystemRights.WriteExtendedAttributes;
+                var isDirectory = Directory.Exists(path);
+                if (!isDirectory && !File.Exists(path)) return StrongSandboxPreflightResult.Unknown;
+                result = CheckGrant(path, isDirectory, rights, sid);
+                if (result != StrongSandboxPreflightResult.Available) return result;
+            }
+
+            return StrongSandboxPreflightResult.Available;
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException and not StackOverflowException)
+        {
+            return StrongSandboxPreflightResult.Unknown;
+        }
+    }
+
+    private static StrongSandboxPreflightResult CheckGrant(
+        string path,
+        bool isDirectory,
+        FileSystemRights rights,
+        SecurityIdentifier sid)
+    {
+        var inheritance = isDirectory
+            ? InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit
+            : InheritanceFlags.None;
+        AuthorizationRuleCollection rules = isDirectory
+            ? new DirectoryInfo(path).GetAccessControl(AccessControlSections.Access)
+                .GetAccessRules(true, false, typeof(SecurityIdentifier))
+            : new FileInfo(path).GetAccessControl(AccessControlSections.Access)
+                .GetAccessRules(true, false, typeof(SecurityIdentifier));
+        var sidRules = rules.Cast<FileSystemAccessRule>()
+            .Where(rule => rule.IdentityReference.Equals(sid) && rule.AccessControlType == AccessControlType.Allow)
+            .ToArray();
+        var exact = sidRules.Any(rule => rule.FileSystemRights == rights
+            && rule.InheritanceFlags == inheritance && rule.PropagationFlags == PropagationFlags.None);
+        if (exact) return StrongSandboxPreflightResult.Available;
+        // StartAsync refuses a different existing ACE for this SID instead of merging grants.
+        if (sidRules.Length != 0) return StrongSandboxPreflightResult.Unknown;
+
+        if (AppContainerNative.CanWriteDac(path, out var error))
+            return StrongSandboxPreflightResult.Available;
+        return error == AppContainerNative.ErrorAccessDenied
+            ? StrongSandboxPreflightResult.UnavailableBeforeLaunch
+            : StrongSandboxPreflightResult.Unknown;
+    }
 
     public ValueTask<ISandboxProcessControl> StartAsync(
         SandboxLaunchSpec launch,
@@ -517,6 +611,7 @@ internal sealed class AppContainerProcessControl : ISandboxProcessControl
 [SupportedOSPlatform("windows")]
 internal static partial class AppContainerNative
 {
+    internal const int ErrorAccessDenied = 5;
     internal const uint WaitObject0 = 0;
     internal const uint WaitTimeout = 258;
     internal const uint Infinite = 0xFFFFFFFF;
@@ -603,6 +698,19 @@ internal static partial class AppContainerNative
         if (result < 0 || sid == IntPtr.Zero) return null;
         try { return new SecurityIdentifier(sid); }
         finally { FreeSid(sid); }
+    }
+
+    internal static bool CanWriteDac(string path, out int error)
+    {
+        using var handle = CreateFileForDac(path, 0x00040000, 0x00000007, IntPtr.Zero,
+            3, 0x02000000, IntPtr.Zero);
+        if (!handle.IsInvalid)
+        {
+            error = 0;
+            return true;
+        }
+        error = Marshal.GetLastPInvokeError();
+        return false;
     }
 
     internal static void ProbeAppContainerLaunchSupport(SecurityIdentifier sid)
@@ -871,6 +979,10 @@ internal static partial class AppContainerNative
     private static partial uint ResumeThread(IntPtr thread);
     [LibraryImport("kernel32.dll", EntryPoint = "CloseHandle", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)] private static partial bool CloseHandle(IntPtr handle);
+    [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    internal static partial SafeFileHandle CreateFileForDac(
+        string fileName, uint desiredAccess, uint shareMode, IntPtr securityAttributes,
+        uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
     [LibraryImport("kernel32.dll", EntryPoint = "TerminateJobObject", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)] internal static partial bool TerminateJobObject(SafeFileHandle job, uint exitCode);
     [LibraryImport("kernel32.dll", EntryPoint = "TerminateJobObject", SetLastError = true)]

@@ -154,6 +154,28 @@ public interface ISandboxProcessLauncher
         CancellationToken cancellationToken);
 }
 
+/// <summary>Pure pre-launch probe. Only UnavailableBeforeLaunch proves that a Strong launcher
+/// was not attempted; Unknown must never be treated as permission to downgrade.</summary>
+public enum StrongSandboxPreflightResult
+{
+    Available,
+    UnavailableBeforeLaunch,
+    Unknown,
+}
+
+public interface IStrongSandboxPreflight
+{
+    StrongSandboxPreflightResult CheckStrongAvailability(SandboxLaunchSpec launch);
+}
+
+/// <summary>Raised only by a preflight that proves no Strong launcher was invoked.</summary>
+public sealed class StrongSandboxUnavailableBeforeLaunchException(string reason)
+    : NotSupportedException(reason);
+
+/// <summary>A Strong launch was attempted and its process-start outcome cannot be proven.</summary>
+public sealed class StrongSandboxLaunchOutcomeUnknownException(string reason, Exception innerException)
+    : Exception(reason, innerException);
+
 /// <summary>Control surface for a launched process, including its captured output.</summary>
 public interface ISandboxProcessControl : IAsyncDisposable
 {

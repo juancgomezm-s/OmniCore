@@ -451,9 +451,13 @@ public sealed partial class OmniServer
             MinimumSequenceExclusive = minimumSequenceExclusive };
 
     internal (PlanItem Item, Delegation Delegation, PreM6RecordPhase Phase)? FindWorkflowStage(
-        WorkflowRuntimeAuthorization authorization, WorkflowStage stage)
+        WorkflowRuntimeAuthorization authorization, WorkflowStage stage,
+        bool allowAwaitingWeakSandboxConsent = false)
     {
-        if (!WorkflowAuthorizationIsCurrent(authorization)) return null;
+        var authorizationIsCurrent = allowAwaitingWeakSandboxConsent
+            ? WeakSandboxWorkflowAuthorizationIsCurrent(authorization)
+            : WorkflowAuthorizationIsCurrent(authorization);
+        if (!authorizationIsCurrent) return null;
         var journal = _store.ReadFrom(authorization.Session, 1);
         var own = journal.Where(evt => evt.RunId == authorization.Run).ToArray();
         var plan = PlanProjection.Replay(_codecs, own);
@@ -492,7 +496,8 @@ public sealed partial class OmniServer
     }
 
     internal WorkflowRuntimeAuthorization AuthorizeNativeWorkflowContinuation(CommandId invocation,
-        NativeCommandInvocationAdmitted admission, NativeCommandPayload payload)
+        NativeCommandInvocationAdmitted admission, NativeCommandPayload payload,
+        bool allowAwaitingWeakSandboxConsent = false)
     {
         if (admission.InvocationId != invocation || admission.SessionId != _lastSessionId
             || admission.RunId is not { } run || _lastRunId != run || admission.Kind != "compiledWorkflow"
@@ -502,16 +507,19 @@ public sealed partial class OmniServer
             throw new InvalidOperationException("Workflow recovery is not bound to the active durable invocation.");
         var request = new WorkflowRequested(new WorkflowRef(workflowId, workflowVersion), payload.Arguments);
         request.Validate();
-        return CreateWorkflowAuthorization(request, invocation, admission.SessionId, run);
+        return CreateWorkflowAuthorization(request, invocation, admission.SessionId, run,
+            allowAwaitingWeakSandboxConsent);
     }
 
     private WorkflowRuntimeAuthorization CreateWorkflowAuthorization(WorkflowRequested request,
-        CommandId commandId, SessionId session, RunId run)
+        CommandId commandId, SessionId session, RunId run, bool allowAwaitingWeakSandboxConsent = false)
     {
         var journal = _store.ReadFrom(session, 1);
         var projection = RunProjection.Replay(session, run, _codecs, journal.Where(evt => evt.RunId == run).ToArray());
         var authority = projection.ModeAuthority;
-        if (projection.State != RunState.Running || authority?.Mode != RunMode.Orchestrate
+        if (projection.State != RunState.Running
+                && !(allowAwaitingWeakSandboxConsent && projection.State == RunState.AwaitingInput)
+            || authority?.Mode != RunMode.Orchestrate
             || authority.Authorization is not { } granted
             || ReadSessionSecurityPolicy(session) is not { AllowOrchestration: true }
             || !authority.IsAutoModeSwitchEffectiveAt(DateTimeOffset.UtcNow))
@@ -528,7 +536,14 @@ public sealed partial class OmniServer
             && HasNativeWorkflowRootContext(authorization.Session, authorization.Run);
     }
 
-    private bool WorkflowAuthorizationAuthorityIsCurrent(WorkflowRuntimeAuthorization authorization)
+    internal bool WeakSandboxWorkflowAuthorizationIsCurrent(WorkflowRuntimeAuthorization authorization)
+    {
+        return WorkflowAuthorizationAuthorityIsCurrent(authorization, allowAwaitingInput: true)
+            && HasNativeWorkflowRootContext(authorization.Session, authorization.Run, allowAwaitingInput: true);
+    }
+
+    private bool WorkflowAuthorizationAuthorityIsCurrent(WorkflowRuntimeAuthorization authorization,
+        bool allowAwaitingInput = false)
     {
         if (_lastSessionId != authorization.Session || _lastRunId != authorization.Run
             || new RunControlService(_store, _codecs).ActiveRun(authorization.Session) != authorization.Run
@@ -577,7 +592,9 @@ public sealed partial class OmniServer
         var projection = RunProjection.Replay(authorization.Session, authorization.Run, _codecs,
             journal.Where(evt => evt.RunId == authorization.Run).ToArray());
         var authority = projection.ModeAuthority;
-        return projection.State == RunState.Running && authority?.Mode == RunMode.Orchestrate
+        return (projection.State == RunState.Running
+                || allowAwaitingInput && projection.State == RunState.AwaitingInput)
+            && authority?.Mode == RunMode.Orchestrate
             && authority.Authorization is { } grant && grant.AuthorizationId == authorization.AuthorizationId
             && authority.Revision == authorization.AuthorityRevision
             && authority.IsAutoModeSwitchEffectiveAt(DateTimeOffset.UtcNow);
@@ -620,14 +637,16 @@ public sealed partial class OmniServer
         }
     }
 
-    internal bool HasNativeWorkflowRootContext(SessionId session, RunId run)
+    internal bool HasNativeWorkflowRootContext(SessionId session, RunId run, bool allowAwaitingInput = false)
     {
         try
         {
             var journal = _store.ReadFrom(session, 1);
             var own = journal.Where(evt => evt.RunId == run).ToArray();
             var projection = RunProjection.Replay(session, run, _codecs, own);
-            if (projection.State != RunState.Running || projection.ModeAuthority?.Mode != RunMode.Orchestrate
+            if (projection.State != RunState.Running
+                    && !(allowAwaitingInput && projection.State == RunState.AwaitingInput)
+                || projection.ModeAuthority?.Mode != RunMode.Orchestrate
                 || ReadSessionSecurityPolicy(session) is not { AllowOrchestration: true }
                 || projection.RootTask is not { } root) return false;
             var facts = own.Select(_codecs.Decode).ToArray();

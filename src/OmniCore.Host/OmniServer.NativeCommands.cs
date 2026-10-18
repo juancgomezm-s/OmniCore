@@ -161,6 +161,155 @@ public sealed partial class OmniServer
         }
     }
 
+    internal void RespondNativeWeakSandboxConsent(SessionId session, RunId run, TaskId task, LaneId lane,
+        TurnId turn, ToolCallId toolCall, InteractionId interaction, CommandId invocation, string optionId,
+        long expectedPolicyRevision, string responseCommandId)
+    {
+        if (_lastSessionId != session || _lastRunId != run || !EnsureWriterOwnershipForCommand())
+            throw new SessionSecurityRevisionConflictException();
+        lock (_modeAuthorityMutationGate)
+        {
+            if (ReadSessionSecurityPolicy(session)?.PolicyRevision != expectedPolicyRevision
+                || new RunControlService(_store, _codecs).ActiveRun(session) != run)
+                throw new SessionSecurityRevisionConflictException();
+            var history = _store.ReadFrom(session, 1);
+            var admittedEvent = history.LastOrDefault(evt => _codecs.Decode(evt) is NativeCommandInvocationAdmitted item
+                && item.InvocationId == invocation && item.SessionId == session && item.RunId == run
+                && item.Kind == "compiledWorkflow");
+            if (admittedEvent is null || _codecs.Decode(admittedEvent) is not NativeCommandInvocationAdmitted admission
+                || !history.Any(evt => evt.Sequence > admittedEvent.Sequence
+                    && _codecs.Decode(evt) is NativeCommandInvocationStarted started
+                    && started.InvocationId == invocation && started.Kind == "compiledWorkflow")
+                || history.Any(evt => evt.Sequence > admittedEvent.Sequence
+                    && _codecs.Decode(evt) is NativeCommandInvocationFinished finished
+                    && finished.InvocationId == invocation)
+                || ReceiptStore?.ReadCommandReceipt(invocation.ToString()) is not
+                    { State: CommandReceiptState.Completed, OutcomeKind: "Accepted",
+                        ExecutionState: "deferred", ExecutionCode: "input_required", ExecutionRunId: var executionRun }
+                || !string.Equals(executionRun, run.ToString(), StringComparison.Ordinal)
+                || !NativeWeakConsentScopeMatches(session, run, admission)
+                || !TryReadNativeCommandPayload(invocation, out var readable, out var json)
+                || readable != admission || !TryDecodeNativeCommandPayload(json, out var payload)
+                || payload.Kind != "compiledWorkflow" || payload.WorkflowId is not { Length: > 0 }
+                || payload.WorkflowVersion is not { Length: > 0 })
+                throw new InteractionNotPendingException(interaction);
+
+            var authorization = AuthorizeNativeWorkflowContinuation(invocation, admission, payload,
+                allowAwaitingWeakSandboxConsent: true);
+            if (!WeakSandboxWorkflowAuthorizationIsCurrent(authorization))
+                throw new SessionSecurityRevisionConflictException();
+            var verify = FindWorkflowStage(ForStage(authorization, WorkflowStage.Verify, null), WorkflowStage.Verify,
+                allowAwaitingWeakSandboxConsent: true);
+            if (verify is not { } stage || stage.Phase != PreM6RecordPhase.Accepted
+                || stage.Item.State is PlanItemState.Failed or PlanItemState.Completed
+                || stage.Delegation.ChildTaskId != task || stage.Delegation.ChildLaneId != lane)
+                throw new InteractionNotPendingException(interaction);
+
+            var interactionEvent = history.SingleOrDefault(evt => evt.RunId == run && evt.TaskId == task
+                && evt.LaneId == lane && evt.TurnId == turn && evt.ToolCallId == toolCall
+                && _codecs.Decode(evt) is InteractionRequested request
+                && request.InteractionId == interaction && request.Kind == InteractionKind.WeakSandboxConsent);
+            if (interactionEvent is null) throw new InteractionNotPendingException(interaction);
+            var control = new RunControlService(_store, _codecs);
+            control.RespondNativeWeakSandboxConsent(session, run, task, lane, turn, toolCall, interaction,
+                optionId, responseCommandId);
+            // Rehydrate only from this authenticated, exact durable invocation after the response
+            // append succeeds. This supplies ExecuteWorkflowAsync's existing current-invocation
+            // guard after a Host restart; passive queries never populate this field.
+            _lastWorkflowRequested = authorization.Request;
+            _lastWorkflowInvocation = new WorkflowInvocation(invocation.ToString(), authorization.Request,
+                session, run);
+        }
+    }
+
+    internal bool CanResolveNativeWeakSandboxConsent(SessionId session, RunId run, TaskId task, LaneId lane,
+        TurnId turn, ToolCallId toolCall, InteractionId interaction, CommandId invocation, string optionId,
+        long expectedPolicyRevision)
+    {
+        if (optionId is not ("consent_once" or "deny") || _lastSessionId != session || _lastRunId != run
+            || ReadSessionSecurityPolicy(session)?.PolicyRevision != expectedPolicyRevision
+            || new RunControlService(_store, _codecs).ActiveRun(session) != run) return false;
+        var history = _store.ReadFrom(session, 1);
+        var admittedEvent = history.LastOrDefault(evt => _codecs.Decode(evt) is NativeCommandInvocationAdmitted item
+            && item.InvocationId == invocation && item.SessionId == session && item.RunId == run
+            && item.Kind == "compiledWorkflow");
+        if (admittedEvent is null || _codecs.Decode(admittedEvent) is not NativeCommandInvocationAdmitted admission
+            || !history.Any(evt => evt.Sequence > admittedEvent.Sequence
+                && _codecs.Decode(evt) is NativeCommandInvocationStarted started
+                && started.InvocationId == invocation && started.Kind == "compiledWorkflow")
+            || history.Any(evt => evt.Sequence > admittedEvent.Sequence
+                && _codecs.Decode(evt) is NativeCommandInvocationFinished finished
+                && finished.InvocationId == invocation)
+            || ReceiptStore?.ReadCommandReceipt(invocation.ToString()) is not
+                { State: CommandReceiptState.Completed, OutcomeKind: "Accepted",
+                    ExecutionState: "deferred", ExecutionCode: "input_required", ExecutionRunId: var executionRun }
+            || !string.Equals(executionRun, run.ToString(), StringComparison.Ordinal)
+            || !NativeWeakConsentScopeMatches(session, run, admission)
+            || !TryReadNativeCommandPayload(invocation, out var readable, out var payloadJson)
+            || readable != admission || !TryDecodeNativeCommandPayload(payloadJson, out var payload)
+            || payload.Kind != "compiledWorkflow" || payload.WorkflowId is not { Length: > 0 }
+            || payload.WorkflowVersion is not { Length: > 0 }) return false;
+        try
+        {
+            var authorization = AuthorizeNativeWorkflowContinuation(invocation, admission, payload,
+                allowAwaitingWeakSandboxConsent: true);
+            if (!WeakSandboxWorkflowAuthorizationIsCurrent(authorization)) return false;
+            var verify = FindWorkflowStage(ForStage(authorization, WorkflowStage.Verify, null), WorkflowStage.Verify,
+                allowAwaitingWeakSandboxConsent: true);
+            if (verify is not { } stage || stage.Phase != PreM6RecordPhase.Accepted
+                || stage.Item.State is PlanItemState.Failed or PlanItemState.Completed
+                || stage.Delegation.ChildTaskId != task || stage.Delegation.ChildLaneId != lane) return false;
+            if (RunProjection.Replay(session, run, _codecs, history).State != RunState.AwaitingInput) return false;
+            var requestEvent = history.SingleOrDefault(evt => evt.RunId == run && evt.TaskId == task
+                && evt.LaneId == lane && evt.TurnId == turn && evt.ToolCallId == toolCall
+                && _codecs.Decode(evt) is InteractionRequested request
+                && request.InteractionId == interaction && request.Kind == InteractionKind.WeakSandboxConsent);
+            if (requestEvent is null || _codecs.Decode(requestEvent) is not InteractionRequested weakRequest
+                || !OptionIds(weakRequest.OptionsJson).Contains(optionId, StringComparer.Ordinal)) return false;
+            var call = history.Where(evt => evt.RunId == run && evt.TaskId == task && evt.LaneId == lane
+                    && evt.TurnId == turn && evt.ToolCallId == toolCall)
+                .Select(evt => (Event: evt, Payload: _codecs.Decode(evt))).ToArray();
+            var requested = call.SingleOrDefault(item => item.Payload is ToolCallRequested);
+            var prepared = call.SingleOrDefault(item => item.Payload is ToolCallPrepared);
+            var authorized = call.LastOrDefault(item => item.Payload is ToolCallAuthorized);
+            return requested.Event is not null && prepared.Event is not null && authorized.Event is not null
+                && requested.Event.Sequence < prepared.Event.Sequence && prepared.Event.Sequence < requestEvent.Sequence
+                && authorized.Event.Sequence < requestEvent.Sequence
+                && !call.Any(item => item.Event.Sequence > requestEvent.Sequence
+                    && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallFailed
+                        or ToolCallEffectUnknown or ToolCallReconciled)
+                && !history.Any(evt => evt.RunId == run && _codecs.Decode(evt) is InteractionResolved resolved
+                    && resolved.InteractionId == interaction)
+                && !history.Any(evt => evt.RunId == run && _codecs.Decode(evt) is InteractionExpired expired
+                    && expired.InteractionId == interaction);
+        }
+        catch (Exception failure) when (failure is InvalidOperationException or InvalidDataException
+            or ArgumentException or KeyNotFoundException or InvalidInteractionOptionException)
+        {
+            return false;
+        }
+    }
+
+    private bool NativeWeakConsentScopeMatches(SessionId session, RunId run,
+        NativeCommandInvocationAdmitted admission)
+    {
+        if (_lastSessionId != session || _lastRunId != run || !EnsureWriterOwnershipForCommand()
+            || new RunControlService(_store, _codecs).ActiveRun(session) != run
+            || HasSessionSecurityInFlightAuthority(session)
+            || ReadSessionSecurityPolicy(session)?.PolicyRevision != admission.ExpectedPolicyRevision
+            || CurrentModeAuthority()?.Revision != admission.ExpectedModeRevision)
+            return false;
+        var history = _store.ReadFrom(session, 1);
+        var selection = SessionModelSelectionProjection.Read(history, _codecs, session);
+        var routing = SessionRoutingAuthorization.Read(history, _codecs, session);
+        if ((selection?.Revision ?? 0) != admission.ExpectedSelectionRevision
+            || routing?.Revision != admission.ExpectedRoutingPolicyRevision
+            || !FixedHashEquals(CurrentNativeCommandCatalog().CatalogRevision, admission.CatalogRevision))
+            return false;
+        var state = RunProjection.Replay(session, run, _codecs, EventsForRun(history, run)).State;
+        return state is RunState.AwaitingInput or RunState.Running;
+    }
+
     private bool NativeWorkflowInvocationIsReady(WorkflowRuntimeAuthorization authorization,
         out string reasonCode, out string? stageName)
     {

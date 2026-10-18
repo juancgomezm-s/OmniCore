@@ -818,6 +818,9 @@ public sealed class OmniCliRuntime : IDisposable
         Action<string> diagnostics, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(admitted);
+        if (admitted.ContinuationResponseType == "weakSandboxConsent")
+            return await ExecutePersistedWeakSandboxConsentAsync(admitted, diagnostics, cancellationToken)
+                .ConfigureAwait(false);
         if (admitted.NativeInvocationId is { Length: > 0 } nativeInvocationId
             && admitted.ContinuationInteractionId is null)
             return await ExecutePersistedNativeCommandAsync(admitted, nativeInvocationId, diagnostics,
@@ -964,6 +967,136 @@ public sealed class OmniCliRuntime : IDisposable
         return exitCode == 130 ? 1 : exitCode;
     }
 
+    private async Task<int> ExecutePersistedWeakSandboxConsentAsync(PersistedConversationCommand admitted,
+        Action<string> diagnostics, CancellationToken cancellationToken)
+    {
+        if (admitted.NativeInvocationId is not { Length: > 0 } invocationText
+            || admitted.ContinuationInvocationId != invocationText
+            || !admitted.NativeWeakSandboxCapability
+            || admitted.NativeCommandKind != "compiledWorkflow"
+            || admitted.ContinuationInteractionId is not { Length: > 0 } interactionText
+            || admitted.ContinuationOptionId is not ("consent_once" or "deny")
+            || admitted.ContinuationTaskId is not { Length: > 0 } taskText
+            || admitted.ContinuationLaneId is not { Length: > 0 } laneText
+            || admitted.ContinuationTurnId is not { Length: > 0 } turnText
+            || admitted.ContinuationToolCallId is not { Length: > 0 } toolCallText
+            || admitted.ContinuationCommandId is not { Length: > 0 } responseCommandText
+            || admitted.ContinuationRequestHash is not { Length: 64 } responseHash
+            || admitted.ContinuationFirstSequence is not { } responseFirst
+            || admitted.ContinuationLastSequence is not { } responseLast || responseLast < responseFirst
+            || !Guid.TryParseExact(admitted.SessionId, "D", out var sessionGuid)
+            || admitted.SessionId != sessionGuid.ToString("D")
+            || !Guid.TryParseExact(admitted.RunId, "D", out var runGuid)
+            || admitted.RunId != runGuid.ToString("D")
+            || !Guid.TryParseExact(invocationText, "D", out var invocationGuid)
+            || invocationText != invocationGuid.ToString("D")
+            || !Guid.TryParseExact(interactionText, "D", out var interactionGuid)
+            || interactionText != interactionGuid.ToString("D")
+            || !Guid.TryParseExact(taskText, "D", out var taskGuid)
+            || taskText != taskGuid.ToString("D")
+            || !Guid.TryParseExact(laneText, "D", out var laneGuid)
+            || laneText != laneGuid.ToString("D")
+            || !Guid.TryParseExact(turnText, "D", out var turnGuid)
+            || turnText != turnGuid.ToString("D")
+            || !Guid.TryParseExact(toolCallText, "D", out var toolCallGuid)
+            || toolCallText != toolCallGuid.ToString("D")
+            || !Guid.TryParseExact(responseCommandText, "D", out var responseCommandGuid)
+            || responseCommandText != responseCommandGuid.ToString("D"))
+            return 1;
+
+        var server = Server();
+        var session = new SessionId(sessionGuid);
+        var run = new RunId(runGuid);
+        var invocation = new CommandId(invocationGuid);
+        var sourceReceipt = server.ReceiptStore?.ReadCommandReceipt(invocationText);
+        var responseReceipt = server.ReceiptStore?.ReadCommandReceipt(responseCommandText);
+        if (server.LastSessionId() != session || server.LastRunId() != run
+            || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(session) != run
+            || sourceReceipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                OutcomeKind: "Accepted", ExecutionState: "deferred", ExecutionCode: "input_required",
+                FirstSequence: not null, LastSequence: { } sourceLastSequence }
+            || !string.Equals(sourceReceipt.SessionId, session.ToString(), StringComparison.Ordinal)
+            || !string.Equals(sourceReceipt.ExecutionRunId, run.ToString(), StringComparison.Ordinal)
+            || responseReceipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                OutcomeKind: "Accepted", ExecutionState: null }
+            || !string.Equals(responseReceipt.RequestHash, responseHash, StringComparison.Ordinal)
+            || !string.Equals(responseReceipt.SessionId, session.ToString(), StringComparison.Ordinal)
+            || responseReceipt.FirstSequence != responseFirst || responseReceipt.LastSequence != responseLast)
+            return 1;
+
+        var codecs = server.AcquireCodecs();
+        var events = server.AcquireStore().ReadFrom(session, 1);
+        var interaction = new InteractionId(interactionGuid);
+        var task = new TaskId(taskGuid);
+        var lane = new LaneId(laneGuid);
+        var turn = new TurnId(turnGuid);
+        var toolCall = new ToolCallId(toolCallGuid);
+        var request = events.SingleOrDefault(evt => evt.RunId == run && evt.TaskId == task
+            && evt.LaneId == lane && evt.TurnId == turn && evt.ToolCallId == toolCall
+            && codecs.Decode(evt) is InteractionRequested requested
+            && requested.InteractionId == interaction && requested.Kind == InteractionKind.WeakSandboxConsent);
+        var resolved = events.SingleOrDefault(evt => evt.RunId == run
+            && codecs.Decode(evt) is InteractionResolved choice && choice.InteractionId == interaction);
+        var resumed = events.SingleOrDefault(evt => evt.RunId == run
+            && codecs.Decode(evt) is RunInteractionResumed item && item.InteractionId == interaction
+            && item.CommandId == responseCommandText);
+        if (request is null || resolved is null || resumed is null
+            || resolved.Sequence < responseFirst || resolved.Sequence > responseLast
+            || resumed.Sequence < responseFirst || resumed.Sequence > responseLast
+            || resolved.Causation is not CommandCausation resolvedCause
+            || resolvedCause.CommandId.ToString() != responseCommandText
+            || resumed.Causation is not CommandCausation resumedCause
+            || resumedCause.CommandId.ToString() != responseCommandText
+            || codecs.Decode(resolved) is not InteractionResolved resolution
+            || resolution.IsQuestionnaire || resolution.Cause != InteractionCause.User
+            || resolution.OptionId != admitted.ContinuationOptionId
+            || events.Any(evt => evt.RunId == run && codecs.Decode(evt) is InteractionExpired expired
+                && expired.InteractionId == interaction))
+            return 1;
+
+        var invocationEvents = events.Where(evt => evt.RunId == run)
+            .Select(evt => (Event: evt, Payload: codecs.Decode(evt))).ToArray();
+        var admissionEvent = invocationEvents.SingleOrDefault(item => item.Payload is NativeCommandInvocationAdmitted value
+            && value.InvocationId == invocation && value.SessionId == session && value.RunId == run
+            && value.Kind == "compiledWorkflow").Event;
+        if (admissionEvent is null || !invocationEvents.Any(item => item.Event.Sequence > admissionEvent.Sequence
+                && item.Payload is NativeCommandInvocationStarted started && started.InvocationId == invocation)
+            || invocationEvents.Any(item => item.Event.Sequence > admissionEvent.Sequence
+                && item.Payload is NativeCommandInvocationFinished finished && finished.InvocationId == invocation))
+            return 1;
+
+        if (admissionEvent.Sequence > sourceLastSequence
+            || !server.TryReadNativeCommandPayload(invocation, out var admission, out var payloadJson)
+            || codecs.Decode(admissionEvent) is not NativeCommandInvocationAdmitted eventAdmission
+            || admission != eventAdmission
+            || !OmniServer.TryDecodeNativeCommandPayload(payloadJson, out var payload)
+            || payload.Kind != "compiledWorkflow" || payload.WorkflowId is not { Length: > 0 } workflowId
+            || payload.WorkflowVersion is not { Length: > 0 } workflowVersion)
+            return 1;
+
+        var continuation = new WeakSandboxWorkflowContinuation(invocationText, interactionText,
+            admitted.ContinuationOptionId, taskText, laneText, turnText, toolCallText, responseCommandText,
+            responseFirst, responseLast);
+        int exitCode;
+        try
+        {
+            exitCode = await ExecuteWorkflowAsync(new WorkflowRequestDto(workflowId,
+                workflowVersion, payload.Arguments), invocationText,
+                diagnostics, cancellationToken, allowNativeWeakSandboxConsent: admitted.NativeWeakSandboxCapability,
+                weakSandboxContinuation: continuation).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { exitCode = 130; }
+        catch (Exception exception)
+        {
+            diagnostics(RedactSensitive(exception.Message));
+            exitCode = 1;
+        }
+
+        if (exitCode == 0) server.FinishNativeCommand(invocation, "completed");
+        else if (exitCode != 3) server.FinishNativeCommand(invocation, exitCode == 130 ? "cancelled" : "failed");
+        return exitCode;
+    }
+
     private async Task<int> ExecutePersistedNativeCommandAsync(PersistedConversationCommand admitted,
         string invocationText, Action<string> diagnostics, CancellationToken cancellationToken)
     {
@@ -997,7 +1130,8 @@ public sealed class OmniCliRuntime : IDisposable
             try
             {
                 continuationCode = await ExecuteWorkflowAsync(new WorkflowRequestDto(workflowId, workflowVersion,
-                    sourcePayload.Arguments), invocationText, diagnostics, cancellationToken).ConfigureAwait(false);
+                    sourcePayload.Arguments), invocationText, diagnostics, cancellationToken,
+                    allowNativeWeakSandboxConsent: admitted.NativeWeakSandboxCapability).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             { continuationCode = 130; }
@@ -1025,7 +1159,8 @@ public sealed class OmniCliRuntime : IDisposable
                 if (payload.WorkflowId is not { Length: > 0 } workflowId
                     || payload.WorkflowVersion is not { Length: > 0 } workflowVersion) return 1;
                 exitCode = await ExecuteWorkflowAsync(new WorkflowRequestDto(workflowId, workflowVersion,
-                    payload.Arguments), invocationGuid.ToString("D"), diagnostics, cancellationToken).ConfigureAwait(false);
+                    payload.Arguments), invocationGuid.ToString("D"), diagnostics, cancellationToken,
+                    allowNativeWeakSandboxConsent: admitted.NativeWeakSandboxCapability).ConfigureAwait(false);
             }
             else if (payload.Kind is "prompt" or "forcedExtension")
             {
@@ -1223,6 +1358,11 @@ public sealed class OmniCliRuntime : IDisposable
     public Task<int> DelegationAsync(string delegationId, Action<string> diagnostics, CancellationToken token) =>
         RunTurnAsync("", false, diagnostics, token, delegationId: new DelegationId(Guid.Parse(delegationId)));
 
+    private Task<int> ContinueWeakSandboxDelegationAsync(string delegationId, Action<string> diagnostics,
+        CancellationToken token, WeakSandboxWorkflowContinuation continuation) =>
+        RunTurnAsync("", false, diagnostics, token, delegationId: new DelegationId(Guid.Parse(delegationId)),
+            allowNativeWeakSandboxConsent: true, weakSandboxContinuation: continuation);
+
     /// <summary>Runs an explicitly invoked extension tool through the ordinary Act Turn and ToolRuntime pipeline.</summary>
     public Task<int> ExecuteExtensionCommandAsync(string prompt, string toolName, Action<string> diagnostics,
         CancellationToken token)
@@ -1234,7 +1374,8 @@ public sealed class OmniCliRuntime : IDisposable
 
     /// <summary>Runs the compiled Explore → Implement → Verify workflow through normal delegation and tool admission.</summary>
     public async Task<int> ExecuteWorkflowAsync(WorkflowRequestDto request, string commandId,
-        Action<string> diagnostics, CancellationToken token)
+        Action<string> diagnostics, CancellationToken token, bool allowNativeWeakSandboxConsent = false,
+        WeakSandboxWorkflowContinuation? weakSandboxContinuation = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(diagnostics);
@@ -1322,8 +1463,9 @@ public sealed class OmniCliRuntime : IDisposable
                 }
                 if (phase == PreM6RecordPhase.Created)
                 {
-                    var code = await DelegationAsync(delegation.DelegationId.ToString(), diagnostics, token)
-                        .ConfigureAwait(false);
+                    var code = await RunTurnAsync("", false, diagnostics, token,
+                        delegationId: delegation.DelegationId,
+                        allowNativeWeakSandboxConsent: allowNativeWeakSandboxConsent).ConfigureAwait(false);
                     if (code != 0) return code;
                     server.ReconcileWorkflowPlanProgress(authorization.Session, authorization.Run);
                     found = server.FindWorkflowStage(stageAuthorization, stage);
@@ -1332,8 +1474,26 @@ public sealed class OmniCliRuntime : IDisposable
                 }
                 if (phase == PreM6RecordPhase.Accepted)
                 {
-                    diagnostics(Text(Localized("cli.runtime.workflow.accepted_wait", ("stage", WorkflowStageLabel(stage.ToString())))));
-                    return 3;
+                    if (weakSandboxContinuation is null || stage != WorkflowStage.Verify
+                        || weakSandboxContinuation.TaskId != delegation.ChildTaskId.ToString()
+                        || weakSandboxContinuation.LaneId != delegation.ChildLaneId.ToString())
+                    {
+                        diagnostics(Text(Localized("cli.runtime.workflow.accepted_wait", ("stage", WorkflowStageLabel(stage.ToString())))));
+                        return 3;
+                    }
+                    var continuationCode = await ContinueWeakSandboxDelegationAsync(
+                        delegation.DelegationId.ToString(), diagnostics, token, weakSandboxContinuation)
+                        .ConfigureAwait(false);
+                    if (continuationCode != 0) return continuationCode;
+                    server.ReconcileWorkflowPlanProgress(authorization.Session, authorization.Run);
+                    found = server.FindWorkflowStage(stageAuthorization, stage);
+                    if (found is null) throw new InvalidDataException("Workflow Verify stage disappeared after its exact consent continuation.");
+                    (planItem, delegation, phase) = found.Value;
+                    if (phase == PreM6RecordPhase.Accepted)
+                    {
+                        diagnostics(Text(Localized("cli.runtime.workflow.accepted_wait", ("stage", WorkflowStageLabel(stage.ToString())))));
+                        return 3;
+                    }
                 }
                 if (phase != PreM6RecordPhase.Returned)
                 {
@@ -1806,7 +1966,9 @@ public sealed class OmniCliRuntime : IDisposable
         DelegationId? delegationId = null, string? forcedInitialToolName = null,
         bool inputAlreadyPersisted = false, SessionId? expectedSession = null, RunId? expectedRun = null,
         IReadOnlyList<ArtifactRef>? attachments = null, PersistedConversationCommand? persistedContinuation = null,
-        bool allowDeferredNativePermission = false, bool exposeForcedInitialToolInDiscoveredMode = false)
+        bool allowDeferredNativePermission = false, bool exposeForcedInitialToolInDiscoveredMode = false,
+        WeakSandboxWorkflowContinuation? weakSandboxContinuation = null,
+        bool allowNativeWeakSandboxConsent = false)
     {
         if (delegationId is { } child)
         {
@@ -1820,7 +1982,8 @@ public sealed class OmniCliRuntime : IDisposable
                 return await RunTurnCoreAsync(prompt, act, writeLine, cancellationToken, conversationOnly,
                     routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName,
                     inputAlreadyPersisted, expectedSession, expectedRun, attachments, persistedContinuation,
-                    allowDeferredNativePermission, exposeForcedInitialToolInDiscoveredMode).ConfigureAwait(false);
+                    allowDeferredNativePermission, exposeForcedInitialToolInDiscoveredMode,
+                    weakSandboxContinuation, allowNativeWeakSandboxConsent).ConfigureAwait(false);
             }
             finally { _activeDelegations.TryRemove(child, out _); }
         }
@@ -1835,7 +1998,8 @@ public sealed class OmniCliRuntime : IDisposable
             return await RunTurnCoreAsync(prompt, act, writeLine, cancellationToken, conversationOnly,
                 routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName,
                 inputAlreadyPersisted, expectedSession, expectedRun, attachments, persistedContinuation,
-                allowDeferredNativePermission, exposeForcedInitialToolInDiscoveredMode).ConfigureAwait(false);
+                allowDeferredNativePermission, exposeForcedInitialToolInDiscoveredMode,
+                weakSandboxContinuation, allowNativeWeakSandboxConsent).ConfigureAwait(false);
         }
         finally
         {
@@ -1849,7 +2013,9 @@ public sealed class OmniCliRuntime : IDisposable
         DelegationId? delegationId = null, string? forcedInitialToolName = null,
         bool inputAlreadyPersisted = false, SessionId? expectedSession = null, RunId? expectedRun = null,
         IReadOnlyList<ArtifactRef>? attachments = null, PersistedConversationCommand? persistedContinuation = null,
-        bool allowDeferredNativePermission = false, bool exposeForcedInitialToolInDiscoveredMode = false)
+        bool allowDeferredNativePermission = false, bool exposeForcedInitialToolInDiscoveredMode = false,
+        WeakSandboxWorkflowContinuation? weakSandboxContinuation = null,
+        bool allowNativeWeakSandboxConsent = false)
     {
         if (turnBoost is null && turnBoostId is not null)
             throw new ArgumentException("A reasoning boost id requires a boost request.", nameof(turnBoostId));
@@ -2826,6 +2992,41 @@ public sealed class OmniCliRuntime : IDisposable
                         || item is ToolCallFailed { EffectOutcome: not EffectOutcome.Unknown });
                 };
             }
+            if (weakSandboxContinuation is { } weakContinuation)
+            {
+                if (workflowStage?.Definition.Stage != WorkflowStage.Verify || delegation is null
+                    || weakContinuation.TaskId != delegation.ChildTaskId.ToString()
+                    || weakContinuation.LaneId != delegation.ChildLaneId.ToString()
+                    || weakContinuation.TurnId != FindOpenTurnContinuation(server, delegation.ChildLaneId)
+                        ?.Started.TurnId.ToString()
+                    || executor is not ScriptedToolExecutor weakResumableExecutor
+                    || !Guid.TryParseExact(weakContinuation.InteractionId, "D", out var weakInteractionGuid))
+                    throw new InvalidOperationException("The Weak sandbox continuation is not bound to the exact Verify child Turn.");
+                var weakInteraction = new InteractionId(weakInteractionGuid);
+                if (weakContinuation.OptionId == "deny")
+                {
+                    // The authenticated response already recorded PermissionDenied before ACK.
+                    // Stop this child without dispatching another provider step or effect.
+                    resumePreflightPassed = () => false;
+                }
+                else if (weakContinuation.OptionId == "consent_once")
+                {
+                    resumePreflightPassed = () =>
+                    {
+                        var scope = ExecutionScope.Current;
+                        if (scope?.RunId != runId || scope.TaskId?.ToString() != weakContinuation.TaskId
+                            || scope.LaneId?.ToString() != weakContinuation.LaneId
+                            || scope.TurnId?.ToString() != weakContinuation.TurnId
+                            || scope.ToolCallId?.ToString() != weakContinuation.ToolCallId)
+                            return false;
+                        var outcome = weakResumableExecutor.ResumeWeakSandboxConsent(
+                            new EventStream(server.AcquireStore(), server.AcquireCodecs(), sessionId),
+                            server.AcquireCodecs(), weakInteraction, weakContinuation.OptionId, cancellationToken);
+                        return outcome.Succeeded && outcome.Events.Any(item => item is ToolCallSucceeded);
+                    };
+                }
+                else throw new InvalidOperationException("The Weak sandbox continuation option is not supported.");
+            }
             if (delegationId is not null)
             {
                 var stageInstruction = workflowStage?.Definition.Instruction
@@ -2931,17 +3132,22 @@ public sealed class OmniCliRuntime : IDisposable
                         ? OmniHost.CreateActExecutor(childTools.Catalog(), laneRoot, childBoundary,
                             restrictions, work.Run, audit, interactionResponder, interactive, artifacts,
                             work.Profile, receiveMailbox,
-                            acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission)
+                            acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission,
+                            allowDeferredWeakSandboxConsent: allowNativeWeakSandboxConsent
+                                && workflowStage?.Definition.Stage == WorkflowStage.Verify)
                         : OmniHost.CreateExplorerExecutor(childTools.Catalog(), laneRoot, childBoundary,
                             restrictions, work.Run, work.Profile, receiveMailbox, artifacts: artifacts,
-                            acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission);
+                            acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission,
+                            allowDeferredWeakSandboxConsent: allowNativeWeakSandboxConsent
+                                && workflowStage?.Definition.Stage == WorkflowStage.Verify);
                     var childMaterializer = new ContextMaterializer(tokenCounter,
                         [new WorkingStateContributor(childWorkingState)]);
                     var childTurn = BuildTurn(productReasoning, reasoningResolution, childExecutor,
                         childTools.Catalog(), childBoundary, childMaterializer, workflowStage?.Definition);
                     var childResult = childTurn.Ask(openTurn is null ? childObjective : "", childInstruction,
                         work.Session, work.Run, work.Delegation.ChildLaneId, childWorkingState, token, "TrustedDelegation",
-                        openTurn?.Started.InstructionSnapshot ?? childSnapshot);
+                        openTurn?.Started.InstructionSnapshot ?? childSnapshot,
+                        resumePreflightPassed: resumePreflightPassed);
                     var laneGates = workspaceConfig.Settings?.Gates;
                     if (childResult.StopReason == StopReason.EndTurn && laneGates is not null
                         && (laneGates.Build is not null || laneGates.Test is not null || laneGates.Acceptance))
@@ -2981,7 +3187,7 @@ public sealed class OmniCliRuntime : IDisposable
                     return childResult;
                 }
                 var ack = server.ExecuteDelegation(delegationId, ExecuteLane,
-                    cancellationToken, waitForCapacity: true);
+                    cancellationToken, waitForCapacity: true, weakSandboxContinuation: weakSandboxContinuation);
                 if (ack.Status == "ok" && ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted
                     && FindPendingLaneAcceptance(server.AcquireStore(), server.AcquireCodecs(), sessionId, runId,
                         server.ReadCurrentDelegation(delegationId).ChildTaskId,

@@ -47,6 +47,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     private readonly IWorkspaceWriteLeaseProvider? _workspaceWriteLeases;
     private readonly Func<IDisposable>? _acquireSessionSecurityAdmission;
     private readonly bool _allowDeferredInteraction;
+    private readonly bool _allowDeferredWeakSandboxConsent;
 
     public ScriptedToolExecutor(FakeCatalog catalog, IPermissionPolicy policy)
     {
@@ -89,7 +90,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         IWorkspaceWriteLeaseProvider? workspaceWriteLeases = null,
         IReadOnlyList<IToolIntentBoundary>? additionalBoundaries = null,
         Func<IDisposable>? acquireSessionSecurityAdmission = null,
-        bool allowDeferredInteraction = false)
+        bool allowDeferredInteraction = false,
+        bool allowDeferredWeakSandboxConsent = false)
     {
         _catalog = catalog;
         _policy = policy;
@@ -106,6 +108,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         _workspaceWriteLeases = workspaceWriteLeases;
         _acquireSessionSecurityAdmission = acquireSessionSecurityAdmission;
         _allowDeferredInteraction = allowDeferredInteraction;
+        _allowDeferredWeakSandboxConsent = allowDeferredWeakSandboxConsent;
     }
 
     public static ScriptedToolExecutor Default() =>
@@ -275,6 +278,68 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         return outcome;
     }
 
+    internal ToolOutcome ResumeWeakSandboxConsent(EventStream stream, IEventCodecRegistry codecs,
+        InteractionId interaction, string optionId, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        var scope = ExecutionScope.Current;
+        if (scope?.RunId is not { } run || scope.TurnId is not { } turn || scope.LaneId is not { } lane)
+            throw new InvalidOperationException("Weak sandbox continuation is missing its execution scope.");
+        if (optionId is not ("consent_once" or "deny"))
+            throw new InvalidOperationException("The Weak sandbox option is not server-defined.");
+        var events = stream.EventsSince(1);
+        var requestEvents = events.Where(evt => evt.RunId == run && evt.TurnId == turn && evt.LaneId == lane)
+            .Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
+            .Where(item => item.Payload is ToolCallRequested).ToArray();
+        var candidates = new List<(ToolCallRequested Call, DomainEvent Request, string Prepared, string Fingerprint)>();
+        foreach (var request in events.Where(evt => evt.RunId == run && evt.TurnId == turn && evt.LaneId == lane
+                     && codecs.Decode(evt) is InteractionRequested interactionRequest
+                     && interactionRequest.InteractionId == interaction
+                     && interactionRequest.Kind == InteractionKind.WeakSandboxConsent))
+        {
+            if (request.ToolCallId is not { } toolCallId) continue;
+            var callEvents = events.Where(evt => evt.RunId == run && evt.TurnId == turn && evt.LaneId == lane
+                    && evt.ToolCallId == toolCallId).OrderBy(evt => evt.Sequence)
+                .Select(evt => (Event: evt, Payload: codecs.Decode(evt))).ToArray();
+            var callRequest = callEvents.SingleOrDefault(item => item.Payload is ToolCallRequested);
+            var prepared = callEvents.SingleOrDefault(item => item.Payload is ToolCallPrepared);
+            var authorized = callEvents.LastOrDefault(item => item.Payload is ToolCallAuthorized);
+            if (callRequest.Event is null || callRequest.Payload is not ToolCallRequested call
+                || prepared.Event is null || prepared.Payload is not ToolCallPrepared preparedCall
+                || authorized.Event is null || authorized.Event.Sequence >= request.Sequence
+                || callRequest.Event.Sequence >= prepared.Event.Sequence || prepared.Event.Sequence >= request.Sequence
+                || callEvents.Any(item => item.Event.Sequence > request.Sequence
+                    && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallFailed or ToolCallEffectUnknown
+                        or ToolCallReconciled)) continue;
+            string fingerprint;
+            try
+            {
+                using var subject = System.Text.Json.JsonDocument.Parse(
+                    ((InteractionRequested)codecs.Decode(request)).SubjectJson);
+                fingerprint = subject.RootElement.TryGetProperty("intentFingerprint", out var value)
+                    && value.ValueKind == System.Text.Json.JsonValueKind.String ? value.GetString() ?? "" : "";
+            }
+            catch (System.Text.Json.JsonException) { continue; }
+            if (fingerprint.Length != 64 || !fingerprint.All(Uri.IsHexDigit)) continue;
+            var response = events.SingleOrDefault(evt => evt.RunId == run
+                && codecs.Decode(evt) is InteractionResolved resolved && resolved.InteractionId == interaction);
+            if (response is null || codecs.Decode(response) is not InteractionResolved choice
+                || choice.IsQuestionnaire || choice.Cause != InteractionCause.User || choice.OptionId != optionId)
+                continue;
+            candidates.Add((call, request, preparedCall.ToolIntentJson, fingerprint));
+        }
+        if (candidates.Count != 1)
+            throw new InvalidOperationException("The Weak sandbox choice is not uniquely bound to this child ToolCall.");
+        var candidate = candidates[0];
+        var validated = new ValidatedToolCall(candidate.Call.ToolCallId, new ToolId(candidate.Call.ToolName),
+            candidate.Call.ProviderCallId, candidate.Call.ArgumentsJson);
+        var outcome = Run(validated, userApprovesAsk: false, cancellationToken, stream,
+            approvedWeakSandboxInteraction: interaction, approvedWeakSandboxOption: optionId,
+            expectedPreparedArguments: candidate.Prepared, expectedIntentFingerprint: candidate.Fingerprint);
+        if (outcome.Events.Count > 0) stream.AppendBatch(outcome.Events, DurabilityClass.Standard);
+        return outcome;
+    }
+
     internal ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
         CancellationToken cancellationToken, EventStream stream, bool requiresSubstitutionAsk)
     {
@@ -340,7 +405,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         bool requiresSubstitutionAsk = false, ProtectedToolSubstitution? protectedSubstitution = null,
         bool recordReadRegistry = true, InteractionId? approvedPermission = null,
         string? approvedOption = null, string? expectedPreparedArguments = null,
-        string? expectedIntentFingerprint = null)
+        string? expectedIntentFingerprint = null, InteractionId? approvedWeakSandboxInteraction = null,
+        string? approvedWeakSandboxOption = null)
     {
         // Buffer local a la llamada (evita estado compartido entre Runs). Sin flush, contiene
         // todos los eventos emitidos; tras un flush contiene solo los outcomes.
@@ -440,8 +506,14 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             requiresSubstitutionAsk: requiresSubstitutionAsk,
             protectedSubstitution: protectedSubstitution,
             acquireSessionSecurityAdmission: _acquireSessionSecurityAdmission,
-            allowDeferredInteraction: _allowDeferredInteraction);
-        var outcome = approvedPermission is { } interaction
+            allowDeferredInteraction: _allowDeferredInteraction,
+            allowDeferredWeakSandboxConsent: _allowDeferredWeakSandboxConsent,
+            weakSandboxConsentForThisCall: approvedWeakSandboxInteraction is not null
+                && approvedWeakSandboxOption == "consent_once");
+        var outcome = approvedWeakSandboxInteraction is { } weakInteraction
+            ? runtime.ResumeWeakSandboxConsent(validated, prepContext, execContext, cancellationToken,
+                weakInteraction, approvedWeakSandboxOption!, expectedPreparedArguments!, expectedIntentFingerprint!)
+            : approvedPermission is { } interaction
             ? runtime.ResumeApprovedPermission(validated, prepContext, execContext, cancellationToken,
                 interaction, approvedOption!, expectedPreparedArguments!, expectedIntentFingerprint!)
             : requestReceipt is null

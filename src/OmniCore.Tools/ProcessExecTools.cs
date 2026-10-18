@@ -6,7 +6,7 @@ using OmniCore.Domain;
 using OmniCore.Sandbox;
 
 /// <summary>process.exec: argv literal, nunca interpretado por un shell (ADR-0015).</summary>
-public sealed class ProcessExecTool : ITool
+public sealed class ProcessExecTool : ITool, IWeakSandboxConsentPreflightTool
 {
     private readonly ToolDescriptor _descriptor;
     private readonly ISandboxProcessLauncher _processLauncher;
@@ -40,6 +40,20 @@ public sealed class ProcessExecTool : ITool
             new ProcessClaim(args.Executable, args.Argv, "External", args.NetworkRequired, cwd), Array.Empty<string>());
         return new Prepared(new ToolIntent(call.ToolCallId, call.ToolId, call.NormalizedArgumentsJson,
             EffectClass.NonIdempotent, claims, ToolRisk.High, null));
+    }
+
+    public WeakSandboxConsentPreflight? CheckWeakSandboxConsentPreflight(ToolIntent intent,
+        ToolPreparationContext preparation, CancellationToken cancellationToken)
+    {
+        if (_requestedStrength != SandboxStrength.Strong || intent.Claims.Process is not { } process
+            || process.WorkingDirectory is not { Length: > 0 } cwd
+            || _processLauncher is not IStrongSandboxPreflight preflight) return null;
+        cancellationToken.ThrowIfCancellationRequested();
+        var launch = ProcessToolJson.CreateLaunchSpec(SandboxStrength.Strong, process.Executable,
+            process.Args, cwd, preparation.WorkspaceRoot, process.NetworkRequired, TimeSpan.FromSeconds(1));
+        return preflight.CheckStrongAvailability(launch) == StrongSandboxPreflightResult.UnavailableBeforeLaunch
+            ? new WeakSandboxConsentPreflight(process.Executable, cwd, "sandbox.strong_unavailable")
+            : null;
     }
 
     public Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
@@ -199,6 +213,16 @@ internal static class ProcessToolJson
         { return false; }
     }
 
+    internal static SandboxLaunchSpec CreateLaunchSpec(SandboxStrength strength, string executable,
+        IReadOnlyList<string> args, string cwd, string workspaceRoot, bool networkRequired, TimeSpan timeout)
+    {
+        var network = new SandboxNetworkPolicy(networkRequired ? SandboxNetworkMode.AllowAll
+            : SandboxNetworkMode.Deny, Array.Empty<string>());
+        return new SandboxLaunchSpec(strength, executable, args, cwd, new Dictionary<string, string>(),
+            new[] { new SandboxAllowedPath(Path.GetFullPath(workspaceRoot),
+                SandboxPathAccess.Read | SandboxPathAccess.Write) }, network, timeout);
+    }
+
     internal static (string? Cwd, TimeSpan Timeout) GetRuntimeValues(string json, string workspaceRoot)
     {
         if (!TryParse(json, out var parsed, out _)) return (null, TimeSpan.Zero);
@@ -207,6 +231,7 @@ internal static class ProcessToolJson
 
     internal static bool EnsureSandboxConsent(ToolExecutionContext context, string executable)
     {
+        if (context.WeakSandboxConsentForThisCall) return true;
         if (context.WeakSandboxConsent?.GrantedForRun == true) return true;
 
         var id = InteractionId.New();
@@ -237,13 +262,8 @@ internal static class ProcessToolJson
         IReadOnlyList<string> args, string cwd, string workspaceRoot, TimeSpan timeout, bool networkRequired,
         SandboxStrength requestedStrength, ToolExecutionContext context, CancellationToken cancellationToken)
     {
-        var network = new SandboxNetworkPolicy(networkRequired ? SandboxNetworkMode.AllowAll
-            : SandboxNetworkMode.Deny, Array.Empty<string>());
-        var launch = new SandboxLaunchSpec(requestedStrength, executable, args, cwd,
-            new Dictionary<string, string>(), new[]
-            {
-                new SandboxAllowedPath(Path.GetFullPath(workspaceRoot), SandboxPathAccess.Read | SandboxPathAccess.Write),
-            }, network, timeout);
+        var launch = CreateLaunchSpec(requestedStrength, executable, args, cwd, workspaceRoot,
+            networkRequired, timeout);
         ISandboxProcessControl? process = null;
         try
         {
@@ -252,12 +272,33 @@ internal static class ProcessToolJson
             {
                 process = await launcher.StartAsync(launch, cancellationToken).ConfigureAwait(false);
             }
+            catch (StrongSandboxUnavailableBeforeLaunchException) when (requestedStrength == SandboxStrength.Strong)
+            {
+                if (context.AllowDeferredWeakSandboxConsent && !context.WeakSandboxConsentForThisCall)
+                    throw new WeakSandboxConsentRequiredException();
+                if (!context.WeakSandboxConsentForThisCall && !EnsureSandboxConsent(context, executable))
+                    throw new WeakSandboxConsentRequiredException();
+                launch = launch with { RequestedStrength = SandboxStrength.Weak };
+                process = await launcher.StartAsync(launch, cancellationToken).ConfigureAwait(false);
+            }
             catch (NotSupportedException) when (requestedStrength == SandboxStrength.Strong)
             {
+                // Keep the established interactive/headless behavior for non-platform launchers.
+                // Native deferred consent is stricter: only the typed pre-launch proof above may
+                // open it. A generic NotSupportedException after dispatch is not proof that no
+                // Strong process was attempted, so preserve the uncertainty and fail closed.
+                if (context.AllowDeferredWeakSandboxConsent)
+                    return new ToolResult("Strong process launch outcome is unknown.", null, null, 0, false,
+                        EffectOutcome.Unknown, true, ToolErrorCode.ProcessFailure);
                 if (!EnsureSandboxConsent(context, executable))
                     throw new WeakSandboxConsentRequiredException();
                 launch = launch with { RequestedStrength = SandboxStrength.Weak };
                 process = await launcher.StartAsync(launch, cancellationToken).ConfigureAwait(false);
+            }
+            catch (StrongSandboxLaunchOutcomeUnknownException)
+            {
+                return new ToolResult("Strong process launch outcome is unknown.", null, null, 0, false,
+                    EffectOutcome.Unknown, true, ToolErrorCode.ProcessFailure);
             }
 
             var output = await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);

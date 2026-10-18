@@ -91,7 +91,7 @@ public static class WorkflowToolFactory
             throw new ArgumentException("Dynamic tool name uses ASCII letters, digits, '-' or '_'.", parameter);
     }
 
-    private sealed class WorkflowOwnedDynamicTool : ITool, IReconcilableTool
+    private sealed class WorkflowOwnedDynamicTool : ITool, IReconcilableTool, IWeakSandboxConsentPreflightTool
     {
         private readonly ITool _implementation;
         private readonly VerificationBinding? _verification;
@@ -153,6 +153,12 @@ public static class WorkflowToolFactory
                     ToolErrorCode.InvalidArguments);
             return result;
         }
+
+        public WeakSandboxConsentPreflight? CheckWeakSandboxConsentPreflight(ToolIntent intent,
+            ToolPreparationContext preparation, CancellationToken cancellationToken) =>
+            _implementation is IWeakSandboxConsentPreflightTool preflight
+                ? preflight.CheckWeakSandboxConsentPreflight(intent, preparation, cancellationToken)
+                : null;
 
         private static bool MatchesVerification(string json, VerificationBinding expected)
         {

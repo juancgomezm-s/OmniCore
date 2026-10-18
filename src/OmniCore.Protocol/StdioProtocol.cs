@@ -69,6 +69,7 @@ public static class StdioProtocol
         "command.conversation.compact.user",
         "command.conversation.questionnaire.respond.user",
         "command.conversation.interaction.choice.respond.user",
+        "command.conversation.weak-sandbox.respond.user",
         "command.conversation.interaction.continue.user",
         "command.invoke.user",
         "command.invoke.continue.user",
@@ -208,6 +209,8 @@ public static class StdioProtocol
             { WireName = "interaction.respond", Variant = "questionnaire" },
         new("interaction.respond.choice", "command.conversation.interaction.choice.respond.user", "native-confirmation+hmac+session-run-interaction-option+policy-revision+receipt+resume", "command.result.lookup", "Choose a server-defined option for a pending Permission or PlanApproval and continue its existing Run")
             { WireName = "interaction.respond", Variant = "choice" },
+        new("interaction.respond.weak-sandbox", "command.conversation.weak-sandbox.respond.user", "native-confirmation+hmac+session-run-task-lane-turn-toolcall-invocation+policy-revision+receipt+resume", "command.result.lookup", "Choose once or deny a proven pre-launch Weak sandbox fallback for the exact workflow verifier child call")
+            { WireName = "interaction.respond", Variant = "weakSandboxConsent" },
         new("interaction.continue", "command.conversation.interaction.continue.user", "native-confirmation+hmac+session-run-interaction-policy-revision+accepted-receipt+explicit-resume", "command.result.lookup", "Explicitly resume an accepted choice whose continuation was not started") ,
         new("command.invoke.user", "command.invoke.user", "native-confirmation+hmac+session-command-catalog+source-fingerprint+model-routing-policy-cas+durable-admission", "command.result.lookup", "Invoke an exact Host-cataloged command in the trusted conversation pipeline"),
         new("command.continue", "command.invoke.continue.user", "native-confirmation+hmac+admitted-command+scope-cas+receipt+explicit-resume", "command.result.lookup", "Explicitly continue a durably admitted command that has not started"),

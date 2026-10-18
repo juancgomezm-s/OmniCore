@@ -165,7 +165,7 @@ public sealed partial class OmniServer
     /// still passes Explorer's routing, profile and hierarchical budget guards.</summary>
     internal CommandAck ExecuteDelegation(DelegationId id,
         Func<DelegationWork, CancellationToken, ExplorerTurn.TurnResult> execute, CancellationToken token,
-        bool waitForCapacity = false)
+        bool waitForCapacity = false, WeakSandboxWorkflowContinuation? weakSandboxContinuation = null)
     {
         var session = _lastSessionId ?? throw new InvalidOperationException("No Session.");
         var run = _lastRunId ?? throw new InvalidOperationException("No Run.");
@@ -460,9 +460,12 @@ public sealed partial class OmniServer
                     && history.Phase == PreM6RecordPhase.Accepted
                     && history.Facts.OfType<DelegationAccepted>().SingleOrDefault() is { } acceptedBinding
                     && HasExactlyBoundOpenExternalStep(own, delegation.ChildLaneId, acceptedBinding.ChildExecutionId);
+                var canResumeWeakSandboxCall = weakSandboxContinuation is { } weak
+                    && history.Phase == PreM6RecordPhase.Accepted
+                    && TryMatchOpenWeakSandboxCall(session, run, delegation, own, weak);
                 if (HasOpenModelStep(own, supervisor.LaneId) || HasOpenToolCall(own, supervisor.LaneId)
                     || childHasOpenModelStep && !canResumeBoundExternal
-                    || HasOpenToolCall(own, delegation.ChildLaneId))
+                    || HasOpenToolCall(own, delegation.ChildLaneId) && !canResumeWeakSandboxCall)
                     return Ack(RuntimeCommandOutcome.Deferred("ExecutionBoundaryRequired"));
                 if (history.Phase == PreM6RecordPhase.Created)
                 {
@@ -652,6 +655,78 @@ public sealed partial class OmniServer
         }
         finally { taskPacketPublicationLease?.Dispose(); capacity?.Dispose(); }
         CommandAck Ack(RuntimeCommandOutcome outcome) => CommandOutcomeAck(messageId, "ok", null, outcome, session, before, commandId);
+    }
+
+    private bool TryMatchOpenWeakSandboxCall(SessionId session, RunId run, Delegation delegation,
+        IReadOnlyList<DomainEvent> events, WeakSandboxWorkflowContinuation continuation)
+    {
+        if (continuation.OptionId != "consent_once"
+            || continuation.TaskId != delegation.ChildTaskId.ToString()
+            || continuation.LaneId != delegation.ChildLaneId.ToString()
+            || !Guid.TryParseExact(continuation.InvocationId, "D", out var invocationGuid)
+            || !Guid.TryParseExact(continuation.InteractionId, "D", out var interactionGuid)
+            || !Guid.TryParseExact(continuation.TurnId, "D", out var turnGuid)
+            || !Guid.TryParseExact(continuation.ToolCallId, "D", out var toolCallGuid)) return false;
+        var invocation = new CommandId(invocationGuid);
+        var interaction = new InteractionId(interactionGuid);
+        var turn = new TurnId(turnGuid);
+        var toolCall = new ToolCallId(toolCallGuid);
+        var codecs = _codecs;
+        var scoped = events.Where(evt => evt.RunId == run).ToArray();
+        if (!scoped.Any(evt => codecs.Decode(evt) is NativeCommandInvocationAdmitted admitted
+                && admitted.InvocationId == invocation && admitted.SessionId == session && admitted.RunId == run
+                && admitted.Kind == "compiledWorkflow")
+            || !scoped.Any(evt => codecs.Decode(evt) is NativeCommandInvocationStarted started
+                && started.InvocationId == invocation && started.Kind == "compiledWorkflow")
+            || scoped.Any(evt => codecs.Decode(evt) is NativeCommandInvocationFinished finished
+                && finished.InvocationId == invocation)) return false;
+
+        var requestEvents = scoped.Where(evt => evt.TaskId == delegation.ChildTaskId
+                && evt.LaneId == delegation.ChildLaneId && evt.TurnId == turn && evt.ToolCallId == toolCall
+                && codecs.Decode(evt) is InteractionRequested request
+                && request.InteractionId == interaction && request.Kind == InteractionKind.WeakSandboxConsent)
+            .ToArray();
+        var resolvedEvents = scoped.Where(evt => codecs.Decode(evt) is InteractionResolved resolved
+                && resolved.InteractionId == interaction && !resolved.IsQuestionnaire
+                && resolved.Cause == InteractionCause.User && resolved.OptionId == continuation.OptionId)
+            .ToArray();
+        var resumedEvents = scoped.Where(evt => codecs.Decode(evt) is RunInteractionResumed resumed
+                && resumed.InteractionId == interaction && resumed.CommandId == continuation.ResponseCommandId)
+            .ToArray();
+        if (requestEvents.Length != 1 || resolvedEvents.Length != 1 || resumedEvents.Length != 1
+            || !(requestEvents[0].Sequence < resolvedEvents[0].Sequence
+                && resolvedEvents[0].Sequence < resumedEvents[0].Sequence)
+            || requestEvents[0].Sequence < continuation.ResponseFirstSequence
+            || resumedEvents[0].Sequence > continuation.ResponseLastSequence
+            || codecs.Decode(requestEvents[0]) is not InteractionRequested weakRequest
+            || !OptionIds(weakRequest.OptionsJson).SequenceEqual(["consent_once", "deny"], StringComparer.Ordinal))
+            return false;
+
+        var callEvents = scoped.Where(evt => evt.TaskId == delegation.ChildTaskId
+                && evt.LaneId == delegation.ChildLaneId && evt.TurnId == turn && evt.ToolCallId == toolCall)
+            .OrderBy(evt => evt.Sequence).Select(evt => (Event: evt, Payload: codecs.Decode(evt))).ToArray();
+        var requested = callEvents.SingleOrDefault(item => item.Payload is ToolCallRequested);
+        var prepared = callEvents.SingleOrDefault(item => item.Payload is ToolCallPrepared);
+        var authorized = callEvents.LastOrDefault(item => item.Payload is ToolCallAuthorized);
+        if (requested.Event is null || prepared.Event is null || authorized.Event is null
+            || !(requested.Event.Sequence < prepared.Event.Sequence && prepared.Event.Sequence < requestEvents[0].Sequence
+                && authorized.Event.Sequence < requestEvents[0].Sequence)
+            || callEvents.Any(item => item.Event.Sequence > requestEvents[0].Sequence
+                && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallFailed
+                    or ToolCallEffectUnknown or ToolCallReconciled)) return false;
+
+        var openToolCalls = scoped.Where(evt => evt.TaskId == delegation.ChildTaskId
+                && evt.LaneId == delegation.ChildLaneId && evt.TurnId == turn
+                && codecs.Decode(evt) is ToolCallRequested)
+            .Select(evt => evt.ToolCallId).Where(id => id is not null).Distinct().ToArray();
+        if (openToolCalls.Length != 1 || openToolCalls[0] != toolCall) return false;
+
+        var responseReceipt = _receiptStore?.ReadCommandReceipt(continuation.ResponseCommandId);
+        return responseReceipt is { State: CommandReceiptState.Completed, OutcomeKind: "Accepted",
+                FirstSequence: not null, LastSequence: not null }
+            && responseReceipt.FirstSequence == continuation.ResponseFirstSequence
+            && responseReceipt.LastSequence == continuation.ResponseLastSequence
+            && string.Equals(responseReceipt.SessionId, session.ToString(), StringComparison.Ordinal);
     }
 
     private static bool ValidAcceptedResult(string json, string schemaId) => schemaId switch

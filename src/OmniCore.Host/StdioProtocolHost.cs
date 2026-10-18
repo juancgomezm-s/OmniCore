@@ -17,7 +17,14 @@ internal sealed record PersistedConversationCommand(string CommandId, string Req
     string? ContinuationTurnId = null,
     bool NativeChoiceCapability = false, bool ExplicitChoiceRecovery = false,
     string? NativeInvocationId = null, string? NativeCommandKind = null,
-    bool ExplicitNativeCommandRecovery = false, bool NativeWorkflowContinuation = false);
+    bool ExplicitNativeCommandRecovery = false, bool NativeWorkflowContinuation = false,
+    string? ContinuationTaskId = null, string? ContinuationLaneId = null,
+    string? ContinuationToolCallId = null, string? ContinuationInvocationId = null,
+    bool NativeWeakSandboxCapability = false);
+
+internal sealed record WeakSandboxWorkflowContinuation(string InvocationId, string InteractionId, string OptionId,
+    string TaskId, string LaneId, string TurnId, string ToolCallId, string ResponseCommandId,
+    long ResponseFirstSequence, long ResponseLastSequence);
 
 /// <summary>Request/response stdio adapter over the same IOmniClient used by the in-process CLI.</summary>
 public static class StdioProtocolHost
@@ -74,12 +81,14 @@ public static class StdioProtocolHost
                 if (!negotiated)
                 {
                     if (!TryNegotiate(client, request, bootstrapKey, actionNonce, runPersistedConversation is not null,
-                        out var response, out var accepted, out var nativeChoiceCapability))
+                        out var response, out var accepted, out var nativeChoiceCapability,
+                        out var nativeWeakSandboxCapability))
                     {
                         WriteFrame(output, response!.ToJson());
                         return 3;
                     }
                     conversation.SetNativeChoiceCapability(nativeChoiceCapability);
+                    conversation.SetNativeWeakSandboxCapability(nativeWeakSandboxCapability);
                     negotiated = accepted;
                     WriteFrame(output, response!.ToJson());
                     continue;
@@ -247,6 +256,7 @@ public static class StdioProtocolHost
                     {
                         "questionnaire" => conversation.CanResumeQuestionnaire(client, trustedScope, command),
                         "choice" => conversation.CanResumeChoice(client, trustedScope, command),
+                        "weakSandboxConsent" => conversation.CanResumeWeakSandboxConsent(client, trustedScope, command),
                         _ => false,
                     };
                     if (!canResume)
@@ -334,6 +344,8 @@ public static class StdioProtocolHost
                         if (option is not ("approve_only" or "reject"))
                             ack = conversation.ResumeChoice(client, command, trustedScope!, ack);
                     }
+                    else if (responseType == "weakSandboxConsent")
+                        ack = conversation.ResumeWeakSandboxConsent(client, command, trustedScope!, ack);
                     else ack = conversation.ResumeQuestionnaire(client, command, trustedScope!, ack);
                 }
                 else if (commandName == "interaction.continue" && newlyExecuted
@@ -407,7 +419,7 @@ public static class StdioProtocolHost
                     throw new InvalidDataException();
                 if (StdioProtocol.TryGetQuery(name, out var descriptor)
                     && !NegotiatedCapabilities(client, bootstrapKey, actionNonce, conversationExecutionAvailable,
-                        conversation.NativeChoiceCapability)
+                        conversation.NativeChoiceCapability, conversation.NativeWeakSandboxCapability)
                         .Contains(descriptor.Capability, StringComparer.Ordinal))
                     throw new NotSupportedException();
                 if (name == "humanActionScope")
@@ -429,7 +441,7 @@ public static class StdioProtocolHost
                 if (name == "native.catalog")
                 {
                     var capabilities = NegotiatedCapabilities(client, bootstrapKey, actionNonce, conversationExecutionAvailable,
-                        conversation.NativeChoiceCapability);
+                        conversation.NativeChoiceCapability, conversation.NativeWeakSandboxCapability);
                     return "{\"name\":\"native.catalog\",\"json\":"
                         + Quote(StdioProtocol.EncodeNativeCatalog(capabilities)) + "}";
                 }
@@ -681,6 +693,35 @@ public static class StdioProtocolHost
                     || !payload.RootElement.TryGetProperty("expectedPolicyRevision", out var choicePolicyRevision)
                     || choicePolicyRevision.ValueKind != JsonValueKind.Number
                     || !choicePolicyRevision.TryGetInt64(out var choiceRevision) || choiceRevision < 1) return false;
+                scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
+                    CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
+                return true;
+            }
+            if (responseType.GetString() == "weakSandboxConsent")
+            {
+                static bool CanonicalChoiceId(JsonElement root, string name) =>
+                    root.TryGetProperty(name, out var id) && id.ValueKind == JsonValueKind.String
+                    && Guid.TryParseExact(id.GetString(), "D", out var parsedId)
+                    && id.GetString() == parsedId.ToString("D");
+                if (properties.Length != 11
+                    || properties.Except(["cmd", "responseType", "interactionId", "optionId", "expectedRunId",
+                        "expectedPolicyRevision", "taskId", "laneId", "turnId", "toolCallId", "invocationId"],
+                        StringComparer.Ordinal).Any()
+                    || !CanonicalChoiceId(payload.RootElement, "interactionId")
+                    || !CanonicalChoiceId(payload.RootElement, "taskId")
+                    || !CanonicalChoiceId(payload.RootElement, "laneId")
+                    || !CanonicalChoiceId(payload.RootElement, "turnId")
+                    || !CanonicalChoiceId(payload.RootElement, "toolCallId")
+                    || !CanonicalChoiceId(payload.RootElement, "invocationId")
+                    || !payload.RootElement.TryGetProperty("optionId", out var weakOption)
+                    || weakOption.ValueKind != JsonValueKind.String
+                    || weakOption.GetString() is not ("consent_once" or "deny")
+                    || !payload.RootElement.TryGetProperty("expectedRunId", out var weakRun)
+                    || weakRun.ValueKind != JsonValueKind.String || weakRun.GetString() != expectedRun.Value
+                    || !payload.RootElement.TryGetProperty("expectedPolicyRevision", out var weakPolicyRevision)
+                    || weakPolicyRevision.ValueKind != JsonValueKind.Number
+                    || !weakPolicyRevision.TryGetInt64(out var weakRevision) || weakRevision < 1)
+                    return false;
                 scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
                     CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
                 return true;
@@ -1145,6 +1186,7 @@ public static class StdioProtocolHost
         private string? _commandId;
         private PersistedConversationCommand? _deferredConversation;
         private bool _nativeChoiceCapability;
+        private bool _nativeWeakSandboxCapability;
         private readonly AttachmentUploadManager _uploads = new();
         private sealed record PendingContinuation(OmniServer Server, PersistedConversationCommand Binding,
             string ReceiptCommandId, string ReceiptRequestHash);
@@ -1154,6 +1196,11 @@ public static class StdioProtocolHost
             lock (_gate) _nativeChoiceCapability = supported;
         }
         public bool NativeChoiceCapability { get { lock (_gate) return _nativeChoiceCapability; } }
+        public void SetNativeWeakSandboxCapability(bool supported)
+        {
+            lock (_gate) _nativeWeakSandboxCapability = supported && _nativeChoiceCapability;
+        }
+        public bool NativeWeakSandboxCapability { get { lock (_gate) return _nativeWeakSandboxCapability; } }
 
         public bool CanAcceptNativeCommand
         {
@@ -1673,6 +1720,57 @@ public static class StdioProtocolHost
             }
         }
 
+        public bool CanResumeWeakSandboxConsent(IOmniClient client, TrustedActionScope scope, WireEnvelope command)
+        {
+            if (client is not OmniServer server || runner is null || !NativeWeakSandboxCapability
+                || scope.ExpectedSessionId is not { } expectedSession || scope.ExpectedRunId is not { } expectedRun)
+                return false;
+            lock (_gate)
+            {
+                if (_pendingContinuation is not null || _task is { IsCompleted: false }) return false;
+                if (_deferredConversation is { } deferred
+                    && (!string.Equals(deferred.SessionId, expectedSession, StringComparison.Ordinal)
+                        || !string.Equals(deferred.RunId, expectedRun, StringComparison.Ordinal)
+                        || deferred.NativeInvocationId is null)) return false;
+            }
+            try
+            {
+                using var payload = JsonDocument.Parse(command.PayloadJson);
+                var root = payload.RootElement;
+                static bool TryId(JsonElement node, string name, out Guid id)
+                {
+                    id = default;
+                    return node.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+                        && Guid.TryParseExact(value.GetString(), "D", out id)
+                        && value.GetString() == id.ToString("D");
+                }
+                if (!TryId(root, "interactionId", out var interactionGuid)
+                    || !TryId(root, "taskId", out var taskGuid) || !TryId(root, "laneId", out var laneGuid)
+                    || !TryId(root, "turnId", out var turnGuid) || !TryId(root, "toolCallId", out var toolCallGuid)
+                    || !TryId(root, "invocationId", out var invocationGuid)
+                    || !root.TryGetProperty("optionId", out var option) || option.ValueKind != JsonValueKind.String
+                    || option.GetString() is not ("consent_once" or "deny")
+                    || !root.TryGetProperty("expectedPolicyRevision", out var revisionNode)
+                    || !revisionNode.TryGetInt64(out var revision) || revision < 1
+                    || server.LastSessionId()?.ToString() != expectedSession || server.LastRunId()?.ToString() != expectedRun)
+                    return false;
+                var session = new SessionId(Guid.Parse(expectedSession));
+                var run = new RunId(Guid.Parse(expectedRun));
+                var invocation = new CommandId(invocationGuid);
+                var receipt = server.ReceiptStore?.ReadCommandReceipt(invocation.ToString());
+                if (receipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                        OutcomeKind: "Accepted", ExecutionState: "deferred", ExecutionCode: "input_required",
+                        FirstSequence: not null, LastSequence: not null }
+                    || !string.Equals(receipt.SessionId, expectedSession, StringComparison.Ordinal)
+                    || !string.Equals(receipt.ExecutionRunId, expectedRun, StringComparison.Ordinal)) return false;
+                return server.CanResolveNativeWeakSandboxConsent(session, run, new TaskId(taskGuid),
+                    new LaneId(laneGuid), new TurnId(turnGuid), new ToolCallId(toolCallGuid),
+                    new InteractionId(interactionGuid), invocation, option.GetString()!, revision);
+            }
+            catch (Exception failure) when (failure is JsonException or ArgumentException or InvalidOperationException)
+            { return false; }
+        }
+
         private static bool CanonicalGuid(JsonElement root, string property, out string value)
         {
             value = string.Empty;
@@ -1897,6 +1995,48 @@ public static class StdioProtocolHost
             return acknowledgement;
         }
 
+        public CommandAck ResumeWeakSandboxConsent(IOmniClient client, WireEnvelope command,
+            TrustedActionScope scope, CommandAck acknowledgement)
+        {
+            if (client is not OmniServer server || runner is null
+                || acknowledgement.FirstSeq is not { } first || acknowledgement.LastSeq is not { } last
+                || scope.ExpectedSessionId is not { } sessionId || scope.ExpectedRunId is not { } runId)
+                return acknowledgement;
+            using var payload = JsonDocument.Parse(command.PayloadJson);
+            var root = payload.RootElement;
+            var interactionId = root.GetProperty("interactionId").GetString()!;
+            var optionId = root.GetProperty("optionId").GetString()!;
+            var invocationId = root.GetProperty("invocationId").GetString()!;
+            var taskId = root.GetProperty("taskId").GetString()!;
+            var laneId = root.GetProperty("laneId").GetString()!;
+            var turnId = root.GetProperty("turnId").GetString()!;
+            var toolCallId = root.GetProperty("toolCallId").GetString()!;
+            var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
+            var sourceReceipt = server.ReceiptStore?.ReadCommandReceipt(invocationId);
+            if (sourceReceipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                    OutcomeKind: "Accepted", ExecutionState: "deferred", ExecutionCode: "input_required",
+                    FirstSequence: not null, LastSequence: not null }
+                || !string.Equals(sourceReceipt.SessionId, sessionId, StringComparison.Ordinal)
+                || !string.Equals(sourceReceipt.ExecutionRunId, runId, StringComparison.Ordinal)) return acknowledgement;
+            var binding = new PersistedConversationCommand(invocationId, sourceReceipt.RequestHash!, sessionId,
+                runId, sourceReceipt.FirstSequence, sourceReceipt.LastSequence,
+                ContinuationInteractionId: interactionId, ContinuationCommandId: command.MessageId,
+                ContinuationRequestHash: hash, ContinuationFirstSequence: first, ContinuationLastSequence: last,
+                ContinuationResponseType: "weakSandboxConsent", ContinuationOptionId: optionId,
+                ContinuationTurnId: turnId, NativeChoiceCapability: _nativeChoiceCapability,
+                NativeInvocationId: invocationId, NativeCommandKind: "compiledWorkflow",
+                ContinuationTaskId: taskId, ContinuationLaneId: laneId, ContinuationToolCallId: toolCallId,
+                ContinuationInvocationId: invocationId, NativeWeakSandboxCapability: _nativeWeakSandboxCapability);
+            lock (_gate)
+            {
+                if (_pendingContinuation is not null || _task is { IsCompleted: false }
+                    || _deferredConversation is { NativeInvocationId: { } current }
+                        && !string.Equals(current, invocationId, StringComparison.Ordinal)) return acknowledgement;
+                _pendingContinuation = new PendingContinuation(server, binding, command.MessageId, hash);
+            }
+            return acknowledgement;
+        }
+
         public void StartPendingAfterAck(string acknowledgedReceiptCommandId)
         {
             PendingContinuation? pending;
@@ -1985,7 +2125,8 @@ public static class StdioProtocolHost
                 activeRun.ToString(), acknowledgement.FirstSeq, acknowledgement.LastSeq,
                 NativeChoiceCapability: _nativeChoiceCapability,
                 NativeInvocationId: invocationText, NativeCommandKind: admission.Kind,
-                ExplicitNativeCommandRecovery: commandName == "command.continue");
+                ExplicitNativeCommandRecovery: commandName == "command.continue",
+                NativeWeakSandboxCapability: _nativeWeakSandboxCapability);
             lock (_gate)
             {
                 if (_pendingContinuation is not null || _task is { IsCompleted: false } || _deferredConversation is not null)
@@ -2103,10 +2244,11 @@ public static class StdioProtocolHost
 
     private static bool TryNegotiate(IOmniClient client, WireEnvelope request, byte[]? bootstrapKey,
         string? actionNonce, bool conversationExecutionAvailable, out WireEnvelope? response, out bool accepted,
-        out bool nativeChoiceCapability)
+        out bool nativeChoiceCapability, out bool nativeWeakSandboxCapability)
     {
         accepted = false;
         nativeChoiceCapability = false;
+        nativeWeakSandboxCapability = false;
         if (request.Version != ProtocolVersions.V1 || request.MessageType != MessageTypes.Hello)
         {
             response = Error(request.MessageId, "incompatible_protocol", "No common protocol version.");
@@ -2128,8 +2270,14 @@ public static class StdioProtocolHost
             && requestedCapabilities.ValueKind == JsonValueKind.Array
             && requestedCapabilities.EnumerateArray().Any(value => value.ValueKind == JsonValueKind.String
                 && value.GetString() == "command.conversation.interaction.choice.respond.user");
+        nativeWeakSandboxCapability = nativeChoiceCapability
+            && document.RootElement.TryGetProperty("capabilities", out var weakCapabilities)
+            && weakCapabilities.ValueKind == JsonValueKind.Array
+            && weakCapabilities.EnumerateArray().Any(value => value.ValueKind == JsonValueKind.String
+                && value.GetString() == "command.conversation.weak-sandbox.respond.user");
         var supported = nativeChoiceCapability
-            ? NegotiatedCapabilities(client, bootstrapKey, actionNonce, conversationExecutionAvailable, nativeChoiceCapability)
+            ? NegotiatedCapabilities(client, bootstrapKey, actionNonce, conversationExecutionAvailable,
+                nativeChoiceCapability, nativeWeakSandboxCapability)
             : baseCapabilities;
         var capabilities = "[" + string.Join(",", supported.Select(Quote)) + "]";
         response = WireEnvelope.Response(request.MessageId,
@@ -2140,7 +2288,8 @@ public static class StdioProtocolHost
     }
 
     private static string[] NegotiatedCapabilities(IOmniClient client, byte[]? bootstrapKey,
-        string? actionNonce, bool conversationExecutionAvailable, bool nativeChoiceCapability = false)
+        string? actionNonce, bool conversationExecutionAvailable, bool nativeChoiceCapability = false,
+        bool nativeWeakSandboxCapability = false)
     {
         IEnumerable<string> supported = StdioProtocol.SupportedCapabilities;
         if (client is not OmniServer)
@@ -2163,10 +2312,16 @@ public static class StdioProtocolHost
                 capability is not ("command.conversation.start.user"
                     or "command.conversation.questionnaire.respond.user"
                     or "command.conversation.interaction.choice.respond.user"
+                    or "command.conversation.weak-sandbox.respond.user"
                     or "command.conversation.interaction.continue.user"
                     or "command.invoke.user" or "command.invoke.continue.user") || conversationExecutionAvailable)
-                .Where(capability => capability is not ("command.conversation.interaction.choice.respond.user"
-                    or "command.conversation.interaction.continue.user") || nativeChoiceCapability));
+                .Where(capability => capability switch
+                {
+                    "command.conversation.interaction.choice.respond.user"
+                        or "command.conversation.interaction.continue.user" => nativeChoiceCapability,
+                    "command.conversation.weak-sandbox.respond.user" => nativeChoiceCapability && nativeWeakSandboxCapability,
+                    _ => true,
+                }));
         if (nativeChoiceCapability) supported = supported.Append("query.interactionRecovery");
         return supported.Distinct(StringComparer.Ordinal).ToArray();
     }
