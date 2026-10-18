@@ -304,6 +304,7 @@ public sealed class ExplorerTurn
 
     private readonly string? _forcedInitialToolName;
     private readonly bool _exposeForcedInitialToolInDiscoveredMode;
+    private readonly WorkflowStageDefinition? _workflowStageDefinition;
     private readonly int _maxModelStepsPerTurn;
     private readonly int _maxToolCallsPerTurn;
     private readonly int _maxGenerationSeconds;
@@ -343,7 +344,8 @@ public sealed class ExplorerTurn
             CancellationToken, IReadOnlyList<ExternalCompletionGateResult>>? resolveLifecycleValidations = null,
         BillingMode? billingMode = null,
         Func<SessionSecurityPolicySet?>? sessionSecurityPolicy = null,
-        bool exposeForcedInitialToolInDiscoveredMode = false)
+        bool exposeForcedInitialToolInDiscoveredMode = false,
+        WorkflowStageDefinition? workflowStageDefinition = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -408,6 +410,7 @@ public sealed class ExplorerTurn
                 nameof(exposeForcedInitialToolInDiscoveredMode));
         _forcedInitialToolName = forcedInitialToolName;
         _exposeForcedInitialToolInDiscoveredMode = exposeForcedInitialToolInDiscoveredMode;
+        _workflowStageDefinition = workflowStageDefinition;
         _maxModelStepsPerTurn = maxModelStepsPerTurn;
         _maxToolCallsPerTurn = maxToolCallsPerTurn;
         _maxGenerationSeconds = maxGenerationSeconds;
@@ -4487,7 +4490,52 @@ public sealed class ExplorerTurn
         // Basic capabilities are ranked first by the boundary, so a low visible-tool cap
         // cannot accidentally hide read/search behind plans.
         IReadOnlyList<ToolDefinition> visible;
-        if (_boundary is not null) visible = _boundary.VisibleTools(definitions, ranks);
+        if (_workflowStageDefinition is { } workflowStage)
+        {
+            var eligible = definitions.Where(tool => _boundary?.IsToolVisible(tool.Name) ?? true)
+                .Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal);
+            var required = workflowStage.RequiredSuccessfulToolIds;
+            var eligibleRequired = required.Where(eligible.Contains).ToArray();
+            if (workflowStage.RequiresEveryTool && eligibleRequired.Length != required.Count
+                || !workflowStage.RequiresEveryTool && eligibleRequired.Length == 0)
+                throw new WorkflowStageToolDisclosureException(workflowStage.Stage,
+                    "required_tool_not_permitted");
+
+            // Patch needs a successful read before it can prepare a mutation. Reserve that
+            // prerequisite alongside the stage's success contract, without changing either
+            // capability ceiling or the configured visible-tool cap.
+            var prerequisites = workflowStage.Stage == WorkflowStage.Implement
+                ? new[] { "filesystem.read" } : Array.Empty<string>();
+            if (prerequisites.Any(name => !eligible.Contains(name)))
+                throw new WorkflowStageToolDisclosureException(workflowStage.Stage,
+                    "prerequisite_not_permitted");
+            IReadOnlyList<string> selectedRequired = workflowStage.RequiresEveryTool
+                ? eligibleRequired : new[] { eligibleRequired[0] };
+            var minimumVisible = prerequisites.Concat(selectedRequired)
+                .Distinct(StringComparer.Ordinal).ToArray();
+            var visibleLimit = _boundary?.MaxVisibleTools() ?? _harness?.MaxVisibleTools ?? Int32.MaxValue;
+            if (visibleLimit < minimumVisible.Length)
+                throw new WorkflowStageToolDisclosureException(workflowStage.Stage,
+                    "visible_tool_limit_too_small");
+
+            var stagePriority = prerequisites.Concat(required).Distinct(StringComparer.Ordinal).ToArray();
+            if (_boundary is not null)
+                visible = _boundary.VisibleTools(definitions, ranks, stagePriority);
+            else
+            {
+                var stageRanks = stagePriority.Select((name, index) => (name, index))
+                    .ToDictionary(item => item.name, item => item.index, StringComparer.Ordinal);
+                visible = definitions.OrderBy(tool => stageRanks.GetValueOrDefault(tool.Name, Int32.MaxValue))
+                    .ThenBy(tool => ranks?.GetValueOrDefault(tool.Name, Int32.MaxValue) ?? Int32.MaxValue)
+                    .Take(visibleLimit).ToArray();
+            }
+
+            var visibleNames = visible.Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal);
+            if (minimumVisible.Any(name => !visibleNames.Contains(name)))
+                throw new WorkflowStageToolDisclosureException(workflowStage.Stage,
+                    "required_tool_not_disclosed");
+        }
+        else if (_boundary is not null) visible = _boundary.VisibleTools(definitions, ranks);
         else
         {
             IEnumerable<ToolDefinition> all = definitions;

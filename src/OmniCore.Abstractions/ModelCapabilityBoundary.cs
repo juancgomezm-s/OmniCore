@@ -437,12 +437,19 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
     /// count. Basic workspace read/search and mailbox capabilities remain available ahead of
     /// optional proposals and complex mutation/process capabilities when the list is small.</summary>
     public IReadOnlyList<ToolDefinition> VisibleTools(IEnumerable<ToolDefinition> definitions,
-        IReadOnlyDictionary<string, int>? preferredOrder = null)
+        IReadOnlyDictionary<string, int>? preferredOrder = null,
+        IReadOnlyList<string>? explicitPriority = null)
     {
         ArgumentNullException.ThrowIfNull(definitions);
         preferredOrder ??= new Dictionary<string, int>(StringComparer.Ordinal);
+        var explicitRanks = explicitPriority is null
+            ? null
+            : explicitPriority.Select((name, index) => (name, index))
+                .GroupBy(item => item.name, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.First().index, StringComparer.Ordinal);
         return definitions.Where(tool => IsToolVisible(tool.Name))
-            .OrderBy(tool => DisclosurePriority(tool.Name))
+            .OrderBy(tool => explicitRanks?.GetValueOrDefault(tool.Name, Int32.MaxValue) ?? Int32.MaxValue)
+            .ThenBy(tool => DisclosurePriority(tool.Name))
             .ThenBy(tool => preferredOrder.GetValueOrDefault(tool.Name, int.MaxValue))
             .ThenBy(tool => tool.Name, StringComparer.Ordinal)
             .Take(MaxVisibleTools()).ToArray();

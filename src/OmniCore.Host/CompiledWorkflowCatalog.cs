@@ -9,6 +9,25 @@ using OmniCore.Engine;
 
 public enum WorkflowStage { Explore, Implement, Verify }
 
+/// <summary>Safe, typed failure when a compiled stage's minimum tool set cannot be disclosed
+/// within the current model and Session ceilings.</summary>
+public sealed class WorkflowStageToolDisclosureException : InvalidOperationException
+{
+    public WorkflowStage Stage { get; }
+    public string ReasonCode { get; }
+
+    public WorkflowStageToolDisclosureException(WorkflowStage stage, string reasonCode)
+        : base("Workflow stage tools are unavailable: " + reasonCode)
+    {
+        if (!Enum.IsDefined(stage)) throw new ArgumentOutOfRangeException(nameof(stage));
+        if (reasonCode is not ("required_tool_not_permitted" or "prerequisite_not_permitted"
+            or "visible_tool_limit_too_small" or "required_tool_not_disclosed"))
+            throw new ArgumentException("Workflow stage disclosure reason is invalid.", nameof(reasonCode));
+        Stage = stage;
+        ReasonCode = reasonCode;
+    }
+}
+
 /// <summary>Built-in, versioned orchestration contract; each gate is durable in its Plan item.</summary>
 public static class CompiledWorkflowCatalog
 {

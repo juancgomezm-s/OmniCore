@@ -2698,7 +2698,8 @@ public sealed class OmniCliRuntime : IDisposable
             var pendingForcedToolName = forcedInitialToolName;
             ExplorerTurn BuildTurn(ReasoningRequest? appliedReasoning, ReasoningResolution? resolution,
                 IToolExecutor? turnExecutor = null, FakeCatalog? turnCatalog = null,
-                ModelCapabilityBoundary? turnBoundary = null, ContextMaterializer? turnMaterializer = null)
+                ModelCapabilityBoundary? turnBoundary = null, ContextMaterializer? turnMaterializer = null,
+                WorkflowStageDefinition? turnWorkflowStage = null)
             {
                 // Each principal retry gets a fresh view of Session activation/release state.
                 // A Turn already in flight keeps its immutable tool/context plan.
@@ -2749,6 +2750,7 @@ public sealed class OmniCliRuntime : IDisposable
                     lifecycleHooks: lifecycleHooks,
                     sessionMemoryPolicy: sessionMemoryPolicy,
                     sessionSecurityPolicy: () => server.ReadSessionSecurityPolicy(sessionId),
+                    workflowStageDefinition: turnWorkflowStage,
                     resolveLifecycleValidations: delegation is null
                         ? (ids, read, context, token) =>
                         {
@@ -2936,7 +2938,7 @@ public sealed class OmniCliRuntime : IDisposable
                     var childMaterializer = new ContextMaterializer(tokenCounter,
                         [new WorkingStateContributor(childWorkingState)]);
                     var childTurn = BuildTurn(productReasoning, reasoningResolution, childExecutor,
-                        childTools.Catalog(), childBoundary, childMaterializer);
+                        childTools.Catalog(), childBoundary, childMaterializer, workflowStage?.Definition);
                     var childResult = childTurn.Ask(openTurn is null ? childObjective : "", childInstruction,
                         work.Session, work.Run, work.Delegation.ChildLaneId, childWorkingState, token, "TrustedDelegation",
                         openTurn?.Started.InstructionSnapshot ?? childSnapshot);
