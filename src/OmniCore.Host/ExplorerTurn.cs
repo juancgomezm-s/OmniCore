@@ -303,6 +303,7 @@ public sealed class ExplorerTurn
     private readonly Action<IReadOnlyList<FileMutationSample>>? _mutationEvidence;
 
     private readonly string? _forcedInitialToolName;
+    private readonly bool _exposeForcedInitialToolInDiscoveredMode;
     private readonly int _maxModelStepsPerTurn;
     private readonly int _maxToolCallsPerTurn;
     private readonly int _maxGenerationSeconds;
@@ -341,7 +342,8 @@ public sealed class ExplorerTurn
         Func<IReadOnlyList<string>, Func<string, SkillValidationReadResult?>, string?,
             CancellationToken, IReadOnlyList<ExternalCompletionGateResult>>? resolveLifecycleValidations = null,
         BillingMode? billingMode = null,
-        Func<SessionSecurityPolicySet?>? sessionSecurityPolicy = null)
+        Func<SessionSecurityPolicySet?>? sessionSecurityPolicy = null,
+        bool exposeForcedInitialToolInDiscoveredMode = false)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -395,7 +397,11 @@ public sealed class ExplorerTurn
         _mutationEvidence = mutationEvidence;
         if (forcedInitialToolName is not null && catalog.Find(new ToolId(forcedInitialToolName)) is null)
             throw new ArgumentException("The forced command tool is not registered in this Turn.", nameof(forcedInitialToolName));
+        if (exposeForcedInitialToolInDiscoveredMode && forcedInitialToolName is null)
+            throw new ArgumentException("A forced tool name is required for explicit Discovered-mode disclosure.",
+                nameof(exposeForcedInitialToolInDiscoveredMode));
         _forcedInitialToolName = forcedInitialToolName;
+        _exposeForcedInitialToolInDiscoveredMode = exposeForcedInitialToolInDiscoveredMode;
         _maxModelStepsPerTurn = maxModelStepsPerTurn;
         _maxToolCallsPerTurn = maxToolCallsPerTurn;
         _maxGenerationSeconds = maxGenerationSeconds;
@@ -4462,6 +4468,8 @@ public sealed class ExplorerTurn
                     "reference.resolve", "tool.search", "user.ask", "artifact.read", "skill.load" };
             visibleIds.UnionWith(_activeSkillToolIds);
             if (discoveredToolIds is not null) visibleIds.UnionWith(discoveredToolIds);
+            if (_exposeForcedInitialToolInDiscoveredMode && _forcedInitialToolName is not null)
+                visibleIds.Add(_forcedInitialToolName);
             definitions = definitions.Where(tool => visibleIds.Contains(tool.Name)).ToArray();
         }
         IReadOnlyDictionary<string, int>? ranks = null;
@@ -4487,12 +4495,34 @@ public sealed class ExplorerTurn
             visible = limited;
         }
 
+        // A native, explicitly selected extension command may be outside the ordinary
+        // Discovered set. Disclose only that exact tool, only if the effective model/session
+        // boundary already permits it, and only within the existing visible-tool cap.
+        // Replacing the final optional disclosure keeps both the cap and all other policy
+        // filtering intact; it does not discover or expose the rest of the extension catalog.
+        if (_selection.ToolMode == ToolMode.Discovered
+            && _exposeForcedInitialToolInDiscoveredMode
+            && _forcedInitialToolName is { Length: > 0 } forcedName
+            && !visible.Any(tool => tool.Name == forcedName)
+            && (_boundary?.IsToolVisible(forcedName) ?? true))
+        {
+            var maxVisible = _boundary?.MaxVisibleTools() ?? _harness?.MaxVisibleTools ?? Int32.MaxValue;
+            var forcedDefinition = definitions.FirstOrDefault(tool => tool.Name == forcedName);
+            if (maxVisible > 0 && forcedDefinition is not null)
+            {
+                var retained = visible.Count < maxVisible ? visible : visible.Take(maxVisible - 1);
+                var replacement = retained.Append(forcedDefinition).ToArray();
+                visible = replacement;
+            }
+        }
+
         // A preference may replace only a currently eligible tool with an already eligible
         // alternative of the same declared tags and effect and no greater risk. Protected
         // substitutions carry an additional user Ask at invocation; the setting itself never
         // bypasses the boundary or grants the intent.
         var eligibleNames = visible.Select(tool => tool.Name).ToHashSet(StringComparer.Ordinal);
-        var substitutions = _toolPreferences.Where(pair => eligibleNames.Contains(pair.Key)
+        var substitutions = _toolPreferences.Where(pair => pair.Key != _forcedInitialToolName
+                && pair.Value != _forcedInitialToolName && eligibleNames.Contains(pair.Key)
                 && eligibleNames.Contains(pair.Value))
             .Where(pair =>
             {

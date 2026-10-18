@@ -1021,6 +1021,7 @@ public sealed class OmniCliRuntime : IDisposable
                 exitCode = await RunTurnAsync(prompt, act, diagnostics, cancellationToken,
                     expectedSession: session, expectedRun: run,
                     forcedInitialToolName: payload.ForcedToolName,
+                    exposeForcedInitialToolInDiscoveredMode: payload.Kind == "forcedExtension",
                     allowDeferredNativePermission: admitted.NativeChoiceCapability).ConfigureAwait(false);
             }
             else return 1;
@@ -1759,7 +1760,7 @@ public sealed class OmniCliRuntime : IDisposable
         DelegationId? delegationId = null, string? forcedInitialToolName = null,
         bool inputAlreadyPersisted = false, SessionId? expectedSession = null, RunId? expectedRun = null,
         IReadOnlyList<ArtifactRef>? attachments = null, PersistedConversationCommand? persistedContinuation = null,
-        bool allowDeferredNativePermission = false)
+        bool allowDeferredNativePermission = false, bool exposeForcedInitialToolInDiscoveredMode = false)
     {
         if (delegationId is { } child)
         {
@@ -1773,7 +1774,7 @@ public sealed class OmniCliRuntime : IDisposable
                 return await RunTurnCoreAsync(prompt, act, writeLine, cancellationToken, conversationOnly,
                     routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName,
                     inputAlreadyPersisted, expectedSession, expectedRun, attachments, persistedContinuation,
-                    allowDeferredNativePermission).ConfigureAwait(false);
+                    allowDeferredNativePermission, exposeForcedInitialToolInDiscoveredMode).ConfigureAwait(false);
             }
             finally { _activeDelegations.TryRemove(child, out _); }
         }
@@ -1788,7 +1789,7 @@ public sealed class OmniCliRuntime : IDisposable
             return await RunTurnCoreAsync(prompt, act, writeLine, cancellationToken, conversationOnly,
                 routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName,
                 inputAlreadyPersisted, expectedSession, expectedRun, attachments, persistedContinuation,
-                allowDeferredNativePermission).ConfigureAwait(false);
+                allowDeferredNativePermission, exposeForcedInitialToolInDiscoveredMode).ConfigureAwait(false);
         }
         finally
         {
@@ -1802,7 +1803,7 @@ public sealed class OmniCliRuntime : IDisposable
         DelegationId? delegationId = null, string? forcedInitialToolName = null,
         bool inputAlreadyPersisted = false, SessionId? expectedSession = null, RunId? expectedRun = null,
         IReadOnlyList<ArtifactRef>? attachments = null, PersistedConversationCommand? persistedContinuation = null,
-        bool allowDeferredNativePermission = false)
+        bool allowDeferredNativePermission = false, bool exposeForcedInitialToolInDiscoveredMode = false)
     {
         if (turnBoost is null && turnBoostId is not null)
             throw new ArgumentException("A reasoning boost id requires a boost request.", nameof(turnBoostId));
@@ -2696,6 +2697,7 @@ public sealed class OmniCliRuntime : IDisposable
                     enforceDailySpendCap: hasDailySpendCap,
                     billingMode: providerDescription?.BillingMode,
                     toolPreferences: loaded.Settings?.ToolPreferences,
+                    exposeForcedInitialToolInDiscoveredMode: exposeForcedInitialToolInDiscoveredMode,
                     lifecycleHooks: lifecycleHooks,
                     sessionMemoryPolicy: sessionMemoryPolicy,
                     sessionSecurityPolicy: () => server.ReadSessionSecurityPolicy(sessionId),
