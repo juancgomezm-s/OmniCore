@@ -1030,8 +1030,13 @@ public static class StdioProtocolHost
                             && RunControlService.IsNativeChoiceResponse(input, request.Kind));
                         if (responseInput is null || HasStartedContinuation(events, codecs, run,
                             requestedEvent, request, responseInput.Sequence)) break;
+                        var sourceTurnId = requestedEvent.TurnId;
+                        if (sourceTurnId is null && request.Kind == InteractionKind.PlanApproval)
+                            sourceTurnId = FindAcceptedPlanProposalTurn(events, codecs, run, requestedEvent, rootLane);
+                        if (sourceTurnId is null) break;
                         var sourceTurnStart = events.FirstOrDefault(item => item.RunId == run
-                            && item.TurnId == requestedEvent.TurnId && codecs.Decode(item) is TurnStarted);
+                            && item.TurnId == sourceTurnId && item.LaneId == rootLane
+                            && codecs.Decode(item) is TurnStarted);
                         if (sourceTurnStart is null) break;
                         var previousTurnTerminal = events.Where(item => item.RunId == run
                                 && item.Sequence < sourceTurnStart.Sequence && item.LaneId == rootLane)
@@ -1074,6 +1079,29 @@ public static class StdioProtocolHost
                 }
             }
             return choices.Count == 1 ? choices[0] : null;
+        }
+
+        private static TurnId? FindAcceptedPlanProposalTurn(IReadOnlyList<DomainEvent> events,
+            IEventCodecRegistry codecs, RunId run, DomainEvent approvalEvent, LaneId rootLane)
+        {
+            foreach (var succeededEvent in events.Where(item => item.RunId == run && item.LaneId == rootLane
+                         && item.TaskId == approvalEvent.TaskId && item.Sequence < approvalEvent.Sequence)
+                         .OrderByDescending(item => item.Sequence))
+            {
+                if (codecs.Decode(succeededEvent) is not ToolCallSucceeded succeeded
+                    || succeededEvent.TurnId is not { } proposalTurn) continue;
+                var requested = events.Any(item => item.RunId == run && item.LaneId == rootLane
+                    && item.TaskId == approvalEvent.TaskId && item.TurnId == proposalTurn
+                    && item.Sequence < succeededEvent.Sequence
+                    && codecs.Decode(item) is ToolCallRequested call
+                    && call.ToolCallId == succeeded.ToolCallId && call.ToolName == "plan.propose");
+                if (!requested) continue;
+                var starts = events.Where(item => item.RunId == run && item.LaneId == rootLane
+                    && item.TaskId == approvalEvent.TaskId && item.TurnId == proposalTurn
+                    && item.Sequence < succeededEvent.Sequence && codecs.Decode(item) is TurnStarted).ToArray();
+                return starts.Length == 1 ? proposalTurn : null;
+            }
+            return null;
         }
 
         private static bool HasStartedContinuation(IReadOnlyList<DomainEvent> events,
