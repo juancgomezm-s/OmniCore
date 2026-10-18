@@ -1332,6 +1332,18 @@ public sealed class GitWorktreeStore
         CancellationToken cancellationToken, bool allowConflictExit = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        var traceEnabled = string.Equals(Environment.GetEnvironmentVariable("OMNICORE_WORKFLOW_TRACE"), "1", StringComparison.Ordinal);
+        var operation = command.Count > 0 ? command[0] switch
+        {
+            "rev-parse" or "symbolic-ref" or "status" or "diff" or "ls-files" or "cat-file"
+                or "merge-base" or "show" or "read-tree" or "update-index" or "hash-object"
+                or "write-tree" or "checkout-index" or "update-ref" or "worktree" => command[0],
+            _ => "other",
+        } : "empty";
+        void TraceGit(string marker)
+        {
+            if (traceEnabled) Console.Error.WriteLine("M9TRACE git." + operation + "." + marker);
+        }
         var disabledHooksPath = OperatingSystem.IsWindows() ? "NUL" : "/dev/null";
         var args = new List<string>
         {
@@ -1350,13 +1362,21 @@ public sealed class GitWorktreeStore
         if (environment is not null) foreach (var pair in environment) env[pair.Key] = pair.Value;
         try
         {
+            var launchTimer = System.Diagnostics.Stopwatch.StartNew();
+            TraceGit("launch.begin");
             var handle = _processes.Launch(new ProcessLaunch("git", args, workingDirectory, env, true), cancellationToken);
+            TraceGit("launch.ready." + launchTimer.ElapsedMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture));
             using var registration = cancellationToken.Register(() => CancelTree(handle));
             ProcessResult result;
             try
             {
+                var waitTimer = System.Diagnostics.Stopwatch.StartNew();
+                TraceGit("wait.begin");
                 result = await System.Threading.Tasks.Task.Run(
                     () => _processes.Wait(handle, GitTimeout, cancellationToken), CancellationToken.None).ConfigureAwait(false);
+                TraceGit("wait.exit." + waitTimer.ElapsedMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + "." + result.ExitCode.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + "." + (result.TimedOut ? "timeout" : "complete"));
             }
             catch (OperationCanceledException)
             {
@@ -1365,6 +1385,7 @@ public sealed class GitWorktreeStore
             }
             catch (Exception)
             {
+                TraceGit("wait.exception");
                 CancelTree(handle);
                 return GitResult.Failure(GitWorktreeErrorCode.GitCommandFailed);
             }
@@ -1387,7 +1408,7 @@ public sealed class GitWorktreeStore
             return GitResult.Failure(GitWorktreeErrorCode.GitCommandFailed);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception) { return GitResult.Failure(GitWorktreeErrorCode.GitCommandFailed); }
+        catch (Exception) { TraceGit("launch.exception"); return GitResult.Failure(GitWorktreeErrorCode.GitCommandFailed); }
     }
 
     private void CancelTree(ProcessHandle handle)
