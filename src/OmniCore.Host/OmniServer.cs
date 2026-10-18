@@ -1249,6 +1249,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         return Enum.IsDefined(mode);
     }
 
+    private static string RunModeWireName(RunMode mode) => mode == RunMode.Orchestrate
+        ? "orq" : mode.ToString().ToLowerInvariant();
+
     internal static string ModeAuthorityJson(RunModeAuthority authority, DateTimeOffset utcNow)
     {
         var auth = authority.Authorization;
@@ -1257,7 +1260,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         var authorization = auth is null ? "null" : "{"
             + JsonObj.Field("authorizationId", auth.AuthorizationId.ToString("D"))
             + ",\"allowedModes\":[" + string.Join(",", allowed.Select(mode =>
-                "\"" + mode.ToString().ToLowerInvariant() + "\"")) + "],\"limits\":{"
+                "\"" + RunModeWireName(mode) + "\"")) + "],\"limits\":{"
             + "\"maxAgents\":" + limits!.MaxAgents.ToString(CultureInfo.InvariantCulture)
             + ",\"maxDepth\":" + limits.MaxDepth.ToString(CultureInfo.InvariantCulture)
             + ",\"maxTurns\":" + limits.MaxTurns.ToString(CultureInfo.InvariantCulture)
@@ -1273,7 +1276,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             + ",\"expired\":" + (auth.IsExpiredAt(utcNow) ? "true" : "false") + "}";
         return "{" + JsonObj.Field("runId", authority.RunId.ToString())
             + ",\"revision\":" + authority.Revision.ToString(CultureInfo.InvariantCulture)
-            + "," + JsonObj.Field("mode", authority.Mode.ToString().ToLowerInvariant())
+            + "," + JsonObj.Field("mode", RunModeWireName(authority.Mode))
             + "," + JsonObj.Field("strategy", authority.Strategy.ToString().ToLowerInvariant())
             + "," + JsonObj.Field("effort", authority.ProductEffort.ToString().ToLowerInvariant())
             + ",\"modePinned\":" + (authority.ModePinned ? "true" : "false")
@@ -1991,7 +1994,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         var authority = projection.ModeAuthority ?? (created is null ? null : RunModeAuthority.Legacy(created));
         return "{\"sessionId\":" + QuoteScope(session.Value.ToString())
             + ",\"runId\":" + QuoteScope(activeRun.Value.ToString())
-            + ",\"mode\":" + (authority is null ? "null" : QuoteScope(authority.Mode.ToString().ToLowerInvariant()))
+            + ",\"mode\":" + (authority is null ? "null" : QuoteScope(RunModeWireName(authority.Mode)))
             + ",\"revision\":" + (authority?.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null") + "}";
     }
 

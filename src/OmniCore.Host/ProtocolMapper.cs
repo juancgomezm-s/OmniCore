@@ -340,7 +340,8 @@ public sealed class ProtocolMapper
             + "\"size\":" + part.Artifact.Size.ToString(System.Globalization.CultureInfo.InvariantCulture) + ","
             + "\"outputIndex\":" + part.OutputIndex.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}")) + "]";
 
-    private static string Mode(RunMode mode) => mode.ToString().ToLowerInvariant();
+    private static string Mode(RunMode mode) => mode == RunMode.Orchestrate
+        ? "orq" : mode.ToString().ToLowerInvariant();
 
     private static Dictionary<string, string> ToolSucceededFields(ToolCallSucceeded succeeded)
     {
