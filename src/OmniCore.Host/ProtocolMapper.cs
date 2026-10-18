@@ -261,6 +261,8 @@ public sealed class ProtocolMapper
         {
             ["interactionId"] = e.InteractionId.ToString(), ["kind"] = e.Kind.ToString(),
             ["options"] = string.Join(",", OptionIds(e.OptionsJson)), ["defaultOption"] = e.DefaultOptionId,
+            ["optionsJson"] = e.Kind is InteractionKind.Permission or InteractionKind.PlanApproval
+                ? CanonicalOptionIdsJson(e.OptionsJson) : null,
             ["subject"] = _redaction.Redact(e.SubjectJson),
             ["questionnaireSchemaHash"] = e.QuestionnaireSchemaRef?.Hash.ToString() ?? "",
             ["questionnaire"] = QuestionnaireText(e.QuestionnaireSchemaRef),
@@ -441,7 +443,9 @@ public sealed class ProtocolMapper
                 foreach (var option in document.RootElement.EnumerateArray())
                 {
                     if (option.ValueKind == System.Text.Json.JsonValueKind.Object
-                        && option.TryGetProperty("id", out var id) && id.GetString() is { } text)
+                        && option.TryGetProperty("id", out var id)
+                        && id.ValueKind == System.Text.Json.JsonValueKind.String
+                        && id.GetString() is { } text)
                     {
                         ids.Add(text);
                     }
@@ -455,4 +459,8 @@ public sealed class ProtocolMapper
 
         return ids;
     }
+
+    private static string CanonicalOptionIdsJson(string optionsJson) => "["
+        + string.Join(",", OptionIds(optionsJson).Select(id => "{" + JsonObj.Field("id", id) + "}"))
+        + "]";
 }
