@@ -595,7 +595,14 @@ public sealed class EventStream
             using var output = new MemoryStream();
             using (var writer = new Utf8JsonWriter(output))
                 WriteRedacted(writer, nested.RootElement, redactor);
-            redacted = Encoding.UTF8.GetString(output.ToArray());
+            var candidate = Encoding.UTF8.GetString(output.ToArray());
+            using var redactedDocument = JsonDocument.Parse(candidate);
+            // Preserve the original bytes of JSON-valued strings (notably file contents) when
+            // redaction did not change their data. Reformatting such a string would mutate the
+            // requested file even though no sensitive value needed redaction.
+            redacted = JsonValuesMatch(nested.RootElement, redactedDocument.RootElement)
+                ? value
+                : candidate;
             return true;
         }
         catch (JsonException)
