@@ -1166,7 +1166,7 @@ public sealed partial class OmniServer
             .Append(AgentScope(run, facts, delegation.ParentExecutionId)).ToList();
         if (finishNativeInvocationId is { } finishedInvocation)
         {
-            if (deniedTurn is null || causeCommandId is null
+            if (deniedTurn is null || causeCommandId is not { } responseCommandId
                 || !own.Any(evt => _codecs.Decode(evt) is NativeCommandInvocationStarted started
                     && started.InvocationId == finishedInvocation && started.Kind == "compiledWorkflow")
                 || own.Any(evt => _codecs.Decode(evt) is NativeCommandInvocationFinished finished
@@ -1175,7 +1175,7 @@ public sealed partial class OmniServer
             batch.Add(new NativeCommandInvocationFinished(finishedInvocation, "failed",
                 new RunControlService(_store, _codecs).ActiveRun(session)));
             scopes.Add(ExecutionScope.Current);
-            var responseCause = new CommandCausation(causeCommandId.Value);
+            var responseCause = new CommandCausation(responseCommandId);
             var causes = Enumerable.Repeat<CausationId?>(responseCause, batch.Count).ToArray();
             causes[^1] = new CommandCausation(finishedInvocation);
             new EventStream(_store, _codecs, session).AppendBatch(batch, DurabilityClass.Barrier, scopes, causes);
