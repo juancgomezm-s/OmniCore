@@ -105,6 +105,66 @@ public sealed class SessionPreferencesPresentationTests
     }
 
     [Fact]
+    public void Session_memory_and_skill_revisions_are_typed_and_legacy_queries_remain_read_only_compatible()
+    {
+        var skills = SessionPreferencesPresentation.Decode("skills", """
+            {"session":"session-1","workspaceTrusted":true,"activationRevision":"skills-rev-1",
+             "skills":[{"id":"fixture.skill","displayName":"Fixture","scope":"Project","trust":"Trusted",
+                        "state":"Ready","manifestSha256":"manifest-1","packageContentSha256":"package-1",
+                        "sealed":false,"tools":[],"modelInvocable":false}],
+             "activations":[{"id":"fixture.skill","scope":"Session","manifestSha256":"manifest-1",
+                             "packageContentSha256":"package-1","origin":"User","sourceState":"Ready"}]}
+            """);
+
+        Assert.True(skills.Available);
+        Assert.Equal("skills-rev-1", skills.Revision);
+        var activation = Assert.Single(skills.SkillActivations!);
+        Assert.Equal("fixture.skill", activation.Id);
+        Assert.Equal("package-1", activation.PackageContentSha256);
+        Assert.Equal("Ready", activation.SourceState);
+
+        var memory = SessionPreferencesPresentation.Decode("memory.session", """
+            {"session":"session-1","revision":"memory-rev-1","records":[],"candidates":[]}
+            """);
+        Assert.True(memory.Available);
+        Assert.Equal("memory-rev-1", memory.Revision);
+        Assert.Empty(memory.Memory);
+        Assert.Empty(memory.MemoryCandidates!);
+
+        // Older hosts omitted revision and activation metadata. Keep their inventory readable,
+        // while exposing no revision a mutating UI could use as a CAS precondition.
+        var legacySkills = SessionPreferencesPresentation.Decode("skills", """
+            {"session":"session-1","workspaceTrusted":true,
+             "skills":[{"id":"legacy.skill","displayName":"Legacy","scope":"Project","trust":"Trusted",
+                        "state":"Ready","manifestSha256":"legacy-manifest","sealed":false,
+                        "tools":[],"modelInvocable":false}]}
+            """);
+        Assert.True(legacySkills.Available);
+        Assert.Null(legacySkills.Revision);
+        Assert.Empty(legacySkills.SkillActivations!);
+        Assert.Equal("legacy.skill", Assert.Single(legacySkills.Skills).Id);
+
+        var legacyMemory = SessionPreferencesPresentation.Decode("memory.session", """
+            {"session":"session-1","records":[{"id":"memory-1","kind":"Fact","content":"legacy note",
+             "source":"UserStated","tags":[]}]}
+            """);
+        Assert.True(legacyMemory.Available);
+        Assert.Null(legacyMemory.Revision);
+        Assert.Equal("legacy note", Assert.Single(legacyMemory.Memory).Content);
+    }
+
+    [Fact]
+    public void Malformed_optional_session_preference_revision_is_not_treated_as_a_valid_mutation_snapshot()
+    {
+        Assert.False(SessionPreferencesPresentation.Decode("skills", """
+            {"session":"session-1","workspaceTrusted":true,"activationRevision":17,"skills":[]}
+            """).Available);
+        Assert.False(SessionPreferencesPresentation.Decode("memory.session", """
+            {"session":"session-1","revision":false,"records":[]}
+            """).Available);
+    }
+
+    [Fact]
     public void Invalid_or_wrong_shaped_query_json_is_not_presented_as_an_empty_inventory()
     {
         Assert.False(SessionPreferencesPresentation.Decode("memory.session", "not-json").Available);
