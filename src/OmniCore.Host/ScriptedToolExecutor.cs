@@ -418,7 +418,12 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             {
                 foreach (var evt in buffered) stream.Append(evt);
                 buffered.Clear();
-                stream.Append(payload);
+                // A tool interaction is part of the exact call that emitted it. The payload
+                // intentionally remains protocol-compatible and does not duplicate the call
+                // identifier, so preserve that binding on the durable event envelope instead.
+                var currentScope = ExecutionScope.Current ?? new ExecutionScopeState();
+                using (ExecutionScope.Begin(currentScope with { ToolCallId = validated.ToolCallId }))
+                    stream.Append(payload);
                 return VoidBox.Instance;
             }
 
