@@ -1206,7 +1206,8 @@ public sealed class OmniCliRuntime : IDisposable
         CancellationToken token)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
-        return RunTurnAsync(prompt, true, diagnostics, token, forcedInitialToolName: toolName);
+        return RunTurnAsync(prompt, true, diagnostics, token, forcedInitialToolName: toolName,
+            exposeForcedInitialToolInDiscoveredMode: true);
     }
 
     /// <summary>Runs the compiled Explore → Implement → Verify workflow through normal delegation and tool admission.</summary>
@@ -2342,9 +2343,6 @@ public sealed class OmniCliRuntime : IDisposable
             var effectivePolicyFingerprint = workflowStage is null ? effectivePolicy.Fingerprint()
                 : WorkflowStagePolicyFingerprint(effectivePolicy, workflowStage.Definition);
 
-            // Un boundary (y su registro de lecturas) por Run, canonizado contra la raíz del workspace.
-            var boundary = CreateBoundary(effectivePolicy, workspaceRoot,
-                sessionSecurityPolicy: () => server.ReadSessionSecurityPolicy(sessionId));
             if (act && effectivePolicy.IsFallback)
                 writeLine(Text(LocalizedText.Of("coder.policy.observeOnly")));
             if (delegation is null && !act && OmniServer.RequirePlanApprovalInteraction(server.RequestPlanApprovalCommand()) is { } pendingApproval)
@@ -2481,8 +2479,6 @@ public sealed class OmniCliRuntime : IDisposable
                         workflowStage.VerifyExecutable!, JsonDocument.Parse(workflowStage.VerifyArgvJson!)
                             .RootElement.EnumerateArray().Select(value => value.GetString()!).ToArray(),
                         workflowStage.VerifyCwd!);
-                    boundary = CreateBoundary(effectivePolicy, workspaceRoot, hostTools.Catalog(),
-                        () => server.ReadSessionSecurityPolicy(sessionId));
                 }
                 catch (Exception failure) when (failure is ArgumentException or InvalidOperationException)
                 {
@@ -2491,6 +2487,12 @@ public sealed class OmniCliRuntime : IDisposable
                     return 1;
                 }
             }
+            // Dynamic extension/MCP tools are registered above. Build the per-Run capability
+            // map from that exact effective catalog before diagnostics or executor creation;
+            // ToolMode.Discovered still controls disclosure, and the boundary still controls
+            // which registered capabilities are eligible.
+            var boundary = CreateBoundary(effectivePolicy, workspaceRoot, hostTools.Catalog(),
+                () => server.ReadSessionSecurityPolicy(sessionId));
             if (delegation is null) server.ConfigureToolDiagnostics(hostTools.Catalog(), boundary, effectiveMode);
             var restrictions = workspaceConfig.Settings?.PermissionRestrictions;
             var audit = new FileAuditSink(paths.DataDirectory);
@@ -2697,7 +2699,8 @@ public sealed class OmniCliRuntime : IDisposable
                     enforceDailySpendCap: hasDailySpendCap,
                     billingMode: providerDescription?.BillingMode,
                     toolPreferences: loaded.Settings?.ToolPreferences,
-                    exposeForcedInitialToolInDiscoveredMode: exposeForcedInitialToolInDiscoveredMode,
+                    exposeForcedInitialToolInDiscoveredMode: exposeForcedInitialToolInDiscoveredMode
+                        && requestedToolName is not null,
                     lifecycleHooks: lifecycleHooks,
                     sessionMemoryPolicy: sessionMemoryPolicy,
                     sessionSecurityPolicy: () => server.ReadSessionSecurityPolicy(sessionId),

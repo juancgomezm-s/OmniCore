@@ -395,10 +395,16 @@ public sealed class ExplorerTurn
         _mailboxDeliveryCompleted = mailboxDeliveryCompleted;
         _stallEscalationUnavailable = stallEscalationUnavailable;
         _mutationEvidence = mutationEvidence;
-        if (forcedInitialToolName is not null && catalog.Find(new ToolId(forcedInitialToolName)) is null)
+        var forcedTool = forcedInitialToolName is null ? null : catalog.Find(new ToolId(forcedInitialToolName));
+        if (forcedInitialToolName is not null && forcedTool is null)
             throw new ArgumentException("The forced command tool is not registered in this Turn.", nameof(forcedInitialToolName));
         if (exposeForcedInitialToolInDiscoveredMode && forcedInitialToolName is null)
             throw new ArgumentException("A forced tool name is required for explicit Discovered-mode disclosure.",
+                nameof(exposeForcedInitialToolInDiscoveredMode));
+        if (exposeForcedInitialToolInDiscoveredMode
+            && (forcedTool is null || forcedTool.Descriptor.Source.Kind != SourceKind.Extension
+                || forcedTool.Descriptor.Source.Trust is TrustLevel.Untrusted or TrustLevel.ThirdParty))
+            throw new ArgumentException("Only a composed extension tool can receive explicit Discovered-mode disclosure.",
                 nameof(exposeForcedInitialToolInDiscoveredMode));
         _forcedInitialToolName = forcedInitialToolName;
         _exposeForcedInitialToolInDiscoveredMode = exposeForcedInitialToolInDiscoveredMode;
@@ -4495,7 +4501,7 @@ public sealed class ExplorerTurn
             visible = limited;
         }
 
-        // A native, explicitly selected extension command may be outside the ordinary
+        // An explicitly selected human extension command may be outside the ordinary
         // Discovered set. Disclose only that exact tool, only if the effective model/session
         // boundary already permits it, and only within the existing visible-tool cap.
         // Replacing the final optional disclosure keeps both the cap and all other policy
