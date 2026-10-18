@@ -487,14 +487,15 @@ public sealed class RunProjection
             && delegation.ChildExecutionId == executionId && delegation.ExecutionId == startedPayload.ParentExecutionId)
             .ToArray();
         if (accepted.Length != 1 || registry.Decode(accepted[0]) is not DelegationAccepted acceptedPayload
-            || accepted[0].Sequence >= executions[0].Sequence)
+            || accepted[0].Sequence <= executions[0].Sequence)
             return false;
         var created = runHistory.Where(item => registry.Decode(item) is DelegationCreated delegation
             && delegation.Delegation.DelegationId == acceptedPayload.DelegationId
             && delegation.Delegation.ParentExecutionId == acceptedPayload.ExecutionId
             && delegation.Delegation.ChildTaskId == taskId
             && delegation.Delegation.ChildLaneId == laneId).ToArray();
-        if (created.Length != 1 || created[0].Sequence >= accepted[0].Sequence) return false;
+        if (created.Length != 1 || created[0].Sequence >= executions[0].Sequence
+            || created[0].Sequence >= accepted[0].Sequence) return false;
 
         var afterRequest = scopedEvents.Where(item => item.Sequence > requestEnvelope.Sequence).ToArray();
         var terminalToolEvents = afterRequest.Where(item =>
@@ -507,7 +508,10 @@ public sealed class RunProjection
         var denials = afterRequest.Where(item => item.Sequence > resolution.Sequence
             && registry.Decode(item) is PermissionDenied denied
             && denied.ToolCallId == toolCallId).ToArray();
-        if (resolutionPayload.OptionId == "deny" ? denials.Length != 1 : denials.Length != 0)
+        if (resolutionPayload.OptionId == "deny"
+            ? denials.Length != 1 || denials[0].Causation is not CommandCausation denialCause
+                || denialCause.CommandId != resumeCause.CommandId
+            : denials.Length != 0)
             return false;
 
         var pending = new HashSet<InteractionId>();
