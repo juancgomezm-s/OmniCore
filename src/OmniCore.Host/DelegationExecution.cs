@@ -218,6 +218,8 @@ public sealed partial class OmniServer
                 .Single(evt => evt.TaskId == initialDelegation.ChildTaskId);
             var workflowStage = ReadWorkflowStageForTask(session, run, initialTask.TaskId);
             traceWorkflowStage = workflowStage?.Definition.Stage;
+            if (traceWorkflowStage is { } delegationStage)
+                OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.DelegationEntered, delegationStage);
             VerifiedImplementationSource? verifiedImplementation = null;
             if (workflowStage?.Definition.Stage == WorkflowStage.Verify
                 && admittedProfile.Executor == AgentExecutorKind.ClaudeCode)
@@ -228,8 +230,14 @@ public sealed partial class OmniServer
                 if (!AgentPermissionScopeSubset.IsWorkflowVerifierReadOnly(admittedProfile.PermissionCeiling))
                     return Ack(RuntimeCommandOutcome.Deferred("WorkflowVerifyMustBeReadOnly"));
                 readOnly = true;
+                OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.BeforeVerifiedImplementationResolve,
+                    WorkflowStage.Verify);
                 verifiedImplementation = ResolveVerifiedImplementationSource(session, run, workflowStage,
                     initialRun, initialFacts, physicalRepositoryRoot, workspaceDataRoot, token);
+                OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.AfterVerifiedImplementationResolve,
+                    WorkflowStage.Verify, reason: verifiedImplementation is null
+                        ? OmniCliRuntime.WorkflowTraceReason.WorkflowImplementationOwnershipUnavailable
+                        : OmniCliRuntime.WorkflowTraceReason.None);
                 if (verifiedImplementation is null)
                     return Ack(RuntimeCommandOutcome.Deferred("WorkflowImplementationOwnershipUnavailable"));
                 plannedLaneDestination = verifiedImplementation.Identity.WorktreePath;
@@ -252,11 +260,19 @@ public sealed partial class OmniServer
                 .Single(evt => _codecs.Decode(evt) is DelegationCreated created
                     && created.Delegation.DelegationId == id).Sequence;
             var scheduler = AgentCapacity.For(_store);
+            if (traceWorkflowStage is { } stageBeforeCapacity)
+                OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.BeforeCapacityAcquire,
+                    stageBeforeCapacity);
             capacity = waitForCapacity
                 ? scheduler.Acquire(session, run, id, initialAuthorization.Limits.MaxAgents,
                     initialDelegation.Priority, readOnly, token, durableSequence, plannedLaneDestination)
                 : scheduler.TryAcquire(session, run, id, initialAuthorization.Limits.MaxAgents,
                     initialDelegation.Priority, readOnly, token, durableSequence, plannedLaneDestination);
+            if (traceWorkflowStage is { } stageAfterCapacity)
+                OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.AfterCapacityAcquire,
+                    stageAfterCapacity, reason: capacity is null
+                        ? OmniCliRuntime.WorkflowTraceReason.WaitingForCapacity
+                        : OmniCliRuntime.WorkflowTraceReason.None);
             if (capacity is null) return Ack(RuntimeCommandOutcome.Deferred("WaitingForCapacity"));
 
             // Provisioning is a durable phase of its own. A crash after LaneProvisioning but
@@ -333,13 +349,23 @@ public sealed partial class OmniServer
                 LaneWorktreeProvisionOutcome provisioned;
                 if (verifiedImplementation is { } verifiedSource)
                 {
+                    OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.BeforeImplementationRecapture,
+                        WorkflowStage.Verify);
                     var latestSource = RecaptureImplementationBinding(verifiedSource, physicalRepositoryRoot,
                         capacity.Cancellation.Token);
+                    OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.AfterImplementationRecapture,
+                        WorkflowStage.Verify, reason: latestSource is null
+                            ? OmniCliRuntime.WorkflowTraceReason.WorkflowImplementationChanged
+                            : OmniCliRuntime.WorkflowTraceReason.None);
                     if (latestSource is null || latestSource != verifiedSource.Binding)
                         return Ack(RuntimeCommandOutcome.Deferred("WorkflowImplementationChanged"));
+                    OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.BeforeWorktreeBind,
+                        WorkflowStage.Verify);
                     provisioned = provisioner.BindVerifiedImplementation(verifiedSource.Identity, session,
                         run, initialTask, initialDelegation, provisionedExecution!, admittedProfile,
                         compactWorkingState, verifiedSource.Binding);
+                    OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.AfterWorktreeBind,
+                        WorkflowStage.Verify);
                 }
                 else
                 {
@@ -552,8 +578,14 @@ public sealed partial class OmniServer
                         delegation.ChildLaneId, executionId));
                     var scopes = admissionEvents.Select(evt => evt is DelegationAccepted
                         ? (ExecutionScopeState?)parentScope : scope).ToArray();
+                    if (traceWorkflowStage is { } stageBeforeAdmission)
+                        OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.BeforeLaneAdmissionAppend,
+                            stageBeforeAdmission);
                     new EventStream(_store, _codecs, session).AppendBatch(admissionEvents,
                         DurabilityClass.Barrier, scopes);
+                    if (traceWorkflowStage is { } stageAfterAdmission)
+                        OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.AfterLaneAdmissionAppend,
+                            stageAfterAdmission);
                     DispatchStartedLaneLifecycle(session, run, task.TaskId, delegation.ChildLaneId);
                     // The journal Barrier now owns all references. Release the CAS GC
                     // publication lease before entering Explorer: the child Turn acquires
@@ -561,12 +593,24 @@ public sealed partial class OmniServer
                     taskPacketPublicationLease?.Dispose();
                     taskPacketPublicationLease = null;
                     var scopedSupervisor = SupervisorClientFactory.Create(this, delegation.ParentExecutionId);
+                    if (traceWorkflowStage is { } stageBeforeBindingAck)
+                        OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.BeforeSupervisorAcknowledge,
+                            stageBeforeBindingAck);
                     new InProcessSupervisor(scopedSupervisor, delegation.ParentExecutionId)
                         .AcknowledgeBinding(executionId, binding.BindingId, capacity.Cancellation.Token);
+                    if (traceWorkflowStage is { } stageAfterBindingAck)
+                        OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.AfterSupervisorAcknowledge,
+                            stageAfterBindingAck);
                 }
             }
             using var execution = ExecutionScope.Begin(work.Scope);
+            if (traceWorkflowStage is { } stageBeforeChild)
+                OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.BeforeChildCallback, stageBeforeChild);
             var result = execute(work, capacity.Cancellation.Token);
+            if (traceWorkflowStage is { } stageAfterChild)
+                OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.AfterChildCallback, stageAfterChild,
+                    exitCode: result.StopReason == StopReason.EndTurn ? 0
+                        : result.StopReason == StopReason.InputRequired ? 3 : 1);
             capacity.Cancellation.Token.ThrowIfCancellationRequested();
             if (result.StopReason == StopReason.InputRequired) return Ack(RuntimeCommandOutcome.Accepted());
             if (result.StopReason != StopReason.EndTurn) throw new InvalidOperationException("Child stopped: " + result.StopReason);
@@ -750,9 +794,13 @@ public sealed partial class OmniServer
         WorktreeCreateOutcome loaded;
         try
         {
+            OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.BeforeWorktreeIdentityLoad,
+                WorkflowStage.Verify);
             loaded = new GitWorktreeStore(SystemProcessRuntime.Instance())
                 .LoadIdentityAsync(physicalRepositoryRoot, workspaceDataRoot, sourceEvent.OwnershipId,
                     cancellationToken).GetAwaiter().GetResult();
+            OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.AfterWorktreeIdentityLoad,
+                WorkflowStage.Verify);
         }
         catch (Exception failure) when (failure is InvalidOperationException or InvalidDataException
             or ArgumentException or IOException or UnauthorizedAccessException)
@@ -766,9 +814,13 @@ public sealed partial class OmniServer
         WorktreeIntegrationPreviewOutcome preview;
         try
         {
+            OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.BeforeWorktreePreview,
+                WorkflowStage.Verify);
             preview = new GitWorktreeStore(SystemProcessRuntime.Instance())
                 .PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(identity), cancellationToken)
                 .GetAwaiter().GetResult();
+            OmniCliRuntime.TraceWorkflow(OmniCliRuntime.WorkflowTracePoint.AfterWorktreePreview,
+                WorkflowStage.Verify);
         }
         catch (Exception failure) when (failure is InvalidOperationException or InvalidDataException
             or ArgumentException or IOException or UnauthorizedAccessException)
