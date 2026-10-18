@@ -9,6 +9,27 @@ Su integración `6953dde` falló en dos casos comunes de Windows/Ubuntu en
 La reparación se sigue en la sección siguiente. Los 121 fallos del bloque
 anterior son diagnóstico histórico, no el estado de esta integración.
 
+Seguimiento del bloque de modelos publicado `e0474a5`:
+[run 39100693817](https://github.com/juancgomezm-s/OmniCore/actions/runs/39100693817)
+aprobó Ubuntu, instalación npm de ambos OS y paquetes Linux. Windows terminó
+con **4871 PASS, 1 FAIL, 9 SKIP** de 4881. El único fallo fue
+`StdioTransportTests.Native_model_selection_is_session_cas_scoped_and_catalog_does_not_expose_route_configuration`,
+línea 355: el raw string de providers usa CRLF después del checkout Windows,
+pero el bloque buscado usa LF. No es un rechazo de selección/inferencia.
+Se normaliza sólo el YAML de la fixture antes de escribirlo/compararlo;
+se conservan el cambio real de endpoint y las assertions de rechazo antes
+de input/HTTP. El foco corregido aprobó **1/1**, sin repetir toda la suite.
+Log CI: `%TEMP%/m9-ci-job-117596179195.log`; foco local:
+`%TEMP%/m9-native-model-routing-windows-eol-fix.log`. La corrección `eb03d4a`
+se incluye en la integración del bloque de skills/memoria; su nueva matriz
+remota debe comprobarse. No se declara esa CI fallida como verde.
+La arquitectura CLI ya pasa en esta matriz.
+
+El consumidor OmniCoder `476ce06` aprobó Windows, Ubuntu y package gate en
+[run 39100698529](https://github.com/juancgomezm-s/OmniCode/actions/runs/39100698529).
+No acredita las fuentes posteriores de skills/memoria, que tienen
+[aceptación local propia](validation/m9-native-session-preferences-20261018.md).
+
 ## Seguimiento de elecciones nativas: dos regresiones de integración
 
 La matriz sobre `6953dde` ejecutó 4880 casos por plataforma: Windows

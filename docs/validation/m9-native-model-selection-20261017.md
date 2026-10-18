@@ -81,6 +81,15 @@ Los comandos exactos y logs del consumidor se registran sólo en
 
 ## Límites del hito
 
+La auditoría posterior encontró que el validator HMAC aún rechazaba revisión
+de routing 0 para Sessions legacy sin snapshot, aunque handler y SDK la
+admitían. `6ba1e93` corrige sólo select (route.respond sigue exigiendo >=1).
+Un caso stdio real sobre journal legacy sin Run aprobó dentro del foco de
+skills/memoria posterior, tests `1abfe35`; no se atribuye ese caso al foco
+original. La CI de `e0474a5` aprobó Ubuntu/npm/paquetes y falló sólo en Windows
+por EOL de la fixture; el [seguimiento CI](../ci-failure-analysis.md) conserva
+el diagnóstico y el foco reparado 1/1. OmniCoder `476ce06` tiene CI aprobada.
+
 HTTP loopback acredita cableado y modelo del request; no interpretación visual,
 generación o gasto de un proveedor live. La configuración del catálogo no
 equivale a disponibilidad remota. No se acredita aceptación multiplataforma,

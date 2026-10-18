@@ -2,7 +2,7 @@
 
 Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petición del usuario. Complementa la fuente de verdad [arquitectura §24](../architecture/arquitectura.md#24-roadmap-m1m10-fuente-de-verdad) y el [plan de preferencias e idiomas](preferences-and-localization.md). Define trabajo restante y aceptación; no declara construido lo que sólo tiene contrato o pantalla. La petición comprende traducciones y convenciones regionales de presentación.
 
-## Estado vigente (2026-10-17)
+## Estado vigente (2026-10-18)
 
 **Seguimiento de cierre M9 (2026-10-17):** el lifecycle de conversaciones y la
 respuesta/reanudación de cuestionarios ya están cableados en Core y OmniCoder.
@@ -17,12 +17,20 @@ validados localmente en Core/SDK/Main/UI; [el acta](../validation/m9-native-choi
 registra 18 casos Core, 18 unidades Coder y siete E2E únicos en focos separados. La CI de este
 cambio se sigue en el informe CI; no se extrapola la matriz anterior. Modelos/rutas por
 Session ya están construidos y validados en el bloque siguiente. Siguen pendientes
-ejecución de comandos, activación de skills, mutadores de memoria y acciones
+ejecución de comandos y acciones
 tipadas de plan/lanes/worktrees. M (procesos persistentes/ConPTY) no está
 construido. También faltan adjuntos TUI en ACT, decodificación WebP completa y
 las aceptaciones de medios/idioma descritas en las actas. Estos pendientes tienen
 precedencia sobre los checkpoints históricos siguientes. M8 permanece abierto
 hasta las pruebas manuales del usuario.
+
+**Bloque construido y validado localmente (2026-10-18):** controles nativos de activación/liberación
+de skills y memoria exclusivamente de Session desde el panel OmniCoder
+([ADR-0058](../adr/0058-native-session-skills-memory.md)). Reutiliza servicios
+existentes con HMAC, CAS y readback. Core aprobó 13 casos más uno de quiescencia;
+Coder aprobó un foco SDK y una E2E real de activar/retirar contexto y resolver
+conflictos, con build app y procesos limpios. [Evidencia y límites](../validation/m9-native-session-preferences-20261018.md).
+`command.invoke` requiere un bloque separado de ejecución/continuación durable.
 
 **M9-F2 implementado e integrado; aceptación live sigue pendiente (2026-10-15):**
 incorpora imágenes generadas como salida del modelo, separa capacidades de
