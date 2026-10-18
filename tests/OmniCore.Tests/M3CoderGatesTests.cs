@@ -76,15 +76,23 @@ public sealed class M3CoderGatesTests
     private sealed record RunContext(OmniServer Server, SqliteEventStore Store, SessionId Session,
         RunId Run, LaneId Lane, TaskId Task, string Workspace, string Data);
 
-    private static RunContext StartRun(string root)
+    private static RunContext StartRun(string root, bool fullAgentSession = false)
     {
         var data = Path.Combine(root, "data");
         var workspace = Path.Combine(root, "workspace");
         Directory.CreateDirectory(data);
         Directory.CreateDirectory(workspace);
         var store = new SqliteEventStore(Path.Combine(data, "journal.db"));
+        var platformPaths = fullAgentSession ? OmniHost.CreatePlatformPaths(Path.Combine(data, "platform")) : null;
+        if (platformPaths is not null)
+        {
+            var securityDefault = new SessionSecurityDefaultConfiguration(platformPaths);
+            var current = securityDefault.Read();
+            securityDefault.Set(current.Revision, ModelPolicyCategory.FullAgent, CancellationToken.None);
+        }
         var server = new OmniServer(store, EventCodecs.Create(), new InMemoryAuditSink(),
-            Path.Combine(data, "lastsession.txt"));
+            Path.Combine(data, "lastsession.txt"),
+            platformPathsFactory: platformPaths is null ? null : () => platformPaths);
         var ack = server.Send(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "act") + ","
             + JsonObj.Field("objective", "corrige este test") + "," + JsonObj.Field("workspace", workspace) + "}"),
             CancellationToken.None);
@@ -385,11 +393,14 @@ public sealed class M3CoderGatesTests
     }
 
     [Fact]
-    public void Failing_test_gate_returns_output_feedback_to_model_then_fixed_workspace_completes()
+    public void Configured_test_gate_reworks_in_act_loop_when_skill_validator_activation_is_unavailable()
     {
         if (OperatingSystem.IsMacOS()) return;
         var root = TempDir();
-        var context = StartRun(root);
+        var context = StartRun(root, fullAgentSession: true);
+        var initialPolicy = context.Store.ReadFrom(context.Session, 1)
+            .Select(context.Server.AcquireCodecs().Decode).OfType<SessionSecurityPolicySet>().Single();
+        Assert.Equal(ModelPolicyCategory.FullAgent, initialPolicy.Category);
         var original = "class Program { BROKEN }  \n" + Padding;
         var rejectedPatch = "class Program { STILL_BROKEN }  \n" + Padding;
         var fixedContent = "class Program { static void Main() { } }\n" + Padding;
@@ -400,62 +411,68 @@ public sealed class M3CoderGatesTests
         var sawGateFeedback = false;
         try
         {
-            var turn = CreateTurn(context, (request, _) =>
+            var modelCall = 0;
+            ModelResponse CompleteModel(ModelRequest request, CancellationToken _)
             {
-                var count = ToolResultCount(request);
                 var userText = string.Join("\n", request.Messages.Where(message => message.Role == MessageRole.User)
                     .SelectMany(message => message.Content).OfType<TextBlock>().Select(block => block.Text));
                 if (userText.Contains("trailing whitespace", StringComparison.OrdinalIgnoreCase)) sawGateFeedback = true;
-                return count switch
+                return modelCall++ switch
                 {
-                    0 => Call("filesystem.read", "{\"path\":\"Program.cs\"}"),
+                    0 or 3 => Call("filesystem.read", "{\"path\":\"Program.cs\"}"),
                     1 => Call("filesystem.patch", Patch("Program.cs", Version(original), "BROKEN", "STILL_BROKEN")),
                     2 => End(),
-                    3 => Call("filesystem.read", "{\"path\":\"Program.cs\"}"),
                     4 => Call("filesystem.patch", Patch("Program.cs", Version(rejectedPatch), "STILL_BROKEN }  ",
                         "static void Main() { } }")),
                     _ => End(),
                 };
-            }, out var boundary);
-
-            var first = turn.Ask("corrige el test", "Coder instructions", context.Session, context.Run,
-                context.Lane, "", CancellationToken.None);
-            Assert.Equal(StopReason.EndTurn, first.StopReason);
-            var failing = GateRunner(context, new WorkspaceGatesYaml
+            }
+            var turn = CreateTurn(context, CompleteModel, out _);
+            var gateConfiguration = new WorkspaceGatesYaml
             {
                 Test = ["git", "diff", "--check"],
-            });
-            Assert.False(Complete(context, stream => failing.Run(stream, CancellationToken.None),
-                boundary.ReadRegistry().Ledger));
-            var rejected = context.Store.ReadFrom(context.Session, 1).Select(context.Server.AcquireCodecs().Decode)
-                .OfType<RunValidationRejected>().Last();
+            };
+            var gateArtifacts = new FileArtifactStore(Path.Combine(context.Data, "gate-artifacts"));
+            var diagnostics = new List<string>();
+            var runtime = OmniCliRuntime.Create(context.Workspace);
+            var exit = runtime.RunActLoop(turn, diagnostics.Add, "corrige el test", "Coder instructions",
+                context.Session, context.Run, context.Lane, "", gateConfiguration, null, context.Server,
+                gateArtifacts, new InMemoryAuditSink(), interaction =>
+                    interaction.Kind == InteractionKind.WeakSandboxConsent ? "consent_once" : "allow_once",
+                interactive: true, locale: "en",
+                cancellationToken: TestContext.Current.CancellationToken,
+                subsequentTurnFactory: attempt => CreateTurn(context, CompleteModel, out _),
+                canActivatePostEditValidator: () => false);
+
+            var payloads = context.Store.ReadFrom(context.Session, 1).Select(context.Server.AcquireCodecs().Decode)
+                .ToArray();
+            var rejections = payloads.OfType<RunValidationRejected>().ToArray();
+            var rejectionKinds = string.Join(" | ", rejections.Select(item => string.Join(',', item.Gates))
+                .Distinct(StringComparer.Ordinal));
+            Assert.True(rejections.Length == 1,
+                $"validation rejection count={rejections.Length}; gate sets={rejectionKinds}; "
+                + $"missing counts={string.Join(',', rejections.Select(item => item.Missing.Count))}; "
+                + $"tool failures={string.Join(',', payloads.OfType<ToolCallFailed>().Select(item => item.ErrorCode?.Value ?? "none"))}; "
+                + $"patch calls={payloads.OfType<ToolCallRequested>().Count(item => item.ToolName == "filesystem.patch")}; "
+                + $"completed={payloads.OfType<RunCompleted>().Any(item => item.RunId.Equals(context.Run))}; "
+                + $"model requests={modelCall}.");
+            var rejected = Assert.Single(rejections);
             Assert.Contains("test", rejected.Gates);
             Assert.Contains(rejected.Missing, missing => missing.Contains("artifact:", StringComparison.Ordinal));
             var outputArtifact = Assert.Single(rejected.OutputArtifacts!);
-            var output = new FileArtifactStore(Path.Combine(context.Data, "gate-artifacts"))
-                .GetText(outputArtifact.Hash);
+            var output = gateArtifacts.GetText(outputArtifact.Hash);
             Assert.NotNull(output);
             Assert.True(output.Contains("trailing whitespace", StringComparison.OrdinalIgnoreCase),
                 "Expected the real whitespace diagnostic from the test gate. Workspace: "
                 + context.Workspace + ". Actual output:\n" + output);
-            var feedback = "Runtime completion validation failed. Fix the following feedback, then propose completion again:\n"
-                + string.Join("\n", rejected.Missing) + "\nGate output:\n" + output;
-            var repaired = turn.Ask(feedback, "Coder instructions", context.Session, context.Run,
-                context.Lane, "", CancellationToken.None);
+            Assert.Equal(0, exit);
             Assert.Equal(fixedContent, File.ReadAllText(Path.Combine(context.Workspace, "Program.cs")));
-            Assert.Contains(repaired.ToolCalls, call => call.ToolName == "filesystem.patch" && call.Succeeded);
-            var passing = GateRunner(context, new WorkspaceGatesYaml
-            {
-                Test = ["git", "diff", "--check"],
-            });
-            var completed = Complete(context, stream => passing.Run(stream, CancellationToken.None),
-                boundary.ReadRegistry().Ledger);
-            Assert.True(completed, string.Join("; ", context.Store.ReadFrom(context.Session, 1)
-                .Select(context.Server.AcquireCodecs().Decode).OfType<RunValidationRejected>()
-                .SelectMany(rejection => rejection.Missing)));
             Assert.True(sawGateFeedback, "el siguiente Turn del modelo recibió la salida del gate fallido");
-            Assert.Contains(context.Store.ReadFrom(context.Session, 1).Select(context.Server.AcquireCodecs().Decode)
-                .OfType<RunCompleted>(), completed => completed.RunId.Equals(context.Run));
+            Assert.Equal(6, modelCall);
+            Assert.Contains(payloads.OfType<ToolCallSucceeded>(), succeeded => payloads.OfType<ToolCallRequested>()
+                .Any(requested => requested.ToolCallId.Equals(succeeded.ToolCallId)
+                    && requested.ToolName == "filesystem.patch"));
+            Assert.Contains(payloads.OfType<RunCompleted>(), completed => completed.RunId.Equals(context.Run));
         }
         finally { context.Store.Close(); Remove(root); }
     }
