@@ -363,10 +363,9 @@ public sealed class OmniCliRuntime : IDisposable
         }
 
         return RunTurnAsync(objective, act: true, writeLine, cancellationToken,
-            // ACT attachments are persisted as the current human input, then materialized by
-            // Explorer from the same canonical history used by conversation turns. This keeps
-            // the prompt and its attachment together without sending an unjournaled side channel.
-            conversationOnly: submittedAttachments.Count > 0, turnBoost: turnBoost,
+            // ACT keeps its normal Run/Task/Lane admission. Attachments are committed as a
+            // canonical input within that ACT Run below; they do not change conversation mode.
+            turnBoost: turnBoost,
             turnBoostId: turnBoostId, turnBoostConsumed: turnBoostConsumed,
             attachments: submittedAttachments,
             // This is only an opt-in to leave a human decision pending; it records no answer
@@ -2497,13 +2496,34 @@ public sealed class OmniCliRuntime : IDisposable
                             : ResolveWire(ack.Error)))));
                     return 1;
                 }
+
+                if (attachments is { Count: > 0 })
+                {
+                    // Keep ACT's canonical Run creation and attach the binary references to
+                    // the same human objective. The RunCreated/TaskCreated objective remains
+                    // the ACT scope; this UserInputReceived is the model-facing attachment
+                    // message, so do not submit the objective a second time as a direct prompt.
+                    var attachmentInput = server.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{"
+                        + JsonObj.Field("cmd", "session.input") + "," + JsonObj.Field("text", prompt)
+                        + ",\"attachments\":" + AttachmentReferences.Encode(attachments) + "}"), cancellationToken);
+                    if (attachmentInput.Status != "ok")
+                    {
+                        writeLine(CommandError(attachmentInput.Error, "cli.runtime.attachment_input.rejected"));
+                        return 1;
+                    }
+                    prompt = "";
+                    workingState = ReadWorkingState(server, cancellationToken);
+                }
             }
 
             var sessionId = server.LastSessionId() ?? SessionId.New();
             var runId = server.LastRunId() ?? RunId.New();
             var laneId = delegation?.ChildLaneId ?? server.LastLaneId() ?? LaneId.New();
+            var actAttachmentInputPersisted = act && attachments is { Count: > 0 }
+                && expectedSession is null && expectedRun is null && !conversationOnly;
             var promptOrigin = routingResume is not null ? routingResume.Origin
-                : conversationOnly ? "AlreadyPersisted(ConversationInput)" : server.ConsumePromptOrigin();
+                : conversationOnly || actAttachmentInputPersisted
+                    ? "AlreadyPersisted(ConversationInput)" : server.ConsumePromptOrigin();
             if (delegation is null && _workspaceRoot is not null)
             {
             var followUp = server.QueueFollowUpPromptCommand(sessionId, runId, laneId, prompt, promptOrigin);
@@ -2593,11 +2613,13 @@ public sealed class OmniCliRuntime : IDisposable
                 writeLine(Text(LocalizedText.Of("cli.runtime.route.child_deferred")));
                 return 1;
             }
-            var admittedInput = conversationOnly && routingResume is null && openTurn is null
+            var admittedInput = (conversationOnly || actAttachmentInputPersisted)
+                && routingResume is null && openTurn is null
                 ? server.AcquireStore().ReadFrom(sessionId, 1).LastOrDefault(evt => evt.RunId == runId
                     && server.AcquireCodecs().Decode(evt) is UserInputReceived) : null;
             var routeContinuation = admittedInput is null ? null : new RouteConsentTurn(admittedInput.Sequence,
-                laneId, new TurnInstructionSnapshot(true, TurnInstruction(server.CurrentRunMode(), true)), reasoningResolution);
+                laneId, new TurnInstructionSnapshot(conversationOnly,
+                    TurnInstruction(server.CurrentRunMode(), conversationOnly)), reasoningResolution);
             if (delegation is null && AuthorizeRouteForInvocation(server, sessionId, runId, route,
                     providerDescription?.BillingMode ?? BillingMode.Unknown, writeLine, locale,
                     continuation: routeContinuation) is { } routeCode)

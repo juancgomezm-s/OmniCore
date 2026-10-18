@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using OmniCore.Domain;
+using OmniCore.Host;
 using OmniCore.Protocol;
 using Terminal.Gui.Drivers;
 using Terminal.Gui.Input;
@@ -86,6 +87,64 @@ public sealed partial class TuiWiringTests
         Assert.Equal(new[] { draft, draft }, client.Inputs.ToArray());
         Assert.Equal(inputs + 1, fx.Decoded<UserInputReceived>().Count());
     });
+
+    [Fact]
+    public void Act_attachment_failure_keeps_draft_and_chip_then_success_consumes_both() => RunTuiTest(fx =>
+    {
+        var path = Path.Combine(fx.Root, "act-brief.txt");
+        File.WriteAllText(path, "Nota para ACT.");
+        var host = new ActAttachmentDraftTurn(fx);
+        fx.StartTui(turnHost: host);
+        Type(fx, "/attach \"" + path + "\"");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "el Host importa el adjunto");
+        var panel = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-composer");
+        var chips = panel.SubViews.Single(view => view.Id == "omni-attachments");
+        Assert.Contains("act-brief.txt", chips.Text.ToString());
+        KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "cerrar confirmación del adjunto");
+
+        const string draft = "/act resume la nota adjunta";
+        fx.Invoke(() => fx.App.Composer!.Text = draft);
+        fx.InjectKey(new Key(KeyCode.Enter));
+        fx.Wait(() => host.CompletedCalls == 1 && fx.App.Overlay is not null,
+            "el primer ACT informa el fallo del turno");
+        Assert.Equal(draft, fx.App.Composer!.Text);
+        Assert.True(chips.Visible);
+        Assert.Equal(new[] { "resume la nota adjunta" }, host.Inputs.ToArray());
+        Assert.Equal(new[] { "act-brief.txt" }, host.AttachmentNames.ToArray());
+
+        KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "cerrar el error conserva el borrador");
+        fx.InjectKey(new Key(KeyCode.Enter));
+        fx.Wait(() => host.CompletedCalls == 2 && string.IsNullOrEmpty(fx.App.Composer!.Text) && !chips.Visible,
+            "un ACT completado consume el borrador y el chip");
+        Assert.Equal(new[] { "resume la nota adjunta", "resume la nota adjunta" }, host.Inputs.ToArray());
+        Assert.Equal(new[] { "act-brief.txt", "act-brief.txt" }, host.AttachmentNames.ToArray());
+    });
+
+    private sealed class ActAttachmentDraftTurn(TuiFixture fixture) : ITuiTurnHost
+    {
+        private readonly ConcurrentQueue<int> _outcomes = new(new[] { 1, 0 });
+        public readonly ConcurrentQueue<string> Inputs = new();
+        public readonly ConcurrentQueue<string> AttachmentNames = new();
+        public int CompletedCalls;
+
+        public TuiAttachmentReference ImportAttachmentFromPath(string path) => new(
+            fixture.Artifacts.PutText(File.ReadAllText(path), "text/plain", ArtifactKind.Other, Sensitivity.Normal)
+                with { FileName = Path.GetFileName(path) });
+
+        public Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken) =>
+            Task.FromResult(1);
+
+        public Task<int> ExecuteActAsync(string input, IReadOnlyList<TuiAttachmentReference> attachments,
+            Action<string> diagnostics, CancellationToken cancellationToken)
+        {
+            Inputs.Enqueue(input);
+            foreach (var attachment in attachments) AttachmentNames.Enqueue(attachment.FileName ?? "");
+            var outcome = _outcomes.TryDequeue(out var next) ? next : 1;
+            if (outcome != 0) diagnostics("El turno ACT de fixture falló.");
+            Interlocked.Increment(ref CompletedCalls);
+            return Task.FromResult(outcome);
+        }
+    }
 
     private sealed class ComposerAdmissionClient(IOmniClient inner) : IOmniClient
     {

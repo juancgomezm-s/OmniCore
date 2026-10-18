@@ -2697,6 +2697,108 @@ public sealed partial class CliEndToEndTests
         });
     }
 
+    [Fact]
+    public async Task Act_image_attachment_uses_the_real_act_run_and_reaches_the_http_request()
+    {
+        await InIsolatedCli(async (workspace, _, config, provider) =>
+        {
+            File.WriteAllText(Path.Combine(config, "models.yaml"), "models:\n  scripted-model: { provider: scripted, context: 8192, maxOutput: 2048, inputModalities: [text, image] }\n");
+            string? requestBody = null;
+            provider.RespondWith((_, body) =>
+            { requestBody = body; return TextResponse("Imagen revisada."); });
+            var imagePath = Path.Combine(workspace, "act-image.png");
+            File.WriteAllBytes(imagePath, Convert.FromBase64String(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/z/kAAAAASUVORK5CYII="));
+
+            using var runtime = OmniCliRuntime.Create(workspace);
+            var host = new TuiTurnHost(runtime);
+            var attachment = host.ImportAttachmentFromPath(imagePath);
+            var diagnostics = new List<string>();
+            Assert.Equal(0, await host.ExecuteActAsync("Describe esta imagen.", [attachment], diagnostics.Add,
+                TestContext.Current.CancellationToken));
+
+            Assert.Equal(1, provider.RequestCount);
+            Assert.NotNull(requestBody);
+            using (var request = JsonDocument.Parse(requestBody!))
+            {
+                var messages = request.RootElement.GetProperty("messages").EnumerateArray().ToArray();
+                Assert.Contains(messages, message => message.TryGetProperty("content", out var content)
+                    && content.ValueKind == JsonValueKind.Array
+                    && content.EnumerateArray().Any(part => part.TryGetProperty("type", out var type)
+                        && type.GetString() == "image_url"));
+            }
+
+            var events = ReadCurrentSessionEvents(workspace);
+            var run = Assert.Single(events.OfType<RunCreated>());
+            Assert.Equal(RunMode.Act, run.Mode);
+            var authority = Assert.Single(events.OfType<RunModeAuthoritySelected>());
+            Assert.Equal(run.RunId, authority.Authority.RunId);
+            Assert.Equal(RunMode.Act, authority.Authority.Mode);
+            Assert.False(authority.Authority.AutoModeSwitch);
+            var input = Assert.Single(events.OfType<UserInputReceived>());
+            Assert.Equal(run.RunId, input.RunId);
+            Assert.Contains("Describe esta imagen", input.InputPartsJson, StringComparison.Ordinal);
+            var persisted = Assert.Single(input.Attachments!);
+            Assert.Equal("image/png", persisted.MediaType);
+            Assert.Equal(attachment.Size, persisted.Size);
+            Assert.Contains(events.OfType<TurnStarted>(), turn => turn.RunId == run.RunId);
+        });
+    }
+
+    [Fact]
+    public async Task Act_rejects_image_before_creating_a_run_when_the_selected_model_is_text_only()
+    {
+        await InIsolatedCli(async (workspace, _, _, provider) =>
+        {
+            provider.RespondWith((_, _) => TextResponse("No debe llegar al proveedor."));
+            var imagePath = Path.Combine(workspace, "unsupported.png");
+            File.WriteAllBytes(imagePath, Convert.FromBase64String(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/z/kAAAAASUVORK5CYII="));
+            using var runtime = OmniCliRuntime.Create(workspace);
+            var host = new TuiTurnHost(runtime);
+            var attachment = host.ImportAttachmentFromPath(imagePath);
+
+            var diagnostics = new List<string>();
+            Assert.Equal(1, await host.ExecuteActAsync("Describe esta imagen.", [attachment], diagnostics.Add,
+                TestContext.Current.CancellationToken));
+
+            Assert.Equal(0, provider.RequestCount);
+            Assert.Empty(ReadAllSessionEvents(workspace).OfType<RunCreated>());
+            Assert.Empty(ReadAllSessionEvents(workspace).OfType<UserInputReceived>());
+            Assert.Contains(diagnostics, line => line.Contains("imagen", StringComparison.OrdinalIgnoreCase));
+        });
+    }
+
+    [Fact]
+    public async Task Act_text_document_attachment_is_admitted_and_materialized_in_the_real_request()
+    {
+        await InIsolatedCli(async (workspace, _, _, provider) =>
+        {
+            const string marker = "ACT_DOCUMENT_FIXTURE_7D91";
+            string? requestBody = null;
+            provider.RespondWith((_, body) =>
+            { requestBody = body; return TextResponse("Documento recibido."); });
+            var documentPath = Path.Combine(workspace, "brief.txt");
+            File.WriteAllText(documentPath, "Nota de trabajo: " + marker, new UTF8Encoding(false));
+            using var runtime = OmniCliRuntime.Create(workspace);
+            var host = new TuiTurnHost(runtime);
+            var attachment = host.ImportAttachmentFromPath(documentPath);
+
+            Assert.Equal(0, await host.ExecuteActAsync("Resume el documento adjunto.", [attachment], _ => { },
+                TestContext.Current.CancellationToken));
+
+            Assert.Equal(1, provider.RequestCount);
+            Assert.Contains(marker, Assert.IsType<string>(requestBody), StringComparison.Ordinal);
+            var events = ReadCurrentSessionEvents(workspace);
+            var run = Assert.Single(events.OfType<RunCreated>());
+            Assert.Equal(RunMode.Act, run.Mode);
+            var input = Assert.Single(events.OfType<UserInputReceived>());
+            Assert.Equal(run.RunId, input.RunId);
+            Assert.Contains("Resume el documento adjunto", input.InputPartsJson, StringComparison.Ordinal);
+            Assert.Equal("text/plain", Assert.Single(input.Attachments!).MediaType);
+        });
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
