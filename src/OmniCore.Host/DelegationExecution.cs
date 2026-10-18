@@ -464,7 +464,7 @@ public sealed partial class OmniServer
                     && history.Phase == PreM6RecordPhase.Accepted
                     && TryMatchOpenWeakSandboxCall(session, run, delegation, own, weak);
                 if (HasOpenModelStep(own, supervisor.LaneId) || HasOpenToolCall(own, supervisor.LaneId)
-                    || childHasOpenModelStep && !canResumeBoundExternal
+                    || childHasOpenModelStep && !canResumeBoundExternal && !canResumeWeakSandboxCall
                     || HasOpenToolCall(own, delegation.ChildLaneId) && !canResumeWeakSandboxCall)
                     return Ack(RuntimeCommandOutcome.Deferred("ExecutionBoundaryRequired"));
                 if (history.Phase == PreM6RecordPhase.Created)
@@ -708,8 +708,11 @@ public sealed partial class OmniServer
         var requested = callEvents.SingleOrDefault(item => item.Payload is ToolCallRequested);
         var prepared = callEvents.SingleOrDefault(item => item.Payload is ToolCallPrepared);
         var authorized = callEvents.LastOrDefault(item => item.Payload is ToolCallAuthorized);
-        if (requested.Event is null || prepared.Event is null || authorized.Event is null
+        if (requested.Event is null || requested.Payload is not ToolCallRequested requestedCall
+            || requestedCall.ToolName != "dyn.core.verify_integration"
+            || prepared.Event is null || authorized.Event is null
             || !(requested.Event.Sequence < prepared.Event.Sequence && prepared.Event.Sequence < requestEvents[0].Sequence
+                && prepared.Event.Sequence < authorized.Event.Sequence
                 && authorized.Event.Sequence < requestEvents[0].Sequence)
             || callEvents.Any(item => item.Event.Sequence > requestEvents[0].Sequence
                 && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallFailed
