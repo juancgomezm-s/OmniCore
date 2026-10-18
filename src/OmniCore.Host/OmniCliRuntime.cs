@@ -1084,8 +1084,6 @@ public sealed class OmniCliRuntime : IDisposable
                 workflowVersion, payload.Arguments), invocationText,
                 diagnostics, cancellationToken, allowNativeWeakSandboxConsent: admitted.NativeWeakSandboxCapability,
                 weakSandboxContinuation: continuation).ConfigureAwait(false);
-            if (string.Equals(Environment.GetEnvironmentVariable("OMNICORE_WORKFLOW_TRACE"), "1", StringComparison.Ordinal))
-                diagnostics($"M9TRACE weak.workflow.exit.{exitCode}");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { exitCode = 130; }
         catch (Exception exception)
@@ -1386,33 +1384,20 @@ public sealed class OmniCliRuntime : IDisposable
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(diagnostics);
-        void WeakTrace(string marker)
-        {
-            if (weakSandboxContinuation is not null
-                && string.Equals(Environment.GetEnvironmentVariable("OMNICORE_WORKFLOW_TRACE"), "1", StringComparison.Ordinal))
-                diagnostics("M9TRACE " + marker);
-        }
         if (Interlocked.CompareExchange(ref _turnExecutionActive, 1, 0) != 0)
         {
-            WeakTrace("workflow.busy");
             diagnostics(Text(LocalizedText.Of("cli.runtime.workflow.busy")));
             return 1;
         }
         try
         {
-            WeakTrace("workflow.begin");
             var locale = UiLocaleCodes.NormalizeOrDefault(UiLocale);
             var server = Server();
             var authorization = server.AuthorizeWorkflowRequest(
                 new WorkflowRequested(new WorkflowRef(request.WorkflowId, request.Version), request.Arguments), commandId);
-            WeakTrace("workflow.authorized");
             server.EnsureWorkflowCompletionGate(authorization);
-            WeakTrace("workflow.gate.current");
-            WeakTrace("workflow.reconcile.begin");
             server.ReconcileWorkflowPlanProgress(authorization.Session, authorization.Run);
-            WeakTrace("workflow.reconcile.done");
             var context = server.ReadWorkflowContext(authorization);
-            WeakTrace("workflow.context.current");
             PlanItemId? previousPlanItem = null;
             long previousCompletionSequence = 0;
             var stages = Enum.GetValues<WorkflowStage>();
@@ -1425,7 +1410,6 @@ public sealed class OmniCliRuntime : IDisposable
                 var stageAuthorization = server.ForStage(authorization, stage, previousPlanItem,
                     previousCompletionSequence);
                 var found = server.FindWorkflowStage(stageAuthorization, stage);
-                WeakTrace($"stage.{stage}.found.{(found is null ? "no" : found.Value.Phase.ToString())}");
                 if (found is null)
                 {
                     var latestJournal = server.AcquireStore().ReadFrom(authorization.Session, 1);
@@ -1447,14 +1431,12 @@ public sealed class OmniCliRuntime : IDisposable
                     var ack = server.CreateWorkflowClient(stageAuthorization).Send(wire, token);
                     if (ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted)
                     {
-                        WeakTrace($"stage.{stage}.admission.{ack.Outcome?.Kind.ToString() ?? "none"}");
                         diagnostics(Text(Localized("cli.runtime.workflow.admission", ("reason",
                             ExternalDiagnostic(ack.Error is null ? ack.Outcome?.Reason
                                 ?? "authority, capacity, permission, route, or budget unavailable" : ResolveWire(ack.Error))))));
                         return 1;
                     }
                     found = server.FindWorkflowStage(stageAuthorization, stage);
-                    WeakTrace($"stage.{stage}.after-admission.{(found is null ? "no" : found.Value.Phase.ToString())}");
                     if (found is null) throw new InvalidDataException("Workflow admission returned without a durable Plan stage.");
                 }
 
@@ -1486,22 +1468,17 @@ public sealed class OmniCliRuntime : IDisposable
                 }
                 if (phase == PreM6RecordPhase.Created)
                 {
-                    WeakTrace($"stage.{stage}.dispatch.begin");
                     var code = await RunTurnAsync("", false, diagnostics, token,
                         delegationId: delegation.DelegationId,
                         allowNativeWeakSandboxConsent: allowNativeWeakSandboxConsent).ConfigureAwait(false);
-                    WeakTrace($"stage.{stage}.dispatch.exit.{code}");
                     if (code != 0) return code;
-                    WeakTrace($"stage.{stage}.reconcile-after-dispatch.begin");
                     server.ReconcileWorkflowPlanProgress(authorization.Session, authorization.Run);
-                    WeakTrace($"stage.{stage}.reconcile-after-dispatch.done");
                     found = server.FindWorkflowStage(stageAuthorization, stage);
                     if (found is null) throw new InvalidDataException("Workflow stage disappeared after dispatch.");
                     (planItem, delegation, phase) = found.Value;
                 }
                 if (phase == PreM6RecordPhase.Accepted)
                 {
-                    WeakTrace($"stage.{stage}.accepted-continuation.check");
                     if (weakSandboxContinuation is null || stage != WorkflowStage.Verify
                         || weakSandboxContinuation.TaskId != delegation.ChildTaskId.ToString()
                         || weakSandboxContinuation.LaneId != delegation.ChildLaneId.ToString())
@@ -1512,13 +1489,9 @@ public sealed class OmniCliRuntime : IDisposable
                     var continuationCode = await ContinueWeakSandboxDelegationAsync(
                         delegation.DelegationId.ToString(), diagnostics, token, weakSandboxContinuation)
                         .ConfigureAwait(false);
-                    WeakTrace($"stage.{stage}.weak-continuation.exit.{continuationCode}");
                     if (continuationCode != 0) return continuationCode;
-                    WeakTrace($"stage.{stage}.reconcile-after-continuation.begin");
                     server.ReconcileWorkflowPlanProgress(authorization.Session, authorization.Run);
-                    WeakTrace($"stage.{stage}.reconcile-after-continuation.done");
                     found = server.FindWorkflowStage(stageAuthorization, stage);
-                    WeakTrace($"stage.{stage}.after-continuation.{(found is null ? "no" : found.Value.Phase.ToString())}");
                     if (found is null) throw new InvalidDataException("Workflow Verify stage disappeared after its exact consent continuation.");
                     (planItem, delegation, phase) = found.Value;
                     if (phase == PreM6RecordPhase.Accepted)
@@ -1529,7 +1502,6 @@ public sealed class OmniCliRuntime : IDisposable
                 }
                 if (phase != PreM6RecordPhase.Returned)
                 {
-                    WeakTrace($"stage.{stage}.invalid-phase.{phase}");
                     diagnostics(Text(Localized("cli.runtime.workflow.invalid_phase", ("stage", WorkflowStageLabel(stage.ToString())),
                         ("phase", WorkflowPhaseLabel(phase.ToString())))));
                     return 1;
@@ -1543,32 +1515,42 @@ public sealed class OmniCliRuntime : IDisposable
                     diagnostics(Text(Localized("cli.runtime.workflow.binding_wait", ("stage", WorkflowStageLabel(stage.ToString())))));
                     return 3;
                 }
-                WeakTrace($"stage.{stage}.review-returned.begin.{phase}");
-                supervisor.ReviewReturnedResults(token, returnedExecution);
-                WeakTrace($"stage.{stage}.supervisor.reviewed");
-                WeakTrace($"stage.{stage}.reconcile-after-review.begin");
+                var reviewJournal = server.AcquireStore().ReadFrom(authorization.Session, 1)
+                    .Where(evt => evt.RunId == authorization.Run).ToArray();
+                var codecs = server.AcquireCodecs();
+                var reviewFacts = reviewJournal.Select(codecs.Decode).ToArray();
+                var returnedResult = reviewFacts.OfType<AgentResultProduced>()
+                    .LastOrDefault(item => item.ExecutionId == returnedExecution);
+                var exactDispositionExists = returnedResult is not null
+                    && reviewFacts.OfType<ResultDispositionRecorded>().Any(item =>
+                        item.Disposition.ExecutionId == returnedExecution
+                        && item.Disposition.ResultRef == returnedResult.ResultRef);
+                if (!exactDispositionExists)
+                    supervisor.ReviewReturnedResults(token, returnedExecution);
                 server.ReconcileWorkflowPlanProgress(authorization.Session, authorization.Run);
-                WeakTrace($"stage.{stage}.reconcile-after-review.done");
                 found = server.FindWorkflowStage(stageAuthorization, stage);
-                WeakTrace($"stage.{stage}.after-review.{(found is null ? "no" : found.Value.Phase.ToString())}");
                 if (found is null) throw new InvalidDataException("Workflow stage disappeared during supervision.");
                 (planItem, delegation, phase) = found.Value;
                 var own = server.AcquireStore().ReadFrom(authorization.Session, 1)
                     .Where(evt => evt.RunId == authorization.Run).ToArray();
                 var contract = WorkflowStageContract.FromPlanItem(planItem);
-                var dispositions = own.Select(server.AcquireCodecs().Decode).OfType<ResultDispositionRecorded>()
-                    .Where(value => contract.Execution is { } execution && value.Disposition.ExecutionId == execution)
+                var ownFacts = own.Select(server.AcquireCodecs().Decode).ToArray();
+                var currentResult = contract.Execution is { } currentExecution
+                    ? ownFacts.OfType<AgentResultProduced>().LastOrDefault(item => item.ExecutionId == currentExecution)
+                    : null;
+                var dispositions = ownFacts.OfType<ResultDispositionRecorded>()
+                    .Where(value => currentResult is not null
+                        && value.Disposition.ExecutionId == currentResult.ExecutionId
+                        && value.Disposition.ResultRef == currentResult.ResultRef)
                     .ToArray();
                 if (dispositions.Length == 0)
                 {
-                    WeakTrace($"stage.{stage}.disposition.none");
                     diagnostics(Text(Localized("cli.runtime.workflow.disposition_wait", ("stage", WorkflowStageLabel(stage.ToString())))));
                     return 3;
                 }
                 var disposition = dispositions[^1].Disposition;
                 if (disposition.Outcome != ResultDispositionOutcome.Accepted || planItem.State != PlanItemState.Completed)
                 {
-                    WeakTrace($"stage.{stage}.disposition.{disposition.Outcome}.plan.{planItem.State}");
                     diagnostics(Text(Localized("cli.runtime.workflow.disposition_failed", ("stage", WorkflowStageLabel(stage.ToString())),
                         ("outcome", DispositionLabel(disposition.Outcome.ToString())),
                         ("reason", ExternalDiagnostic(disposition.Reason)))));
@@ -1579,7 +1561,6 @@ public sealed class OmniCliRuntime : IDisposable
                     server.AcquireCodecs());
                 if (!evidence.Passed)
                 {
-                    WeakTrace($"stage.{stage}.evidence.failed");
                     server.RecordWorkflowGateEvidenceDebt(authorization, contract, contract.Execution!);
                     diagnostics(Text(Localized("cli.runtime.workflow.evidence_failed", ("stage", WorkflowStageLabel(stage.ToString())),
                         ("reason", ExternalDiagnostic(evidence.Reason)))));
@@ -1589,7 +1570,6 @@ public sealed class OmniCliRuntime : IDisposable
                     && !server.VerifyAcceptedImplementationBinding(contract, authorization.Session,
                         authorization.Run, own, token))
                 {
-                    WeakTrace("verify.binding.failed");
                     server.RecordWorkflowGateEvidenceDebt(authorization, contract, contract.Execution!);
                     diagnostics(Text(Localized("host.workflow.verify_binding", [])));
                     return 1;
@@ -1612,7 +1592,6 @@ public sealed class OmniCliRuntime : IDisposable
                     // preview of the completed Implement stage.
                     var verifyAuthorization = server.ForStage(authorization, WorkflowStage.Verify, planItem.Id);
                     var verifyStage = server.FindWorkflowStage(verifyAuthorization, WorkflowStage.Verify);
-                    WeakTrace($"implement.verify-stage.{(verifyStage is null ? "no" : verifyStage.Value.Phase.ToString())}");
                     var verifyBindingIsCurrent = false;
                     if (verifyStage is { } existingVerify
                         && existingVerify.Phase is PreM6RecordPhase.Accepted or PreM6RecordPhase.Returned)
@@ -1624,7 +1603,6 @@ public sealed class OmniCliRuntime : IDisposable
                             && existingVerify.Item.DependsOn[0] == planItem.Id
                             && server.VerifyAcceptedImplementationBinding(verifyContract, authorization.Session,
                                 authorization.Run, own, token);
-                        WeakTrace($"implement.verify-binding.{verifyBindingIsCurrent}");
                         if (!verifyBindingIsCurrent)
                         {
                             if (verifyExecution is { } execution)
@@ -1635,10 +1613,8 @@ public sealed class OmniCliRuntime : IDisposable
                     }
                     if (!verifyBindingIsCurrent)
                     {
-                        WeakTrace("implement.preview.begin");
                         var preview = await WorktreePreviewHost.PreviewAsync(_workspaceRoot,
                             implementationWorktree.OwnershipId, token).ConfigureAwait(false);
-                        WeakTrace($"implement.preview.exit.{preview.Succeeded}.{preview.ErrorCode ?? "none"}");
                         if (!preview.Succeeded)
                         {
                             diagnostics(Text(Localized("host.workflow.manual_recovery", [])));
@@ -1650,10 +1626,8 @@ public sealed class OmniCliRuntime : IDisposable
                 previousCompletionSequence = own.Single(evt => evt.TaskId == contract.Task
                     && server.AcquireCodecs().Decode(evt) is TaskCompleted).Sequence;
             }
-            WeakTrace("workflow.completion-gate.begin");
             BeforeWorkflowCompletionGateForTests?.Invoke(server, authorization);
             server.CompleteWorkflowCompletionGate(authorization);
-            WeakTrace("workflow.completion-gate.complete");
             diagnostics(Text(Localized("host.workflow.completed", [])));
             return 0;
         }
@@ -1665,7 +1639,6 @@ public sealed class OmniCliRuntime : IDisposable
         catch (Exception failure) when (failure is InvalidOperationException or InvalidDataException
             or ArgumentException or KeyNotFoundException)
         {
-            WeakTrace("workflow.exception." + failure.GetType().Name);
             diagnostics(Text(Localized("cli.runtime.workflow.stopped", ("diagnostic", ExternalDiagnostic(failure.Message)))));
             return 1;
         }
@@ -3185,6 +3158,7 @@ public sealed class OmniCliRuntime : IDisposable
                             allowDeferredWeakSandboxConsent: allowNativeWeakSandboxConsent
                                 && workflowStage?.Definition.Stage == WorkflowStage.Verify);
                     var childResumePreflightPassed = resumePreflightPassed;
+                    Func<bool>? childResumePreflightDenied = null;
                     if (weakSandboxContinuation is { } weakContinuation)
                     {
                         if (workflowStage?.Definition.Stage != WorkflowStage.Verify
@@ -3199,8 +3173,63 @@ public sealed class OmniCliRuntime : IDisposable
                         if (weakContinuation.OptionId == "deny")
                         {
                             // The authenticated response already recorded PermissionDenied before ACK.
-                            // Stop this child without dispatching another provider step or effect.
+                            // Revalidate that exact terminal response before closing this open Turn.
                             childResumePreflightPassed = () => false;
+                            childResumePreflightDenied = () =>
+                            {
+                                if (ExecutionScope.Current is not { } currentScope
+                                    || currentScope.RunId != runId
+                                    || currentScope.TaskId != work.Delegation.ChildTaskId
+                                    || currentScope.LaneId != work.Delegation.ChildLaneId
+                                    || currentScope.ExecutionId != work.Scope.ExecutionId
+                                    || !Guid.TryParseExact(weakContinuation.TurnId, "D", out var deniedTurnGuid)
+                                    || !Guid.TryParseExact(weakContinuation.ToolCallId, "D", out var deniedCallGuid)
+                                    || !Guid.TryParseExact(weakContinuation.InteractionId, "D", out var deniedInteractionGuid)
+                                    || !Guid.TryParseExact(weakContinuation.ResponseCommandId, "D", out var deniedCommandGuid))
+                                    return false;
+                                var deniedTurn = new TurnId(deniedTurnGuid);
+                                if (currentScope.TurnId != deniedTurn) return false;
+                                var deniedCall = new ToolCallId(deniedCallGuid);
+                                var deniedInteraction = new InteractionId(deniedInteractionGuid);
+                                var deniedCommand = new CommandId(deniedCommandGuid);
+                                var codecs = server.AcquireCodecs();
+                                var callEvents = server.AcquireStore().ReadFrom(sessionId, 1)
+                                    .Where(evt => evt.RunId == runId && evt.TaskId == work.Delegation.ChildTaskId
+                                        && evt.LaneId == work.Delegation.ChildLaneId && evt.TurnId == deniedTurn
+                                        && evt.ToolCallId == deniedCall && evt.ExecutionId == work.Scope.ExecutionId)
+                                    .OrderBy(evt => evt.Sequence)
+                                    .Select(evt => (Event: evt, Payload: codecs.Decode(evt))).ToArray();
+                                var request = callEvents.SingleOrDefault(item => item.Payload is InteractionRequested weak
+                                    && weak.InteractionId == deniedInteraction
+                                    && weak.Kind == InteractionKind.WeakSandboxConsent);
+                                var resolution = callEvents.SingleOrDefault(item => item.Payload is InteractionResolved resolved
+                                    && resolved.InteractionId == deniedInteraction && !resolved.IsQuestionnaire
+                                    && resolved.Cause == InteractionCause.User && resolved.OptionId == "deny");
+                                var denial = callEvents.SingleOrDefault(item => item.Payload is PermissionDenied denied
+                                    && denied.ToolCallId == deniedCall);
+                                var resumed = callEvents.SingleOrDefault(item => item.Payload is RunInteractionResumed resumedEvent
+                                    && resumedEvent.InteractionId == deniedInteraction
+                                    && resumedEvent.CommandId == weakContinuation.ResponseCommandId);
+                                if (request.Event is null || resolution.Event is null || denial.Event is null || resumed.Event is null
+                                    || !(request.Event.Sequence < resolution.Event.Sequence
+                                        && resolution.Event.Sequence < denial.Event.Sequence
+                                        && denial.Event.Sequence < resumed.Event.Sequence)
+                                    || resolution.Event.Sequence < weakContinuation.ResponseFirstSequence
+                                    || resolution.Event.Sequence > weakContinuation.ResponseLastSequence
+                                    || resumed.Event.Sequence < weakContinuation.ResponseFirstSequence
+                                    || resumed.Event.Sequence > weakContinuation.ResponseLastSequence
+                                    || resolution.Event.Causation is not CommandCausation resolutionCause
+                                    || resolutionCause.CommandId != deniedCommand
+                                    || denial.Event.Causation is not CommandCausation denialCause
+                                    || denialCause.CommandId != deniedCommand
+                                    || resumed.Event.Causation is not CommandCausation resumeCause
+                                    || resumeCause.CommandId != deniedCommand
+                                    || callEvents.Any(item => item.Event.Sequence > request.Event.Sequence
+                                        && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallFailed
+                                            or ToolCallEffectUnknown or ToolCallReconciled))
+                                    return false;
+                                return true;
+                            };
                         }
                         else if (weakContinuation.OptionId == "consent_once")
                         {
@@ -3247,7 +3276,8 @@ public sealed class OmniCliRuntime : IDisposable
                     var childResult = childTurn.Ask(openTurn is null ? childObjective : "", childInstruction,
                         work.Session, work.Run, work.Delegation.ChildLaneId, childWorkingState, token, "TrustedDelegation",
                         openTurn?.Started.InstructionSnapshot ?? childSnapshot,
-                        resumePreflightPassed: childResumePreflightPassed);
+                        resumePreflightPassed: childResumePreflightPassed,
+                        resumePreflightDenied: childResumePreflightDenied);
                     var laneGates = workspaceConfig.Settings?.Gates;
                     if (childResult.StopReason == StopReason.EndTurn && laneGates is not null
                         && (laneGates.Build is not null || laneGates.Test is not null || laneGates.Acceptance))

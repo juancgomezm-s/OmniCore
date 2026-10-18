@@ -884,23 +884,13 @@ public sealed partial class OmniServer
     internal bool VerifyAcceptedImplementationBinding(WorkflowStageContract verifyContract,
         SessionId session, RunId run, IReadOnlyList<DomainEvent> journal, CancellationToken cancellationToken)
     {
-        void TraceBinding(string marker)
-        {
-            if (string.Equals(Environment.GetEnvironmentVariable("OMNICORE_WORKFLOW_TRACE"), "1", StringComparison.Ordinal))
-                Console.Error.WriteLine("M9TRACE verify-binding " + marker);
-        }
         try
         {
-            TraceBinding("begin");
             bool RejectBinding(string code)
-            {
-                TraceBinding("reject." + code);
-                return false;
-            }
+                => false;
             if (verifyContract.Definition.Stage != WorkflowStage.Verify
                 || verifyContract.Execution is not { } verifyExecution) return RejectBinding("stage-or-execution");
             var plan = PlanProjection.Replay(_codecs, journal.Where(evt => evt.RunId == run).ToArray());
-            TraceBinding("plan.replayed");
             var verifyItem = plan.Items().SingleOrDefault(item => WorkflowStageContract.TryFromPlanItem(item,
                 out var parsed) && parsed!.Task == verifyContract.Task);
             if (verifyItem is null || verifyItem.DependsOn.Count != 1) return RejectBinding("plan-link");
@@ -925,10 +915,7 @@ public sealed partial class OmniServer
                 .SingleOrDefault(evt => evt.ChildTaskId == verifyContract.Task && evt.ChildLaneId == verifyContract.Lane);
             if (original.Length != 1 || bound.Length != 1 || verifyTask is null || verifyDelegation is null
                 ) return RejectBinding("event-count-or-target-facts");
-            TraceBinding("binding-events.valid");
-            TraceBinding("identity-load.begin");
             var identity = LoadIdentityForRecovery(session, original[0], cancellationToken);
-            TraceBinding("identity-load." + (identity is null ? "missing" : "valid"));
             var worktreeBinding = bound[0];
             if (identity is null || !MatchesCreatedEvent(original[0], identity)
                 || !MatchesBoundEvent(worktreeBinding, identity, original[0],
@@ -937,7 +924,6 @@ public sealed partial class OmniServer
                         original[0].OwnershipId, worktreeBinding.SourceTree, worktreeBinding.SourceHead,
                         worktreeBinding.SourceBranch))) return RejectBinding("owner-or-binding-event");
             var boundPacket = ReadTaskPacket(worktreeBinding.TaskPacketRef);
-            TraceBinding("task-packet." + (boundPacket is null ? "missing" : "valid"));
             var binding = boundPacket?.WorkflowImplementation;
             if (boundPacket is null || !MatchesTaskPacket(worktreeBinding, boundPacket, session, run,
                     verifyTask, verifyDelegation, _artifacts)
@@ -946,11 +932,9 @@ public sealed partial class OmniServer
                 || binding.Instance != verifyContract.Instance || binding.TaskId != implementContract.Task
                 || binding.LaneId != implementContract.Lane || binding.ExecutionId != implementExecution
                 || binding.OwnershipId != original[0].OwnershipId) return RejectBinding("task-packet");
-            TraceBinding("preview.begin");
             var preview = new GitWorktreeStore(SystemProcessRuntime.Instance())
                 .PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(identity), cancellationToken)
                 .GetAwaiter().GetResult();
-            TraceBinding($"preview.exit.{preview.Succeeded}.{preview.Error?.ToString() ?? "none"}");
             return preview.Succeeded && preview.Preview is { } current
                 && binding.Tree == current.TheirsTree && binding.Head == current.LaneHeadAtCapture
                 && binding.Branch == current.LaneBranchAtCapture
@@ -962,7 +946,6 @@ public sealed partial class OmniServer
         catch (Exception failure) when (failure is InvalidOperationException or InvalidDataException
             or ArgumentException or IOException or UnauthorizedAccessException or JsonException)
         {
-            TraceBinding("exception." + failure.GetType().Name);
             return false;
         }
     }
