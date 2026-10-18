@@ -1811,7 +1811,9 @@ public sealed class OmniCliRuntime : IDisposable
                 var changed = catalogPolicies.ApplyChatGptCatalog(catalog, workspaceSelectionId, cancellationToken);
                 if (changed is not null) writeLine(changed);
                 storedSelection = policyService.CurrentSelection(workspaceSelectionId, cancellationToken);
-                if (_escalatedModel is null && Environment.GetEnvironmentVariable("OMNI_MODEL") is null
+                if (principalSourceStep is null && routingResume is null && openTurn is null
+                    && sessionModelSelection is null && _escalatedModel is null
+                    && Environment.GetEnvironmentVariable("OMNI_MODEL") is null
                     && workspaceConfig.Settings?.DefaultModel is null && storedSelection is not null)
                     explicitModel = storedSelection.ModelId;
                 if (!catalog.Any(m => m.Id == (explicitModel ?? modelDefinition?.Id)))
