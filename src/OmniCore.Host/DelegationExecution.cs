@@ -1036,56 +1036,131 @@ public sealed partial class OmniServer
         ProjectIdentity.CanonicalWorkspacePath(left), ProjectIdentity.CanonicalWorkspacePath(right),
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
+    internal bool FailDeniedNativeWeakWorkflowContinuation(WorkflowRuntimeAuthorization authorization,
+        WeakSandboxWorkflowContinuation continuation)
+    {
+        if (continuation.OptionId != "deny" || authorization.InvocationCommand.ToString() != continuation.InvocationId
+            || !Guid.TryParseExact(continuation.TaskId, "D", out var taskGuid)
+            || !Guid.TryParseExact(continuation.LaneId, "D", out var laneGuid)
+            || !Guid.TryParseExact(continuation.TurnId, "D", out var turnGuid)
+            || !Guid.TryParseExact(continuation.ToolCallId, "D", out var toolCallGuid)
+            || !Guid.TryParseExact(continuation.ResponseCommandId, "D", out var responseCommandGuid)) return false;
+        var taskId = new TaskId(taskGuid);
+        var laneId = new LaneId(laneGuid);
+        var turnId = new TurnId(turnGuid);
+        var toolCallId = new ToolCallId(toolCallGuid);
+        lock (_modeAuthorityMutationGate)
+        {
+            if (!WeakSandboxWorkflowAuthorizationIsCurrent(authorization)) return false;
+            ReconcileDurableMailboxReceipts(authorization.Session, authorization.Run);
+            var journal = _store.ReadFrom(authorization.Session, 1);
+            var found = FindWorkflowStage(ForStage(authorization, WorkflowStage.Verify, null),
+                WorkflowStage.Verify, allowAwaitingWeakSandboxConsent: true);
+            if (found is not { } stage || stage.Phase != PreM6RecordPhase.Accepted
+                || stage.Delegation.ChildTaskId != taskId || stage.Delegation.ChildLaneId != laneId
+                || !TryMatchOpenWeakSandboxCall(authorization.Session, authorization.Run, stage.Delegation,
+                    journal, continuation)) return false;
+            var runEvents = journal.Where(evt => evt.RunId == authorization.Run).ToArray();
+            if (RunProjection.Replay(authorization.Session, authorization.Run, _codecs, runEvents).State
+                    != RunState.Running
+                || OmniCliRuntime.FindOpenTurnStart(runEvents, _codecs, authorization.Run, laneId)?.TurnId != turnId)
+                return false;
+            var request = journal.SingleOrDefault(evt => evt.RunId == authorization.Run
+                && evt.TaskId == taskId && evt.LaneId == laneId && evt.TurnId == turnId
+                && evt.ToolCallId == toolCallId && _codecs.Decode(evt) is InteractionRequested item
+                && item.InteractionId.ToString() == continuation.InteractionId
+                && item.Kind == InteractionKind.WeakSandboxConsent);
+            if (request?.ExecutionId is not { } executionId
+                || runEvents.Select(_codecs.Decode).OfType<AgentExecutionStarted>().SingleOrDefault(item =>
+                    item.ExecutionId == executionId && item.LaneId == laneId
+                    && item.ParentExecutionId == stage.Delegation.ParentExecutionId
+                    && item.ProfileId == stage.Delegation.ProfileId) is null)
+                return false;
+            var scope = new ExecutionScopeState(authorization.Run, taskId, laneId, turnId, toolCallId, executionId);
+            return FailOwnedDelegationCore(authorization.Session, authorization.Run, stage.Delegation,
+                scope, stage.Delegation.ProfileId, cancelled: false, deniedTurn: turnId,
+                causeCommandId: new CommandId(responseCommandGuid));
+        }
+    }
+
     private void FailOwnedDelegation(DelegationWork work, bool cancelled)
     {
         lock (_modeAuthorityMutationGate)
         {
             ReconcileDurableMailboxReceipts(work.Session, work.Run);
-            var journal = _store.ReadFrom(work.Session, 1);
-            var records = PreM6RecordProjection.Replay(work.Session, _codecs, journal);
-            if (records.Records["delegation:" + work.Delegation.DelegationId].Phase != PreM6RecordPhase.Accepted) return;
-            // Preserve an unsettled provider/tool receipt as recovery evidence; never falsely settle it.
-            var own = journal.Where(e => e.RunId == work.Run).ToArray();
-            // A sibling may still be inside its provider/tool boundary. Preserve uncertain
-            // receipts for this execution only; run-wide ownership would strand a cancelled
-            // child Accepted merely because another Lane remains active.
-            if (HasOpenModelStep(own, work.Scope.LaneId!) || HasOpenToolCall(own, work.Scope.LaneId!)) return;
-            var facts = own.Select(_codecs.Decode).ToArray();
-            var childId = work.Scope.ExecutionId!;
-            var bindingHistory = records.Records.Values.Where(history => history.OwnerExecutionId == childId)
-                .SelectMany(history => history.Facts.OfType<SupervisionBindingCreated>()).SingleOrDefault();
-            if (bindingHistory is not null)
-            {
-                var binding = bindingHistory.Binding;
-                var phase = records.Records["binding:" + binding.BindingId].Phase;
-                if (phase == PreM6RecordPhase.Failed) return;
-                if (binding.FailurePolicy == SupervisionFailurePolicy.Wait
-                    && (phase == PreM6RecordPhase.Created
-                        || IsExecutionTerminal(facts, work.Delegation.ParentExecutionId)))
-                {
-                    if (IsExecutionTerminal(facts, work.Delegation.ParentExecutionId))
-                        ReconcileTerminatedSupervisors(work.Session, work.Run);
-                    else RecordWaitBindingFailure(work.Session, work.Run, binding,
-                        "Supervisor handshake failed; Wait policy keeps the join unresolved.", cause: null);
-                    return;
-                }
-            }
-            var taskState = TaskGraphProjection.Replay(_codecs, own).Get(work.Scope.TaskId!)!.State;
-            var laneState = LaneProjection.Replay(_codecs, own).StateOf(work.Scope.LaneId!)!.Value;
-            var childEvents = new List<DomainEventPayload>();
-            if (!StateMachines.IsTaskTerminal(taskState)) childEvents.Add(cancelled
-                ? new TaskCancelled(work.Scope.TaskId!) : new TaskFailed(work.Scope.TaskId!, "Child execution failed"));
-            if (!StateMachines.IsLaneTerminal(laneState)) childEvents.Add(cancelled
-                ? new LaneCancelled(work.Scope.LaneId!) : new LaneFailed(work.Scope.LaneId!, "Child execution failed"));
-            var batch = new List<DomainEventPayload>();
-            batch.Add(new AgentExecutionFailed(childId, work.Scope.LaneId!, work.Profile.Id,
-                work.Delegation.ParentExecutionId, work.Delegation.Relation, work.Delegation.Supervision));
-            batch.AddRange(childEvents);
-            batch.Add(new DelegationFailed(work.Delegation.ParentExecutionId, work.Delegation.DelegationId,
-                cancelled ? "Explicit cancellation or elapsed limit" : "Child execution failed"));
-            var scopes = Enumerable.Repeat<ExecutionScopeState?>(work.Scope, batch.Count - 1)
-                .Append(AgentScope(work.Run, facts, work.Delegation.ParentExecutionId)).ToArray();
-            new EventStream(_store, _codecs, work.Session).AppendBatch(batch, DurabilityClass.Barrier, scopes);
+            _ = FailOwnedDelegationCore(work.Session, work.Run, work.Delegation, work.Scope,
+                work.Profile.Id, cancelled, deniedTurn: null, causeCommandId: null);
         }
+    }
+
+    private bool FailOwnedDelegationCore(SessionId session, RunId run, Delegation delegation,
+        ExecutionScopeState scope, ProfileId profileId, bool cancelled, TurnId? deniedTurn,
+        CommandId? causeCommandId)
+    {
+        var journal = _store.ReadFrom(session, 1);
+        var records = PreM6RecordProjection.Replay(session, _codecs, journal);
+        if (records.Records["delegation:" + delegation.DelegationId].Phase != PreM6RecordPhase.Accepted) return false;
+        // Preserve an unsettled provider/tool receipt as recovery evidence; never falsely settle it.
+        var own = journal.Where(e => e.RunId == run).ToArray();
+        // A sibling may still be inside its provider/tool boundary. Preserve uncertain
+        // receipts for this execution only; run-wide ownership would strand a cancelled
+        // child Accepted merely because another Lane remains active.
+        if (HasOpenModelStep(own, scope.LaneId!) || HasOpenToolCall(own, scope.LaneId!)) return false;
+        if (deniedTurn is { } exactDeniedTurn
+            && (scope.TurnId != exactDeniedTurn
+                || OmniCliRuntime.FindOpenTurnStart(own, _codecs, run, scope.LaneId!)?.TurnId != exactDeniedTurn
+                || own.Any(evt => evt.TurnId == exactDeniedTurn && _codecs.Decode(evt) is TurnAbandoned)))
+            return false;
+        var facts = own.Select(_codecs.Decode).ToArray();
+        var childId = scope.ExecutionId!;
+        var bindingHistory = records.Records.Values.Where(history => history.OwnerExecutionId == childId)
+            .SelectMany(history => history.Facts.OfType<SupervisionBindingCreated>()).SingleOrDefault();
+        if (bindingHistory is not null)
+        {
+            var binding = bindingHistory.Binding;
+            var phase = records.Records["binding:" + binding.BindingId].Phase;
+            if (phase == PreM6RecordPhase.Failed) return false;
+            if (binding.FailurePolicy == SupervisionFailurePolicy.Wait
+                && (phase == PreM6RecordPhase.Created
+                    || IsExecutionTerminal(facts, delegation.ParentExecutionId)))
+            {
+                if (IsExecutionTerminal(facts, delegation.ParentExecutionId))
+                    ReconcileTerminatedSupervisors(session, run);
+                else RecordWaitBindingFailure(session, run, binding,
+                    "Supervisor handshake failed; Wait policy keeps the join unresolved.", cause: null);
+                return false;
+            }
+        }
+        var taskState = TaskGraphProjection.Replay(_codecs, own).Get(scope.TaskId!)!.State;
+        var laneState = LaneProjection.Replay(_codecs, own).StateOf(scope.LaneId!)!.Value;
+        var childEvents = new List<DomainEventPayload>();
+        if (deniedTurn is { } turnToAbandon)
+        {
+            var pendingSteering = SteeringQueue.Pending(_store, _codecs, session, run,
+                scope.LaneId!, turnToAbandon);
+            childEvents.AddRange(SteeringQueue.DropEvents(pendingSteering, run, scope.LaneId!, turnToAbandon,
+                "turn ended without another model step"));
+            childEvents.Add(new TurnAbandoned(turnToAbandon, "Weak sandbox consent was denied by the user."));
+        }
+        if (!StateMachines.IsTaskTerminal(taskState)) childEvents.Add(cancelled
+            ? new TaskCancelled(scope.TaskId!) : new TaskFailed(scope.TaskId!, "Child execution failed"));
+        if (!StateMachines.IsLaneTerminal(laneState)) childEvents.Add(cancelled
+            ? new LaneCancelled(scope.LaneId!) : new LaneFailed(scope.LaneId!, "Child execution failed"));
+        var childScope = scope with { TurnId = null, ToolCallId = null };
+        var batch = new List<DomainEventPayload>();
+        if (deniedTurn is not null)
+            batch.AddRange(childEvents.Where(evt => evt is TurnSteeringDropped or TurnAbandoned));
+        batch.Add(new AgentExecutionFailed(childId, scope.LaneId!, profileId,
+            delegation.ParentExecutionId, delegation.Relation, delegation.Supervision));
+        batch.AddRange(childEvents.Where(evt => evt is not (TurnSteeringDropped or TurnAbandoned)));
+        batch.Add(new DelegationFailed(delegation.ParentExecutionId, delegation.DelegationId,
+            cancelled ? "Explicit cancellation or elapsed limit" : "Child execution failed"));
+        var scopes = batch.Take(batch.Count - 1)
+            .Select(evt => (ExecutionScopeState?)(evt is TurnAbandoned or TurnSteeringDropped ? scope : childScope))
+            .Append(AgentScope(run, facts, delegation.ParentExecutionId)).ToArray();
+        using var cause = causeCommandId is { } commandId
+                ? CausationScope.Begin(new CommandCausation(commandId)) : null;
+        new EventStream(_store, _codecs, session).AppendBatch(batch, DurabilityClass.Barrier, scopes);
+        return true;
     }
 }

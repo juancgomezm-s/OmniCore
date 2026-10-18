@@ -1078,18 +1078,50 @@ public sealed class OmniCliRuntime : IDisposable
             admitted.ContinuationOptionId, taskText, laneText, turnText, toolCallText, responseCommandText,
             responseFirst, responseLast);
         int exitCode;
-        try
+        if (continuation.OptionId == "deny")
         {
-            exitCode = await ExecuteWorkflowAsync(new WorkflowRequestDto(workflowId,
-                workflowVersion, payload.Arguments), invocationText,
-                diagnostics, cancellationToken, allowNativeWeakSandboxConsent: admitted.NativeWeakSandboxCapability,
-                weakSandboxContinuation: continuation).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { exitCode = 130; }
-        catch (Exception exception)
-        {
-            diagnostics(RedactSensitive(exception.Message));
+            WorkflowRuntimeAuthorization authorization;
+            try
+            {
+                authorization = server.AuthorizeNativeWorkflowContinuation(invocation, eventAdmission, payload,
+                    allowAwaitingWeakSandboxConsent: true);
+            }
+            catch (Exception exception)
+            {
+                diagnostics(RedactSensitive(exception.Message));
+                return 3;
+            }
+            bool terminalized;
+            try { terminalized = server.FailDeniedNativeWeakWorkflowContinuation(authorization, continuation); }
+            catch (Exception exception)
+            {
+                diagnostics(RedactSensitive(exception.Message));
+                return 3;
+            }
+            if (!terminalized)
+            {
+                diagnostics(Text(LocalizedText.Of("host.workflow.manual_recovery")));
+                return 3;
+            }
+            // The exact denied Verify child and its open Turn are durably failed by the Host.
+            // No lane executor, provider, filesystem preview, or child process is restarted.
             exitCode = 1;
+        }
+        else
+        {
+            try
+            {
+                exitCode = await ExecuteWorkflowAsync(new WorkflowRequestDto(workflowId,
+                    workflowVersion, payload.Arguments), invocationText,
+                    diagnostics, cancellationToken, allowNativeWeakSandboxConsent: admitted.NativeWeakSandboxCapability,
+                    weakSandboxContinuation: continuation).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { exitCode = 130; }
+            catch (Exception exception)
+            {
+                diagnostics(RedactSensitive(exception.Message));
+                exitCode = 1;
+            }
         }
 
         if (exitCode == 0) server.FinishNativeCommand(invocation, "completed");
@@ -3158,7 +3190,6 @@ public sealed class OmniCliRuntime : IDisposable
                             allowDeferredWeakSandboxConsent: allowNativeWeakSandboxConsent
                                 && workflowStage?.Definition.Stage == WorkflowStage.Verify);
                     var childResumePreflightPassed = resumePreflightPassed;
-                    Func<bool>? childResumePreflightDenied = null;
                     if (weakSandboxContinuation is { } weakContinuation)
                     {
                         if (workflowStage?.Definition.Stage != WorkflowStage.Verify
@@ -3170,68 +3201,7 @@ public sealed class OmniCliRuntime : IDisposable
                             || !Guid.TryParseExact(weakContinuation.InteractionId, "D", out var weakInteractionGuid))
                             throw new InvalidOperationException("The Weak sandbox continuation is not bound to the exact Verify child Turn.");
                         var weakInteraction = new InteractionId(weakInteractionGuid);
-                        if (weakContinuation.OptionId == "deny")
-                        {
-                            // The authenticated response already recorded PermissionDenied before ACK.
-                            // Revalidate that exact terminal response before closing this open Turn.
-                            childResumePreflightPassed = () => false;
-                            childResumePreflightDenied = () =>
-                            {
-                                if (ExecutionScope.Current is not { } currentScope
-                                    || currentScope.RunId != runId
-                                    || currentScope.TaskId != work.Delegation.ChildTaskId
-                                    || currentScope.LaneId != work.Delegation.ChildLaneId
-                                    || currentScope.ExecutionId != work.Scope.ExecutionId
-                                    || !Guid.TryParseExact(weakContinuation.TurnId, "D", out var deniedTurnGuid)
-                                    || !Guid.TryParseExact(weakContinuation.ToolCallId, "D", out var deniedCallGuid)
-                                    || !Guid.TryParseExact(weakContinuation.InteractionId, "D", out var deniedInteractionGuid)
-                                    || !Guid.TryParseExact(weakContinuation.ResponseCommandId, "D", out var deniedCommandGuid))
-                                    return false;
-                                var deniedTurn = new TurnId(deniedTurnGuid);
-                                if (currentScope.TurnId != deniedTurn) return false;
-                                var deniedCall = new ToolCallId(deniedCallGuid);
-                                var deniedInteraction = new InteractionId(deniedInteractionGuid);
-                                var deniedCommand = new CommandId(deniedCommandGuid);
-                                var codecs = server.AcquireCodecs();
-                                var callEvents = server.AcquireStore().ReadFrom(sessionId, 1)
-                                    .Where(evt => evt.RunId == runId && evt.TaskId == work.Delegation.ChildTaskId
-                                        && evt.LaneId == work.Delegation.ChildLaneId && evt.TurnId == deniedTurn
-                                        && evt.ToolCallId == deniedCall && evt.ExecutionId == work.Scope.ExecutionId)
-                                    .OrderBy(evt => evt.Sequence)
-                                    .Select(evt => (Event: evt, Payload: codecs.Decode(evt))).ToArray();
-                                var request = callEvents.SingleOrDefault(item => item.Payload is InteractionRequested weak
-                                    && weak.InteractionId == deniedInteraction
-                                    && weak.Kind == InteractionKind.WeakSandboxConsent);
-                                var resolution = callEvents.SingleOrDefault(item => item.Payload is InteractionResolved resolved
-                                    && resolved.InteractionId == deniedInteraction && !resolved.IsQuestionnaire
-                                    && resolved.Cause == InteractionCause.User && resolved.OptionId == "deny");
-                                var denial = callEvents.SingleOrDefault(item => item.Payload is PermissionDenied denied
-                                    && denied.ToolCallId == deniedCall);
-                                var resumed = callEvents.SingleOrDefault(item => item.Payload is RunInteractionResumed resumedEvent
-                                    && resumedEvent.InteractionId == deniedInteraction
-                                    && resumedEvent.CommandId == weakContinuation.ResponseCommandId);
-                                if (request.Event is null || resolution.Event is null || denial.Event is null || resumed.Event is null
-                                    || !(request.Event.Sequence < resolution.Event.Sequence
-                                        && resolution.Event.Sequence < denial.Event.Sequence
-                                        && denial.Event.Sequence < resumed.Event.Sequence)
-                                    || resolution.Event.Sequence < weakContinuation.ResponseFirstSequence
-                                    || resolution.Event.Sequence > weakContinuation.ResponseLastSequence
-                                    || resumed.Event.Sequence < weakContinuation.ResponseFirstSequence
-                                    || resumed.Event.Sequence > weakContinuation.ResponseLastSequence
-                                    || resolution.Event.Causation is not CommandCausation resolutionCause
-                                    || resolutionCause.CommandId != deniedCommand
-                                    || denial.Event.Causation is not CommandCausation denialCause
-                                    || denialCause.CommandId != deniedCommand
-                                    || resumed.Event.Causation is not CommandCausation resumeCause
-                                    || resumeCause.CommandId != deniedCommand
-                                    || callEvents.Any(item => item.Event.Sequence > request.Event.Sequence
-                                        && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallFailed
-                                            or ToolCallEffectUnknown or ToolCallReconciled))
-                                    return false;
-                                return true;
-                            };
-                        }
-                        else if (weakContinuation.OptionId == "consent_once")
+                        if (weakContinuation.OptionId == "consent_once")
                         {
                             childResumePreflightPassed = () =>
                             {
@@ -3276,8 +3246,7 @@ public sealed class OmniCliRuntime : IDisposable
                     var childResult = childTurn.Ask(openTurn is null ? childObjective : "", childInstruction,
                         work.Session, work.Run, work.Delegation.ChildLaneId, childWorkingState, token, "TrustedDelegation",
                         openTurn?.Started.InstructionSnapshot ?? childSnapshot,
-                        resumePreflightPassed: childResumePreflightPassed,
-                        resumePreflightDenied: childResumePreflightDenied);
+                        resumePreflightPassed: childResumePreflightPassed);
                     var laneGates = workspaceConfig.Settings?.Gates;
                     if (childResult.StopReason == StopReason.EndTurn && laneGates is not null
                         && (laneGates.Build is not null || laneGates.Test is not null || laneGates.Acceptance))

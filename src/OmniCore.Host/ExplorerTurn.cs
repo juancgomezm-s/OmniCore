@@ -599,7 +599,7 @@ public sealed class ExplorerTurn
     public TurnResult Ask(string question, string instruction, SessionId sessionId, RunId runId,
         LaneId laneId, string workingStateText, CancellationToken cancellationToken, string? origin = null,
         TurnInstructionSnapshot? instructionSnapshot = null, Action<TurnStarted>? turnStarted = null,
-        Func<bool>? resumePreflightPassed = null, Func<bool>? resumePreflightDenied = null)
+        Func<bool>? resumePreflightPassed = null)
     {
         // Without a durable shared reservation ledger, keep finite-budget work serialized for
         // compatibility and fail-safe behavior. Production Host installs that ledger for the
@@ -625,7 +625,7 @@ public sealed class ExplorerTurn
             }
             var result = AskCore(question, instruction, sessionId, runId, laneId, workingStateText,
                 deadline.Token, origin, instructionSnapshot, start => { exactTurn = start.TurnId; turnStarted?.Invoke(start); },
-                resumePreflightPassed, resumePreflightDenied);
+                resumePreflightPassed);
             // ADR-0048 §1: el watchdog se evalúa al cerrar el Turn, aún dentro del gate de la Lane.
             var stall = exactTurn is { } finished ? ApplyStallWatchdog(sessionId, runId, laneId, finished) : null;
             return new TurnResult(result.FinalText, result.StopReason, result.Steps, result.Usage,
@@ -638,7 +638,7 @@ public sealed class ExplorerTurn
     private TurnResult AskCore(string question, string instruction, SessionId sessionId, RunId runId,
         LaneId laneId, string workingStateText, CancellationToken cancellationToken, string? origin,
         TurnInstructionSnapshot? instructionSnapshot, Action<TurnStarted>? turnStarted,
-        Func<bool>? resumePreflightPassed, Func<bool>? resumePreflightDenied)
+        Func<bool>? resumePreflightPassed)
     {
         try { _selection.Route?.ReasoningCapability.ValidateRequest(_selection.Reasoning); }
         catch (InvalidOperationException)
@@ -934,14 +934,7 @@ public sealed class ExplorerTurn
             // Then apply the already-approved tool so its result is part of the rebuilt context.
             if (!resumePreflightPassed())
             {
-                var explicitlyDenied = isResume && resumePreflightDenied?.Invoke() == true;
-                if (explicitlyDenied
-                    && FindOpenTurn(stream, runId, laneId) == turnId)
-                    AppendTerminalTurn(stream, sessionId, runId, laneId, turnId,
-                        new TurnAbandoned(turnId, "Weak sandbox consent was denied by the user."));
-                return new TurnResult(explicitlyDenied
-                        ? "Weak sandbox consent was denied by the user."
-                        : "Approved interaction could not be continued under the current effective policy.",
+                return new TurnResult("Approved interaction could not be continued under the current effective policy.",
                     StopReason.Error, 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null)
                     { TurnId = turnId };
             }
