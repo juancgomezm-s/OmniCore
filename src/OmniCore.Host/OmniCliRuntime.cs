@@ -619,10 +619,11 @@ public sealed class OmniCliRuntime : IDisposable
         ReasoningRequest? turnBoost = null, Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null,
         IReadOnlyList<ArtifactRef>? attachments = null)
     {
-        if (attachments is { Count: > 0 } && ValidateConversationAttachmentsBeforeAdmission(attachments) is { } rejection)
+        if (ValidateConversationAttachmentsBeforeAdmission(attachments ?? Array.Empty<ArtifactRef>()) is { } rejection)
         {
             var key = rejection switch
             {
+                "session_model_route_unavailable" => "shell.model.session_route_unavailable",
                 "image_input_not_supported" => "shell.attachment.image_not_supported",
                 "document_text_input_not_supported" => "shell.attachment.document_not_supported",
                 _ => "shell.attachment.capability_unavailable",
@@ -689,6 +690,13 @@ public sealed class OmniCliRuntime : IDisposable
     /// <summary>Fail-closed profile preflight before a trusted attachment command admits input/run events.</summary>
     internal string? ValidateConversationAttachmentsBeforeAdmission(IReadOnlyList<ArtifactRef> attachments)
     {
+        if (Server().LastSessionId() is { } session)
+        {
+            try { _ = Server().ResolveSessionModelSelection(session); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException
+                or InvalidOperationException or ArgumentException or System.Text.Json.JsonException)
+            { return "session_model_route_unavailable"; }
+        }
         if (attachments.Count == 0) return null;
         try
         {

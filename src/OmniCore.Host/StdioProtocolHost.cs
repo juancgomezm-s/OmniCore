@@ -1245,8 +1245,8 @@ public static class StdioProtocolHost
                 var text = root.GetProperty("text").GetString()!;
                 var attachments = HasAttachments(root) ? root.GetProperty("attachments").GetRawText() : null;
                 var attachmentRefs = attachments is null ? Array.Empty<ArtifactRef>() : AttachmentReferences.Decode(attachments);
-                if (attachmentRefs.Length > 0 && validateAttachments is not null
-                    && validateAttachments(attachments!) is { } attachmentRejection)
+                if (validateAttachments is not null
+                    && validateAttachments(attachments ?? "[]") is { } attachmentRejection)
                     return new CommandAck(command.MessageId, "error", attachmentRejection,
                         RuntimeCommandOutcome.Rejected());
                 var mode = root.GetProperty("mode").GetString()!;
