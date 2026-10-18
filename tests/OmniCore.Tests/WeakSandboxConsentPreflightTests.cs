@@ -1,10 +1,14 @@
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Execution;
 using OmniCore.Security;
 using OmniCore.Sandbox;
 using OmniCore.Tools;
+using OmniCore.Engine;
+using OmniCore.Host;
+using OmniCore.Infrastructure;
 
 namespace OmniCore.Tests;
 
@@ -14,6 +18,64 @@ namespace OmniCore.Tests;
 /// </summary>
 public sealed class WeakSandboxConsentPreflightTests
 {
+    [Fact]
+    public void Scripted_executor_persists_weak_interaction_with_exact_execution_scope()
+    {
+        var workspace = Path.Combine(Path.GetTempPath(), "omni-weak-consent-envelope-", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspace);
+        using var store = new SqliteEventStore(Path.Combine(workspace, "journal.db"));
+        var codecs = EventCodecs.Create();
+        var session = SessionId.New();
+        var run = TestRun.OpenInSession(store, session, workspace);
+        var stream = new EventStream(store, codecs, session);
+        var call = new ValidatedToolCall(ToolCallId.New(), new ToolId("process.exec"), "weak-envelope-fixture",
+            JsonSerializer.Serialize(new
+            {
+                executable = OperatingSystem.IsWindows()
+                    ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "whoami.exe")
+                    : "/bin/echo",
+                argv = new[] { "fixture" }, cwd = ".", timeoutSeconds = 5,
+            }));
+        var launcher = new CountingLauncher(StrongSandboxPreflightResult.UnavailableBeforeLaunch,
+            strongLaunchUnknown: false);
+        var catalog = new FakeCatalog().Add(new ProcessExecTool(launcher, new PathBoundaryValidator()));
+        var executor = new ScriptedToolExecutor(catalog,
+            ScriptedPermissionPolicy.WithTool("process.exec", PermissionDecision.Allow), workspace,
+            boundary: null, audit: null, interactionResponder: null, isInteractive: false,
+            allowDeferredWeakSandboxConsent: true);
+        var turn = TurnId.New();
+        var execution = ExecutionId.New();
+        // ToolCallId is deliberately absent from the ambient caller scope. The executor must
+        // bind the interaction envelope to the validated call it is currently emitting.
+        var scope = new ExecutionScopeState(run.RunId, run.RootTask, run.RootLane, turn, null, execution);
+
+        using (ExecutionScope.Begin(scope))
+        {
+            var outcome = executor.ExecuteTool(call, userApprovesAsk: false, CancellationToken.None, stream);
+            Assert.False(outcome.Succeeded);
+            Assert.Equal(ToolCallState.Authorized, outcome.FinalState);
+            Assert.Null(outcome.Effect);
+        }
+
+        Assert.Empty(launcher.Attempts);
+        Assert.Equal(0, launcher.WeakProcessesStarted);
+        var persisted = Assert.Single(store.ReadFrom(session, 1), evt =>
+            evt.RunId == run.RunId && codecs.Decode(evt) is InteractionRequested request
+                && request.Kind == InteractionKind.WeakSandboxConsent);
+        Assert.Equal(session, persisted.SessionId);
+        Assert.Equal(run.RunId, persisted.RunId);
+        Assert.Equal(run.RootTask, persisted.TaskId);
+        Assert.Equal(run.RootLane, persisted.LaneId);
+        Assert.Equal(turn, persisted.TurnId);
+        Assert.Equal(call.ToolCallId, persisted.ToolCallId);
+        Assert.Equal(execution, persisted.ExecutionId);
+        Assert.Equal("OmniCore.Engine.EventStream", persisted.Source);
+
+        store.Close();
+        SqliteConnection.ClearPool((SqliteConnection)store.Connection);
+        Directory.Delete(workspace, recursive: true);
+    }
+
     [Fact]
     public void Unavailable_preflight_pends_before_started_without_invoking_the_launcher()
     {
