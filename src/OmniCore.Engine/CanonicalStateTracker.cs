@@ -211,10 +211,14 @@ public sealed class CanonicalStateTracker
                 if (e.InteractionId.Value == Guid.Empty || string.IsNullOrWhiteSpace(e.CommandId))
                     throw new InvalidStateTransitionException("run", "incomplete interaction resume", payload.Type().ToString());
                 if (!_interactionStates.TryGetValue(e.InteractionId, out var resumedInteraction)
-                    || resumedInteraction.Kind != InteractionKind.ModelRouteConsent || resumedInteraction.Pending
-                    || resumedInteraction.OptionId != "allow_route" || resumedInteraction.Cause != InteractionCause.User
-                    || _interactionStates.Values.Any(state => state.Pending))
-                    throw new InvalidStateTransitionException("run", "interaction resume lacks resolved user route consent",
+                    || resumedInteraction.Pending || _interactionStates.Values.Any(state => state.Pending))
+                    throw new InvalidStateTransitionException("run", "interaction resume lacks resolved user consent",
+                        payload.Type().ToString());
+                if (!IsResumableUserInteraction(resumedInteraction))
+                    throw new InvalidStateTransitionException("run",
+                        resumedInteraction.Kind == InteractionKind.WeakSandboxConsent
+                            ? "interaction resume lacks resolved user weak sandbox consent"
+                            : "interaction resume lacks resolved user route consent",
                         payload.Type().ToString());
                 Transition(_runs, e.RunId, "run", payload, StateMachines.ApplyRun);
                 break;
@@ -456,6 +460,12 @@ public sealed class CanonicalStateTracker
             // estado canónico de una entidad.
         }
     }
+
+    private static bool IsResumableUserInteraction((InteractionKind Kind, bool Pending, string? OptionId,
+        InteractionCause? Cause) interaction) => interaction.Cause == InteractionCause.User
+        && (interaction.Kind == InteractionKind.ModelRouteConsent && interaction.OptionId == "allow_route"
+            || interaction.Kind == InteractionKind.WeakSandboxConsent
+                && interaction.OptionId is "consent_once" or "deny");
 
     private static void ValidateReasoningRequest(ReasoningRequest? request, DomainEventPayload payload)
     {

@@ -393,8 +393,12 @@ public sealed class RunProjection
                 && request.InteractionId == resumed.InteractionId)
             .OrderBy(item => item.Sequence).LastOrDefault();
         if (requestEvent is null || requestEvent.RunId != resumed.RunId
-            || registry.Decode(requestEvent) is not InteractionRequested
-                { Kind: InteractionKind.ModelRouteConsent })
+            || registry.Decode(requestEvent) is not InteractionRequested request)
+            return false;
+
+        if (request.Kind == InteractionKind.WeakSandboxConsent)
+            return ValidWeakSandboxConsentResume(resumed, envelope, resumeCause, requestEvent, request, registry, events);
+        if (request.Kind != InteractionKind.ModelRouteConsent)
             return false;
 
         var resolutions = events.Where(item => item.Sequence > requestEvent.Sequence
@@ -420,6 +424,118 @@ public sealed class RunProjection
             }
         }
         return pending.Count == 0;
+    }
+
+    private static bool ValidWeakSandboxConsentResume(RunInteractionResumed resumed, DomainEvent resumeEnvelope,
+        CommandCausation resumeCause, DomainEvent requestEnvelope, InteractionRequested request,
+        IEventCodecRegistry registry, IReadOnlyList<DomainEvent> events)
+    {
+        if (request.Kind != InteractionKind.WeakSandboxConsent
+            || requestEnvelope.SessionId != resumeEnvelope.SessionId
+            || requestEnvelope.RunId != resumed.RunId
+            || requestEnvelope.TaskId is not { } taskId
+            || requestEnvelope.LaneId is not { } laneId
+            || requestEnvelope.TurnId is not { } turnId
+            || requestEnvelope.ToolCallId is not { } toolCallId
+            || requestEnvelope.ExecutionId is not { } executionId
+            || resumeEnvelope.TaskId != taskId || resumeEnvelope.LaneId != laneId
+            || resumeEnvelope.TurnId != turnId || resumeEnvelope.ToolCallId != toolCallId
+            || resumeEnvelope.ExecutionId != executionId
+            || !OptionIds(request.OptionsJson).SequenceEqual(["consent_once", "deny"], StringComparer.Ordinal))
+            return false;
+
+        var scopedEvents = events.Where(item => item.Sequence < resumeEnvelope.Sequence
+            && item.SessionId == requestEnvelope.SessionId && item.RunId == resumed.RunId
+            && item.TaskId == taskId && item.LaneId == laneId && item.TurnId == turnId
+            && item.ToolCallId == toolCallId && item.ExecutionId == executionId).ToArray();
+        var resolutions = scopedEvents.Where(item => item.Sequence > requestEnvelope.Sequence
+            && registry.Decode(item) is InteractionResolved resolved
+            && resolved.InteractionId == resumed.InteractionId && !resolved.IsQuestionnaire
+            && resolved.Cause == InteractionCause.User
+            && resolved.OptionId is "consent_once" or "deny").ToArray();
+        if (resolutions.Length != 1) return false;
+        var resolution = resolutions[0];
+        if (resolution.Causation is not CommandCausation resolutionCause
+            || resolutionCause.CommandId != resumeCause.CommandId)
+            return false;
+        var resolutionPayload = (InteractionResolved)registry.Decode(resolution);
+
+        var beforeRequest = scopedEvents.Where(item => item.Sequence < requestEnvelope.Sequence).ToArray();
+        var requestedCalls = beforeRequest.Where(item => registry.Decode(item) is ToolCallRequested call
+            && call.ToolCallId == toolCallId && call.ToolName == "dyn.core.verify_integration").ToArray();
+        if (requestedCalls.Length != 1 || registry.Decode(requestedCalls[0]) is not ToolCallRequested)
+            return false;
+        var toolRequest = requestedCalls[0];
+        var prepared = beforeRequest.Where(item => registry.Decode(item) is ToolCallPrepared payload
+            && payload.ToolCallId == toolCallId).ToArray();
+        var authorized = beforeRequest.Where(item => registry.Decode(item) is ToolCallAuthorized payload
+            && payload.ToolCallId == toolCallId).ToArray();
+        if (prepared.Length != 1 || authorized.Length != 1
+            || toolRequest.Sequence >= prepared[0].Sequence || prepared[0].Sequence >= authorized[0].Sequence
+            || authorized[0].Sequence >= requestEnvelope.Sequence)
+            return false;
+
+        var runHistory = events.Where(item => item.Sequence < requestEnvelope.Sequence
+            && item.SessionId == requestEnvelope.SessionId && item.RunId == resumed.RunId).ToArray();
+        var executions = runHistory.Where(item => item.TaskId == taskId && item.LaneId == laneId
+            && item.ExecutionId == executionId && registry.Decode(item) is AgentExecutionStarted started
+            && started.ExecutionId == executionId && started.ParentExecutionId is not null
+            && started.LaneId == laneId).ToArray();
+        if (executions.Length != 1) return false;
+        var startedPayload = (AgentExecutionStarted)registry.Decode(executions[0]);
+        var accepted = runHistory.Where(item => registry.Decode(item) is DelegationAccepted delegation
+            && delegation.ChildExecutionId == executionId && delegation.ExecutionId == startedPayload.ParentExecutionId)
+            .ToArray();
+        if (accepted.Length != 1 || registry.Decode(accepted[0]) is not DelegationAccepted acceptedPayload
+            || accepted[0].Sequence >= executions[0].Sequence)
+            return false;
+        var created = runHistory.Where(item => registry.Decode(item) is DelegationCreated delegation
+            && delegation.Delegation.DelegationId == acceptedPayload.DelegationId
+            && delegation.Delegation.ParentExecutionId == acceptedPayload.ExecutionId
+            && delegation.Delegation.ChildTaskId == taskId
+            && delegation.Delegation.ChildLaneId == laneId).ToArray();
+        if (created.Length != 1 || created[0].Sequence >= accepted[0].Sequence) return false;
+
+        var afterRequest = scopedEvents.Where(item => item.Sequence > requestEnvelope.Sequence).ToArray();
+        var terminalToolEvents = afterRequest.Where(item =>
+            (registry.Decode(item) is ToolCallStarted started && started.ToolCallId == toolCallId)
+            || (registry.Decode(item) is ToolCallSucceeded succeeded && succeeded.ToolCallId == toolCallId)
+            || (registry.Decode(item) is ToolCallFailed failed && failed.ToolCallId == toolCallId)
+            || (registry.Decode(item) is ToolCallEffectUnknown unknown && unknown.ToolCallId == toolCallId)
+            || (registry.Decode(item) is ToolCallReconciled reconciled && reconciled.ToolCallId == toolCallId)).ToArray();
+        if (terminalToolEvents.Length != 0) return false;
+        var denials = afterRequest.Where(item => item.Sequence > resolution.Sequence
+            && registry.Decode(item) is PermissionDenied denied
+            && denied.ToolCallId == toolCallId).ToArray();
+        if (resolutionPayload.OptionId == "deny" ? denials.Length != 1 : denials.Length != 0)
+            return false;
+
+        var pending = new HashSet<InteractionId>();
+        foreach (var item in events.Where(item => item.Sequence < resumeEnvelope.Sequence).OrderBy(item => item.Sequence))
+        {
+            switch (registry.Decode(item))
+            {
+                case InteractionRequested pendingRequest: pending.Add(pendingRequest.InteractionId); break;
+                case InteractionResolved resolved: pending.Remove(resolved.InteractionId); break;
+                case InteractionExpired expired: pending.Remove(expired.InteractionId); break;
+            }
+        }
+        return pending.Count == 0;
+    }
+
+    private static IReadOnlyList<string> OptionIds(string optionsJson)
+    {
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(optionsJson);
+            if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array) return [];
+            return document.RootElement.EnumerateArray()
+                .Where(item => item.ValueKind == System.Text.Json.JsonValueKind.Object)
+                .Select(item => item.TryGetProperty("id", out var id) && id.ValueKind == System.Text.Json.JsonValueKind.String
+                    ? id.GetString() : null)
+                .Where(id => id is not null).Select(id => id!).ToArray();
+        }
+        catch (System.Text.Json.JsonException) { return []; }
     }
 
     public bool IsTerminal() => StateMachines.IsRunTerminal(State);
