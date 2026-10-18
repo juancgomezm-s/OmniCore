@@ -2775,7 +2775,7 @@ public sealed partial class CliEndToEndTests
             Assert.Equal(0, provider.RequestCount);
             Assert.Empty(ReadAllSessionEvents(workspace).OfType<RunCreated>());
             Assert.Empty(ReadAllSessionEvents(workspace).OfType<UserInputReceived>());
-            Assert.Contains(diagnostics, line => line.Contains("imagen", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(Localization.Spanish().Resolve("shell.attachment.image_not_supported"), diagnostics);
         });
     }
 
