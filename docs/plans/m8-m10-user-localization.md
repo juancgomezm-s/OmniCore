@@ -15,7 +15,8 @@ K continúa abierto hasta SEC-CONV-01–13, definidos en el [plan de OmniCoder](
 En L, Permission/PlanApproval y recuperación explícita de la Lane raíz están construidos y
 validados localmente en Core/SDK/Main/UI; [el acta](../validation/m9-native-choices-recovery-20261017.md)
 registra 18 casos Core, 18 unidades Coder y siete E2E únicos en focos separados. La CI de este
-cambio aún debe comprobarse; no se extrapola la matriz anterior. Siguen pendientes modelos/rutas,
+cambio se sigue en el informe CI; no se extrapola la matriz anterior. Modelos/rutas por
+Session ya están construidos y validados en el bloque siguiente. Siguen pendientes
 ejecución de comandos, activación de skills, mutadores de memoria y acciones
 tipadas de plan/lanes/worktrees. M (procesos persistentes/ConPTY) no está
 construido. También faltan adjuntos TUI en ACT, decodificación WebP completa y
@@ -391,12 +392,12 @@ acreditan preferencia efectiva ni cambio en caliente. M8 permanece abierto para 
 
 #### Siguiente bloque nativo: selección de modelo y ruta por Session
 
-**En diseño; no construido.** Tras reparar los dos fallos de integración de
-`6953dde`, conectar la elección de modelos/rutas Core desde OmniCoder. La
-selección actual de `ModelPolicyService` pertenece al workspace; no debe
-reutilizarse como elección de una conversación. Hace falta binding canónico,
-durable y revisionado por Session, catálogo local acotado sin probes de red,
-comando humano firmado y consumo del binding en el Turn siguiente/reapertura.
+**Construido y validado localmente.** Core `92f2db4` + `d2c4381` y
+OmniCoder `31cb234` incorporan binding canónico, durable y revisionado por
+Session, catálogo local acotado sin probes de red, comando humano firmado y
+consumo del binding en el Turn siguiente/reapertura. La selección de
+`ModelPolicyService` pertenece al workspace y conserva su función distinta.
+Contrato y límites en [ADR-0057](../adr/0057-session-model-selection.md).
 
 La selección no amplía el techo de seguridad, ni grants ni presupuestos. Las
 rutas fuera del snapshot autorizado mantienen consentimiento exacto; modificar
@@ -405,8 +406,15 @@ identidad de ruta/configuración, rechazar revisiones obsoletas y respetar el
 modelo original de continuaciones/efectos pendientes. La prevalidación de
 adjuntos y la inferencia deben resolver el mismo modelo. OmniCoder conserva
 Pi separado y sólo presenta una elección como efectiva tras confirmación Core.
-Se requiere cobertura Host real y Electron; un catálogo o selector visual
-aislados no satisfacen el bloque.
+El caso integrado Host aprobó 1/1, lifecycle 1/1 y arquitectura 1/1 en focos
+separados. El consumidor aprobó SDK 2/2 y adapter 13/13; dos E2E únicos reales
+aprobaron en ejecuciones separadas, sin una tanda combinada limpia. Build final,
+control IPC y huérfanos pasaron. [Acta y límites](../validation/m9-native-model-selection-20261017.md).
+La rama específica Codex se corrigió y auditó sin llamada autenticada; el
+proveedor loopback acredita cableado, no inferencia live. El siguiente bloque
+es activación de skills y memoria Session. `command.invoke` queda separado:
+su resultado actual es volátil y requiere conectar ejecución/continuación
+durable al pipeline antes de anunciarlo como comando nativo funcional.
 
 ## M10: v1, memoria completa y evaluación
 

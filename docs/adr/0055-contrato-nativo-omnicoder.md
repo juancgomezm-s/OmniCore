@@ -112,7 +112,10 @@ general de procesos ni reconciliación de efectos inciertos.
 M9-J hace operativas las consultas actualmente negociadas y acciones ya construidas, incluido el
 catálogo real en una vista útil para tools/skills/context y un SDK de producción que reutiliza el
 Host. No cierra el acceso funcional completo. La siguiente cobertura debe coordinar y construir
-contratos mutadores tipados para modelos y rutas reales de
-Core; interacciones y continuaciones de Lanes hijas; `command.invoke`, activación de skills y acciones de
+contratos mutadores tipados para interacciones y continuaciones de Lanes hijas; `command.invoke`, activación de skills y acciones de
 memoria; y controladores de plan/lanes/worktrees. ConPTY, capacidad prevista en M9, y otras partes
 de M10 siguen inexistentes y no se anuncian como disponibles.
+
+La selección durable de modelos/rutas por Session y su consumidor real se
+construyeron después; [ADR-0057](0057-session-model-selection.md) y su acta
+registran CAS, consentimiento exacto, límites y validación integrada.

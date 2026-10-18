@@ -74,7 +74,9 @@ consumidores pendientes; esa matriz no acredita cambios posteriores en construcc
 La propiedad de Sessions importadas requiere un importador Core real; hasta entonces no se anuncia
 ruta de importación. El cuestionario, Permission y PlanApproval de la Lane raíz tienen consumidor
 y validación integrada; [el acta de elecciones](../validation/m9-native-choices-recovery-20261017.md)
-registra recuperación explícita, denegación en el contexto del modelo y sus límites. Modelos/rutas,
-acciones de Lanes hijas y los demás mutadores de L siguen pendientes. M (ConPTY/procesos
+registra recuperación explícita, denegación en el contexto del modelo y sus límites.
+Modelos/rutas por Session ya tienen binding durable y consumidor validado
+([ADR-0057](0057-session-model-selection.md)); acciones de Lanes hijas y los
+demás mutadores de L siguen pendientes. M (ConPTY/procesos
 persistentes) no está construido. La aceptación manual de M8 corresponde al usuario y permanece
 pendiente.

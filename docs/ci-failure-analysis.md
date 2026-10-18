@@ -41,6 +41,46 @@ completa local. Logs `%TEMP%/m9-ci39090154269-f364a48-testbuild-20261017.log`
 y `m9-ci39090154269-f364a48-focused-20261017.log`. La nueva matriz remota debe
 validar esta reparación; no se presenta aún como aprobada.
 
+Comandos efectivamente ejecutados desde la raíz Core:
+
+```powershell
+dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore
+dotnet test tests/OmniCore.Tests/OmniCore.Tests.csproj --no-build --no-restore --parallel none --filter-method '*Versioned_golden_frames_are_valid_and_match_the_capability_contract*' '*Act_permission_ask_without_tty_stays_awaiting_input_without_inventing_answer*' '*NoClient_ask_denies_even_when_resolver_exists_without_native_defer_opt_in*' '*Native_permission_choice_resumes_exact_turn_with_one_effect_and_receipt*'
+```
+
+La nueva matriz de reparación es
+[39098271400](https://github.com/juancgomezm-s/OmniCore/actions/runs/39098271400),
+SHA `7dfa102`. Ubuntu terminó con **4857 PASS, 1 FAIL, 22 SKIP** de 4880:
+los dos casos anteriores pasan, pero falla
+`CliAssemblyReferenceTests.Omni_assembly_references_only_allowed_projects`.
+La llamada CLI al overload con parámetros opcionales de tipo Domain introdujo
+una referencia IL a `OmniCore.Domain`. La fachada debe ser primitiva; no se
+amplía la allowlist de arquitectura. Windows seguía en curso al comprobarlo;
+npm de ambas plataformas y paquetes Linux pasaron.
+
+`3e69d11` añade `ActWithDeferredPermissionAsync` en Host y retira esa llamada
+con firma Domain desde CLI. Está en la rama del siguiente bloque nativo,
+todavía sin publicar. El foco arquitectónico sobre `7029910` aprobó **1/1**,
+sin omisiones; no se repitió el foco verde al cambiar sólo el snapshot inicial
+de rutas. Ese commit también
+repara dos errores de compilación encontrados en el primer build del bloque
+de modelos `126e953`: variable local `session` duplicada y routing nullable.
+No se presenta ese build fallido como validación del bloque.
+
+El push de documentación OmniCoder `b24d166` también detectó un fallo en
+[run 39098276410](https://github.com/juancgomezm-s/OmniCode/actions/runs/39098276410):
+T11.6 de cancelación Git agotó 20 segundos en Windows. Ubuntu y package gate
+pasaron; la CI global falló. El caso contiene ventanas internas de 15 y 5
+segundos, además de consultas de procesos y cancelación. `4653e34` acota la
+espera de cancelación, añade diagnóstico por etapa y amplía el timeout exterior
+a 40 segundos sin eliminar árbol muerto, commit ausente ni estado cancelado.
+El foco aprobó **1/1** (65 filtrados); la cancelación observada fue de 2011 ms.
+La [CI de esa reparación](https://github.com/juancgomezm-s/OmniCode/actions/runs/39099365577)
+terminó **aprobada**. El código de producto de ese push no cambió.
+
+Logs de jobs descargados en `%TEMP%/m9-ci-job-117589108261.log` (Core Ubuntu)
+y `%TEMP%/m9-ci-job-117589122216.log` (Coder Windows).
+
 ## Regresiones detectadas tras seguridad de Session (2026-10-17)
 
 El run [39077479124](https://github.com/juancgomezm-s/OmniCore/actions/runs/39077479124),
