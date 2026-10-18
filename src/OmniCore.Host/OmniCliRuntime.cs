@@ -1567,12 +1567,42 @@ public sealed class OmniCliRuntime : IDisposable
                         diagnostics(Text(Localized("host.workflow.implementation_owner", [])));
                         return 1;
                     }
-                    var preview = await WorktreePreviewHost.PreviewAsync(_workspaceRoot,
-                        implementationWorktree.OwnershipId, token).ConfigureAwait(false);
-                    if (!preview.Succeeded)
+
+                    // A restarted workflow replays returned stages from their durable facts.
+                    // If Verify was already admitted, its canonical LaneWorktreeBound and task
+                    // packet bind this exact implementation snapshot. Revalidate that binding
+                    // against the physical worktree instead of creating a second, unbound
+                    // preview of the completed Implement stage.
+                    var verifyAuthorization = server.ForStage(authorization, WorkflowStage.Verify, planItem.Id);
+                    var verifyStage = server.FindWorkflowStage(verifyAuthorization, WorkflowStage.Verify);
+                    var verifyBindingIsCurrent = false;
+                    if (verifyStage is { } existingVerify
+                        && existingVerify.Phase is PreM6RecordPhase.Accepted or PreM6RecordPhase.Returned)
                     {
-                        diagnostics(Text(Localized("host.workflow.manual_recovery", [])));
-                        return 3;
+                        var verifyContract = WorkflowStageContract.FromPlanItem(existingVerify.Item);
+                        var verifyExecution = verifyContract.Execution;
+                        verifyBindingIsCurrent = verifyExecution is not null
+                            && existingVerify.Item.DependsOn.Count == 1
+                            && existingVerify.Item.DependsOn[0] == planItem.Id
+                            && server.VerifyAcceptedImplementationBinding(verifyContract, authorization.Session,
+                                authorization.Run, own, token);
+                        if (!verifyBindingIsCurrent)
+                        {
+                            if (verifyExecution is { } execution)
+                                server.RecordWorkflowGateEvidenceDebt(authorization, verifyContract, execution);
+                            diagnostics(Text(Localized("host.workflow.verify_binding", [])));
+                            return 1;
+                        }
+                    }
+                    if (!verifyBindingIsCurrent)
+                    {
+                        var preview = await WorktreePreviewHost.PreviewAsync(_workspaceRoot,
+                            implementationWorktree.OwnershipId, token).ConfigureAwait(false);
+                        if (!preview.Succeeded)
+                        {
+                            diagnostics(Text(Localized("host.workflow.manual_recovery", [])));
+                            return 3;
+                        }
                     }
                 }
                 previousPlanItem = planItem.Id;
