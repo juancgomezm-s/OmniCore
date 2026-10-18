@@ -147,6 +147,98 @@ public sealed partial class StdioTransportTests
     }
 
     [Fact]
+    public async Task Native_session_memory_mutation_is_deferred_during_an_open_turn_without_journal_changes()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-session-memory-open-turn-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var data = Path.Combine(root, "data");
+        var config = Path.Combine(root, "config");
+        Directory.CreateDirectory(workspace);
+        Directory.CreateDirectory(data);
+        Directory.CreateDirectory(config);
+        var names = new[] { "OMNICORE_DATA_DIR", "OMNICORE_CONFIG_DIR", "OMNICORE_AGENT_HOME", "CODEX_HOME",
+            "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "OPENCODE_CONFIG_DIR" };
+        var previous = names.ToDictionary(name => name, Environment.GetEnvironmentVariable, StringComparer.Ordinal);
+        var previousDirectory = Environment.CurrentDirectory;
+        var key = RandomNumberGenerator.GetBytes(32);
+        Process? host = null;
+        try
+        {
+            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", data);
+            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", config);
+            Environment.SetEnvironmentVariable("OMNICORE_AGENT_HOME", Path.Combine(root, "agent-home"));
+            Environment.SetEnvironmentVariable("CODEX_HOME", Path.Combine(root, "agent-home", ".codex"));
+            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", Path.Combine(root, "agent-home", ".claude"));
+            Environment.SetEnvironmentVariable("XDG_CONFIG_HOME", Path.Combine(root, "agent-home", ".config"));
+            Environment.SetEnvironmentVariable("OPENCODE_CONFIG_DIR", Path.Combine(root, "agent-home", ".config", "opencode"));
+            Environment.CurrentDirectory = workspace;
+
+            var cli = Path.Combine(FindRepositoryRoot(), "src", "OmniCore.Cli", "bin", "Debug", "net10.0", "omni.dll");
+            host = StartRawHost(cli, workspace, Convert.ToHexString(key));
+            var hello = ReadNativeHello(host);
+            var session = CreatePreferenceSession(host, key, hello.Nonce, workspace);
+            await StopNativeRawHost(host);
+            host = null;
+            var journalPath = Path.Combine(OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace), "journal.db");
+            using (var journal = new SqliteEventStore(journalPath))
+            {
+                var codecs = EventCodecs.Create();
+                var opened = TestRun.Open(journal, SessionId.Parse(session), "busy mutation fixture", RunMode.Act);
+                using (ExecutionScope.Begin(new(opened.RunId, opened.RootTask, opened.RootLane)))
+                {
+                    new EventStream(journal, codecs, opened.SessionId)
+                        .Append(new TurnStarted(TurnId.New(), opened.RootLane), DurabilityClass.Barrier);
+                }
+                var events = journal.ReadFrom(SessionId.Parse(session), 1).Select(codecs.Decode).ToArray();
+                Assert.Single(events.OfType<RunCreated>());
+                Assert.Single(events.OfType<TurnStarted>());
+            }
+
+            host = StartRawHost(cli, workspace, Convert.ToHexString(key));
+            hello = ReadNativeHello(host);
+
+            var before = QueryNativeJson(host, "memory.session");
+            Assert.Equal(session, before.GetProperty("session").GetString());
+            Assert.Empty(before.GetProperty("records").EnumerateArray());
+            var sequenceBefore = FindNativeConversation(host, session).GetProperty("journalSequence").GetInt64();
+            var mutation = NativePreferenceCommand(host, key, hello.Nonce, workspace, JsonSerializer.Serialize(new
+            {
+                cmd = "memory.session.add", expectedSessionId = session,
+                expectedRevision = before.GetProperty("revision").GetString(), content = "This must wait for the open Turn.",
+            }));
+
+            Assert.Equal(RuntimeCommandOutcomeKind.Deferred, mutation.Ack.Outcome?.Kind);
+            Assert.Equal("busy", mutation.Ack.Status);
+            Assert.Equal("sessionPreferences.error.execution_busy", mutation.Ack.Error);
+            Assert.Null(mutation.Ack.FirstSeq);
+            Assert.Null(mutation.Ack.LastSeq);
+            var receipt = LookupNativeReceipt(host, mutation.Command);
+            Assert.Equal("completed", receipt.GetProperty("state").GetString());
+            Assert.Equal("Deferred", receipt.GetProperty("ack").GetProperty("outcome").GetString());
+
+            var after = QueryNativeJson(host, "memory.session");
+            Assert.Equal(before.GetProperty("revision").GetString(), after.GetProperty("revision").GetString());
+            Assert.Empty(after.GetProperty("records").EnumerateArray());
+            Assert.Empty(after.GetProperty("candidates").EnumerateArray());
+            Assert.Equal(sequenceBefore, FindNativeConversation(host, session).GetProperty("journalSequence").GetInt64());
+            using var reopenedJournal = new SqliteEventStore(journalPath, readOnly: true);
+            Assert.DoesNotContain(reopenedJournal.ReadFrom(SessionId.Parse(session), 1).Select(EventCodecs.Create().Decode),
+                item => item is MemoryCandidateProposed or MemoryPromoted or MemoryRejected);
+        }
+        finally
+        {
+            if (host is not null)
+            {
+                try { await StopNativeRawHost(host); } catch (InvalidOperationException) { }
+            }
+            CryptographicOperations.ZeroMemory(key);
+            foreach (var name in names) Environment.SetEnvironmentVariable(name, previous[name]);
+            Environment.CurrentDirectory = previousDirectory;
+            try { Directory.Delete(root, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
     public async Task Native_session_skills_and_memory_use_hmac_cas_isolation_and_durable_source_identity()
     {
         var root = Path.Combine(Path.GetTempPath(), "omni-native-session-preferences-" + Guid.NewGuid().ToString("N"));
