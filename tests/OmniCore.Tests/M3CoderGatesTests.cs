@@ -533,7 +533,8 @@ public sealed class M3CoderGatesTests
             Assert.Equal(1, exit);
             Assert.Equal(3, modelCall);
             Assert.False(subsequentTurnCreated);
-            Assert.Contains(diagnostics, line => line.Contains("The skill validation passed.", StringComparison.Ordinal));
+            Assert.Contains(diagnostics, line => line.StartsWith("cli.runtime.gate.result(", StringComparison.Ordinal)
+                && line.Contains("summary=cli.runtime.skill.validator.passed", StringComparison.Ordinal));
             Assert.Equal(verified, File.ReadAllText(Path.Combine(context.Workspace, "Program.cs")));
             Assert.Contains(events.OfType<ToolCallSucceeded>(), succeeded => events.OfType<ToolCallRequested>()
                 .Any(requested => requested.ToolCallId.Equals(succeeded.ToolCallId)
