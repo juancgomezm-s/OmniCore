@@ -809,7 +809,10 @@ public sealed class OmniCliRuntime : IDisposable
             || !string.Equals(receipt.RequestHash, admitted.RequestHash, StringComparison.Ordinal)
             || !string.Equals(receipt.SessionId, expectedSession, StringComparison.Ordinal)
             || receipt.FirstSequence != admitted.FirstSequence || receipt.LastSequence != admitted.LastSequence)
+        {
+            if (isChoiceContinuation) diagnostics("native_choice.resume.source_binding_invalid");
             return 1;
+        }
         if (isQuestionnaireContinuation)
         {
             if (receipt is not { ExecutionState: "deferred", ExecutionCode: "input_required" }
@@ -843,19 +846,27 @@ public sealed class OmniCliRuntime : IDisposable
                 || admitted.ContinuationFirstSequence is not { } choiceFirst
                 || admitted.ContinuationLastSequence is not { } choiceLast || choiceLast < choiceFirst
                 || admitted.ContinuationOptionId is not { Length: > 0 } optionId)
+            {
+                diagnostics("native_choice.resume.source_not_deferred_or_response_binding_missing");
                 return 1;
+            }
             var responseReceipt = server.ReceiptStore?.ReadCommandReceipt(choiceCommandId);
             if (responseReceipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
                     OutcomeKind: "Accepted" }
                 || !string.Equals(responseReceipt.RequestHash, choiceHash, StringComparison.Ordinal)
                 || !string.Equals(responseReceipt.SessionId, expectedSession, StringComparison.Ordinal)
-                || responseReceipt.FirstSequence != choiceFirst || responseReceipt.LastSequence != choiceLast
-                || !TryValidateChoiceContinuation(server, session, run, admitted.ContinuationInteractionId!,
-                    optionId, choiceCommandId, choiceFirst, choiceLast, out continuationTurnId))
+                || responseReceipt.FirstSequence != choiceFirst || responseReceipt.LastSequence != choiceLast)
+            {
+                diagnostics("native_choice.resume.response_receipt_invalid");
+                return 1;
+            }
+            if (!TryValidateChoiceContinuation(server, session, run, admitted.ContinuationInteractionId!,
+                    optionId, choiceCommandId, choiceFirst, choiceLast, diagnostics, out continuationTurnId))
                 return 1;
         }
         else if (receipt.ExecutionState is not null)
         {
+            if (isChoiceContinuation) diagnostics("native_choice.resume.source_execution_not_recoverable");
             return 1;
         }
         var runIsAct = server.CurrentRunMode() is RunMode.Act or RunMode.Orchestrate;
@@ -902,13 +913,17 @@ public sealed class OmniCliRuntime : IDisposable
 
     private static bool TryValidateChoiceContinuation(OmniServer server, SessionId session, RunId run,
         string interactionText, string optionId, string responseCommandText, long firstSequence, long lastSequence,
-        out TurnId? permissionTurnId)
+        Action<string> diagnostics, out TurnId? permissionTurnId)
     {
         permissionTurnId = null;
         if (!Guid.TryParseExact(interactionText, "D", out var interactionGuid)
             || interactionText != interactionGuid.ToString("D")
             || !Guid.TryParseExact(responseCommandText, "D", out var responseGuid)
-            || responseCommandText != responseGuid.ToString("D")) return false;
+            || responseCommandText != responseGuid.ToString("D"))
+        {
+            diagnostics("native_choice.resume.identifiers_invalid");
+            return false;
+        }
         var codecs = server.AcquireCodecs();
         var events = server.AcquireStore().ReadFrom(session, 1);
         var interaction = new InteractionId(interactionGuid);
@@ -918,7 +933,11 @@ public sealed class OmniCliRuntime : IDisposable
             && request.InteractionId == interaction
             && request.Kind is InteractionKind.Permission or InteractionKind.PlanApproval);
         if (requestEvent is null || codecs.Decode(requestEvent) is not InteractionRequested requested
-            || requested.OptionsJson is null || !OptionsContain(requested.OptionsJson, optionId)) return false;
+            || requested.OptionsJson is null || !OptionsContain(requested.OptionsJson, optionId))
+        {
+            diagnostics("native_choice.resume.request_or_option_not_canonical");
+            return false;
+        }
         var resolved = events.SingleOrDefault(evt => evt.Sequence >= firstSequence && evt.Sequence <= lastSequence
             && evt.RunId == run && evt.Causation is CommandCausation cause && cause.CommandId == command
             && codecs.Decode(evt) is InteractionResolved item && item.InteractionId == interaction);
@@ -928,12 +947,20 @@ public sealed class OmniCliRuntime : IDisposable
             && RunControlService.IsNativeChoiceResponse(item, requested.Kind));
         if (resolved is null || input is null
             || codecs.Decode(resolved) is not InteractionResolved response || response.State != optionId
-            || RunProjection.Replay(session, run, codecs, events).State != RunState.Running) return false;
+            || RunProjection.Replay(session, run, codecs, events).State != RunState.Running)
+        {
+            diagnostics("native_choice.resume.response_events_or_run_state_invalid");
+            return false;
+        }
         if (requested.Kind == InteractionKind.Permission)
         {
             var permission = events.SingleOrDefault(evt => evt.RunId == run && evt.TurnId == requestEvent.TurnId
                 && codecs.Decode(evt) is PermissionRequested item && item.InteractionId == interaction);
-            if (permission?.TurnId is not { } turnId || !IsOpenPermissionTurn(events, codecs, run, turnId)) return false;
+            if (permission?.TurnId is not { } turnId || !IsOpenPermissionTurn(events, codecs, run, turnId))
+            {
+                diagnostics("native_choice.resume.permission_turn_not_open");
+                return false;
+            }
             permissionTurnId = turnId;
         }
         return true;
