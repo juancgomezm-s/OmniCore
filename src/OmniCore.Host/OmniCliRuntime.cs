@@ -361,6 +361,11 @@ public sealed class OmniCliRuntime : IDisposable
             allowDeferredNativePermission: allowDeferredPermission);
     }
 
+    /// <summary>CLI convenience boundary that does not expose Engine/Domain types across assemblies.</summary>
+    public Task<int> ActWithDeferredPermissionAsync(string objective, Action<string> writeLine,
+        CancellationToken cancellationToken) => ActAsync(objective, writeLine, cancellationToken,
+            allowDeferredPermission: true);
+
     /// <summary>Diagnóstico de componentes de runtime en DTOs de texto para el CLI.</summary>
     public static int Doctor(string locale, Action<string> writeLine,
         Func<string, IReadOnlyDictionary<string, string>, string>? localize = null)
@@ -710,17 +715,17 @@ public sealed class OmniCliRuntime : IDisposable
                 alias => { try { _ = registry.Resolve(alias); return true; } catch { return false; } });
             ModelDefinition? definition = null;
             var server = Server();
-            if (server.LastSessionId() is { } session)
+            if (server.LastSessionId() is { } selectedSession)
             {
-                if (server.LastRunId() is { } run && server.HasOpenSessionTurn(session, run))
+                if (server.LastRunId() is { } run && server.HasOpenSessionTurn(selectedSession, run))
                 {
-                    var priorModel = server.AcquireStore().ReadFrom(session, 1)
+                    var priorModel = server.AcquireStore().ReadFrom(selectedSession, 1)
                         .Where(evt => evt.RunId == run).OrderBy(evt => evt.Sequence)
                         .Select(evt => server.AcquireCodecs().Decode(evt)).OfType<ModelStepStarted>()
                         .LastOrDefault()?.ModelId;
                     if (priorModel is not null) definition = ResolveExplicitModel(loaded, priorModel);
                 }
-                definition ??= server.ResolveSessionModelSelection(session)?.Model;
+                definition ??= server.ResolveSessionModelSelection(selectedSession)?.Model;
             }
 
             var policyService = OmniHost.CreateModelPolicyService(null);

@@ -245,7 +245,7 @@ public sealed partial class OmniServer
             var latestSelection = SessionModelSelectionProjection.Read(latestHistory, _codecs, session);
             var latestRouting = SessionRoutingAuthorization.Read(latestHistory, _codecs, session);
             var latestSecurity = ReadSessionSecurityPolicy(session);
-            if (!StringComparer.Ordinal.Equals(latestCatalog.Revision, catalog.Revision)
+            if (latestRouting is null || !StringComparer.Ordinal.Equals(latestCatalog.Revision, catalog.Revision)
                 || latestSelection?.Revision != selection?.Revision
                 || latestRouting?.Revision != expectedRoutingRevision
                 || latestSecurity?.PolicyRevision != expectedSecurityRevision

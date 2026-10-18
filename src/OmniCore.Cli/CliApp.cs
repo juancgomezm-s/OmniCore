@@ -1258,8 +1258,8 @@ public sealed class CliApp
 
     private static async Task<int> RunAct(string[] args)
     {
-        var code = await Runtime.ActAsync(args.Length >= 2 ? args[1] : "", Console.WriteLine,
-            CancellationToken.None, allowDeferredPermission: true);
+        var code = await Runtime.ActWithDeferredPermissionAsync(args.Length >= 2 ? args[1] : "", Console.WriteLine,
+            CancellationToken.None);
         PrintStatusLine();
         return code;
     }
