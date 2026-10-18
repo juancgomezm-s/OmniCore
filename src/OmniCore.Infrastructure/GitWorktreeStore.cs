@@ -21,6 +21,7 @@ public sealed class GitWorktreeStore
     private const int CapturedOutputLimit = 1_048_576;
     private const int MaxIntegrationFiles = 64;
     private const long MaxIntegrationImageBytes = 8L * 1024 * 1024;
+    private static int _workflowTraceGitOrdinal;
     public static readonly TimeSpan SnapshotReferenceRetention = TimeSpan.FromDays(7);
     private readonly IProcessRuntime _processes;
     private readonly RedactionPolicy _redaction;
@@ -1340,9 +1341,13 @@ public sealed class GitWorktreeStore
                 or "write-tree" or "checkout-index" or "update-ref" or "worktree" => command[0],
             _ => "other",
         } : "empty";
-        void TraceGit(string marker)
+        var traceOrdinal = traceEnabled ? System.Threading.Interlocked.Increment(ref _workflowTraceGitOrdinal) : 0;
+        var sampledTrace = traceEnabled && traceOrdinal % 16 == 1;
+        void TraceGit(string marker, bool force = false)
         {
-            if (traceEnabled) Console.Error.WriteLine("M9TRACE git." + operation + "." + marker);
+            if (traceEnabled && (sampledTrace || force))
+                Console.Error.WriteLine("M9TRACE git." + traceOrdinal.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    + "." + operation + "." + marker);
         }
         var disabledHooksPath = OperatingSystem.IsWindows() ? "NUL" : "/dev/null";
         var args = new List<string>
@@ -1372,11 +1377,16 @@ public sealed class GitWorktreeStore
             {
                 var waitTimer = System.Diagnostics.Stopwatch.StartNew();
                 TraceGit("wait.begin");
-                result = await System.Threading.Tasks.Task.Run(
-                    () => _processes.Wait(handle, GitTimeout, cancellationToken), CancellationToken.None).ConfigureAwait(false);
-                TraceGit("wait.exit." + waitTimer.ElapsedMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                using (var slowWaitTimer = new System.Threading.Timer(_ =>
+                    TraceGit("wait.over1s", force: true), null, TimeSpan.FromSeconds(1), Timeout.InfiniteTimeSpan))
+                {
+                    result = await System.Threading.Tasks.Task.Run(
+                        () => _processes.Wait(handle, GitTimeout, cancellationToken), CancellationToken.None).ConfigureAwait(false);
+                }
+                var waitDuration = waitTimer.ElapsedMilliseconds;
+                TraceGit("wait.exit." + waitDuration.ToString(System.Globalization.CultureInfo.InvariantCulture)
                     + "." + result.ExitCode.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                    + "." + (result.TimedOut ? "timeout" : "complete"));
+                    + "." + (result.TimedOut ? "timeout" : "complete"), force: waitDuration >= 1_000);
             }
             catch (OperationCanceledException)
             {
