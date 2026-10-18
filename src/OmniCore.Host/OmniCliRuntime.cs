@@ -598,23 +598,6 @@ public sealed class OmniCliRuntime : IDisposable
         WorkflowStageDefinition stage)
     {
         var capabilities = policy.ToolPolicy.CapabilityCeiling.Intersect(stage.Capabilities).ToHashSet();
-        var mutation = policy.MutationPolicy;
-        if (mutation.Mode == FileMutationMode.Full
-            && stage.Capabilities.Contains(ModelToolCapability.PatchExisting)
-            && stage.Capabilities.Contains(ModelToolCapability.CreateFile)
-            && !stage.Capabilities.Contains(ModelToolCapability.ReplaceFile)
-            && !stage.Capabilities.Contains(ModelToolCapability.DeleteFile)
-            && !stage.Capabilities.Contains(ModelToolCapability.MoveOrRename))
-        {
-            // filesystem.write is create-only when the effective mutation mode is
-            // PatchAndCreate. Keep FullAgent's stage from accidentally mapping it to
-            // ReplaceFile, which this exact stage does not declare.
-            mutation = new FileMutationPolicy(FileMutationMode.PatchAndCreate,
-                mutation.Delete, mutation.MoveOrRename, mutation.MaxFilesPerTurn,
-                mutation.MaxChangedLinesPerTurn, mutation.MaxRewriteRatio,
-                mutation.RequirePriorRead, mutation.RequireExpectedVersionToken,
-                mutation.RequirePostEditValidation, mutation.AllowParallelMutations);
-        }
         // A compiled workflow already receives an exact Host-composed stage catalog. Discovered
         // mode would hide the stage's declared mutation/verifier tools because this catalog
         // intentionally omits general control tools such as tool.search. Direct here means only
@@ -622,7 +605,7 @@ public sealed class OmniCliRuntime : IDisposable
         var tools = new ModelToolPolicy(ToolMode.Direct, policy.ToolPolicy.MaxVisibleTools,
             policy.ToolPolicy.AllowToolDiscovery, capabilities);
         return new EffectiveModelPolicy(policy.Key, policy.Revision, policy.Category, tools,
-            mutation, policy.IsFallback, policy.MaxModelStepsPerTurn,
+            policy.MutationPolicy, policy.IsFallback, policy.MaxModelStepsPerTurn,
             policy.MaxToolCallsPerTurn, policy.AllowOrchestration, policy.MaxGenerationSeconds);
     }
 
