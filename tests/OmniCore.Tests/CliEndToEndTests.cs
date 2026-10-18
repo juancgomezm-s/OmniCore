@@ -3161,6 +3161,7 @@ public sealed class CliEndToEndTests
             var rejected = Assert.Single(payloads.OfType<RunValidationRejected>());
             Assert.Equal(new[] { "post-edit-validation", "plan" }, rejected.Gates);
             Assert.DoesNotContain(payloads, payload => payload is RunCompleted);
+            Assert.Equal(3, provider.RequestCount);
             Assert.Contains(traits, trait => trait.Trait == "InstructionFollowing" && trait.Samples == 10);
             AssertNoLeaks(act.Output);
         });

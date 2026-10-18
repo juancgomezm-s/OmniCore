@@ -2290,6 +2290,24 @@ public sealed class OmniCliRuntime : IDisposable
                 activeSkillFingerprints = composition.Fingerprints;
                 materializer = composition.Materializer;
             }
+            bool CanModelActivateSkillValidator()
+            {
+                var selector = new SkillSelector();
+                foreach (var candidate in skillCandidates.Where(candidate =>
+                             candidate.Manifest.Contributions?.Validators is { Count: > 0 }
+                             && !string.IsNullOrWhiteSpace(candidate.Manifest.Id)))
+                {
+                    var id = candidate.Manifest.Id!;
+                    if (skillCandidates.Count(item => string.Equals(item.Manifest.Id, id,
+                            StringComparison.Ordinal)) != 1)
+                        continue;
+                    if (selector.Select(skillCandidates, SkillSelectionRequestKind.ModelExplicit,
+                            skillLimits, id).Selected.Any(selected => string.Equals(selected.Manifest.Id, id,
+                            StringComparison.Ordinal)))
+                        return true;
+                }
+                return false;
+            }
             RefreshSkillComposition();
             if (delegation is null && skillCandidates.Count > 0)
                 hostTools.RegisterSkillLoadTool(new SkillLoadTool(sessionId,
@@ -2795,7 +2813,8 @@ public sealed class OmniCliRuntime : IDisposable
                     turnBoostConsumed: turnBoostConsumed, delegationId: delegation?.DelegationId,
                     escalateOnStall: delegation is null ? EscalateOnStall : null,
                     skillValidators: skillCompletionValidators,
-                    skillValidatorFactory: () => skillCompletionValidators);
+                    skillValidatorFactory: () => skillCompletionValidators,
+                    canActivatePostEditValidator: CanModelActivateSkillValidator);
             }
 
             var askExecution = server.ExecuteExplorerTurn(sessionId, runId,
@@ -2892,6 +2911,7 @@ public sealed class OmniCliRuntime : IDisposable
                         escalateOnStall: delegation is null ? EscalateOnStall : null,
                         skillValidators: skillCompletionValidators,
                         skillValidatorFactory: () => skillCompletionValidators,
+                        canActivatePostEditValidator: CanModelActivateSkillValidator,
                         subsequentTurnFactory: attempt => BuildSubsequentActTurn(attempt,
                             actExecutor, actTools.Catalog()));
                 }
@@ -3334,7 +3354,8 @@ public sealed class OmniCliRuntime : IDisposable
         TurnInstructionSnapshot? instructionSnapshot = null, Func<int, ExplorerTurn?>? subsequentTurnFactory = null,
         Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null, DelegationId? delegationId = null,
         Func<int?>? escalateOnStall = null, SkillCompletionValidator? skillValidators = null,
-        Func<SkillCompletionValidator?>? skillValidatorFactory = null)
+        Func<SkillCompletionValidator?>? skillValidatorFactory = null,
+        Func<bool>? canActivatePostEditValidator = null)
     {
         // Las mutaciones y las roturas de validación quedan completas solo al cerrar el bucle:
         // la evidencia de cada Turn usado (el inicial y los que cree la fábrica) se entrega entonces.
@@ -3350,7 +3371,8 @@ public sealed class OmniCliRuntime : IDisposable
             return RunActLoopCore(turn, writeLine, objective, instruction, sessionId, runId, laneId, workingState,
                 gateConfiguration, restrictions, server, artifacts, audit, interactionResponder, interactive, locale,
                 cancellationToken, origin, acceptanceResponder, instructionSnapshot, tracked, turnBoostId,
-                turnBoostConsumed, delegationId, escalateOnStall, skillValidators, skillValidatorFactory);
+                turnBoostConsumed, delegationId, escalateOnStall, skillValidators, skillValidatorFactory,
+                canActivatePostEditValidator);
         }
         finally
         {
@@ -3368,7 +3390,8 @@ public sealed class OmniCliRuntime : IDisposable
         TurnInstructionSnapshot? instructionSnapshot = null, Func<int, ExplorerTurn?>? subsequentTurnFactory = null,
         Guid? turnBoostId = null, Action<Guid>? turnBoostConsumed = null, DelegationId? delegationId = null,
         Func<int?>? escalateOnStall = null, SkillCompletionValidator? skillValidators = null,
-        Func<SkillCompletionValidator?>? skillValidatorFactory = null)
+        Func<SkillCompletionValidator?>? skillValidatorFactory = null,
+        Func<bool>? canActivatePostEditValidator = null)
     {
         var hasExternalGates = gateConfiguration is { Build: not null } or { Test: not null };
         var hasAcceptance = gateConfiguration?.Acceptance == true;
@@ -3750,6 +3773,18 @@ public sealed class OmniCliRuntime : IDisposable
 
             var rejection = server.AcquireStore().ReadFrom(sessionId, 1).Select(server.AcquireCodecs().Decode)
                 .OfType<RunValidationRejected>().LastOrDefault(item => item.RunId.Equals(runId));
+            var validatorWasRequested = checkResults.Any(result => result.Key is "build" or "test"
+                || result.ValidatorId is not null
+                || result.Key.StartsWith("hook.validation:", StringComparison.Ordinal));
+            if (rejection?.Gates.Contains("post-edit-validation", StringComparer.Ordinal) == true
+                && !hasExternalGates
+                && activeSkillValidators?.HasValidators != true
+                && !validatorWasRequested
+                && canActivatePostEditValidator?.Invoke() == false)
+            {
+                writeLine(Text(LocalizedText.Of("cli.runtime.postEditValidation.unavailable")));
+                return 1;
+            }
             var feedback = new List<string>();
             if (rejection is null)
                 feedback.Add("Completion was rejected by a runtime gate.");
