@@ -1,8 +1,9 @@
 # ADR-0060: autorización Orchestrate y recuperación nativa del workflow
 
-Estado: construcción reanudada por el usuario el 2026-10-18. Se valida el
-recorrido integrado del workflow; la atribución de mutaciones de procesos al
-ledger es otro pendiente explícito. Este bloque todavía no se ha publicado.
+Estado: recorrido integrado del workflow aceptado localmente el 2026-10-18,
+Core `582dc9c` y Coder bundle `1fb3639`/test `b919802`. La atribución de
+mutaciones de procesos al ledger es otro pendiente explícito. Publicación y CI
+de este incremento se comprueban por separado.
 M9 sigue abierto; M8 espera pruebas manuales.
 
 ## Problema
@@ -72,12 +73,14 @@ recuperación anterior a Started tras corte ACK (1/1) tienen evidencia local en
 reabre el mismo store y exige continuación humana; no demuestra kill OS ni cierre
 del workflow. Coder tiene formulario, prestart/continuación y lectura tras fallo.
 
-Pendiente: Electron→Host→hijos/tools/verificador sobre proyecto temporal real y
-cierre del gate; continuación de una etapa durable sin duplicar
-delegación ni efecto, lectura/replay sin autoejecución y rechazo de scope/revisión
-obsoletos. El caso CLI anterior no acredita el nuevo consumidor. Fixtures HTTP
-prueban cableado, no inferencia live. Accepted con interacción hija pendiente
-requiere el consumidor de esa interacción; no se declara resuelto por mostrarlo.
+Electron→Host→hijos/tools/verificador sobre proyecto temporal real aprobó tras
+reinicio: denegación 47.404 s y consentimiento único 84.825 s. Se conserva la
+misma Session/Run, las consultas no ejecutan trabajo y no se duplica el proceso;
+deny exige cero inicio y todos los terminales, consent_once exige verificador
+exitoso, resultado al modelo y workflow completed. Build 0W/0E y preflight 7/7
+aprobados. Fixtures HTTP prueban cableado, no inferencia live. Los unitarios de
+ToolRuntime no sustituyen pruebas negativas específicas del matcher Host;
+los demás límites y comandos reproducibles están en el acta.
 
 ## Checkpoint de detención
 
@@ -113,7 +116,7 @@ la interfaz especializada conserva una acción humana `command.continue` para es
 estado. Después de Started usa `workflow.continue`. Consultar cualquiera de las
 dos vistas no despacha trabajo.
 
-## Consentimiento de sandbox en children — construcción pendiente
+## Consentimiento de sandbox en children — aceptado localmente
 
 La E2E del 2026-10-18 acreditó Explore e Implement, pero Verify terminó con
 WeakSandboxConsent resuelto por NoClient. No fue una denegación humana ni un
@@ -132,4 +135,18 @@ una excepción genérica NotSupported/UnauthorizedAccess tras intentar el launch
 no demuestra ausencia de efectos y no autoriza un fallback Weak. Una ejecución
 incierta queda bloqueada. El consentimiento explícito de Weak no amplía las
 políticas Session/modelo, el perfil ni los argumentos autorizados del verificador.
-Esta sección fija el contrato en construcción; no declara implementado el flujo.
+La implementación de rama añade preflight tipado sin efectos, respuesta HMAC/CAS
+y proyección específica `interaction.recovery.weakSandbox`. El consumidor sólo
+usa esta última para restaurar una solicitud canónica; no interpreta el bloqueo
+normal de replay de una invocación activa como fallo de ejecución. La interacción
+se persiste con el ToolCallId exacto y los demás IDs del scope original. El
+ejecutor de continuación pertenece al worktree hijo, con su directorio y catálogo.
+Los focos locales acreditan pipeline, envelope y negociación; las dos E2E de
+reapertura acreditan el recorrido UI/proceso/gate y la denegación. `deny` cierra
+steering pendiente, Turn, ejecución, Task, Lane, Delegation e invocación en una
+sola barrera; no vuelve a ejecutar el hijo para fallarlo. Se revalida el recibo
+exacto, autoridad, causación y ausencia de efectos abiertos. `consent_once`
+mantiene reprepare y validación física del binding Implement→Verify.
+Un ACK de consentimiento aceptado
+cuyo inicio posterior no se puede demostrar sigue bloqueado, sin reintento
+automático. No existe una garantía exactly-once general.

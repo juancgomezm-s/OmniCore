@@ -10,7 +10,7 @@ reabren capacidades ya integradas ni sustituyen estas aceptaciones:
 | Recorrido | Estado efectivo | Trabajo para aceptarlo |
 |---|---|---|
 | Explain nativo y recuperación previa a inicio | Integrado, con CI aprobada en el checkpoint publicado | Conservar recibos, scope y recuperación explícita al ampliar comandos. |
-| Workflow Explore/Implement/Verify desde OmniCoder | En construcción; Explore/Implement producen archivos reales, Verify queda bloqueado por consentimiento NoClient | Presentar consentimiento del child, continuar una sola llamada autorizada y acreditar proceso/gate reales, denegación y recuperación sin duplicar efectos. |
+| Workflow Explore/Implement/Verify desde OmniCoder | Aceptado localmente sobre Core `582dc9c`, Coder test `b919802` y bundle `1fb3639`: reapertura con deny PASS 47.404 s y consentimiento único PASS 84.825 s; misma Session/Run, sin ejecución en consultas, cero inicio tras deny y un único verificador exitoso tras consentir. Build 0W/0E, preflight 7/7, sin huérfanos | Integrar/publicar el incremento y comprobar su CI. La fixture local acredita cableado; inferencia live y los otros bloques M9 conservan su aceptación independiente. |
 | Extensiones con procesos escritores | Sin aceptación; falta atribución de mutaciones | Aislamiento, diff acotado, ledger/CAS durable y pruebas allow/deny con efecto real. No lo cubre el permiso del verificador. |
 | Controladores de plan/lanes/worktrees y procesos persistentes/ConPTY | Pendientes | Construir consumidores y operaciones efectivas, sin confundir DTOs/catálogos con acciones disponibles. |
 | Paridad restante TUI/medios e idiomas | Parcial | Adjuntos en ACT, WebP completo, preferencia efectiva/cambio de idioma y recorridos de aceptación pendientes en sus actas. |

@@ -1,6 +1,266 @@
 # M9-L: handoff nativo durable de comandos
 
-Estado: prompt y recuperación previa al inicio construidos, cableados y validados
+## Estado actual: cierre de denegación y aceptación de reapertura (2026-10-18)
+
+**Aceptación local del bloque:** Core `582dc9c`, Coder test `b919802`, fuente/bundle
+de aplicación `1fb3639`. `deny` revalida autoridad, etapa Verify Accepted,
+recibo, interacción, causación y scope exactos, sin reconstruir la ejecución ni
+recapturar el filesystem para denegar. Los drops de steering pendientes, el Turn,
+AgentExecution, Task, Lane, Delegation y NativeCommandInvocationFinished(failed)
+se cierran en una sola barrera. Los terminales del hijo conservan causación de la
+respuesta; el cierre de la invocación conserva la suya. La atomicidad se revisó
+en código; no se ejecutó una inyección de crash dentro del commit SQLite.
+`consent_once` conserva las validaciones físicas y de autorización.
+
+| Validación sobre el freeze final | Resultado |
+|---|---|
+| `dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --no-restore` (incluye CLI) | PASS, 0W/0E, 49.94 s |
+| Runner serial, `WeakSandboxConsentPreflightTests.*` | 7/7 PASS, 0 fallos/omisiones/no ejecutados, 0.763 s |
+| Electron real, workflow `reopen-deny` | 1/1 PASS, 47.404 s; 23 casos ajenos excluidos por filtro |
+| Electron real, workflow `reopen-consent_once` | 1/1 PASS, 84.825 s; 23 casos ajenos excluidos por filtro |
+| `scripts/Assert-NoOrphanWorkers.ps1 -Etapa 'M9 workflow reinicio aceptado'` | NO_ORPHANS |
+
+Las dos E2E se ejecutaron desde la raíz OmniCoder, con
+`OMNICORE_E2E_ENTRY=<Core>/src/OmniCore.Cli/bin/Debug/net10.0/omni.dll`:
+
+```powershell
+npm exec --workspace @omnicoder/app -- vitest run --config vitest.e2e.config.ts test/e2e/omnicore-host.e2e.test.ts -t 'verificador reales \(reopen-deny\)' --reporter verbose
+npm exec --workspace @omnicoder/app -- vitest run --config vitest.e2e.config.ts test/e2e/omnicore-host.e2e.test.ts -t 'verificador reales \(reopen-consent_once\)' --reporter verbose
+dotnet tests/OmniCore.Tests/bin/Debug/net10.0/OmniCore.Tests.dll -method '*OmniCore.Tests.WeakSandboxConsentPreflightTests.*' -parallelMode none
+```
+
+El último comando corresponde a la raíz Core. SHA256 del CLI usado:
+`1F7EC65CD9A5854B82107E948B13B6C64F88110BDA9DFE12AF23F259650DF7F7`;
+bundle main Coder:
+`F09D17EFD34DF947F33BA20235C629B93886542E7194FBEE50CE322CCF72488B`.
+Los logs privados completos son `m9-reopen-deny-582dc9c-vitest.private.log` y
+`m9-reopen-consent-once-582dc9c-vitest.private.log` en Temp; root comprobó ambos.
+
+La reapertura conserva Session/Run y la interacción exacta. Consultar y reconectar
+son pasivos. Denegar conserva nueve HTTP locales, cero inicio del verificador y
+exige un único terminal de cada entidad antes de Finished. Consentir acredita
+diez HTTP locales, un único verificador real exitoso, su resultado exacto al
+modelo, workflow completed y raíz intacta, sin integración automática. El helper
+de reapertura conserva la reserva de backend en settings del store aislado.
+Se retiraron las trazas temporales y la observación posterior al timeout.
+
+Límites: HTTP fixture, sin inferencia pagada/live; los siete unitarios prueban
+ToolRuntime y no son pruebas negativas del matcher Host para receipt cambiado o
+ToolCallStarted previo. El foco CLI de tres casos descrito abajo aprobó sobre
+`c84a2e7`, no se repitió sobre `582dc9c`. El primer build de `47a440b` detectó
+CS1503 y no llegó a pruebas; `582dc9c` lo corrige. Este bloque no acredita
+procesos escritores generales, ConPTY, SEC-CONV ni aceptación global M9. M8
+espera pruebas manuales. La publicación y su CI se comprueban por separado.
+
+## Histórico de construcción y diagnósticos del verificador
+
+**Fuentes en aceptación:** Core `c84a2e7` elimina las trazas temporales y añade
+dos correcciones: no consulta supervisión global cuando ya existe disposición
+del resultado exacto de la ejecución (los gates posteriores siguen vigentes),
+y cierra el Turn hijo sólo tras revalidar una denegación Weak humana canónica,
+su causación, rango y todos los IDs. La ruta de fallo existente debe cerrar
+Task/Lane/AgentExecution/Delegation. Se amplía la E2E para exigir esos terminales,
+además de cero inicio del verificador. No se declara aceptada hasta pasar.
+
+Sobre `c84a2e7`, build de `OmniCore.Tests.csproj --no-restore` **PASS, 0W/0E,
+69.31 s** (incluye CLI). Runner serial del ensamblado, método
+`CliEndToEndTests.Typed_workflow_runs_real_filesystem_and_verifier_tools_and_reworks_unconnected_module`:
+**3/3 PASS, sin fallos/omisiones/no ejecutados, 71.372 s**. Cubre módulo conectado,
+módulo sin conectar y deuda/quiescencia al añadir una solicitud de tool posterior
+a Verify mediante hook de test. Ese tercer caso no modifica físicamente archivos
+después de verificar. No sustituye la E2E de consentimiento/reinicio.
+
+La E2E ampliada `reopen-deny` todavía falla **69.935 s**: reabre y registra la
+decisión, pero no alcanza los terminales dentro de su espera. La observación
+diagnóstica posterior conserva el recibo **antes del cleanup** con ExecutionState
+y ExecutionCode nulos, journal hasta 173 y sin finalización tras 30.128 s extra.
+La etiqueta `failed/runtime_failed` de una consulta SQL posterior al cierre no
+describe ese estado vivo y no se usa como evidencia de retorno.
+
+El sampler muestra avance por numerosos Git cortos; un `wait.begin` final sin
+`wait.exit` no demuestra bloqueo, pues las salidas se muestrean. No se identificó
+un Git individual detenido. Un preview de sólo lectura sobre una fixture anterior
+equivalente aprueba en **3.259 s**, y con stdin pipe abierto en **3.240 s**; con
+sampler, cien llamadas Git completan en **3.379 s**. No se reejecuta el ToolCall.
+El diagnóstico más reciente procede de workspace `AevM7P` / store `idyWnd`;
+las rutas `aITCdu` / `0dhbSC` corresponden al intento anterior.
+
+La reparación siguiente cierra la denegación desde sus hechos canónicos y el
+fallo real de la delegación, sin reconstruir ni lanzar el child para rechazarlo.
+Debe conservar todos los checks y recapturas físicas para `consent_once`; no se
+declara implementada ni aceptada todavía.
+
+**Corte histórico:** Core `1e9b7dd`, Coder fuente/bundle `1fb3639`:
+`consent_once` **PASS (95.348 s)** completo; CLI **0W/0E, 1:47.24**.
+Los dos casos de reapertura fallaron al conectar el Host nuevo, antes de iniciar
+el runtime o probar la continuación corregida. Una conexión pasiva posterior al
+mismo store/workspace conservado aprobó **1/1 (5.94 s)**, sin errores de página,
+sin iniciar runtime ni llamar al proveedor. No sustituye la aceptación de la
+secuencia de reinicio del workflow. Se conserva la corrección y se observa esa
+secuencia antes de publicar; no se atribuye el fallo de conexión al replay sin
+evidencia.
+
+La repetición `reopen-deny` con captura de conexión volvió a fallar **99.219 s**:
+status `disconnected`, sin PID/Session/generación ni errores de página. No llegó
+a la respuesta humana. La inspección localizó un defecto del harness: `launchApp`
+sobrescribe `userdata/settings.json` al reusar el store y borra `workspaces`,
+incluida la reserva OmniCore. El arranque automático del renderer entra entonces
+en legacy/demo y compite con Connect. Se corrige la conservación del archivo y
+se exige comprobar el backend guardado antes de validar otra reapertura; no se
+relajan los guards del producto.
+
+Coder test `68a0c76` conserva/valida ese archivo y comprueba la reserva del
+workspace antes y después de reabrir. El siguiente `reopen-deny` supera conexión
+y restauración de la misma Session/Run, conserva nueve HTTP y registra
+resolución/PermissionDenied/RunInteractionResumed (171–173). Sigue **FAIL,
+71.407 s**: no aparece Finished ni arranca el verificador; la corrección `1e9b7dd`
+no acredita aún el cierre. Store `%TEMP%/e02-e2e-store-WcISSG`. Se localiza el
+punto de salida con instrumentación temporal acotada, que debe retirarse antes
+de publicar.
+
+**Corrección de la hipótesis anterior:** el diagnóstico posterior llega a
+`implement.verify-stage.Accepted`, con identidad y TaskPacket válidos, y entra
+al preview físico. Los Git observados terminan normalmente (25–272 ms); la
+captura de 8 KiB se trunca durante ese trabajo. El receipt de respuesta leído
+**antes del cleanup** conserva ExecutionState/ExecutionCode nulos: la ejecución
+todavía estaba activa al vencer la espera. No demuestra retorno 3/deferred ni un
+Git individual colgado. La reparación en construcción eliminará la consulta
+global de supervisión repetida para una ejecución que ya tiene disposición
+durable, manteniendo las comprobaciones posteriores. También se audita el cierre
+terminal del Turn tras denegación explícita.
+Estas reparaciones todavía requieren su aceptación real.
+
+`1e9b7dd` evita un segundo preview no ligado al reproducir Implement si Verify
+ya está admitido: exige su dependencia exacta y vuelve a validar admisión,
+ownership, artifact/TaskPacket y árbol físico actual. Un binding inválido registra
+deuda de evidencia y falla. La ejecución inicial conserva el preview existente.
+Esta ruta fría todavía no tiene aceptación de extremo a extremo.
+
+**Corte anterior:** Core `e07dbdc`, Coder fuente/bundle `1fb3639`:
+`consent_once` **PASS (84.095 s)** completo. La reapertura ya restaura la tarjeta
+y limpia la alerta obsoleta de scope. Denegar persiste resolución User, luego
+PermissionDenied y RunInteractionResumed, con los mismos IDs y cero inicio del
+verificador; conserva nueve HTTP. Falta cierre: el receipt de respuesta termina
+`deferred/input_required`, la invocación no tiene Finished y el caso falla.
+El store `%TEMP%/e02-e2e-store-gZFtqJ` conserva seq171–173 y recibos originales;
+Triage privado y diagnóstico del Host nuevo se usan para localizar el retorno 3,
+sin cambiar límites ni reintentar la llamada original. No se declara aceptado
+ni publicado este incremento.
+
+**Histórico de la aceptación normal y reparación de reapertura:** Core `e07dbdc`, bundle Coder `c90ffef`, test `49a0968`:
+escenario `consent_once` **PASS (80.621 s)**. Acredita diez HTTP locales,
+un único proceso verificador exitoso, resultado exacto al modelo, workflow
+`completed`, identidad Session/Run, razonamiento y raíz intacta. Escenario
+`reopen-deny` **FAIL (60.810 s)**: la tarjeta no reaparece después de reabrir,
+con `native_command_scope_unavailable`; la interacción sigue pendiente y no
+hay lanzamiento ni HTTP adicional. Store `%TEMP%/e02-e2e-store-o335Nn`.
+Se repara esta restauración antes de aceptar/publicar el incremento. El fallo
+no se cuenta como aceptación de denegación ni recuperación completa.
+
+Coder `9b0ac66` corrige la rama de reapertura: el replay Weak ya no evita la
+consulta de `interaction.recovery.weakSandbox`. La tarjeta exige concordancia
+exacta de IDs, opciones, ejecutable y directorio con la solicitud replayada.
+No crea grants ni despacha un comando al consultar. Foco adapter **4/4 PASS**
+(19 filtrados, 476 ms): coincidencia canónica, ToolCall distinto, sujeto distinto
+y solicitud ya cerrada. Build app **PASS, 5.426 s**; scanner **PASS**, 37 archivos,
+157 canales main/preload y 155 métodos Bridge. Bundle main SHA-256
+`F09D17EFD34DF947F33BA20235C629B93886542E7194FBEE50CE322CCF72488B`.
+La E2E afectada de reapertura/denegación queda pendiente de resultado; no se
+repite el recorrido normal ya aprobado porque esta corrección sólo cambia
+la restauración de una solicitud Weak replayada al abrir la Session.
+
+M9 sigue abierto y M8 espera aceptación manual. La publicación citada más abajo
+no acredita este incremento de rama. El consentimiento de una sola llamada ya
+tiene ruta Host/Protocol/SDK/adapter y presentación en OmniCoder; su aceptación
+de extremo a extremo sigue pendiente. No se ofrece un grant Weak para todo el Run.
+
+Evidencia local: seis casos del pipeline Weak aprobaron con launcher contado de
+prueba; dos casos Host/stdio aprobaron negociación explícita de capacidad; dos
+casos del adapter aprobaron recuperación pasiva y cierre por replay. Estas pruebas
+no acreditan por sí solas lanzamiento OS ni el diálogo de Electron. Core CLI
+`fe95168` compiló sin advertencias/errores en 46.17 s; el bundle de OmniCoder
+`8af7afa` compiló y su scanner de arquitectura aprobó (37 archivos; 157 canales
+main/preload y 155 métodos Bridge). No son CI ni aceptación global.
+
+La primera E2E posterior falló en 68.22 s, con nueve HTTP locales: Explore e
+Implement completan, Verify llega a Prepared/Authorized y pide consentimiento,
+pero el diálogo no aparece. El journal conservado de
+`%TEMP%/e02-e2e-store-fWYYxP` termina con InteractionRequested (169),
+RunAwaitingInput (170) y NativeCommandInvocationFinished failed (171), sin
+ToolCallStarted ni proceso verificador. La interacción conserva Task/Lane/Turn
+pero omite ToolCallId en su envelope: el consumidor exacto no puede vincularla.
+Se corrige la atribución al persistirla, conservando los demás IDs del scope;
+no se infiere una llamada por cercanía ni se relajan los guards. También se
+conserva la corrección para reanudar el ejecutor del worktree hijo. Ninguno de
+estos cambios se cuenta como aceptado hasta completar el recorrido real.
+
+Core `3c278cf` corrige la atribución directa en ScriptedToolExecutor. El foco
+posterior aprueba **7/7**, sin fallos ni omisiones (0.895 s): conserva los seis
+casos de ToolRuntime y añade un caso ScriptedToolExecutor/EventStream/SQLite.
+Éste inicia con ToolCallId ausente del scope ambiente y comprueba el ID exacto
+del call en la interacción persistida, manteniendo Session/Run/Task/Lane/Turn y
+ExecutionId. No siembra la interacción. Usa un preflight/launcher controlado y
+no acredita proceso OS. Build del proyecto de tests y CLI: 0W/0E; el incremental
+tras ajustar el caso final tomó 13.19 s. La E2E sobre ese artefacto sigue pendiente.
+
+Los diagnósticos posteriores acreditan recuperación pasiva real: Core `5192ce4`
+devuelve Weak `pending` con todos los IDs y receipt `deferred/input_required`.
+OmniCoder `bf9ea87` decodifica los 33 descriptores del Host; `c90ffef` también
+lo acredita por el bridge de Electron, sin ejecutar un comando. El SDK acepta
+la gramática de la capacidad `weak-sandbox` y conserva un límite de 64
+descriptores; no amplía herramientas del modelo ni permisos. El foco SDK prueba
+33 entradas, binding exacto y rechazo de 65 o de un binding inconsistente.
+
+La E2E siguiente (`5192ce4`/`c90ffef`, 48.24 s) muestra la tarjeta y pulsa
+`consent_once`, pero el Engine rechaza RunInteractionResumed porque sus dos
+validadores todavía sólo admitían ModelRouteConsent. Conserva nueve HTTP y
+cero ToolCallStarted. Core `870d60f` extiende tracker y replay al consentimiento
+Weak exacto, con resolución humana, misma causación y scope, llamada preparada
+y autorizada, delegación/ejecución canónicas y ningún lanzamiento previo. La
+auditoría corrigió el orden usando el journal real: Created → Started → Accepted
+→ InteractionRequested. Esta corrección sigue sin aceptación de extremo a
+extremo; denegación y recuperación del pendiente también deben acreditarse.
+
+El recorrido posterior Core `1d7c7c4`/Coder `c90ffef` acredita la tarjeta,
+resolución humana `consent_once`, RunInteractionResumed y el inicio real del
+proceso verificador. Sigue fallando: nueve HTTP, exit 1 y ToolCallFailed
+`PROCESS_FAILURE`, sin gate completado (106.449 s). Journal conservado en
+`%TEMP%/e02-e2e-store-WjIUpO`. No acredita el cierre del workflow.
+
+La causa se aisló con copias nuevas del proyecto hijo, sin reintentar la llamada
+original: el launcher Weak real y su entorno filtrado reproducen NETSDK1060
+(`path1` nulo); añadir únicamente `APPDATA` mediante la allowlist existente da
+exit 0. No se hereda el entorno completo ni se amplía el permiso del proceso.
+Core `e07dbdc` añade esa variable sólo en Windows y un test de proceso real que
+comprueba su transmisión y la exclusión de un secreto sintético no permitido.
+Build tests con referencias de producción: **0W/0E, 47.02 s**. Foco
+`SystemProcessRuntimeEnvironmentTests`: **1/1 PASS, 0.244 s** mediante runner
+serial del ensamblado. Engine/Execution/CLI se actualizaron en la salida CLI;
+Execution SHA-256 `0084A8B1466EB267ED9D8AC04CD25D49FC4499834EFA73109B27B6E2ED7B75BF`.
+La E2E posterior alcanza diez HTTP y ToolCallSucceeded del verificador
+(seq175 Started, seq176 Succeeded, mismo ToolCallId/Execution; 73.966 s),
+pero aborta por exigir JSON `exitCode` en el resultado al modelo. El contrato
+real persiste `{"summary":"Proceso terminó con código 0"}` y la continuación
+recuperada envía ese JSON como string. Se corrige sólo la expectativa de representación,
+comprobando el provider call exacto `verify-integration`; se conservan las
+aserciones de recovery/gate. El cleanup del intento fallido canceló el Run,
+por lo que este journal no acredita cierre. Store `%TEMP%/e02-e2e-store-AuV0To`.
+El intento posterior comprueba correctamente ese JSON para el provider call
+exacto. También acredita recovery `completed`, misma Session/Run en `orq`,
+implementación única en el worktree hijo y HEAD/status raíz intactos. Falla
+después en la comprobación de evidencia de razonamiento UltraCode (76.87 s);
+no es una E2E aprobada ni CI. Store `%TEMP%/e02-e2e-store-e0qy8B`. Se audita
+esa discrepancia antes de modificar la comprobación. La causa demostrada es
+de lectura: el journal guarda Source=4 (UltraCode) y Reductions=[0] (Capability),
+mientras el helper esperaba nombres. Se normalizan sólo los enums conocidos.
+La siguiente ejecución de dos escenarios también detecta dos errores del test:
+los tres inputs `TrustedDelegation` se contaban como humanos adicionales y la
+consulta del PID intentaba abrir Diagnóstico bajo el modal. Test `49a0968`
+clasifica el Origin/scope durable de cada input y lee `processId` del estado
+existente, sin cambiar producción ni forzar clicks. Denegación y reapertura
+del consentimiento pendiente siguen sin aceptación hasta ese recorrido.
+
+Estado del checkpoint publicado anterior: prompt y recuperación previa al inicio construidos, cableados y validados
 localmente. Publicado en Core `768c92c` y Coder `9b0e24c`, SHAs remotos
 comprobados. [CI Coder 39113234258](https://github.com/juancgomezm-s/OmniCode/actions/runs/39113234258)
 aprobada completa, incluido package-gate. Core también terminó completa aprobada:
