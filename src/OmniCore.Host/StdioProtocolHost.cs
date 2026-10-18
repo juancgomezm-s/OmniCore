@@ -1124,8 +1124,8 @@ public static class StdioProtocolHost
             {
                 if (_pendingContinuation is not null || _task is { IsCompleted: false }) return false;
             }
-            if (!TryReadInvocationId(command.PayloadJson, out var invocation)) return false;
-            return server.NativeWorkflowContinuationIsAllowed(invocation, out _, out _, out _);
+            if (!TryReadInvocationId(command.PayloadJson, out var invocationGuid)) return false;
+            return server.NativeWorkflowContinuationIsAllowed(new CommandId(invocationGuid), out _, out _, out _);
         }
 
         public bool IsRunning { get { lock (_gate) return _pendingContinuation is not null || _task is { IsCompleted: false }; } }
@@ -1957,8 +1957,8 @@ public static class StdioProtocolHost
             if (runner is null || client is not OmniServer server || server.ReceiptStore is not { } receipts
                 || acknowledgement.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted
                 || !Guid.TryParse(command.MessageId, out _)
-                || !TryReadInvocationId(command.PayloadJson, out var invocation)
-                || !server.NativeWorkflowContinuationIsAllowed(invocation, out _, out _, out _)) return false;
+                || !TryReadInvocationId(command.PayloadJson, out var invocationGuid)
+                || !server.NativeWorkflowContinuationIsAllowed(new CommandId(invocationGuid), out _, out _, out _)) return false;
             var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
             var receipt = receipts.ReadCommandReceipt(command.MessageId);
             if (receipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
@@ -1969,19 +1969,19 @@ public static class StdioProtocolHost
                 || server.LastRunId() is not { } run) return false;
             var binding = new PersistedConversationCommand(command.MessageId, hash, session, run.ToString(),
                 acknowledgement.FirstSeq, acknowledgement.LastSeq, NativeChoiceCapability: _nativeChoiceCapability,
-                NativeInvocationId: invocation.ToString(), NativeCommandKind: "compiledWorkflow",
+                NativeInvocationId: invocationGuid.ToString("D"), NativeCommandKind: "compiledWorkflow",
                 NativeWorkflowContinuation: true);
             lock (_gate)
             {
                 if (_pendingContinuation is not null || _task is { IsCompleted: false }) return false;
                 if (_deferredConversation is { NativeInvocationId: { } deferredInvocation }
-                    && !string.Equals(deferredInvocation, invocation.ToString(), StringComparison.Ordinal)) return false;
+                    && !string.Equals(deferredInvocation, invocationGuid.ToString("D"), StringComparison.Ordinal)) return false;
                 _pendingContinuation = new PendingContinuation(server, binding, command.MessageId, hash);
             }
             return true;
         }
 
-        private static bool TryReadInvocationId(string payloadJson, out CommandId invocation)
+        private static bool TryReadInvocationId(string payloadJson, out Guid invocation)
         {
             invocation = default;
             try
@@ -1990,7 +1990,7 @@ public static class StdioProtocolHost
                 if (!request.RootElement.TryGetProperty("invocationId", out var node)
                     || node.ValueKind != JsonValueKind.String || node.GetString() is not { } text
                     || !Guid.TryParseExact(text, "D", out var parsed) || text != parsed.ToString("D")) return false;
-                invocation = new CommandId(parsed);
+                invocation = parsed;
                 return true;
             }
             catch (JsonException) { return false; }

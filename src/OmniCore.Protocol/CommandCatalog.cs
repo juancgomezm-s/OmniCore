@@ -52,6 +52,9 @@ public static class CommandCatalogJson
 
     public static string Encode(NativeCommandRecoverySnapshot snapshot) =>
         JsonSerializer.Serialize(snapshot, CatalogJsonContext.Default.NativeCommandRecoverySnapshot);
+
+    public static string Encode(NativeWorkflowRecoverySnapshot snapshot) =>
+        JsonSerializer.Serialize(snapshot, CatalogJsonContext.Default.NativeWorkflowRecoverySnapshot);
 }
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]

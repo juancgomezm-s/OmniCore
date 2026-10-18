@@ -139,6 +139,8 @@ public sealed partial class OmniServer
         if (receipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
                 OutcomeKind: "Accepted", ExecutionState: "deferred", ExecutionCode: "input_required" })
         { reasonCode = "workflow.execution_uncertain"; return false; }
+        if (!NativeCommandRunIsQuiescent(session, run))
+        { reasonCode = "workflow.run_not_quiescent"; return false; }
         if (!TryReadNativeCommandPayload(invocation, out var readable, out var json) || readable != admission
             || !TryDecodeNativeCommandPayload(json, out var payload) || payload.Kind != "compiledWorkflow"
             || payload.WorkflowId is not { Length: > 0 } id || payload.WorkflowVersion is not { Length: > 0 })
