@@ -2741,7 +2741,9 @@ public sealed partial class CliEndToEndTests
             var persisted = Assert.Single(input.Attachments!);
             Assert.Equal("image/png", persisted.MediaType);
             Assert.Equal(attachment.Size, persisted.Size);
-            Assert.Contains(events.OfType<TurnStarted>(), turn => turn.RunId == run.RunId);
+            var turnStarted = Assert.Single(events.OfType<TurnStarted>());
+            Assert.Equal(run.RunId, turnStarted.RunId);
+            Assert.False(Assert.IsType<TurnInstructionSnapshot>(turnStarted.InstructionSnapshot).ConversationOnly);
         });
     }
 

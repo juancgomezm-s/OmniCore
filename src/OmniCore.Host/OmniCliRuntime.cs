@@ -2427,6 +2427,7 @@ public sealed class OmniCliRuntime : IDisposable
                 }
             }
             string workingState = "";
+            var actAttachmentInputPersisted = false;
             // Recheck under the invocation gate: simultaneous callbacks cannot consume the input twice.
             if (routingResume?.PendingInputSequence is { } pendingInput
                 && server.AcquireStore().ReadFrom(routingResume.Session, pendingInput + 1)
@@ -2508,9 +2509,10 @@ public sealed class OmniCliRuntime : IDisposable
                         + ",\"attachments\":" + AttachmentReferences.Encode(attachments) + "}"), cancellationToken);
                     if (attachmentInput.Status != "ok")
                     {
-                        writeLine(CommandError(attachmentInput.Error, "cli.runtime.attachment_input.rejected"));
+                        writeLine(CommandError(attachmentInput.Error, "cli.runtime.act.attachment_input.rejected"));
                         return 1;
                     }
+                    actAttachmentInputPersisted = true;
                     prompt = "";
                     workingState = ReadWorkingState(server, cancellationToken);
                 }
@@ -2519,10 +2521,8 @@ public sealed class OmniCliRuntime : IDisposable
             var sessionId = server.LastSessionId() ?? SessionId.New();
             var runId = server.LastRunId() ?? RunId.New();
             var laneId = delegation?.ChildLaneId ?? server.LastLaneId() ?? LaneId.New();
-            var actAttachmentInputPersisted = act && attachments is { Count: > 0 }
-                && expectedSession is null && expectedRun is null && !conversationOnly;
             var promptOrigin = routingResume is not null ? routingResume.Origin
-                : conversationOnly || actAttachmentInputPersisted
+                : (conversationOnly || actAttachmentInputPersisted)
                     ? "AlreadyPersisted(ConversationInput)" : server.ConsumePromptOrigin();
             if (delegation is null && _workspaceRoot is not null)
             {
