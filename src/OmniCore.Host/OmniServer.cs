@@ -812,6 +812,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 ? SetSessionSecurityDefault(command, fields, cancellationToken)
                 : new CommandAck(command.MessageId, "error", "trusted_user_action_required",
                     RuntimeCommandOutcome.Rejected());
+        if (commandName is "session.model.select" or "session.model.route.respond")
+            return trustedUserAction
+                ? HandleSessionModelCommand(command, fields, commandName, cancellationToken)
+                : new CommandAck(command.MessageId, "error", "trusted_user_action_required",
+                    RuntimeCommandOutcome.Rejected());
         if (commandName == UiLocalePreferencesProtocol.ConfigureCommand)
         {
             if (!trustedUserAction)
@@ -2812,6 +2817,10 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (name == "models.catalog")
+            return new SessionQueryResult(name, EncodeSessionModelCatalog(cancellationToken));
+        if (name == "session.model.selection")
+            return new SessionQueryResult(name, EncodeCurrentSessionModelSelection());
         if (name == "conversations") return new(name, ConversationJson.Encode(Conversations()));
         if (name == OpenRouterProtocol.StatusQuery)
         {

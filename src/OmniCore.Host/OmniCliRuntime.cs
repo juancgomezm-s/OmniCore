@@ -701,13 +701,17 @@ public sealed class OmniCliRuntime : IDisposable
                 alias => { try { _ = registry.Resolve(alias); return true; } catch { return false; } });
             ModelDefinition? definition = null;
             var server = Server();
-            if (server.LastSessionId() is { } session && server.LastRunId() is { } run)
+            if (server.LastSessionId() is { } session)
             {
-                var priorModel = server.AcquireStore().ReadFrom(session, 1)
-                    .Where(evt => evt.RunId == run).OrderBy(evt => evt.Sequence)
-                    .Select(evt => server.AcquireCodecs().Decode(evt)).OfType<ModelStepStarted>()
-                    .LastOrDefault()?.ModelId;
-                if (priorModel is not null) definition = ResolveExplicitModel(loaded, priorModel);
+                if (server.LastRunId() is { } run && server.HasOpenSessionTurn(session, run))
+                {
+                    var priorModel = server.AcquireStore().ReadFrom(session, 1)
+                        .Where(evt => evt.RunId == run).OrderBy(evt => evt.Sequence)
+                        .Select(evt => server.AcquireCodecs().Decode(evt)).OfType<ModelStepStarted>()
+                        .LastOrDefault()?.ModelId;
+                    if (priorModel is not null) definition = ResolveExplicitModel(loaded, priorModel);
+                }
+                definition ??= server.ResolveSessionModelSelection(session)?.Model;
             }
 
             var policyService = OmniHost.CreateModelPolicyService(null);
@@ -1731,8 +1735,11 @@ public sealed class OmniCliRuntime : IDisposable
         // restore the snapshot when the engine itself will continue an exact open Turn.
         var openTurn = routingResume is null && !externalDelegation
             ? FindOpenTurnContinuation(server, delegation?.ChildLaneId) : null;
+        var sessionModelSelection = openTurn is null && principalSourceStep is null && routingResume is null
+            && delegation is null && _escalatedModel is null && server.LastSessionId() is { } selectedSession
+                ? server.ResolveSessionModelSelection(selectedSession) : null;
         ModelDefinition? modelDefinition = null;
-        ModelRoute? selectedRoute = routingResume?.Route;
+        ModelRoute? selectedRoute = routingResume?.Route ?? sessionModelSelection?.Route;
         NoModelConfiguredException? noModel = null;
         try
         {
@@ -1746,9 +1753,10 @@ public sealed class OmniCliRuntime : IDisposable
         if (workspaceConfig.Settings?.DefaultModel is not null)
             modelDefinition = registry.Resolve(workspaceConfig.Settings.DefaultModel);
 
-        // Elección explícita (escalación en curso, OMNI_MODEL o defaultModel del workspace) siempre gana;
-        // si no la hay y el usuario configuró routing:, elige el router por tipo de tarea (M5).
-        var explicitModel = principalSourceStep?.ModelId ?? routingResume?.Model ?? openTurn?.LastStep?.ModelId ?? _escalatedModel ?? Environment.GetEnvironmentVariable("OMNI_MODEL")
+        // Continuations retain their durable source model. For future Turns, a native Session
+        // selection precedes process/workspace defaults and never changes any active Run's facts.
+        var explicitModel = principalSourceStep?.ModelId ?? routingResume?.Model ?? openTurn?.LastStep?.ModelId
+            ?? _escalatedModel ?? sessionModelSelection?.Model.Id ?? Environment.GetEnvironmentVariable("OMNI_MODEL")
             ?? workspaceConfig.Settings?.DefaultModel ?? storedSelection?.ModelId;
         if (explicitModel is not null)
         {

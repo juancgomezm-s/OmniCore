@@ -59,6 +59,8 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.SessionSecurityPolicySet())
             .Plus(Typed.SessionRoutingPolicySet())
             .Plus(Typed.SessionRoutingPolicyRevised())
+            .Plus(Typed.SessionModelSelectionSet())
+            .Plus(Typed.SessionModelSelectionRevised())
             .Plus(Typed.WorkspaceRootEstablished())
             .Plus(Typed.InteractionRequested())
             .Plus(Typed.InteractionResolved())
@@ -440,6 +442,8 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(SessionSecurityPolicySet))]
 [JsonSerializable(typeof(SessionRoutingPolicySet))]
 [JsonSerializable(typeof(SessionRoutingPolicyRevised))]
+[JsonSerializable(typeof(SessionModelSelectionSet))]
+[JsonSerializable(typeof(SessionModelSelectionRevised))]
 [JsonSerializable(typeof(WorkspaceRootEstablished))]
 [JsonSerializable(typeof(InteractionRequested))]
 [JsonSerializable(typeof(InteractionResolved))]
@@ -700,6 +704,12 @@ public sealed class Typed
 
     public static CodecPair SessionRoutingPolicyRevised() =>
         Of(EventType.Of("session.routing_policy_revised"), EventJsonContext.Default.SessionRoutingPolicyRevised);
+
+    public static CodecPair SessionModelSelectionSet() =>
+        Of(EventType.Of("session.model_selection_set"), EventJsonContext.Default.SessionModelSelectionSet);
+
+    public static CodecPair SessionModelSelectionRevised() =>
+        Of(EventType.Of("session.model_selection_revised"), EventJsonContext.Default.SessionModelSelectionRevised);
 
     public static CodecPair WorkspaceRootEstablished() =>
         Of(EventType.Of("workspace.root_established"), EventJsonContext.Default.WorkspaceRootEstablished, currentVersion: 2);

@@ -27,6 +27,8 @@ public static class StdioProtocol
         "query.sessionIdentity",
         "query.sessionSecurity",
         "query.sessionSecurityDefault",
+        "query.modelsCatalog",
+        "query.sessionModelSelection",
         "query.workingState",
         "query.commands",
         "query.sessionSidebar",
@@ -70,6 +72,8 @@ public static class StdioProtocol
         "command.conversation.interaction.continue.user",
         "command.session.security.set.user",
         "command.session.security.default.set.user",
+        "command.session.model.select.user",
+        "command.session.model.route.respond.user",
         "command.run.interrupt.user",
         "command.run.cancel.user",
         "command.run.mode.select.user",
@@ -88,6 +92,8 @@ public static class StdioProtocol
         new("sessionIdentity", "query.sessionIdentity", "Current Session and Run identity", "session", "session-read", true),
         new("sessionSecurity", "query.sessionSecurity", "Durable Session security ceiling and revision", "session", "session-read", true),
         new("sessionSecurityDefault", "query.sessionSecurityDefault", "Configured default ceiling for new Sessions", "user", "configuration-read", true),
+        new("models.catalog", "query.modelsCatalog", "Configured model identities and supported routes; no provider discovery", "workspace", "configuration-read", true),
+        new("session.model.selection", "query.sessionModelSelection", "Current Session model binding and compare-and-set revisions", "trusted-session", "session-read", false),
         new("interaction.recovery", "query.interactionRecovery", "Explicitly recoverable accepted native choices", "trusted-session", "session-read", false),
         new("workingState", "query.workingState", "Current plan and working state", "session", "session-read", true),
         new("commands", "query.commands", "Effective human command catalog", "session", "workspace-read", true),
@@ -164,7 +170,8 @@ public static class StdioProtocol
 
     public static bool IsSupportedCommand(string name) => name is "sim" or "sim.resume" or "session.input"
         or "conversation.start" or "conversation.new" or "conversation.resume" or "conversation.rename" or "conversation.compact"
-        or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
+        or "session.security.set" or "session.security.default.set" or "session.model.select" or "session.model.route.respond"
+        or "run.interrupt" or "run.cancel" or "run.mode.select"
         or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish"
         or "external.memory.consent" or "interaction.respond" or "interaction.continue";
 
@@ -185,6 +192,8 @@ public static class StdioProtocol
         new("interaction.continue", "command.conversation.interaction.continue.user", "native-confirmation+hmac+session-run-interaction-policy-revision+accepted-receipt+explicit-resume", "command.result.lookup", "Explicitly resume an accepted choice whose continuation was not started") ,
         new("session.security.set", "command.session.security.set.user", "native-confirmation+hmac+session-revision", "command.result.lookup", "Set a revision-checked Session capability ceiling"),
         new("session.security.default.set", "command.session.security.default.set.user", "native-confirmation+hmac+user-revision", "command.result.lookup", "Set the configured security ceiling for new Sessions"),
+        new("session.model.select", "command.session.model.select.user", "native-confirmation+hmac+session+catalog+selection+routing+security-revision", "command.result.lookup", "Select an exact configured model route for the current Session"),
+        new("session.model.route.respond", "command.session.model.route.respond.user", "native-confirmation+hmac+session-model-route-consent+revision+receipt", "command.result.lookup", "Accept or reject the exact pending Session model route consent"),
         new("run.interrupt", "command.run.interrupt.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Interrupt the active Run"),
         new("run.cancel", "command.run.cancel.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Cancel the active Run"),
         new("run.mode.select", "command.run.mode.select.user", "native-confirmation+hmac+session-scope", "command.result.lookup", "Select the active Run mode"),

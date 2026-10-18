@@ -202,6 +202,7 @@ public static class StdioProtocolHost
                 var commandName = nameElement.GetString()!;
                 var trustedOnly = commandName is "conversation.start" or "conversation.new" or "conversation.resume"
                     or "conversation.rename" or "conversation.compact" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
+                    or "session.model.select" or "session.model.route.respond"
                     or "external.memory.consent" or "interaction.respond" or "interaction.continue"
                     or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish";
                 TrustedActionScope? trustedScope = null;
@@ -263,6 +264,7 @@ public static class StdioProtocolHost
                 }
                 if (trustedScope is not null && commandName is not ("session.input" or "conversation.start" or "conversation.new" or "conversation.resume"
                     or "conversation.rename" or "conversation.compact" or "session.security.set" or "session.security.default.set"
+                    or "session.model.select" or "session.model.route.respond"
                     or "run.interrupt" or "run.cancel" or "run.mode.select" or "external.memory.consent" or "interaction.respond" or "interaction.continue" or "attachment.upload.begin"
                     or "attachment.upload.chunk" or "attachment.upload.finish"))
                     return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_action_not_supported",
@@ -539,6 +541,7 @@ public static class StdioProtocolHost
         var commandName = cmd.GetString();
         if (commandName is not ("session.input" or "conversation.start" or "conversation.new" or "conversation.resume"
             or "conversation.rename" or "conversation.compact" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
+            or "session.model.select" or "session.model.route.respond"
             or "external.memory.consent" or "interaction.respond" or "interaction.continue"
             or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish")) return false;
         if (commandName.StartsWith("attachment.upload.", StringComparison.Ordinal))
@@ -715,6 +718,56 @@ public static class StdioProtocolHost
                 || !payload.RootElement.TryGetProperty("expectedRevision", out var policyRevision)
                 || policyRevision.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(policyRevision.GetString()))
                 return false;
+            scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
+                CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
+            return true;
+        }
+        else if (commandName is "session.model.select" or "session.model.route.respond")
+        {
+            if (expectedSession.Value is null
+                || properties.Distinct(StringComparer.Ordinal).Count() != properties.Length)
+                return false;
+            bool Revision(string propertyName, out long revision)
+            {
+                revision = 0;
+                return payload.RootElement.TryGetProperty(propertyName, out var value)
+                    && value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out revision) && revision >= 0;
+            }
+            if (!payload.RootElement.TryGetProperty("sessionId", out var selectedSession)
+                || selectedSession.ValueKind != JsonValueKind.String || selectedSession.GetString() != expectedSession.Value
+                || !Revision("expectedSelectionRevision", out _)
+                || !Revision("expectedRoutingPolicyRevision", out var routingRevision) || routingRevision < 1
+                || !Revision("expectedSessionPolicyRevision", out var securityRevision) || securityRevision < 1
+                || !payload.RootElement.TryGetProperty("catalogRevision", out var catalogRevision)
+                || catalogRevision.ValueKind != JsonValueKind.String
+                || catalogRevision.GetString() is not { Length: 64 } catalogHash || !catalogHash.All(Uri.IsHexDigit))
+                return false;
+            if (!payload.RootElement.TryGetProperty("expectedRunId", out var selectedRunScope)
+                || selectedRunScope.ValueKind is not (JsonValueKind.Null or JsonValueKind.String)
+                || (selectedRunScope.ValueKind == JsonValueKind.String
+                    && (!Guid.TryParseExact(selectedRunScope.GetString(), "D", out var scopeRun)
+                        || selectedRunScope.GetString() != scopeRun.ToString("D")))
+                || (selectedRunScope.ValueKind == JsonValueKind.Null ? null : selectedRunScope.GetString()) != expectedRun.Value)
+                return false;
+            if (commandName == "session.model.select")
+            {
+                if (properties.Except(["cmd", "sessionId", "modelId", "expectedSelectionRevision",
+                    "expectedRoutingPolicyRevision", "expectedSessionPolicyRevision", "expectedRunId", "catalogRevision"], StringComparer.Ordinal).Any()
+                    || properties.Length != 8
+                    || !payload.RootElement.TryGetProperty("modelId", out var modelId)
+                    || modelId.ValueKind != JsonValueKind.String || modelId.GetString() is not { Length: > 0 and <= 200 } modelText
+                    || modelText.Any(char.IsControl)
+                    ) return false;
+            }
+            else if (properties.Except(["cmd", "sessionId", "interactionId", "optionId", "expectedSelectionRevision",
+                "expectedRoutingPolicyRevision", "expectedSessionPolicyRevision", "expectedRunId", "catalogRevision"], StringComparer.Ordinal).Any()
+                || properties.Length != 9
+                || !payload.RootElement.TryGetProperty("interactionId", out var interactionId)
+                || interactionId.ValueKind != JsonValueKind.String
+                || !Guid.TryParseExact(interactionId.GetString(), "D", out var parsedInteraction)
+                || interactionId.GetString() != parsedInteraction.ToString("D")
+                || !payload.RootElement.TryGetProperty("optionId", out var optionId)
+                || optionId.ValueKind != JsonValueKind.String || optionId.GetString() is not ("allow_route" or "deny")) return false;
             scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
                 CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
             return true;
