@@ -257,16 +257,7 @@ public sealed class ProtocolMapper
             ["targetKeyHash"] = e.TargetKeyHash,
             ["changedLines"] = e.ChangedLines.ToString(System.Globalization.CultureInfo.InvariantCulture),
         },
-        InteractionRequested e => new()
-        {
-            ["interactionId"] = e.InteractionId.ToString(), ["kind"] = e.Kind.ToString(),
-            ["options"] = string.Join(",", OptionIds(e.OptionsJson)), ["defaultOption"] = e.DefaultOptionId,
-            ["optionsJson"] = e.Kind is InteractionKind.Permission or InteractionKind.PlanApproval
-                ? CanonicalOptionIdsJson(e.OptionsJson) : null,
-            ["subject"] = _redaction.Redact(e.SubjectJson),
-            ["questionnaireSchemaHash"] = e.QuestionnaireSchemaRef?.Hash.ToString() ?? "",
-            ["questionnaire"] = QuestionnaireText(e.QuestionnaireSchemaRef),
-        },
+        InteractionRequested e => InteractionRequestedFields(e),
         InteractionResolved e => new()
         {
             ["interactionId"] = e.InteractionId.ToString(), ["optionId"] = e.OptionId,
@@ -458,6 +449,23 @@ public sealed class ProtocolMapper
         }
 
         return ids;
+    }
+
+    private Dictionary<string, string> InteractionRequestedFields(InteractionRequested interaction)
+    {
+        var fields = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["interactionId"] = interaction.InteractionId.ToString(),
+            ["kind"] = interaction.Kind.ToString(),
+            ["options"] = string.Join(",", OptionIds(interaction.OptionsJson)),
+            ["defaultOption"] = interaction.DefaultOptionId,
+            ["subject"] = _redaction.Redact(interaction.SubjectJson),
+            ["questionnaireSchemaHash"] = interaction.QuestionnaireSchemaRef?.Hash.ToString() ?? "",
+            ["questionnaire"] = QuestionnaireText(interaction.QuestionnaireSchemaRef),
+        };
+        if (interaction.Kind is InteractionKind.Permission or InteractionKind.PlanApproval)
+            fields["optionsJson"] = CanonicalOptionIdsJson(interaction.OptionsJson);
+        return fields;
     }
 
     private static string CanonicalOptionIdsJson(string optionsJson) => "["
