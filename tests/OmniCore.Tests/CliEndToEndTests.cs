@@ -24,7 +24,7 @@ namespace OmniCore.Tests;
 
 /// <summary>Smoke tests through the real CLI dispatcher, persistent Host and provider HTTP adapter.</summary>
 [Collection(nameof(ProcessEnvironmentCollection))]
-public sealed class CliEndToEndTests
+public sealed partial class CliEndToEndTests
 {
     [Theory]
     [InlineData(false, false, false)]

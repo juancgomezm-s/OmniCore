@@ -11,6 +11,57 @@ namespace OmniCore.Tests;
 public sealed class ModelPolicyProfileControlsTests
 {
     [Fact]
+    public void Compiled_workflow_stage_tools_stay_visible_within_the_existing_cap()
+    {
+        var definitions = new[]
+        {
+            "filesystem.read", "filesystem.list", "search.text", "reference.resolve",
+            "filesystem.write", "filesystem.patch", "dyn.core.verify_integration", "process.exec",
+        }.Select(name => new ToolDefinition(name, name, "{}" )).ToArray();
+        var capabilities = ModelCapabilityBoundary.CoreTools.ToDictionary(
+            pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        capabilities["dyn.core.verify_integration"] = ModelToolCapability.ValidationProcess;
+        var full = ModelPolicyPresets.FullAgent();
+        var fullPolicy = new EffectiveModelPolicy(ModelPolicyKey.For("fixture", "workflow-full"), 1,
+            full.Category, new ModelToolPolicy(ToolMode.Direct, 6, false, full.ToolPolicy.CapabilityCeiling),
+            full.MutationPolicy, false);
+        var fullBoundary = new ModelCapabilityBoundary(fullPolicy, capabilities);
+        var implement = CompiledWorkflowCatalog.Stage(WorkflowStage.Implement);
+        var implementVisible = fullBoundary.VisibleTools(definitions,
+            explicitPriority: new[] { "filesystem.read" }.Concat(implement.RequiredSuccessfulToolIds).ToArray())
+            .Select(tool => tool.Name).ToArray();
+
+        Assert.False(implement.RequiresEveryTool);
+        Assert.Equal(6, implementVisible.Length);
+        Assert.Contains("filesystem.read", implementVisible);
+        Assert.All(implement.RequiredSuccessfulToolIds, required => Assert.Contains(required, implementVisible));
+        Assert.Equal(6, fullBoundary.MaxVisibleTools());
+
+        var verify = CompiledWorkflowCatalog.Stage(WorkflowStage.Verify);
+        var verifyVisible = fullBoundary.VisibleTools(definitions,
+            explicitPriority: verify.RequiredSuccessfulToolIds).Select(tool => tool.Name).ToArray();
+        Assert.Equal(6, verifyVisible.Length);
+        Assert.Contains("dyn.core.verify_integration", verifyVisible);
+
+        var patchOnly = ModelPolicyPresets.PatchOnly();
+        var patchPolicy = new EffectiveModelPolicy(ModelPolicyKey.For("fixture", "workflow-patch-only"), 1,
+            patchOnly.Category, new ModelToolPolicy(ToolMode.Direct, 6, false,
+                patchOnly.ToolPolicy.CapabilityCeiling), patchOnly.MutationPolicy, false);
+        var patchBoundary = new ModelCapabilityBoundary(patchPolicy, capabilities);
+        var eligibleChoices = implement.RequiredSuccessfulToolIds.Where(patchBoundary.IsToolVisible).ToArray();
+        var patchVisible = patchBoundary.VisibleTools(definitions,
+            explicitPriority: new[] { "filesystem.read" }.Concat(implement.RequiredSuccessfulToolIds).ToArray())
+            .Select(tool => tool.Name).ToArray();
+
+        Assert.Equal(new[] { "filesystem.patch" }, eligibleChoices);
+        Assert.Contains("filesystem.read", patchVisible);
+        Assert.Contains("filesystem.patch", patchVisible);
+        Assert.DoesNotContain("filesystem.write", patchVisible);
+        Assert.True(patchVisible.Length <= patchBoundary.MaxVisibleTools());
+        Assert.Equal(6, patchBoundary.MaxVisibleTools());
+    }
+
+    [Fact]
     public void Preset_catalogs_keep_basic_read_search_and_user_ask_before_optional_tools()
     {
         var temp = Path.Combine(Path.GetTempPath(), "omnicore-profile-catalog-" + Guid.NewGuid().ToString("N"));
