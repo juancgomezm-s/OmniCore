@@ -30,6 +30,13 @@ public sealed record NativeCommandRecoverySnapshot(IReadOnlyList<NativeCommandRe
 public sealed record NativeCommandRecoveryEntry(string InvocationId, string? SessionId, string? RunId,
     string CanonicalCommandId, string Kind, string State, string? ReasonCode, long Sequence);
 
+/// <summary>Read-only workflow continuation state derived from the durable invocation and stage journal.</summary>
+public sealed record NativeWorkflowRecoverySnapshot(string? SessionId, string? RunId, long? ModeRevision,
+    long? PolicyRevision, IReadOnlyList<NativeWorkflowRecoveryEntry> Invocations);
+
+public sealed record NativeWorkflowRecoveryEntry(string InvocationId, string SessionId, string RunId,
+    string CanonicalCommandId, string WorkflowId, string State, string? ReasonCode, string? Stage, long Sequence);
+
 public sealed record WorkflowRequestDto(string WorkflowId, string Version, IReadOnlyList<string> Arguments);
 
 public static class CommandCatalogJson
@@ -55,6 +62,8 @@ public static class CommandCatalogJson
 [JsonSerializable(typeof(NativeCommandCatalogEntry))]
 [JsonSerializable(typeof(NativeCommandRecoverySnapshot))]
 [JsonSerializable(typeof(NativeCommandRecoveryEntry))]
+[JsonSerializable(typeof(NativeWorkflowRecoverySnapshot))]
+[JsonSerializable(typeof(NativeWorkflowRecoveryEntry))]
 internal sealed partial class CatalogJsonContext : JsonSerializerContext
 {
 }

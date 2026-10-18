@@ -17,7 +17,7 @@ internal sealed record PersistedConversationCommand(string CommandId, string Req
     string? ContinuationTurnId = null,
     bool NativeChoiceCapability = false, bool ExplicitChoiceRecovery = false,
     string? NativeInvocationId = null, string? NativeCommandKind = null,
-    bool ExplicitNativeCommandRecovery = false);
+    bool ExplicitNativeCommandRecovery = false, bool NativeWorkflowContinuation = false);
 
 /// <summary>Request/response stdio adapter over the same IOmniClient used by the in-process CLI.</summary>
 public static class StdioProtocolHost
@@ -208,7 +208,7 @@ public static class StdioProtocolHost
                     or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
                     or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
                     or "external.memory.consent" or "interaction.respond" or "interaction.continue"
-                    or "command.invoke.user" or "command.continue"
+                    or "command.invoke.user" or "command.continue" or "workflow.continue"
                     or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish";
                 TrustedActionScope? trustedScope = null;
                 if (root.TryGetProperty("actionProof", out var proofElement))
@@ -222,11 +222,13 @@ public static class StdioProtocolHost
                 if (trustedOnly && trustedScope is null)
                     return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_user_action_required",
                         RuntimeCommandOutcome.Rejected()));
-                if (commandName is "command.invoke.user" or "command.continue")
+                if (commandName is "command.invoke.user" or "command.continue" or "workflow.continue")
                 {
                     var priorNativeCommand = FindReceiptResult(client, command);
                     if (priorNativeCommand is not null) return EncodeAck(priorNativeCommand);
-                    if (!conversation.CanAcceptNativeCommand)
+                    if (commandName == "workflow.continue"
+                        ? !conversation.CanAcceptWorkflowContinuation(client, command)
+                        : !conversation.CanAcceptNativeCommand)
                         return EncodeAck(new CommandAck(command.MessageId, "busy", "conversation_turn_busy",
                             RuntimeCommandOutcome.Deferred("conversation_turn_busy")));
                 }
@@ -281,7 +283,7 @@ public static class StdioProtocolHost
                     or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
                     or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
                     or "run.interrupt" or "run.cancel" or "run.mode.select" or "external.memory.consent" or "interaction.respond" or "interaction.continue"
-                    or "command.invoke.user" or "command.continue" or "attachment.upload.begin"
+                    or "command.invoke.user" or "command.continue" or "workflow.continue" or "attachment.upload.begin"
                     or "attachment.upload.chunk" or "attachment.upload.finish"))
                     return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_action_not_supported",
                         RuntimeCommandOutcome.Rejected()));
@@ -340,6 +342,9 @@ public static class StdioProtocolHost
                 else if (commandName is "command.invoke.user" or "command.continue" && newlyExecuted
                     && ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted)
                     conversation.ScheduleNativeCommand(client, command, ack);
+                else if (commandName == "workflow.continue" && newlyExecuted
+                    && ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted)
+                    conversation.ScheduleNativeWorkflowContinuation(client, command, ack);
                 if (newlyExecuted && ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted)
                     acknowledgedReceiptCommandId = conversation.PendingCommandForAcknowledgement(command.MessageId);
                 var outcome = ack.Outcome is null ? "null" : "{\"kind\":"
@@ -564,7 +569,7 @@ public static class StdioProtocolHost
             or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
             or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
             or "external.memory.consent" or "interaction.respond" or "interaction.continue"
-            or "command.invoke.user" or "command.continue"
+            or "command.invoke.user" or "command.continue" or "workflow.continue"
             or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish")) return false;
         if (commandName.StartsWith("attachment.upload.", StringComparison.Ordinal))
         {
@@ -576,7 +581,7 @@ public static class StdioProtocolHost
         }
         if ((commandName is "run.interrupt" or "run.cancel" or "run.mode.select") && expectedRun.Value is null) return false;
         var properties = payload.RootElement.EnumerateObject().Select(property => property.Name).ToArray();
-        if (commandName is "command.invoke.user" or "command.continue")
+        if (commandName is "command.invoke.user" or "command.continue" or "workflow.continue")
         {
             bool ExactCommandProperties(params string[] expected) => properties.Length == expected.Length
                 && properties.Distinct(StringComparer.Ordinal).Count() == properties.Length
@@ -1110,6 +1115,17 @@ public static class StdioProtocolHost
         {
             get { lock (_gate) return _pendingContinuation is null && _task is not { IsCompleted: false }
                 && _deferredConversation is null; }
+        }
+
+        public bool CanAcceptWorkflowContinuation(IOmniClient client, WireEnvelope command)
+        {
+            if (client is not OmniServer server) return false;
+            lock (_gate)
+            {
+                if (_pendingContinuation is not null || _task is { IsCompleted: false }) return false;
+            }
+            if (!TryReadInvocationId(command.PayloadJson, out var invocation)) return false;
+            return server.NativeWorkflowContinuationIsAllowed(invocation, out _, out _, out _);
         }
 
         public bool IsRunning { get { lock (_gate) return _pendingContinuation is not null || _task is { IsCompleted: false }; } }
@@ -1870,7 +1886,7 @@ public static class StdioProtocolHost
                     {
                         lock (_gate)
                         {
-                            if (code != 3) _deferredConversation = null;
+                            _deferredConversation = code == 3 ? pending.Binding : null;
                         }
                     }
                     return code;
@@ -1933,6 +1949,51 @@ public static class StdioProtocolHost
                 _pendingContinuation = new PendingContinuation(server, binding, command.MessageId, hash);
             }
             return true;
+        }
+
+        public bool ScheduleNativeWorkflowContinuation(IOmniClient client, WireEnvelope command,
+            CommandAck acknowledgement)
+        {
+            if (runner is null || client is not OmniServer server || server.ReceiptStore is not { } receipts
+                || acknowledgement.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted
+                || !Guid.TryParse(command.MessageId, out _)
+                || !TryReadInvocationId(command.PayloadJson, out var invocation)
+                || !server.NativeWorkflowContinuationIsAllowed(invocation, out _, out _, out _)) return false;
+            var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
+            var receipt = receipts.ReadCommandReceipt(command.MessageId);
+            if (receipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                    OutcomeKind: "Accepted", ExecutionState: null }
+                || !string.Equals(receipt.RequestHash, hash, StringComparison.Ordinal)
+                || receipt.SessionId is not { Length: > 0 } session
+                || server.LastSessionId()?.ToString() != session
+                || server.LastRunId() is not { } run) return false;
+            var binding = new PersistedConversationCommand(command.MessageId, hash, session, run.ToString(),
+                acknowledgement.FirstSeq, acknowledgement.LastSeq, NativeChoiceCapability: _nativeChoiceCapability,
+                NativeInvocationId: invocation.ToString(), NativeCommandKind: "compiledWorkflow",
+                NativeWorkflowContinuation: true);
+            lock (_gate)
+            {
+                if (_pendingContinuation is not null || _task is { IsCompleted: false }) return false;
+                if (_deferredConversation is { NativeInvocationId: { } deferredInvocation }
+                    && !string.Equals(deferredInvocation, invocation.ToString(), StringComparison.Ordinal)) return false;
+                _pendingContinuation = new PendingContinuation(server, binding, command.MessageId, hash);
+            }
+            return true;
+        }
+
+        private static bool TryReadInvocationId(string payloadJson, out CommandId invocation)
+        {
+            invocation = default;
+            try
+            {
+                using var request = JsonDocument.Parse(payloadJson);
+                if (!request.RootElement.TryGetProperty("invocationId", out var node)
+                    || node.ValueKind != JsonValueKind.String || node.GetString() is not { } text
+                    || !Guid.TryParseExact(text, "D", out var parsed) || text != parsed.ToString("D")) return false;
+                invocation = new CommandId(parsed);
+                return true;
+            }
+            catch (JsonException) { return false; }
         }
 
         public bool CancelAndJoin(TimeSpan timeout)
@@ -2044,7 +2105,7 @@ public static class StdioProtocolHost
                 "query.hookCatalog", "query.skillCatalog", "query.sessionMemory", "query.modePreferences",
                 "query.reasoningPreferences", "query.workspaceStatus", "query.turnContext", "query.openRouterStatus", "query.uiPreferences",
                 "query.sessionSecurity", "query.sessionSecurityDefault", "query.conversations",
-                "query.commandOutcome", "query.commandCatalog", "query.commandRecovery"],
+                "query.commandOutcome", "query.commandCatalog", "query.commandRecovery", "query.workflowRecovery"],
                 StringComparer.Ordinal);
             supported = supported.Where(capability => !hostOnlyQueries.Contains(capability));
         }

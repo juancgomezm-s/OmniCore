@@ -967,6 +967,37 @@ public sealed class OmniCliRuntime : IDisposable
             || !string.Equals(receipt.SessionId, session.ToString(), StringComparison.Ordinal)
             || receipt.FirstSequence != admitted.FirstSequence || receipt.LastSequence != admitted.LastSequence)
             return 1;
+        if (admitted.NativeWorkflowContinuation)
+        {
+            if (!Guid.TryParseExact(invocationText, "D", out var workflowGuid)
+                || !server.TryReadNativeCommandPayload(new CommandId(workflowGuid), out var sourceAdmission,
+                    out var sourceJson)
+                || sourceAdmission.SessionId != session || sourceAdmission.RunId != run
+                || sourceAdmission.Kind != "compiledWorkflow"
+                || !OmniServer.TryDecodeNativeCommandPayload(sourceJson, out var sourcePayload)
+                || sourcePayload.WorkflowId is not { Length: > 0 } workflowId
+                || sourcePayload.WorkflowVersion is not { Length: > 0 } workflowVersion
+                || !server.NativeWorkflowContinuationIsAllowed(new CommandId(workflowGuid), out _, out _, out _))
+                return 1;
+            int continuationCode;
+            try
+            {
+                continuationCode = await ExecuteWorkflowAsync(new WorkflowRequestDto(workflowId, workflowVersion,
+                    sourcePayload.Arguments), invocationText, diagnostics, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            { continuationCode = 130; }
+            catch (Exception exception)
+            {
+                diagnostics(RedactSensitive(exception.Message));
+                continuationCode = 1;
+            }
+            if (continuationCode == 0)
+                server.FinishNativeCommand(new CommandId(workflowGuid), "completed");
+            else if (continuationCode != 3)
+                server.FinishNativeCommand(new CommandId(workflowGuid), continuationCode == 130 ? "cancelled" : "failed");
+            return continuationCode;
+        }
         if (!server.TryBeginNativeCommand(new CommandId(invocationGuid), admitted.ExplicitNativeCommandRecovery,
                 out var admission, out var payload)
             || admission.RunId != run || admission.SessionId != session || payload.Kind != admitted.NativeCommandKind)
@@ -1240,6 +1271,26 @@ public sealed class OmniCliRuntime : IDisposable
                 }
 
                 var (planItem, delegation, phase) = found.Value;
+                if (planItem.State == PlanItemState.Completed
+                    && phase is PreM6RecordPhase.Resolved or PreM6RecordPhase.Recorded)
+                {
+                    var completedContract = WorkflowStageContract.FromPlanItem(planItem);
+                    var completedEvents = server.AcquireStore().ReadFrom(authorization.Session, 1)
+                        .Where(evt => evt.RunId == authorization.Run).ToArray();
+                    var completion = completedEvents.Where(evt => evt.TaskId == completedContract.Task
+                            && server.AcquireCodecs().Decode(evt) is TaskCompleted)
+                        .OrderBy(evt => evt.Sequence).LastOrDefault();
+                    if (completion is null)
+                    {
+                        diagnostics(Text(Localized("cli.runtime.workflow.invalid_phase",
+                            ("stage", WorkflowStageLabel(stage.ToString())),
+                            ("phase", WorkflowPhaseLabel(phase.ToString())))));
+                        return 1;
+                    }
+                    previousPlanItem = planItem.Id;
+                    previousCompletionSequence = completion.Sequence;
+                    continue;
+                }
                 if (phase == PreM6RecordPhase.Failed)
                 {
                     diagnostics(Text(Localized("cli.runtime.workflow.failed_phase", ("stage", WorkflowStageLabel(stage.ToString())))));

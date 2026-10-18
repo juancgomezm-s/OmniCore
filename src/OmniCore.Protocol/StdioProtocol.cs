@@ -72,8 +72,10 @@ public static class StdioProtocol
         "command.conversation.interaction.continue.user",
         "command.invoke.user",
         "command.invoke.continue.user",
+        "command.workflow.continue.user",
         "query.commandCatalog",
         "query.commandRecovery",
+        "query.workflowRecovery",
         "command.session.security.set.user",
         "command.session.security.default.set.user",
         "command.session.model.select.user",
@@ -101,6 +103,7 @@ public static class StdioProtocol
         new("commandOutcome", "query.commandOutcome", "Metadata about the latest prompt expansion or workflow request", "session", "session-read", true),
         new("command.catalog", "query.commandCatalog", "Current canonical command catalog and invocation compare-and-set scope", "trusted-session", "session-read", false),
         new("command.recovery", "query.commandRecovery", "Bounded status of durable native command invocations", "trusted-session", "session-read", false),
+        new("workflow.recovery", "query.workflowRecovery", "Durable compiled-workflow stage status and explicit continuation eligibility", "trusted-session", "session-read", false),
         new("state", "query.state", "Current runtime state", "session", "session-read", true),
         new("sessionIdentity", "query.sessionIdentity", "Current Session and Run identity", "session", "session-read", true),
         new("sessionSecurity", "query.sessionSecurity", "Durable Session security ceiling and revision", "session", "session-read", true),
@@ -189,7 +192,7 @@ public static class StdioProtocol
         or "run.interrupt" or "run.cancel" or "run.mode.select"
         or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish"
         or "external.memory.consent" or "interaction.respond" or "interaction.continue"
-        or "command.invoke.user" or "command.continue";
+        or "command.invoke.user" or "command.continue" or "workflow.continue";
 
     public static IReadOnlyList<NativeCommandDescriptor> NativeCommands { get; } =
     [
@@ -208,6 +211,7 @@ public static class StdioProtocol
         new("interaction.continue", "command.conversation.interaction.continue.user", "native-confirmation+hmac+session-run-interaction-policy-revision+accepted-receipt+explicit-resume", "command.result.lookup", "Explicitly resume an accepted choice whose continuation was not started") ,
         new("command.invoke.user", "command.invoke.user", "native-confirmation+hmac+session-command-catalog+source-fingerprint+model-routing-policy-cas+durable-admission", "command.result.lookup", "Invoke an exact Host-cataloged command in the trusted conversation pipeline"),
         new("command.continue", "command.invoke.continue.user", "native-confirmation+hmac+admitted-command+scope-cas+receipt+explicit-resume", "command.result.lookup", "Explicitly continue a durably admitted command that has not started"),
+        new("workflow.continue", "command.workflow.continue.user", "native-confirmation+hmac+workflow-invocation+stage-journal+mode-policy-cas+explicit-supervision", "command.result.lookup", "Explicitly supervise a pending durable compiled workflow stage"),
         new("session.security.set", "command.session.security.set.user", "native-confirmation+hmac+session-revision", "command.result.lookup", "Set a revision-checked Session capability ceiling"),
         new("session.security.default.set", "command.session.security.default.set.user", "native-confirmation+hmac+user-revision", "command.result.lookup", "Set the configured security ceiling for new Sessions"),
         new("session.model.select", "command.session.model.select.user", "native-confirmation+hmac+session+catalog+selection+routing+security-revision", "command.result.lookup", "Select an exact configured model route for the current Session"),

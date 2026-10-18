@@ -485,25 +485,86 @@ public sealed partial class OmniServer
             || !SameWorkflowRequest(invocation.Request, request)
             || !CompiledWorkflowCatalog.TryResolve(request.Workflow, out _))
             throw new InvalidOperationException("Workflow request is not the current typed command outcome.");
+        return CreateWorkflowAuthorization(request, new CommandId(commandGuid), session, run);
+    }
+
+    internal WorkflowRuntimeAuthorization AuthorizeNativeWorkflowContinuation(CommandId invocation,
+        NativeCommandInvocationAdmitted admission, NativeCommandPayload payload)
+    {
+        if (admission.InvocationId != invocation || admission.SessionId != _lastSessionId
+            || admission.RunId is not { } run || _lastRunId != run || admission.Kind != "compiledWorkflow"
+            || payload.Kind != "compiledWorkflow" || payload.CanonicalCommandId != admission.CanonicalCommandId
+            || payload.WorkflowId is not { Length: > 0 } workflowId
+            || payload.WorkflowVersion is not { Length: > 0 } workflowVersion)
+            throw new InvalidOperationException("Workflow recovery is not bound to the active durable invocation.");
+        var request = new WorkflowRequested(new WorkflowRef(workflowId, workflowVersion), payload.Arguments);
+        request.Validate();
+        return CreateWorkflowAuthorization(request, invocation, admission.SessionId, run);
+    }
+
+    private WorkflowRuntimeAuthorization CreateWorkflowAuthorization(WorkflowRequested request,
+        CommandId commandId, SessionId session, RunId run)
+    {
         var journal = _store.ReadFrom(session, 1);
         var projection = RunProjection.Replay(session, run, _codecs, journal.Where(evt => evt.RunId == run).ToArray());
         var authority = projection.ModeAuthority;
         if (projection.State != RunState.Running || authority?.Mode != RunMode.Orchestrate
             || authority.Authorization is not { } granted
+            || ReadSessionSecurityPolicy(session) is not { AllowOrchestration: true }
             || !authority.IsAutoModeSwitchEffectiveAt(DateTimeOffset.UtcNow))
             throw new InvalidOperationException("Workflow requires an active Run with current Orchestrate authorization.");
         var specification = WorkflowRequestSpecification.Parse(request.Arguments, _workspaceRoot ?? Environment.CurrentDirectory);
         var instance = CompiledWorkflowCatalog.InstanceKey(run, request.Workflow, specification);
-        return new(session, run, new CommandId(commandGuid), request, granted.AuthorizationId, authority.Revision,
+        return new(session, run, commandId, request, granted.AuthorizationId, authority.Revision,
             specification, instance);
     }
 
     internal bool WorkflowAuthorizationIsCurrent(WorkflowRuntimeAuthorization authorization)
     {
         if (_lastSessionId != authorization.Session || _lastRunId != authorization.Run
-            || _lastWorkflowInvocation is not { } invocation
-            || !string.Equals(invocation.CommandId, authorization.InvocationCommand.ToString(), StringComparison.Ordinal)
-            || !SameWorkflowRequest(invocation.Request, authorization.Request)) return false;
+            || new RunControlService(_store, _codecs).ActiveRun(authorization.Session) != authorization.Run
+            || ReadSessionSecurityPolicy(authorization.Session) is not { AllowOrchestration: true }
+            || !HasNativeWorkflowRootContext(authorization.Session, authorization.Run))
+            return false;
+        var events = _store.ReadFrom(authorization.Session, 1);
+        var inMemoryInvocation = _lastWorkflowInvocation is { } currentInvocation
+            && string.Equals(currentInvocation.CommandId, authorization.InvocationCommand.ToString(), StringComparison.Ordinal)
+            && currentInvocation.Session == authorization.Session && currentInvocation.Run == authorization.Run
+            && SameWorkflowRequest(currentInvocation.Request, authorization.Request);
+        var admittedEvent = events.LastOrDefault(evt => evt.SessionId == authorization.Session
+            && _codecs.Decode(evt) is NativeCommandInvocationAdmitted admitted
+            && admitted.InvocationId == authorization.InvocationCommand && admitted.Kind == "compiledWorkflow"
+            && admitted.RunId == authorization.Run);
+        if (admittedEvent is null)
+        {
+            if (!inMemoryInvocation) return false; // Preserve the established CLI/TUI invocation path.
+        }
+        else
+        {
+            if (!events.Any(evt => evt.Sequence > admittedEvent.Sequence
+                    && _codecs.Decode(evt) is NativeCommandInvocationStarted started
+                    && started.InvocationId == authorization.InvocationCommand && started.Kind == "compiledWorkflow")
+                || events.Any(evt => evt.Sequence > admittedEvent.Sequence
+                    && _codecs.Decode(evt) is NativeCommandInvocationFinished finished
+                    && finished.InvocationId == authorization.InvocationCommand))
+                return false;
+            if (!TryReadNativeCommandPayload(authorization.InvocationCommand, out var admission, out var payloadJson)
+                || !TryDecodeNativeCommandPayload(payloadJson, out var payload)
+                || admission.InvocationId != authorization.InvocationCommand || admission.RunId != authorization.Run
+                || payload.Kind != "compiledWorkflow" || payload.WorkflowId != authorization.Request.Workflow.Id
+                || payload.WorkflowVersion != authorization.Request.Workflow.Version
+                || !payload.Arguments.SequenceEqual(authorization.Request.Arguments, StringComparer.Ordinal))
+                return false;
+            var policy = ReadSessionSecurityPolicy(authorization.Session);
+            var selection = SessionModelSelectionProjection.Read(events, _codecs, authorization.Session);
+            var routing = SessionRoutingAuthorization.Read(events, _codecs, authorization.Session);
+            if (admission.ExpectedModeRevision != authorization.AuthorityRevision
+                || policy?.PolicyRevision != admission.ExpectedPolicyRevision
+                || (selection?.Revision ?? 0) != admission.ExpectedSelectionRevision
+                || routing?.Revision != admission.ExpectedRoutingPolicyRevision
+                || !FixedHashEquals(admission.CatalogRevision, CurrentNativeCommandCatalog().CatalogRevision))
+                return false;
+        }
         var journal = _store.ReadFrom(authorization.Session, 1);
         var projection = RunProjection.Replay(authorization.Session, authorization.Run, _codecs,
             journal.Where(evt => evt.RunId == authorization.Run).ToArray());
@@ -548,6 +609,41 @@ public sealed partial class OmniServer
             return new(authorization.Session, authorization.Run, root, rootLane.LaneId,
                 rootExecution.ExecutionId, rootSnapshot.EventId, profile, rootItem.Id, projection.ModeAuthority?.Authorization
                     ?? throw new InvalidDataException("Workflow authorization missing."), journal);
+        }
+    }
+
+    internal bool HasNativeWorkflowRootContext(SessionId session, RunId run)
+    {
+        try
+        {
+            var journal = _store.ReadFrom(session, 1);
+            var own = journal.Where(evt => evt.RunId == run).ToArray();
+            var projection = RunProjection.Replay(session, run, _codecs, own);
+            if (projection.State != RunState.Running || projection.ModeAuthority?.Mode != RunMode.Orchestrate
+                || ReadSessionSecurityPolicy(session) is not { AllowOrchestration: true }
+                || projection.RootTask is not { } root) return false;
+            var facts = own.Select(_codecs.Decode).ToArray();
+            var task = facts.OfType<TaskCreated>().SingleOrDefault(item => item.TaskId == root);
+            var lane = facts.OfType<LaneCreated>().SingleOrDefault(item => item.TaskId == root);
+            if (task is null || lane is null) return false;
+            var execution = facts.OfType<AgentExecutionStarted>()
+                .SingleOrDefault(item => item.LaneId == lane.LaneId && item.ParentExecutionId is null);
+            if (execution is null || facts.Any(item => item is AgentExecutionCompleted completed
+                    && completed.ExecutionId == execution.ExecutionId
+                || item is AgentExecutionFailed failed && failed.ExecutionId == execution.ExecutionId)
+                || HasOpenModelStep(own, lane.LaneId) || HasOpenToolCall(own, lane.LaneId)
+                || ResolveLaneAgentProfile(session, run, lane.LaneId) is null) return false;
+            if (!own.Any(evt => evt.TaskId == root && evt.LaneId == lane.LaneId
+                    && evt.ExecutionId == execution.ExecutionId
+                    && _codecs.Decode(evt) is ModelStepStarted { ContextSnapshotRef: not null } step
+                    && SourceModelAllowsOrchestration(session, journal, step))) return false;
+            return PlanProjection.Replay(_codecs, own).Latest() is { } plan
+                && plan.Items.Count(item => item.ParentId is null) == 1;
+        }
+        catch (Exception failure) when (failure is InvalidOperationException or InvalidDataException
+            or ArgumentException or KeyNotFoundException)
+        {
+            return false;
         }
     }
 

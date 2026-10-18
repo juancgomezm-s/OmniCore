@@ -50,8 +50,147 @@ public sealed partial class OmniServer
             || !Guid.TryParseExact(invocationText, "D", out var invocationGuid)
             || invocationText != invocationGuid.ToString("D"))
             return NativeCommandRejected(command.MessageId, "command.invalid_request");
+        if (commandName == "workflow.continue")
+            return AcceptNativeWorkflowContinuation(command, new CommandId(invocationGuid), expectedRun,
+                expectedMode, expectedPolicy, expectedSelection, expectedRouting, expectedCatalog, expectedSource);
         return AcceptNativeCommandContinuation(command, new CommandId(invocationGuid), expectedRun, expectedMode,
             expectedPolicy, expectedSelection, expectedRouting, expectedCatalog, expectedSource);
+    }
+
+    private CommandAck AcceptNativeWorkflowContinuation(WireEnvelope command, CommandId invocation,
+        RunId? expectedRun, long? expectedMode, long expectedPolicy, int expectedSelection,
+        long? expectedRouting, string expectedCatalog, string expectedSource)
+    {
+        var before = _lastSessionId;
+        if (before is not { } session || expectedRun is not { } run || !EnsureWriterOwnershipForCommand())
+            return NativeCommandRejected(command.MessageId, "workflow.session_unavailable");
+        lock (_modeAuthorityMutationGate)
+        {
+            var history = _store.ReadFrom(session, 1);
+            var admissionEvent = history.LastOrDefault(evt => _codecs.Decode(evt) is NativeCommandInvocationAdmitted admitted
+                && admitted.InvocationId == invocation && admitted.SessionId == session
+                && admitted.RunId == run && admitted.Kind == "compiledWorkflow");
+            if (admissionEvent is null || _codecs.Decode(admissionEvent) is not NativeCommandInvocationAdmitted admission
+                || !history.Any(evt => evt.Sequence > admissionEvent.Sequence
+                    && _codecs.Decode(evt) is NativeCommandInvocationStarted started
+                    && started.InvocationId == invocation && started.Kind == "compiledWorkflow")
+                || history.Any(evt => evt.Sequence > admissionEvent.Sequence
+                    && _codecs.Decode(evt) is NativeCommandInvocationFinished finished
+                    && finished.InvocationId == invocation))
+                return NativeCommandRejected(command.MessageId, "workflow.recovery_unavailable");
+            if (!TryReadNativeCommandPayload(invocation, out var readable, out var payloadJson)
+                || readable != admission || !TryDecodeNativeCommandPayload(payloadJson, out var payload)
+                || payload.Kind != "compiledWorkflow"
+                || !FixedHashEquals(expectedSource, admission.SourceFingerprint))
+                return NativeCommandRejected(command.MessageId, "workflow.admission_invalid");
+            var receipt = ReceiptStore?.ReadCommandReceipt(invocation.ToString());
+            if (receipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                    OutcomeKind: "Accepted", ExecutionState: "deferred", ExecutionCode: "input_required" })
+                return NativeCommandRejected(command.MessageId, "workflow.execution_uncertain");
+            if (admission.RunId != run || admission.ExpectedModeRevision != expectedMode
+                || admission.ExpectedPolicyRevision != expectedPolicy
+                || admission.ExpectedSelectionRevision != expectedSelection
+                || admission.ExpectedRoutingPolicyRevision != expectedRouting
+                || !FixedHashEquals(admission.CatalogRevision, expectedCatalog)
+                || !NativeCommandScopeMatches(session, expectedRun, expectedMode, expectedPolicy,
+                    expectedSelection, expectedRouting, expectedCatalog))
+                return NativeCommandRejected(command.MessageId, "workflow.scope_changed");
+
+            WorkflowRuntimeAuthorization authorization;
+            try
+            {
+                authorization = AuthorizeNativeWorkflowContinuation(invocation, admission, payload);
+                _ = ReadWorkflowContext(authorization);
+                if (!NativeWorkflowInvocationIsReady(authorization, out _, out _))
+                    return NativeCommandRejected(command.MessageId, "workflow.continuation_unavailable");
+            }
+            catch (Exception failure) when (failure is InvalidOperationException or InvalidDataException
+                or ArgumentException or KeyNotFoundException)
+            {
+                return NativeCommandRejected(command.MessageId, "workflow.authorization_unavailable");
+            }
+            _lastWorkflowRequested = authorization.Request;
+            _lastWorkflowInvocation = new WorkflowInvocation(invocation.ToString(), authorization.Request,
+                session, run);
+            return CommandOutcomeAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted(), session,
+                _store.CurrentSequence(session), new CommandId(Guid.Parse(command.MessageId)));
+        }
+    }
+
+    internal bool NativeWorkflowContinuationIsAllowed(CommandId invocation, out string reasonCode,
+        out string? workflowId, out string? stage)
+    {
+        reasonCode = "workflow.recovery_unavailable";
+        workflowId = null;
+        stage = null;
+        if (_lastSessionId is not { } session || _lastRunId is not { } run) return false;
+        var history = _store.ReadFrom(session, 1);
+        var admissionEvent = history.LastOrDefault(evt => _codecs.Decode(evt) is NativeCommandInvocationAdmitted admitted
+            && admitted.InvocationId == invocation && admitted.SessionId == session
+            && admitted.RunId == run && admitted.Kind == "compiledWorkflow");
+        if (admissionEvent is null || _codecs.Decode(admissionEvent) is not NativeCommandInvocationAdmitted admission
+            || !history.Any(evt => evt.Sequence > admissionEvent.Sequence
+                && _codecs.Decode(evt) is NativeCommandInvocationStarted started
+                && started.InvocationId == invocation && started.Kind == "compiledWorkflow")
+            || history.Any(evt => evt.Sequence > admissionEvent.Sequence
+                && _codecs.Decode(evt) is NativeCommandInvocationFinished finished
+                && finished.InvocationId == invocation)) return false;
+        var receipt = ReceiptStore?.ReadCommandReceipt(invocation.ToString());
+        if (receipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                OutcomeKind: "Accepted", ExecutionState: "deferred", ExecutionCode: "input_required" })
+        { reasonCode = "workflow.execution_uncertain"; return false; }
+        if (!TryReadNativeCommandPayload(invocation, out var readable, out var json) || readable != admission
+            || !TryDecodeNativeCommandPayload(json, out var payload) || payload.Kind != "compiledWorkflow"
+            || payload.WorkflowId is not { Length: > 0 } id || payload.WorkflowVersion is not { Length: > 0 })
+        { reasonCode = "workflow.admission_invalid"; return false; }
+        workflowId = id;
+        try
+        {
+            var authorization = AuthorizeNativeWorkflowContinuation(invocation, admission, payload);
+            _ = ReadWorkflowContext(authorization);
+            if (!NativeWorkflowInvocationIsReady(authorization, out reasonCode, out stage)) return false;
+            return true;
+        }
+        catch (Exception failure) when (failure is InvalidOperationException or InvalidDataException
+            or ArgumentException or KeyNotFoundException)
+        {
+            reasonCode = failure is InvalidDataException ? "workflow.journal_invalid" : "workflow.authorization_unavailable";
+            return false;
+        }
+    }
+
+    private bool NativeWorkflowInvocationIsReady(WorkflowRuntimeAuthorization authorization,
+        out string reasonCode, out string? stageName)
+    {
+        reasonCode = "workflow.stage_state_uncertain";
+        stageName = null;
+        if (!WorkflowAuthorizationIsCurrent(authorization))
+        { reasonCode = "workflow.authorization_unavailable"; return false; }
+        foreach (var stage in Enum.GetValues<WorkflowStage>())
+        {
+            var found = FindWorkflowStage(ForStage(authorization, stage, null), stage);
+            if (found is null)
+            {
+                stageName = stage.ToString();
+                reasonCode = "";
+                return true;
+            }
+            var (item, _, phase) = found.Value;
+            stageName = stage.ToString();
+            if (phase == PreM6RecordPhase.Failed || item.State == PlanItemState.Failed)
+            { reasonCode = "workflow.stage_failed"; return false; }
+            if (item.State == PlanItemState.Completed && phase is PreM6RecordPhase.Resolved or PreM6RecordPhase.Recorded)
+                continue;
+            if (phase is PreM6RecordPhase.Created or PreM6RecordPhase.Returned)
+            { reasonCode = ""; return true; }
+            if (phase == PreM6RecordPhase.Accepted)
+            { reasonCode = "workflow.child_pending"; return false; }
+            reasonCode = "workflow.stage_state_uncertain";
+            return false;
+        }
+        stageName = "completion";
+        reasonCode = "";
+        return true;
     }
 
     private CommandAck AdmitNativeCommand(WireEnvelope command, JsonElement root, RunId? expectedRun,
@@ -92,15 +231,20 @@ public sealed partial class OmniServer
                     ? new CommandContext(session, null, ReadModePreference().Mode, _workspaceRoot, false,
                         "A Run is required for workflow authorization.")
                     : CommandContextForCurrentRun();
+                var nativeSnapshot = CurrentNativeCommandCatalog();
+                if (!FixedHashEquals(expectedCatalog, nativeSnapshot.CatalogRevision))
+                    return NativeCommandRejected(command.MessageId, "command.catalog_changed");
+                var nativeEntry = nativeSnapshot.Commands.SingleOrDefault(entry =>
+                    entry.CanonicalCommandId == canonicalId);
+                if (nativeEntry is not { Enabled: true }
+                    || !FixedHashEquals(expectedSource, nativeEntry.SourceFingerprint))
+                    return NativeCommandRejected(command.MessageId, nativeEntry?.DisabledReason ?? "command.source_changed");
                 var snapshot = _commandService.Catalog(context);
                 var catalogEntry = snapshot.Commands.SingleOrDefault(entry => entry.Id == canonicalId);
                 var handler = _commandService.ResolveCanonical(canonicalId);
                 var fingerprint = CommandService.Fingerprint(handler.Descriptor);
                 if (catalogEntry is null || !catalogEntry.Enabled || !FixedHashEquals(expectedSource, fingerprint))
                     return NativeCommandRejected(command.MessageId, "command.source_changed");
-                var expectedCatalogNow = CurrentNativeCommandCatalog().CatalogRevision;
-                if (!FixedHashEquals(expectedCatalog, expectedCatalogNow))
-                    return NativeCommandRejected(command.MessageId, "command.catalog_changed");
 
                 var outcome = _commandService.InvokeAsync(new CommandInvocation(canonicalId, arguments, "NativeCommand"),
                     context, cancellationToken).AsTask().GetAwaiter().GetResult();
@@ -457,6 +601,73 @@ public sealed partial class OmniServer
         return CommandCatalogJson.Encode(new NativeCommandRecoverySnapshot(rows));
     }
 
+    private string EncodeNativeWorkflowRecovery()
+    {
+        if (_lastSessionId is not { } session)
+            return CommandCatalogJson.Encode(new NativeWorkflowRecoverySnapshot(null, null, null, null, []));
+        var run = new RunControlService(_store, _codecs).ActiveRun(session);
+        var policyRevision = ReadSessionSecurityPolicy(session)?.PolicyRevision;
+        var mode = CurrentModeAuthority();
+        if (run is null)
+            return CommandCatalogJson.Encode(new NativeWorkflowRecoverySnapshot(session.ToString(), null,
+                null, policyRevision, []));
+        var events = _store.ReadFrom(session, 1);
+        var admitted = new Dictionary<CommandId, (NativeCommandInvocationAdmitted Admission, long Sequence)>();
+        var started = new HashSet<CommandId>();
+        var finished = new Dictionary<CommandId, NativeCommandInvocationFinished>();
+        foreach (var evt in events)
+        {
+            switch (_codecs.Decode(evt))
+            {
+                case NativeCommandInvocationAdmitted value when value.SessionId == session
+                    && value.RunId == run && value.Kind == "compiledWorkflow":
+                    admitted[value.InvocationId] = (value, evt.Sequence);
+                    break;
+                case NativeCommandInvocationStarted value when value.Kind == "compiledWorkflow":
+                    started.Add(value.InvocationId);
+                    break;
+                case NativeCommandInvocationFinished value:
+                    finished[value.InvocationId] = value;
+                    break;
+            }
+        }
+        var rows = new List<NativeWorkflowRecoveryEntry>();
+        foreach (var (id, value) in admitted.OrderByDescending(item => item.Value.Sequence).Take(16))
+        {
+            var admission = value.Admission;
+            var state = "blocked";
+            string? reason = "workflow_invocation_unavailable";
+            string? stageName = null;
+            string workflowId = "";
+            if (TryReadNativeCommandPayload(id, out var payloadAdmission, out var payloadJson)
+                && payloadAdmission == admission && TryDecodeNativeCommandPayload(payloadJson, out var decoded)
+                && decoded.WorkflowId is { Length: > 0 } idValue)
+                workflowId = idValue;
+            if (finished.TryGetValue(id, out var completion))
+            {
+                state = completion.OutcomeCode == "completed" ? "completed" : "blocked";
+                reason = completion.OutcomeCode == "completed" ? null : "workflow_invocation_incomplete";
+            }
+            else if (!started.Contains(id))
+            {
+                // The generic command recovery view owns the admitted-but-not-started case.
+                continue;
+            }
+            else if (NativeWorkflowContinuationIsAllowed(id, out var reasonCode, out _, out var nextStage))
+            { state = "ready"; reason = null; stageName = nextStage; }
+            else
+            {
+                reason = reasonCode;
+                state = reasonCode == "workflow.child_pending" ? "pending" : "blocked";
+                stageName = nextStage;
+            }
+            rows.Add(new NativeWorkflowRecoveryEntry(id.ToString(), session.ToString(), run.ToString(),
+                admission.CanonicalCommandId, workflowId, state, reason, stageName, value.Sequence));
+        }
+        return CommandCatalogJson.Encode(new NativeWorkflowRecoverySnapshot(session.ToString(), run.ToString(),
+            mode?.Revision, policyRevision, rows));
+    }
+
     private NativeCommandCatalogSnapshot CurrentNativeCommandCatalog(RunModePreference? modePreferenceOverride = null)
     {
         RefreshProjectExtensionCommands();
@@ -510,6 +721,8 @@ public sealed partial class OmniServer
             : !HasSessionSecurityInFlightAuthority(current)
                 && new RunControlService(_store, _codecs).UnreconciledEffects(current).Count == 0);
         var effectiveMode = mode?.Mode ?? modePreference.Mode;
+        var workflowRootReady = session is { } workflowSession && run is { } workflowRun
+            && mode?.Mode == RunMode.Orchestrate && HasNativeWorkflowRootContext(workflowSession, workflowRun);
         var commands = catalog.Commands.Select(command =>
         {
             var descriptor = _commandService.ResolveCanonical(command.Id).Descriptor;
@@ -523,7 +736,7 @@ public sealed partial class OmniServer
             {
                 "prompt" => effectiveMode is RunMode.Plan or RunMode.Act,
                 "forcedExtension" => run is not null && mode?.Mode == RunMode.Act,
-                "compiledWorkflow" => run is not null && mode?.Mode == RunMode.Orchestrate,
+                "compiledWorkflow" => workflowRootReady,
                 _ => false,
             };
             var firstPromptAllowed = run is not null || command.Id == "core:explain" && kind == "prompt";
@@ -531,7 +744,9 @@ public sealed partial class OmniServer
             var disabledReason = enabled ? null : command.DisabledReason
                 ?? (policy is null ? "A configured Session security policy is required." : !firstPromptAllowed
                     ? "This command requires an existing Session Run." : !hasQuiescentScope
-                        ? "The Session Run must be quiescent." : !modeCompatible
+                        ? "The Session Run must be quiescent." : kind == "compiledWorkflow" && !workflowRootReady
+                            ? "A live root execution with its persisted context is required for this workflow."
+                            : !modeCompatible
                     ? "The command is unavailable in the current Run mode." : "The Session Run must be quiescent.");
             return new NativeCommandCatalogEntry(command.Id, kind, enabled, disabledReason,
                 CommandService.Fingerprint(descriptor), command.Description, command.Arguments);
@@ -552,7 +767,7 @@ public sealed partial class OmniServer
         return RunProjection.Replay(session, run, _codecs, EventsForRun(history, run)).State == RunState.Running;
     }
 
-    private static bool TryDecodeNativeCommandPayload(string json, out NativeCommandPayload payload)
+    internal static bool TryDecodeNativeCommandPayload(string json, out NativeCommandPayload payload)
     {
         payload = null!;
         try
