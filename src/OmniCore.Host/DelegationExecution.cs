@@ -950,7 +950,7 @@ public sealed partial class OmniServer
             var preview = new GitWorktreeStore(SystemProcessRuntime.Instance())
                 .PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(identity), cancellationToken)
                 .GetAwaiter().GetResult();
-            TraceBinding($"preview.exit.{preview.Succeeded}.{preview.ErrorCode ?? "none"}");
+            TraceBinding($"preview.exit.{preview.Succeeded}.{preview.Error?.ToString() ?? "none"}");
             return preview.Succeeded && preview.Preview is { } current
                 && binding.Tree == current.TheirsTree && binding.Head == current.LaneHeadAtCapture
                 && binding.Branch == current.LaneBranchAtCapture
