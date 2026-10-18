@@ -528,7 +528,7 @@ public sealed class M3CoderGatesTests
                 .Select(context.Server.AcquireCodecs().Decode).ToArray();
             var rejected = events.OfType<RunValidationRejected>().ToArray();
             var rejection = Assert.Single(rejected);
-            Assert.Equal(new[] { "post-edit-validation" }, rejection.Gates);
+            Assert.Equal(new[] { "post-edit-validation", "plan" }, rejection.Gates);
             Assert.Contains("coder.postEditValidation.required", rejection.Missing);
             Assert.Equal(1, exit);
             Assert.Equal(3, modelCall);
