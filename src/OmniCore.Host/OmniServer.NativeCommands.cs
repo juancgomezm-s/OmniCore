@@ -187,7 +187,6 @@ public sealed partial class OmniServer
                     { State: CommandReceiptState.Completed, OutcomeKind: "Accepted",
                         ExecutionState: "deferred", ExecutionCode: "input_required", ExecutionRunId: var executionRun }
                 || !string.Equals(executionRun, run.ToString(), StringComparison.Ordinal)
-                || !NativeWeakConsentScopeMatches(session, run, admission)
                 || !TryReadNativeCommandPayload(invocation, out var readable, out var json)
                 || readable != admission || !TryDecodeNativeCommandPayload(json, out var payload)
                 || payload.Kind != "compiledWorkflow" || payload.WorkflowId is not { Length: > 0 }
@@ -204,6 +203,9 @@ public sealed partial class OmniServer
                 || stage.Item.State is PlanItemState.Failed or PlanItemState.Completed
                 || stage.Delegation.ChildTaskId != task || stage.Delegation.ChildLaneId != lane)
                 throw new InteractionNotPendingException(interaction);
+            if (!NativeWeakConsentScopeMatches(session, run, admission, stage.Delegation,
+                task, lane, turn, toolCall, interaction))
+                throw new SessionSecurityRevisionConflictException();
 
             var interactionEvent = history.SingleOrDefault(evt => evt.RunId == run && evt.TaskId == task
                 && evt.LaneId == lane && evt.TurnId == turn && evt.ToolCallId == toolCall
@@ -244,7 +246,6 @@ public sealed partial class OmniServer
                 { State: CommandReceiptState.Completed, OutcomeKind: "Accepted",
                     ExecutionState: "deferred", ExecutionCode: "input_required", ExecutionRunId: var executionRun }
             || !string.Equals(executionRun, run.ToString(), StringComparison.Ordinal)
-            || !NativeWeakConsentScopeMatches(session, run, admission)
             || !TryReadNativeCommandPayload(invocation, out var readable, out var payloadJson)
             || readable != admission || !TryDecodeNativeCommandPayload(payloadJson, out var payload)
             || payload.Kind != "compiledWorkflow" || payload.WorkflowId is not { Length: > 0 }
@@ -259,6 +260,8 @@ public sealed partial class OmniServer
             if (verify is not { } stage || stage.Phase != PreM6RecordPhase.Accepted
                 || stage.Item.State is PlanItemState.Failed or PlanItemState.Completed
                 || stage.Delegation.ChildTaskId != task || stage.Delegation.ChildLaneId != lane) return false;
+            if (!NativeWeakConsentScopeMatches(session, run, admission, stage.Delegation,
+                task, lane, turn, toolCall, interaction)) return false;
             if (RunProjection.Replay(session, run, _codecs, history).State != RunState.AwaitingInput) return false;
             var requestEvent = history.SingleOrDefault(evt => evt.RunId == run && evt.TaskId == task
                 && evt.LaneId == lane && evt.TurnId == turn && evt.ToolCallId == toolCall
@@ -291,15 +294,17 @@ public sealed partial class OmniServer
     }
 
     private bool NativeWeakConsentScopeMatches(SessionId session, RunId run,
-        NativeCommandInvocationAdmitted admission)
+        NativeCommandInvocationAdmitted admission, Delegation verifyDelegation, TaskId task, LaneId lane,
+        TurnId turn, ToolCallId toolCall, InteractionId interaction)
     {
         if (_lastSessionId != session || _lastRunId != run || !EnsureWriterOwnershipForCommand()
             || new RunControlService(_store, _codecs).ActiveRun(session) != run
-            || HasSessionSecurityInFlightAuthority(session)
             || ReadSessionSecurityPolicy(session)?.PolicyRevision != admission.ExpectedPolicyRevision
             || CurrentModeAuthority()?.Revision != admission.ExpectedModeRevision)
             return false;
         var history = _store.ReadFrom(session, 1);
+        if (!HasOnlyPendingWeakVerifyChildInFlight(session, run, history, verifyDelegation,
+                task, lane, turn, toolCall, interaction)) return false;
         var selection = SessionModelSelectionProjection.Read(history, _codecs, session);
         var routing = SessionRoutingAuthorization.Read(history, _codecs, session);
         if ((selection?.Revision ?? 0) != admission.ExpectedSelectionRevision
@@ -308,6 +313,67 @@ public sealed partial class OmniServer
             return false;
         var state = RunProjection.Replay(session, run, _codecs, EventsForRun(history, run)).State;
         return state is RunState.AwaitingInput or RunState.Running;
+    }
+
+    private bool HasOnlyPendingWeakVerifyChildInFlight(SessionId session, RunId run,
+        IReadOnlyList<DomainEvent> history, Delegation verifyDelegation, TaskId task, LaneId lane,
+        TurnId turn, ToolCallId toolCall, InteractionId interaction)
+    {
+        if (verifyDelegation.ChildTaskId != task || verifyDelegation.ChildLaneId != lane) return false;
+        var accepted = history.Where(evt => evt.RunId == run)
+            .Select(evt => (Event: evt, Payload: _codecs.Decode(evt)))
+            .SingleOrDefault(item => item.Payload is DelegationAccepted acceptedEvent
+                && acceptedEvent.DelegationId == verifyDelegation.DelegationId
+                && acceptedEvent.ExecutionId == verifyDelegation.ParentExecutionId);
+        if (accepted.Event is null || accepted.Payload is not DelegationAccepted delegationAccepted
+            || delegationAccepted.ChildExecutionId == default) return false;
+
+        var childExecution = delegationAccepted.ChildExecutionId;
+        var childStart = history.Where(evt => evt.RunId == run && evt.TaskId == task && evt.LaneId == lane)
+            .Select(evt => (Event: evt, Payload: _codecs.Decode(evt)))
+            .SingleOrDefault(item => item.Payload is AgentExecutionStarted started
+                && started.ExecutionId == childExecution && started.ParentExecutionId == verifyDelegation.ParentExecutionId);
+        if (childStart.Event is null) return false;
+
+        var weakRequest = history.Where(evt => evt.RunId == run && evt.TaskId == task && evt.LaneId == lane
+                && evt.TurnId == turn && evt.ToolCallId == toolCall && evt.ExecutionId == childExecution)
+            .Select(evt => (Event: evt, Payload: _codecs.Decode(evt)))
+            .SingleOrDefault(item => item.Payload is InteractionRequested request
+                && request.InteractionId == interaction && request.Kind == InteractionKind.WeakSandboxConsent);
+        if (weakRequest.Event is null || weakRequest.Event.Sequence <= childStart.Event.Sequence
+            || weakRequest.Event.Sequence <= accepted.Event.Sequence) return false;
+
+        var startedTools = new HashSet<ToolCallId>();
+        var activeChildren = new HashSet<ExecutionId>();
+        foreach (var envelope in history)
+        {
+            switch (_codecs.Decode(envelope))
+            {
+                case ToolCallStarted started:
+                    startedTools.Add(started.ToolCallId);
+                    break;
+                case ToolCallSucceeded succeeded:
+                    startedTools.Remove(succeeded.ToolCallId);
+                    break;
+                case ToolCallFailed failed when failed.EffectOutcome != EffectOutcome.Unknown:
+                    startedTools.Remove(failed.ToolCallId);
+                    break;
+                case ToolCallReconciled reconciled when reconciled.Outcome is ReconciliationOutcome.Applied
+                    or ReconciliationOutcome.NotApplied:
+                    startedTools.Remove(reconciled.ToolCallId);
+                    break;
+                case AgentExecutionStarted started when started.ParentExecutionId is not null:
+                    activeChildren.Add(started.ExecutionId);
+                    break;
+                case AgentExecutionCompleted completed:
+                    activeChildren.Remove(completed.ExecutionId);
+                    break;
+                case AgentExecutionFailed failed:
+                    activeChildren.Remove(failed.ExecutionId);
+                    break;
+            }
+        }
+        return startedTools.Count == 0 && activeChildren.Count == 1 && activeChildren.Contains(childExecution);
     }
 
     private bool NativeWorkflowInvocationIsReady(WorkflowRuntimeAuthorization authorization,
