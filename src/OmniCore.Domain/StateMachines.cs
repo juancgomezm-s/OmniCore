@@ -177,6 +177,10 @@ public sealed class StateMachines
         if (evt is ToolCallRejected
             && (from == ToolCallState.Requested || from == ToolCallState.Prepared)) return ToolCallState.Rejected;
         if (evt is PermissionEvaluated && from == ToolCallState.Prepared) return ToolCallState.Prepared;
+        // A resumed human approval re-evaluates the current policy against the original
+        // prepared intent. Keep the call awaiting the human decision until a durable
+        // PermissionGranted/PermissionDenied event records that decision.
+        if (evt is PermissionEvaluated && from == ToolCallState.AwaitingPermission) return ToolCallState.AwaitingPermission;
         if (evt is PermissionRequested && from == ToolCallState.Prepared) return ToolCallState.AwaitingPermission;
         if (evt is PermissionGranted
             && (from == ToolCallState.AwaitingPermission || from == ToolCallState.Prepared))
