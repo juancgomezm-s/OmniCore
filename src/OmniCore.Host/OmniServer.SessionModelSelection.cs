@@ -245,11 +245,13 @@ public sealed partial class OmniServer
             var latestSelection = SessionModelSelectionProjection.Read(latestHistory, _codecs, session);
             var latestRouting = SessionRoutingAuthorization.Read(latestHistory, _codecs, session);
             var latestSecurity = ReadSessionSecurityPolicy(session);
-            if (latestRouting is null || !StringComparer.Ordinal.Equals(latestCatalog.Revision, catalog.Revision)
+            if (latestRouting is null)
+                return ModelAck(command.MessageId, "error", "session_model.consent_stale", RuntimeCommandOutcome.Rejected(), session, before, commandId);
+            if (!StringComparer.Ordinal.Equals(latestCatalog.Revision, catalog.Revision)
                 || latestSelection?.Revision != selection?.Revision
-                || latestRouting?.Revision != expectedRoutingRevision
+                || latestRouting.Revision != expectedRoutingRevision
                 || latestSecurity?.PolicyRevision != expectedSecurityRevision
-                || latestRouting?.Allows(entry.Route, entry.BillingMode) == true)
+                || latestRouting.Allows(entry.Route, entry.BillingMode))
                 return ModelAck(command.MessageId, "error", "session_model.consent_stale", RuntimeCommandOutcome.Rejected(), session, before, commandId);
             var revised = latestRouting.Grant(offer.Route);
             payloads.Add(new SessionRoutingPolicyRevised(session, revised, interactionId));
