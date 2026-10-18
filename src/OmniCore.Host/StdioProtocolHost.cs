@@ -601,12 +601,23 @@ public static class StdioProtocolHost
                 : new[] { "cmd", "invocationId", "expectedSessionId", "expectedRunId", "expectedModeRevision",
                     "expectedPolicyRevision", "expectedSelectionRevision", "expectedRoutingPolicyRevision",
                     "catalogRevision", "sourceFingerprint" };
-            if (expectedSession.Value is null || expectedRun.Value is null
+            var runlessExplain = commandName == "command.invoke.user"
+                && RequiredString("canonicalCommandId", 256, out var runlessCommandId)
+                && string.Equals(runlessCommandId, "core:explain", StringComparison.Ordinal);
+            var runScopeMatches = payload.RootElement.TryGetProperty("expectedRunId", out var commandRunNode)
+                && (expectedRun.Value is null
+                    ? commandName == "command.invoke.user" && runlessExplain
+                        && commandRunNode.ValueKind == JsonValueKind.Null
+                    : commandRunNode.ValueKind == JsonValueKind.String
+                        && string.Equals(commandRunNode.GetString(), expectedRun.Value, StringComparison.Ordinal));
+            var modeScopeMatches = payload.RootElement.TryGetProperty("expectedModeRevision", out var commandModeNode)
+                && (expectedRun.Value is not null || commandModeNode.ValueKind == JsonValueKind.Null);
+            if (expectedSession.Value is null
                 || !ExactCommandProperties(expectedCommandProperties)
                 || !RequiredString("expectedSessionId", 36, out var commandSession)
                 || commandSession != expectedSession.Value
-                || !payload.RootElement.TryGetProperty("expectedRunId", out var commandRunNode)
-                || commandRunNode.ValueKind != JsonValueKind.String || commandRunNode.GetString() != expectedRun.Value
+                || !runScopeMatches
+                || !modeScopeMatches
                 || !NullableRevision("expectedModeRevision")
                 || !NullableRevision("expectedRoutingPolicyRevision")
                 || !payload.RootElement.TryGetProperty("expectedPolicyRevision", out var commandPolicyNode)
