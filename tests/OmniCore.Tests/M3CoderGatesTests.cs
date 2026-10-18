@@ -4,6 +4,7 @@ using OmniCore.Client;
 using OmniCore.Context;
 using OmniCore.Domain;
 using OmniCore.Engine;
+using OmniCore.Extensions;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
 using OmniCore.Models;
@@ -441,8 +442,7 @@ public sealed class M3CoderGatesTests
                     interaction.Kind == InteractionKind.WeakSandboxConsent ? "consent_once" : "allow_once",
                 interactive: true, locale: "en",
                 cancellationToken: TestContext.Current.CancellationToken,
-                subsequentTurnFactory: attempt => CreateTurn(context, CompleteModel, out _),
-                canActivatePostEditValidator: () => false);
+                subsequentTurnFactory: attempt => CreateTurn(context, CompleteModel, out _));
 
             var payloads = context.Store.ReadFrom(context.Session, 1).Select(context.Server.AcquireCodecs().Decode)
                 .ToArray();
@@ -473,6 +473,72 @@ public sealed class M3CoderGatesTests
                 .Any(requested => requested.ToolCallId.Equals(succeeded.ToolCallId)
                     && requested.ToolName == "filesystem.patch"));
             Assert.Contains(payloads.OfType<RunCompleted>(), completed => completed.RunId.Equals(context.Run));
+        }
+        finally { context.Store.Close(); Remove(root); }
+    }
+
+    [Fact]
+    public void Skill_validator_pass_does_not_replace_required_build_or_test_validation()
+    {
+        if (OperatingSystem.IsMacOS()) return;
+        var root = TempDir();
+        var context = StartRun(root, fullAgentSession: true);
+        var original = "class Program { BROKEN }\n" + Padding;
+        var verified = "class Program { VERIFIED }\n" + Padding;
+        File.WriteAllText(Path.Combine(context.Workspace, "Program.cs"), original);
+        var skill = new DiscoveredSkill(context.Workspace,
+            new SkillManifest { Id = "fixture.post-edit-validator", Version = "1", BudgetTokens = 64 },
+            ScopeLevel.Session, TrustLevel.Trusted, new string('a', 64), SkillLifecycleState.Loaded, null);
+        const string rule = "{\"id\":\"verified-output\",\"kind\":\"file-contains\",\"path\":\"Program.cs\",\"text\":\"VERIFIED\"}";
+        var resource = new LoadedSkillResource(SkillResourceKind.Validator, "validators/output.json", rule,
+            new string('b', 64));
+        var validator = new SkillCompletionValidator([new LoadedSkill(skill, "fixture instructions",
+            new string('c', 64), [resource], new string('d', 64))]);
+        try
+        {
+            var modelCall = 0;
+            var subsequentTurnCreated = false;
+            ModelResponse CompleteModel(ModelRequest _, CancellationToken __)
+            {
+                return modelCall++ switch
+                {
+                    0 => Call("filesystem.read", "{\"path\":\"Program.cs\"}"),
+                    1 => Call("filesystem.patch", Patch("Program.cs", Version(original), "BROKEN", "VERIFIED")),
+                    2 => End(),
+                    _ => End(),
+                };
+            }
+
+            var turn = CreateTurn(context, CompleteModel, out _);
+            var diagnostics = new List<string>();
+            var runtime = OmniCliRuntime.Create(context.Workspace);
+            var exit = runtime.RunActLoop(turn, diagnostics.Add, "corrige y valida", "Coder instructions",
+                context.Session, context.Run, context.Lane, "", null, null, context.Server,
+                new FileArtifactStore(Path.Combine(context.Data, "artifacts")), new InMemoryAuditSink(),
+                interaction => interaction.Kind == InteractionKind.WeakSandboxConsent ? "consent_once" : "allow_once",
+                interactive: true, locale: "en", cancellationToken: TestContext.Current.CancellationToken,
+                skillValidators: validator,
+                subsequentTurnFactory: _ =>
+                {
+                    subsequentTurnCreated = true;
+                    return CreateTurn(context, CompleteModel, out _);
+                });
+
+            var events = context.Store.ReadFrom(context.Session, 1)
+                .Select(context.Server.AcquireCodecs().Decode).ToArray();
+            var rejected = events.OfType<RunValidationRejected>().ToArray();
+            var rejection = Assert.Single(rejected);
+            Assert.Equal(new[] { "post-edit-validation" }, rejection.Gates);
+            Assert.Contains("coder.postEditValidation.required", rejection.Missing);
+            Assert.Equal(1, exit);
+            Assert.Equal(3, modelCall);
+            Assert.False(subsequentTurnCreated);
+            Assert.Contains(diagnostics, line => line.Contains("The skill validation passed.", StringComparison.Ordinal));
+            Assert.Equal(verified, File.ReadAllText(Path.Combine(context.Workspace, "Program.cs")));
+            Assert.Contains(events.OfType<ToolCallSucceeded>(), succeeded => events.OfType<ToolCallRequested>()
+                .Any(requested => requested.ToolCallId.Equals(succeeded.ToolCallId)
+                    && requested.ToolName == "filesystem.patch"));
+            Assert.DoesNotContain(events.OfType<RunCompleted>(), completed => completed.RunId.Equals(context.Run));
         }
         finally { context.Store.Close(); Remove(root); }
     }
