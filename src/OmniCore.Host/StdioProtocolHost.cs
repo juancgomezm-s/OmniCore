@@ -224,22 +224,43 @@ public static class StdioProtocolHost
                     // the in-memory runner or attempting an explicit post-restart recovery.
                     var prior = FindReceiptResult(client, command);
                     if (prior is not null) return EncodeAck(prior);
-                    if (trustedScope is null || !(responseType switch
+                    if (trustedScope is null)
+                        return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_user_action_required",
+                            RuntimeCommandOutcome.Rejected()));
+                    var canResume = responseType switch
                     {
                         "questionnaire" => conversation.CanResumeQuestionnaire(client, trustedScope, command),
                         "choice" => conversation.CanResumeChoice(client, trustedScope, command),
                         _ => false,
-                    }))
+                    };
+                    if (!canResume)
+                    {
+                        if (client is OmniServer responseServer && !responseServer.MatchesTrustedActionScope(
+                                trustedScope.ExpectedSessionId, trustedScope.ExpectedRunId,
+                                trustedScope.ExpectedRevision, trustedScope.CheckRevision, trustedScope.RequirePlanRun))
+                            return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_action_scope_changed",
+                                RuntimeCommandOutcome.Rejected()));
                         return EncodeAck(conversation.IsRunning
                             ? new CommandAck(command.MessageId, "busy", "conversation_turn_busy",
                                 RuntimeCommandOutcome.Deferred("conversation_turn_busy"))
                             : new CommandAck(command.MessageId, "error", "conversation_questionnaire_resume_unavailable",
                                 RuntimeCommandOutcome.Rejected()));
+                    }
                 }
-                if (commandName == "interaction.continue"
-                    && (trustedScope is null || !conversation.CanRecoverChoice(client, trustedScope, command)))
-                    return EncodeAck(new CommandAck(command.MessageId, "error", "interaction_recovery_unavailable",
-                        RuntimeCommandOutcome.Rejected()));
+                if (commandName == "interaction.continue")
+                {
+                    if (trustedScope is null)
+                        return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_user_action_required",
+                            RuntimeCommandOutcome.Rejected()));
+                    if (client is OmniServer recoveryServer && !recoveryServer.MatchesTrustedActionScope(
+                            trustedScope.ExpectedSessionId, trustedScope.ExpectedRunId,
+                            trustedScope.ExpectedRevision, trustedScope.CheckRevision, trustedScope.RequirePlanRun))
+                        return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_action_scope_changed",
+                            RuntimeCommandOutcome.Rejected()));
+                    if (!conversation.CanRecoverChoice(client, trustedScope, command))
+                        return EncodeAck(new CommandAck(command.MessageId, "error", "interaction_recovery_unavailable",
+                            RuntimeCommandOutcome.Rejected()));
+                }
                 if (trustedScope is not null && commandName is not ("session.input" or "conversation.start" or "conversation.new" or "conversation.resume"
                     or "conversation.rename" or "conversation.compact" or "session.security.set" or "session.security.default.set"
                     or "run.interrupt" or "run.cancel" or "run.mode.select" or "external.memory.consent" or "interaction.respond" or "interaction.continue" or "attachment.upload.begin"
