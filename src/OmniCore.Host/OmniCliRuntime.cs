@@ -934,7 +934,16 @@ public sealed class OmniCliRuntime : IDisposable
                 || item.Payload is AssistantImagesRecorded images && images.TurnId == turnId));
             if (turnCompleted && admitted.NativeInvocationId is { Length: > 0 } completedInvocation
                 && Guid.TryParseExact(completedInvocation, "D", out var completedGuid))
-                server.FinishNativeCommand(new CommandId(completedGuid), "completed");
+            {
+                var invocation = new CommandId(completedGuid);
+                if (server.NativeCommandRequiredEffectSucceeded(invocation))
+                    server.FinishNativeCommand(invocation, "completed");
+                else
+                {
+                    server.FinishNativeCommand(invocation, "failed");
+                    return 1;
+                }
+            }
             return turnCompleted ? 0 : 1;
         }
         if (journal.Any(item => item.Payload is TurnInterrupted))
@@ -1034,7 +1043,15 @@ public sealed class OmniCliRuntime : IDisposable
         }
 
         if (exitCode == 0)
-            server.FinishNativeCommand(new CommandId(invocationGuid), "completed");
+        {
+            var invocation = new CommandId(invocationGuid);
+            if (!server.NativeCommandRequiredEffectSucceeded(invocation))
+            {
+                server.FinishNativeCommand(invocation, "failed");
+                return 1;
+            }
+            server.FinishNativeCommand(invocation, "completed");
+        }
         else if (exitCode == 3)
             return exitCode; // The existing conversation runner retains this binding for human interaction.
         else

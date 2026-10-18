@@ -544,6 +544,38 @@ public sealed partial class OmniServer
         }
     }
 
+    internal bool NativeCommandRequiredEffectSucceeded(CommandId invocation)
+    {
+        if (!TryReadNativeCommandPayload(invocation, out var admission, out var payloadJson)
+            || !TryDecodeNativeCommandPayload(payloadJson, out var payload)) return false;
+        if (admission.Kind == "prompt" && payload.Kind == "prompt") return true;
+        if (admission.Kind != "forcedExtension" || admission.RunId is not { } run
+            || payload.Kind != "forcedExtension" || payload.ForcedToolName is not { Length: > 0 } forcedToolName)
+            return false;
+
+        var history = _store.ReadFrom(admission.SessionId, 1);
+        var started = history.FirstOrDefault(evt => evt.RunId == run
+            && _codecs.Decode(evt) is NativeCommandInvocationStarted item
+            && item.InvocationId == invocation && item.Kind == "forcedExtension");
+        if (started is null) return false;
+
+        var requested = new HashSet<ToolCallId>();
+        var succeeded = new HashSet<ToolCallId>();
+        foreach (var evt in history.Where(evt => evt.Sequence > started.Sequence && evt.RunId == run))
+        {
+            switch (_codecs.Decode(evt))
+            {
+                case ToolCallRequested call when string.Equals(call.ToolName, forcedToolName, StringComparison.Ordinal):
+                    requested.Add(call.ToolCallId);
+                    break;
+                case ToolCallSucceeded success:
+                    succeeded.Add(success.ToolCallId);
+                    break;
+            }
+        }
+        return requested.Overlaps(succeeded);
+    }
+
     private string EncodeNativeCommandRecovery()
     {
         if (_lastSessionId is not { } session)
