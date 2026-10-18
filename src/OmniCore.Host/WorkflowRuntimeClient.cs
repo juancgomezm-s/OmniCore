@@ -107,7 +107,10 @@ public sealed partial class OmniServer
     {
         lock (_modeAuthorityMutationGate)
         {
-            if (!WorkflowAuthorizationIsCurrent(authorization))
+            // Validation can fail because a late mutation is present. Preserve the durable debt
+            // record even when that mutation leaves an open tool call; only authority and CAS
+            // checks are required to append this non-effect event.
+            if (!WorkflowAuthorizationAuthorityIsCurrent(authorization))
                 throw new InvalidOperationException("Workflow authorization is no longer current.");
             var journal = _store.ReadFrom(authorization.Session, 1);
             var own = journal.Where(evt => evt.RunId == authorization.Run).ToArray();
@@ -195,7 +198,7 @@ public sealed partial class OmniServer
     {
         lock (_modeAuthorityMutationGate)
         {
-            if (!WorkflowAuthorizationIsCurrent(authorization))
+            if (!WorkflowAuthorizationAuthorityIsCurrent(authorization))
                 throw new InvalidOperationException("Workflow authorization is no longer current.");
             var journal = _store.ReadFrom(authorization.Session, 1);
             var own = journal.Where(evt => evt.RunId == authorization.Run).ToArray();
@@ -521,10 +524,15 @@ public sealed partial class OmniServer
 
     internal bool WorkflowAuthorizationIsCurrent(WorkflowRuntimeAuthorization authorization)
     {
+        return WorkflowAuthorizationAuthorityIsCurrent(authorization)
+            && HasNativeWorkflowRootContext(authorization.Session, authorization.Run);
+    }
+
+    private bool WorkflowAuthorizationAuthorityIsCurrent(WorkflowRuntimeAuthorization authorization)
+    {
         if (_lastSessionId != authorization.Session || _lastRunId != authorization.Run
             || new RunControlService(_store, _codecs).ActiveRun(authorization.Session) != authorization.Run
-            || ReadSessionSecurityPolicy(authorization.Session) is not { AllowOrchestration: true }
-            || !HasNativeWorkflowRootContext(authorization.Session, authorization.Run))
+            || ReadSessionSecurityPolicy(authorization.Session) is not { AllowOrchestration: true })
             return false;
         var events = _store.ReadFrom(authorization.Session, 1);
         var inMemoryInvocation = _lastWorkflowInvocation is { } currentInvocation
