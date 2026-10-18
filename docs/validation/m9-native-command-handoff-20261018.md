@@ -1,7 +1,11 @@
 # M9-L: handoff nativo durable de comandos
 
 Estado: prompt y recuperación previa al inicio construidos, cableados y validados
-localmente. Publicación en preparación; las otras familias siguen abiertas.
+localmente. Publicado en Core `768c92c` y Coder `9b0e24c`, SHAs remotos
+comprobados. [CI Coder 39113234258](https://github.com/juancgomezm-s/OmniCode/actions/runs/39113234258)
+aprobada completa, incluido package-gate. Core aprobó Ubuntu, npm de ambos
+sistemas y paquete Linux; su suite Windows sigue en curso. Las otras familias
+siguen abiertas. Esta matriz no cubre las fuentes posteriores de workflows.
 M9 sigue abierto. M8 espera las pruebas manuales del usuario.
 
 ## Alcance y autoridad
@@ -101,3 +105,26 @@ deben conservar el Turn original. MemoryPromotion, Lanes hijas, controles de
 plan/lanes/worktrees, SEC-CONV completo y procesos persistentes/ConPTY siguen
 abiertos; esta acta no los cierra. Tampoco acredita proveedor live, aceptación
 manual, otros sistemas operativos ni preferencia efectiva/cambio de idioma.
+
+## Hallazgo posterior que detiene la integración de extensiones
+
+La aceptación con proceso Strong real no pasó y no se publica como construida.
+Los intentos revelaron un setup Act que completaba su Run (fixture corregida a
+turno Plan real y selección Act por HMAC), falta de exposición de la tool exacta
+en Discovered (`3a6ff35`) y creación prematura del boundary sin catálogo Extension/
+MCP (`23e2fc3`). La captura final sobre `3a6ff35` confirmó Session y modelo FullAgent,
+choice exacto, definición ausente y rechazo ModelCapabilityBoundary en 1 caso
+focal de 2.3 s; no se contaron esos fallos como aceptación. Logs
+`%TEMP%/m9-forced-extension-3a6ff35-focus-20261018.log` y
+`%TEMP%/m9-forced-extension-allow-policy-diagnostic-3a6ff35-20261018.log`.
+
+La revisión estática posterior confirma otra frontera: `GeneralProcess` con
+Writes no tiene contabilidad de mutaciones en el ledger y ambas barreras lo
+rechazan. El permiso de proceso y FileMutationMode son condiciones distintas;
+FullAgent no permite omitir el techo ni medir por inferencia. Reclasificar una
+extensión como validador o quitar sus claims sería un bypass. Se detiene el
+bloque por instrucción del usuario ante impedimentos, preservando cambios en
+rama y sin publicar esta aceptación. Hace falta ejecución con cambios atribuibles
+(acotación/aislamiento/diff y ledger durable) antes de habilitar escritura genérica.
+La finalización nativa también debe distinguir un rechazo técnico de herramienta
+del texto final del modelo: EndTurn por sí solo no acredita el efecto forzado.

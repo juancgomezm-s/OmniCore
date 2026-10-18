@@ -66,8 +66,14 @@ Cada ADR registra una decisión que precisa o modifica `docs/spec/OmniCore-v1.md
 | [0047](0047-modos-explicitos-y-ultracode.md) | Modos explícitos, ejecución directa y esfuerzo UltraCode | Aceptada (implementación en M5.5; delegación real en M6) |
 | [0048](0048-watchdog-y-respuesta-al-estancamiento.md) | Watchdog en Runs reales y respuesta al estancamiento (`StallPolicy`) | Aceptada (precisa 0016 §9 y 0036 §7) |
 | [0049](0049-ownership-durable-y-reconexion-stdio.md) | Ownership durable por Session y recuperación stdio M9-B | Aceptada e integrada para M9-B; nota posterior M9-D |
-| [0050](0050-autoridad-humana-stdio-omnicoder.md) | Autoridad humana acotada desde OmniCoder a Host stdio | Aceptada para M9-D; entrega en revisión |
-| [0052](0052-multimodal-intake-and-materialization.md) | Intake multimodal, snapshots documentales y salida de imagen M9-F/F2 | Aceptada para F/F2; worktree pendiente de revisión/integración; live generation pendiente |
-| [0053](0053-fuentes-externas-de-agente.md) | Fuentes locales de agentes, activación portable y consentimiento Ask | Aceptada para construcción M9-G local; revisión/integración pendientes |
+| [0050](0050-autoridad-humana-stdio-omnicoder.md) | Autoridad humana acotada desde OmniCoder a Host stdio | Integrada para M9-D; el acceso funcional completo M9 sigue abierto |
+| [0051](0051-conversation-inference-from-persisted-input.md) | Chat e inferencia desde input persistido | Integrada para M9-E; ACK de admisión separado del resultado |
+| [0052](0052-multimodal-intake-and-materialization.md) | Intake multimodal, snapshots documentales y salida de imagen M9-F/F2 | Integrada para F/F2; aceptación de inferencia/generación live pendiente |
+| [0053](0053-fuentes-externas-de-agente.md) | Fuentes locales de agentes, activación portable y consentimiento Ask | Integrada y validada en el alcance local M9-G; no cierra memoria multiscoped M10 |
 | [0054](0054-event-stream-backpressure-stdio.md) | Flujo durable continuo, reanudación y backpressure de eventos stdio | Aceptada para M9-H; verificación Windows registrada en el acta |
 | [0055](0055-contrato-nativo-omnicoder.md) | Contrato nativo versionado para OmniCoder | Aceptada para M9-J; paridad funcional completa permanece abierta |
+| [0056](0056-seguridad-durable-por-session.md) | Techo de seguridad durable por conversación | Construido en Core y cliente; aceptación SEC-CONV completa pendiente |
+| [0057](0057-session-model-selection.md) | Selección nativa de modelo/ruta por Session | Construida, cableada y validada en sus focos; no amplía autoridad |
+| [0058](0058-native-session-skills-memory.md) | Activación de skills y memoria de Session nativas | Construidas, cableadas y validadas localmente; MemoryPromotion sobre Turn abierto pendiente |
+| [0059](0059-native-command-handoff.md) | Handoff durable de comandos humanos | Prompt y recuperación previa al inicio publicados; otras familias pendientes de aceptación |
+| [0060](0060-native-orchestration-workflow-recovery.md) | Orchestrate y recuperación nativa de workflows | Construcción/validación en curso, todavía sin publicación |

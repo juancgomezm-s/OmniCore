@@ -44,7 +44,30 @@ capability incorrecta, rechazo HMAC sin Run y recreación legacy de Session/Run.
 [Evidencia y límites](../validation/m9-native-command-handoff-20261018.md).
 Extensión con efecto/Ask y acceso/continuación workflow todavía no están
 aceptados: OmniCoder aún no habilita Orchestrate y un workflow iniciado que
-espera no tiene continuación nativa. Publicación de este slice en preparación.
+espera no tiene continuación nativa. Publicado y remoto comprobado: Core
+`768c92c`, Coder `9b0e24c`; sus nuevas CI
+[39113225326](https://github.com/juancgomezm-s/OmniCore/actions/runs/39113225326) /
+[39113234258](https://github.com/juancgomezm-s/OmniCode/actions/runs/39113234258)
+están en curso. El siguiente objetivo en construcción es autoridad Orchestrate
+y continuación workflow; no se declara construido hasta validar el recorrido.
+
+**Bloque detenido por impedimento de contrato (2026-10-18):** se conservan en
+rama Core `23e2fc3` (sobre `be2948f`/`3a6ff35`) y Coder `270126a`, tests Coder
+`fb0f62b`. SDK/adapter/transporte aprobaron 42/42 y un foco adicional de capability;
+compilaciones presentación/app y scanner 157/157/155 aprobaron. No existe todavía
+E2E del workflow nativo y no se publica ese slice.
+
+La prueba de extensión con proceso Strong real descubrió primero falta de
+exposición explícita en Discovered y un boundary construido antes del catálogo
+Extension/MCP; ambos cableados se corrigieron en fuente. Queda un límite de fondo:
+los procesos con claims de escritura no tienen atribución de mutaciones al ledger.
+`GeneralProcess` no puede eludir FileMutationMode ni el techo Session/modelo;
+la excepción estrecha de validadores no autoriza procesos arbitrarios. La prueba
+allow/deny con marker permanece sin aceptación. Se detiene integración por la
+instrucción del usuario de avisar ante un impedimento; no se amplían policies ni
+se simula el efecto. Para continuar se requiere diseño/implementación de ejecución
+con cambios atribuibles y acotados (aislamiento/diff/ledger durable), además de
+la aceptación real de Orchestrate/workflow. M9 permanece abierto.
 
 **M9-F2 implementado e integrado; aceptación live sigue pendiente (2026-10-15):**
 incorpora imágenes generadas como salida del modelo, separa capacidades de
