@@ -922,11 +922,10 @@ public sealed class OmniCliRuntime : IDisposable
         var resolved = events.SingleOrDefault(evt => evt.Sequence >= firstSequence && evt.Sequence <= lastSequence
             && evt.RunId == run && evt.Causation is CommandCausation cause && cause.CommandId == command
             && codecs.Decode(evt) is InteractionResolved item && item.InteractionId == interaction);
-        var origin = requested.Kind == InteractionKind.Permission ? "InteractionResponse(Permission)"
-            : "InteractionResponse(PlanApproval)";
         var input = events.SingleOrDefault(evt => evt.Sequence >= firstSequence && evt.Sequence <= lastSequence
             && evt.RunId == run && evt.Causation is CommandCausation cause && cause.CommandId == command
-            && codecs.Decode(evt) is UserInputReceived item && item.Origin == origin);
+            && codecs.Decode(evt) is UserInputReceived item
+            && RunControlService.IsNativeChoiceResponse(item, requested.Kind));
         if (resolved is null || input is null
             || codecs.Decode(resolved) is not InteractionResolved response || response.State != optionId
             || RunProjection.Replay(session, run, codecs, events).State != RunState.Running) return false;

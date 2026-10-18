@@ -922,11 +922,20 @@ public static class StdioProtocolHost
                 if (codecs.Decode(evt) is not InteractionResolved resolved || !requests.TryGetValue(resolved.InteractionId, out var requestEvent)
                     || evt.Causation is not CommandCausation cause) continue;
                 var request = (InteractionRequested)codecs.Decode(requestEvent);
+                var responseInput = events.FirstOrDefault(item => item.RunId == run
+                    && item.Causation is CommandCausation inputCause && inputCause.CommandId == cause.CommandId
+                    && codecs.Decode(item) is UserInputReceived input
+                    && RunControlService.IsNativeChoiceResponse(input, request.Kind));
+                // Legacy interaction replies can resolve the same durable interaction without a native
+                // choice command/receipt. They are history, not an interrupted native recovery attempt.
+                if (responseInput is null) continue;
                 var receipt = server.ReceiptStore?.ReadCommandReceipt(cause.CommandId.ToString());
                 if (receipt is null || receipt.State != OmniCore.Infrastructure.CommandReceiptState.Completed
-                    || receipt.OutcomeKind != "Accepted" || receipt.ExecutionState is not (null or "cancelled"))
+                    || receipt.OutcomeKind != "Accepted" || receipt.SessionId != session.ToString()
+                    || receipt.FirstSequence is not { } firstSequence || receipt.LastSequence is not { } lastSequence
+                    || evt.Sequence < firstSequence || evt.Sequence > lastSequence
+                    || responseInput.Sequence < firstSequence || responseInput.Sequence > lastSequence)
                     return "response_receipt_unknown";
-                if (!HasStartedContinuation(events, codecs, run, requestEvent, request, evt.Sequence)) continue;
                 if (request.Kind == InteractionKind.Permission)
                 {
                     var permission = events.FirstOrDefault(item => item.RunId == run && item.TurnId == requestEvent.TurnId
@@ -934,9 +943,17 @@ public static class StdioProtocolHost
                         && permissionRequest.InteractionId == resolved.InteractionId);
                     if (permission is not null && permission.ToolCallId is { } toolCall
                         && events.Any(item => item.RunId == run && item.ToolCallId == toolCall
-                            && item.Sequence > permission.Sequence && codecs.Decode(item) is ToolCallEffectUnknown or ToolCallReconciled))
+                            && item.Sequence > permission.Sequence
+                            && (codecs.Decode(item) is ToolCallEffectUnknown
+                                || codecs.Decode(item) is ToolCallReconciled { Outcome: ReconciliationOutcome.Conflict or ReconciliationOutcome.Unresolvable })))
                         return "effect_outcome_unknown";
                 }
+                // A completed continuation, or one that reached a later durable input request, is
+                // ordinary history. It must not be presented as a recovery action for this response.
+                if (receipt.ExecutionState == "completed"
+                    || receipt.ExecutionState == "deferred" && receipt.ExecutionCode == "input_required") continue;
+                if (receipt.ExecutionState is not (null or "cancelled")) return "response_receipt_unknown";
+                if (!HasStartedContinuation(events, codecs, run, requestEvent, request, responseInput.Sequence)) continue;
                 return "continuation_already_started";
             }
             return null;
@@ -1010,8 +1027,7 @@ public static class StdioProtocolHost
                             && item.Sequence <= responseLast && item.RunId == run && item.Causation is CommandCausation inputCause
                             && inputCause.CommandId == commandCause.CommandId
                             && codecs.Decode(item) is UserInputReceived input
-                            && input.Origin == (request.Kind == InteractionKind.Permission
-                                ? "InteractionResponse(Permission)" : "InteractionResponse(PlanApproval)"));
+                            && RunControlService.IsNativeChoiceResponse(input, request.Kind));
                         if (responseInput is null || HasStartedContinuation(events, codecs, run,
                             requestedEvent, request, responseInput.Sequence)) break;
                         var sourceTurnStart = events.FirstOrDefault(item => item.RunId == run
@@ -1706,7 +1722,9 @@ public static class StdioProtocolHost
                 capability is not ("command.conversation.start.user"
                     or "command.conversation.questionnaire.respond.user"
                     or "command.conversation.interaction.choice.respond.user"
-                    or "command.conversation.interaction.continue.user") || conversationExecutionAvailable));
+                    or "command.conversation.interaction.continue.user") || conversationExecutionAvailable)
+                .Where(capability => capability is not ("command.conversation.interaction.choice.respond.user"
+                    or "command.conversation.interaction.continue.user") || nativeChoiceCapability));
         if (nativeChoiceCapability) supported = supported.Append("query.interactionRecovery");
         return supported.Distinct(StringComparer.Ordinal).ToArray();
     }

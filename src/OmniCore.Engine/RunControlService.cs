@@ -10,6 +10,17 @@ using OmniCore.Domain;
 /// </summary>
 public sealed class RunControlService
 {
+    public const string NativePlanApprovalResponseOrigin = "InteractionResponse(PlanApproval.NativeChoice)";
+
+    public static bool IsNativeChoiceResponse(UserInputReceived input, InteractionKind kind) => kind switch
+    {
+        InteractionKind.Permission => input.Origin == "InteractionResponse(Permission)",
+        InteractionKind.PlanApproval => input.Origin == NativePlanApprovalResponseOrigin
+            // Older native choice journals used the generic PlanApproval origin. They persist one
+            // empty input part; legacy UI responses persist the selected label.
+            || input.Origin == "InteractionResponse(PlanApproval)" && input.InputPartsJson == "[\"\"]",
+        _ => false,
+    };
     private readonly IEventStore _store;
 
     private readonly IEventCodecRegistry _codecs;
@@ -678,7 +689,7 @@ public sealed class RunControlService
         // como input canónico además de InteractionResolved.
         var resume = projection.State == RunState.AwaitingInput
             ? new UserInputReceived(run, InputParts(nativeChoice ? string.Empty : "PlanApproval: " + optionId), null,
-                "InteractionResponse(PlanApproval)")
+                nativeChoice ? NativePlanApprovalResponseOrigin : "InteractionResponse(PlanApproval)")
             : null;
         switch (optionId)
         {
