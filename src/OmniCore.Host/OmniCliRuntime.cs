@@ -1373,7 +1373,12 @@ public sealed class OmniCliRuntime : IDisposable
     }
 
     /// <summary>Runs the compiled Explore → Implement → Verify workflow through normal delegation and tool admission.</summary>
-    public async Task<int> ExecuteWorkflowAsync(WorkflowRequestDto request, string commandId,
+    public Task<int> ExecuteWorkflowAsync(WorkflowRequestDto request, string commandId,
+        Action<string> diagnostics, CancellationToken token) =>
+        ExecuteWorkflowAsync(request, commandId, diagnostics, token, allowNativeWeakSandboxConsent: false,
+            weakSandboxContinuation: null);
+
+    private async Task<int> ExecuteWorkflowAsync(WorkflowRequestDto request, string commandId,
         Action<string> diagnostics, CancellationToken token, bool allowNativeWeakSandboxConsent = false,
         WeakSandboxWorkflowContinuation? weakSandboxContinuation = null)
     {
