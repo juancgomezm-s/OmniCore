@@ -117,9 +117,10 @@ public sealed partial class OmniServer
                 attempted = target; sequenceBefore = _store.CurrentSequence(target);
                 if (_store is SqliteEventStore sqlite)
                     acquiredTargetLease = sqlite.AcquireSessionWriterLease(target);
-                // First actual intent resolves the initial model route. A blank conversation
-                // does not inherit the previous conversation's route grants.
-                if (name == "conversation.new") StartSession(target, deferRouting: true);
+                // New Sessions persist their configured routing baseline at creation. It is
+                // the same user-configuration snapshot as other native Sessions, never grants
+                // copied from the previously selected conversation.
+                if (name == "conversation.new") StartSession(target);
                 EnsureSessionSecurityPolicy(target);
                 _lastSessionId = target; _lastRunId = run; _lastSnapshot = null; _lastWorkingStateText = "";
                 _writerOwnershipUnavailable = false;

@@ -124,11 +124,11 @@ public sealed partial class OmniServer
                 var security = ReadSessionSecurityPolicy(session);
                 var routing = SessionRoutingAuthorization.Read(history, _codecs, session);
                 var selection = SessionModelSelectionProjection.Read(history, _codecs, session);
-                if (security is null || routing is null
+                if (security is null
                     || !ReadRevision(fields, "expectedSessionPolicyRevision", out var expectedSecurityRevision)
                     || expectedSecurityRevision != security.PolicyRevision
                     || !ReadRevision(fields, "expectedRoutingPolicyRevision", out var expectedRoutingRevision)
-                    || expectedRoutingRevision != routing.Revision
+                    || expectedRoutingRevision != (routing?.Revision ?? 0)
                     || !ReadRevision(fields, "expectedSelectionRevision", out var expectedSelectionRevision)
                     || expectedSelectionRevision != (selection?.Revision ?? 0))
                     return ModelAck(messageId, "error", "session_model.stale_revision", RuntimeCommandOutcome.Rejected(), session, before, commandId);
@@ -144,27 +144,35 @@ public sealed partial class OmniServer
                     var entry = requested is null ? null : SessionModelCatalog.Resolve(catalog, requested);
                     if (entry is null)
                         return ModelAck(messageId, "error", "session_model.model_unavailable", RuntimeCommandOutcome.Rejected(), session, before, commandId);
+                    var routingWasMissing = routing is null;
+                    var effectiveRouting = routing ?? SessionModelCatalog.InitialRoutingPolicy(catalog, entry.Provider.Id);
                     var pendingOffers = PendingModelRouteConsent(history).ToArray();
                     if (pendingOffers.Length != 0)
                     {
+                        if (routingWasMissing)
+                            return ModelAck(messageId, "error", "session_model.consent_pending", RuntimeCommandOutcome.Rejected(), session, before, commandId);
                         var sameOffer = pendingOffers.Any(request =>
                             SessionRoutingAuthorization.Parse(request) == new SessionRoutingAuthorization.Offer(
-                                routing.Revision, AuthorizedModelRoute.From(entry.Route, entry.BillingMode))
+                                effectiveRouting.Revision, AuthorizedModelRoute.From(entry.Route, entry.BillingMode))
                             && TryString(request.SubjectJson, "modelId") == entry.Model.Id);
                         return sameOffer
                             ? ModelAck(messageId, "ok", null, RuntimeCommandOutcome.Deferred("ModelRouteConsent"), session, before, commandId)
                             : ModelAck(messageId, "error", "session_model.consent_pending", RuntimeCommandOutcome.Rejected(), session, before, commandId);
                     }
                     var binding = CreateSelection(entry, checked((selection?.Revision ?? 0) + 1));
-                    if (routing.Allows(entry.Route, entry.BillingMode))
+                    if (effectiveRouting.Allows(entry.Route, entry.BillingMode))
                     {
-                        AppendSelection(session, selection, binding, null, history, expectedSecurityRevision,
-                            expectedRoutingRevision, catalog.Revision, cancellationToken);
+                        if (routingWasMissing)
+                            AppendInitialRoutingDecision(session, effectiveRouting, [new SessionModelSelectionSet(session, binding)],
+                                expectedSecurityRevision, expectedSelectionRevision, catalog.Revision, cancellationToken);
+                        else
+                            AppendSelection(session, selection, binding, null, history, expectedSecurityRevision,
+                                expectedRoutingRevision, catalog.Revision, cancellationToken);
                         return ModelAck(messageId, "ok", null, RuntimeCommandOutcome.Accepted(), session, before, commandId);
                     }
 
                     var offer = SessionRoutingAuthorization.Context(new SessionRoutingAuthorization.Offer(
-                        routing.Revision, AuthorizedModelRoute.From(entry.Route, entry.BillingMode)));
+                        effectiveRouting.Revision, AuthorizedModelRoute.From(entry.Route, entry.BillingMode)));
                     var subject = offer[..^1] + ",\"modelId\":" + Q(entry.Model.Id)
                         + ",\"selectionRevision\":" + expectedSelectionRevision.ToString(System.Globalization.CultureInfo.InvariantCulture)
                         + ",\"securityRevision\":" + expectedSecurityRevision.ToString(System.Globalization.CultureInfo.InvariantCulture)
@@ -175,9 +183,18 @@ public sealed partial class OmniServer
                         "[{\"id\":\"deny\",\"intent\":\"deny\"},{\"id\":\"allow_route\",\"intent\":\"allow\"}]",
                         "deny", null, null, null, null, 0, 1);
                     using var cause = CausationScope.Begin(new CommandCausation(commandId));
-                    new EventStream(_store, _codecs, session).Append(request, DurabilityClass.Barrier);
+                    if (routingWasMissing)
+                        AppendInitialRoutingDecision(session, effectiveRouting, [request], expectedSecurityRevision,
+                            expectedSelectionRevision, catalog.Revision, cancellationToken);
+                    else
+                        new EventStream(_store, _codecs, session).Append(request, DurabilityClass.Barrier);
                     return ModelAck(messageId, "ok", null, RuntimeCommandOutcome.Deferred("ModelRouteConsent"), session, before, commandId);
                 }
+
+                // A route response can only close an offer created against a durable routing
+                // snapshot. A missing snapshot is not an implicit authorization context.
+                if (routing is null)
+                    return ModelAck(messageId, "error", "session_model.stale_revision", RuntimeCommandOutcome.Rejected(), session, before, commandId);
 
                 return ResolveSessionModelRoute(command, fields, commandId, session, before, history,
                     selection, routing, security, catalog, expectedSelectionRevision, expectedRoutingRevision,
@@ -278,6 +295,27 @@ public sealed partial class OmniServer
             || SessionRoutingAuthorization.Read(_store.ReadFrom(session, 1), _codecs, session)?.Revision != expectedRoutingRevision)
             throw new SessionModelRevisionConflictException();
         new EventStream(_store, _codecs, session).Append(payload, DurabilityClass.Barrier);
+    }
+
+    private void AppendInitialRoutingDecision(SessionId session, SessionRoutingPolicy routing,
+        IReadOnlyList<DomainEventPayload> decision, long expectedSecurityRevision, long expectedSelectionRevision,
+        string catalogRevision, CancellationToken cancellationToken)
+    {
+        var paths = _platformPathsFactory();
+        var latestCatalog = SessionModelCatalog.Read(paths, cancellationToken);
+        var latestHistory = _store.ReadFrom(session, 1);
+        var latestRouting = SessionRoutingAuthorization.Read(latestHistory, _codecs, session);
+        var latestSelection = SessionModelSelectionProjection.Read(latestHistory, _codecs, session);
+        if (latestCatalog.Revision != catalogRevision || latestRouting is not null
+            || ReadSessionSecurityPolicy(session)?.PolicyRevision != expectedSecurityRevision
+            || (latestSelection?.Revision ?? 0) != expectedSelectionRevision)
+            throw new SessionModelRevisionConflictException();
+        var payloads = new List<DomainEventPayload>(decision.Count + 1)
+        {
+            new SessionRoutingPolicySet(session, routing),
+        };
+        payloads.AddRange(decision);
+        new EventStream(_store, _codecs, session).AppendBatch(payloads, DurabilityClass.Barrier);
     }
 
     private bool IsSessionTurnInFlight(IReadOnlyList<DomainEvent> history, RunId? activeRun)

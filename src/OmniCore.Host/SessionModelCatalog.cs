@@ -14,7 +14,7 @@ internal sealed record SessionModelCatalogEntry(ModelDefinition Model, ProviderD
 /// <summary>Read-only, local catalog used by the native Session model selector.</summary>
 internal static class SessionModelCatalog
 {
-    internal sealed record Snapshot(string Revision, IReadOnlyList<SessionModelCatalogEntry> Models);
+    internal sealed record Snapshot(string Revision, IReadOnlyList<SessionModelCatalogEntry> Models, decimal? SessionSpendLimit);
 
     public static Snapshot Read(IPlatformPaths paths, CancellationToken cancellationToken)
     {
@@ -31,16 +31,31 @@ internal static class SessionModelCatalog
         }).OrderBy(entry => entry.Model.Id, StringComparer.Ordinal)
           .ThenBy(entry => entry.Provider.Id, StringComparer.Ordinal).ToArray();
 
-        var canonical = CanonicalBytes(entries);
+        var sessionSpendLimit = loaded.Settings?.Budget?.Session;
+        var canonical = CanonicalBytes(entries, sessionSpendLimit);
         var revision = Convert.ToHexStringLower(SHA256.HashData(canonical));
-        return new Snapshot(revision, entries);
+        return new Snapshot(revision, entries, sessionSpendLimit);
     }
 
-    private static byte[] CanonicalBytes(IReadOnlyList<SessionModelCatalogEntry> entries)
+    public static SessionRoutingPolicy InitialRoutingPolicy(Snapshot snapshot, string originProviderId)
+    {
+        if (string.IsNullOrWhiteSpace(originProviderId)) throw new ArgumentException("Provider id is required.", nameof(originProviderId));
+        var routes = snapshot.Models.Where(entry => StringComparer.Ordinal.Equals(entry.Provider.Id, originProviderId)
+                && entry.BillingMode is BillingMode.Local or BillingMode.IncludedQuota or BillingMode.CreditBalance)
+            .Select(entry => AuthorizedModelRoute.From(entry.Route, entry.BillingMode)).ToArray();
+        return new SessionRoutingPolicy(1, routes, routes.Select(route => route.BillingMode).Distinct().ToArray(),
+            false, snapshot.SessionSpendLimit, originProviderId).Freeze();
+    }
+
+    private static byte[] CanonicalBytes(IReadOnlyList<SessionModelCatalogEntry> entries, decimal? sessionSpendLimit)
     {
         using var buffer = new MemoryStream();
         using (var writer = new Utf8JsonWriter(buffer))
         {
+            writer.WriteStartObject();
+            if (sessionSpendLimit is { } spendLimit) writer.WriteNumber("sessionSpendLimit", spendLimit);
+            else writer.WriteNull("sessionSpendLimit");
+            writer.WritePropertyName("models");
             writer.WriteStartArray();
             foreach (var entry in entries)
             {
@@ -79,6 +94,7 @@ internal static class SessionModelCatalog
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
+            writer.WriteEndObject();
         }
         return buffer.ToArray();
     }
