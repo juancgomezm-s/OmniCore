@@ -1360,10 +1360,18 @@ public static class StdioProtocolHost
             lock (_gate)
             {
                 if (_task is { IsCompleted: false }) return false;
-                _deferredConversation ??= admitted;
-                return _deferredConversation is { } deferred
-                    && deferred.SessionId == expectedSession && deferred.RunId == expectedRun
-                    && deferred.CommandId == admitted.CommandId && deferred.RequestHash == admitted.RequestHash;
+                if (_deferredConversation is { } current
+                    && (!string.Equals(current.SessionId, expectedSession, StringComparison.Ordinal)
+                        || !string.Equals(current.RunId, expectedRun, StringComparison.Ordinal))) return false;
+
+                // A later choice can belong to a later Turn in the same Run. The journal-derived
+                // admission above is scoped to that exact Turn's source input; retaining the first
+                // in-memory binding would either lose a Permission TurnId or resume an older receipt.
+                _deferredConversation = admitted;
+                return string.Equals(_deferredConversation.SessionId, expectedSession, StringComparison.Ordinal)
+                    && string.Equals(_deferredConversation.RunId, expectedRun, StringComparison.Ordinal)
+                    && string.Equals(_deferredConversation.CommandId, admitted.CommandId, StringComparison.Ordinal)
+                    && string.Equals(_deferredConversation.RequestHash, admitted.RequestHash, StringComparison.Ordinal);
             }
         }
 
