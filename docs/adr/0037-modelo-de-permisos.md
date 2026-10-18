@@ -102,7 +102,7 @@ Las categorías de la spec §43 se mapean a `ResourceClaims` (ADR-0014):
 
 - **Resolución:** `IExecutableResolver` busca solo en el `PATH` del sistema. **Nunca** en el directorio actual ni en el workspace, salvo una regla explícita del usuario. Así, un `git.exe` o un `dotnet.cmd` plantado en el repo no gana.
 - **Clasificación:** build y test (`dotnet build/test`, `npm test`…) son `WorkspaceEffect`, porque ejecutan código del repo.
-- **Entorno por defecto** (allowlist): `PATH`, `SystemRoot`, `TEMP`/`TMP`, `HOME`/`USERPROFILE`, `LANG`/`LC_*`, `DOTNET_*` y `NUGET_*` de configuración.
+- **Entorno por defecto** (allowlist): `PATH`, `SystemRoot`, `TEMP`/`TMP`, `HOME`/`USERPROFILE`, `LANG`/`LC_*`, `DOTNET_*` y `NUGET_*` de configuración; en Windows también `APPDATA` para que herramientas del SDK resuelvan la configuración del usuario.
   - Todo lo demás, incluidos `GITHUB_TOKEN`, `AWS_*` y `*_API_KEY`, **no se hereda** salvo declaración explícita.
   - Los secretos entran solo como `SecretRef` (ADR-0018).
 - **Comandos `cmd:` de secretos:** se ejecutan fuera del pipeline del modelo, con ejecutable fijo, timeout, sin working directory del workspace y sin red adicional.

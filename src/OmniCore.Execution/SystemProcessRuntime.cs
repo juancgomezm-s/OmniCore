@@ -118,6 +118,7 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IStreamingProcessRun
         {
             "PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE", "LANG",
         };
+        if (OperatingSystem.IsWindows()) allowed.Add("APPDATA");
         foreach (var extra in _additionalEnvironmentAllowlist) allowed.Add(extra);
 
         foreach (System.Collections.DictionaryEntry pair in Environment.GetEnvironmentVariables())

@@ -88,6 +88,13 @@ if (args.Length == 1 && args[0] == "stdin-echo")
     return 0;
 }
 
+if (args.Length == 3 && args[0] == "environment-probe")
+{
+    Console.WriteLine(Environment.GetEnvironmentVariable(args[1]) ?? "<null>");
+    Console.WriteLine(Environment.GetEnvironmentVariable(args[2]) is null ? "excluded" : "included");
+    return 0;
+}
+
 if (args.Length == 1 && args[0] == "stdin-state") return StandardInputProbe.Run();
 
 if (args.Length == 1 && args[0] is "mcp" or "mcp-error" or "mcp-stall")
