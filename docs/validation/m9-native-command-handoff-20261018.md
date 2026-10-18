@@ -2,6 +2,18 @@
 
 ## Estado actual: cierre de denegación y aceptación de reapertura (2026-10-18)
 
+**Publicación comprobada:** Core `c56123e`, Coder `2c31071`, ambos en main remoto.
+La [CI Coder 39168400950](https://github.com/juancgomezm-s/OmniCode/actions/runs/39168400950)
+terminó completa aprobada (Windows, Ubuntu y package gate). La primera publicación
+Coder `f76aed3` falló el mismo unitario en los tres jobs: el fixture usaba
+`command.recovery` y el código consulta `workflow.recovery`. La corrección
+test-only `da9ce39` conserva fencing/CAS; archivo completo del adapter 23/23 PASS,
+1.13 s. Bundle de producción sin cambios. En la
+[CI Core 39167620380](https://github.com/juancgomezm-s/OmniCore/actions/runs/39167620380)
+aprobaron instaladores npm Windows/Ubuntu, paquete Linux y suite Ubuntu
+(4,888 aprobadas, 0 fallos, 24 omisiones); la suite Windows aún estaba ejecutándose
+al registrar este corte. No se extrapola ese resultado al incremento ACT posterior.
+
 **Aceptación local del bloque:** Core `582dc9c`, Coder test `b919802`, fuente/bundle
 de aplicación `1fb3639`. `deny` revalida autoridad, etapa Verify Accepted,
 recibo, interacción, causación y scope exactos, sin reconstruir la ejecución ni
