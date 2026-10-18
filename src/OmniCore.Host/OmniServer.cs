@@ -800,6 +800,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
         using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
         var commandName = fields.TryGetValue("cmd", out var c) ? c : null;
+        if (commandName is "command.invoke.user" or "command.continue")
+            return trustedUserAction ? HandleNativeCommandAction(command, commandName, cancellationToken)
+                : new CommandAck(command.MessageId, "error", "trusted_user_action_required", RuntimeCommandOutcome.Rejected());
         if (commandName is "conversation.new" or "conversation.resume" or "conversation.rename" or "conversation.compact")
             return HandleConversationCommand(command, fields, commandName, trustedUserAction, cancellationToken);
         if (commandName == "session.security.set")
@@ -2922,6 +2925,10 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             return new SessionQueryResult(name, EncodeSessionModelCatalog(cancellationToken));
         if (name == "session.model.selection")
             return new SessionQueryResult(name, EncodeCurrentSessionModelSelection());
+        if (name == "command.catalog")
+            return new SessionQueryResult(name, CommandCatalogJson.Encode(CurrentNativeCommandCatalog()));
+        if (name == "command.recovery")
+            return new SessionQueryResult(name, EncodeNativeCommandRecovery());
         if (name == "conversations") return new(name, ConversationJson.Encode(Conversations()));
         if (name == OpenRouterProtocol.StatusQuery)
         {

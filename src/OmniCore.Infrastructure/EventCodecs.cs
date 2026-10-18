@@ -53,6 +53,9 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.RunReasoningPreferenceSelected())
             .Plus(Typed.RunReasoningPreferenceRevoked())
             .Plus(Typed.SkillActivationChanged())
+            .Plus(Typed.NativeCommandInvocationAdmitted())
+            .Plus(Typed.NativeCommandInvocationStarted())
+            .Plus(Typed.NativeCommandInvocationFinished())
             .Plus(Typed.RunInteractionResumed())
             .Plus(Typed.SessionCreated())
             .Plus(Typed.SessionTitleChanged())
@@ -432,6 +435,9 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(RunReasoningPreferenceSelected))]
 [JsonSerializable(typeof(RunReasoningPreferenceRevoked))]
 [JsonSerializable(typeof(SkillActivationChanged))]
+[JsonSerializable(typeof(NativeCommandInvocationAdmitted))]
+[JsonSerializable(typeof(NativeCommandInvocationStarted))]
+[JsonSerializable(typeof(NativeCommandInvocationFinished))]
 [JsonSerializable(typeof(RunInteractionResumed))]
 [JsonSerializable(typeof(RunModeAuthority))]
 [JsonSerializable(typeof(ModeSwitchAuthorization))]
@@ -686,6 +692,15 @@ public sealed class Typed
 
     public static CodecPair SkillActivationChanged() =>
         Of(EventType.Of("skills.activation_changed"), EventJsonContext.Default.SkillActivationChanged);
+
+    public static CodecPair NativeCommandInvocationAdmitted() =>
+        Of(EventType.Of("command.invocation_admitted"), EventJsonContext.Default.NativeCommandInvocationAdmitted);
+
+    public static CodecPair NativeCommandInvocationStarted() =>
+        Of(EventType.Of("command.invocation_started"), EventJsonContext.Default.NativeCommandInvocationStarted);
+
+    public static CodecPair NativeCommandInvocationFinished() =>
+        Of(EventType.Of("command.invocation_finished"), EventJsonContext.Default.NativeCommandInvocationFinished);
 
     public static CodecPair RunInteractionResumed() =>
         Of(EventType.Of("run.interaction_resumed"), EventJsonContext.Default.RunInteractionResumed);

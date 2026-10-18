@@ -95,7 +95,9 @@ public sealed class RunControlService
     /// Abre un Run nuevo en la sesión con su Task y Lane raíz y el Plan rev.1 de un item
     /// (ADR-0035 §2-3). Falla con <see cref="RunAlreadyActiveException"/> si ya hay uno activo.
     /// </summary>
-    public RunId StartRun(SessionId session, string objective, RunMode mode)
+    public RunId StartRun(SessionId session, string objective, RunMode mode,
+        Func<RunId, IReadOnlyList<DomainEventPayload>>? additionalEvents = null,
+        DurabilityClass durability = DurabilityClass.Standard)
     {
         ArgumentException.ThrowIfNullOrEmpty(objective);
         if (ActiveRun(session) is { } active)
@@ -134,7 +136,8 @@ public sealed class RunControlService
             new TaskStarted(task, lane),
             new PlanCreated(PlanId.New(), run, PlanItemId.New(), objective),
         });
-        new EventStream(_store, _codecs, session).AppendBatch(creation, DurabilityClass.Standard);
+        if (additionalEvents is not null) creation.AddRange(additionalEvents(run));
+        new EventStream(_store, _codecs, session).AppendBatch(creation, durability);
         return run;
     }
 

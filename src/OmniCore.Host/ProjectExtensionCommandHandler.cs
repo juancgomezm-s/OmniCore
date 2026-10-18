@@ -1,6 +1,8 @@
 namespace OmniCore.Host;
 
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Extensions;
@@ -30,12 +32,22 @@ internal sealed class ProjectExtensionCommandHandler : ICommandHandler
             ["<JSON object of tool arguments>"],
             new ComponentSource(SourceKind.Extension,
                 extension.Trust == TrustLevel.Project ? ScopeLevel.Project : ScopeLevel.User,
-                extension.Trust, _extensionId, _extensionVersion))
+                extension.Trust, _extensionId, _extensionVersion, extension.ConsentHash))
         {
             UiDescriptions = manifest.UiResources?.Where(pair => pair.Value.ContainsKey("command." + command.Name + ".description"))
                 .ToDictionary(pair => pair.Key, pair => pair.Value["command." + command.Name + ".description"], StringComparer.Ordinal),
+            SourceFingerprint = Fingerprint(extension, command),
         };
         Descriptor.Validate();
+    }
+
+    private static string Fingerprint(DiscoveredExtension extension, ExtensionCommandManifest command)
+    {
+        static string Part(string value) => value.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + ":" + value;
+        var canonical = string.Concat(Part(extension.ManifestSha256), Part(extension.PackageSha256),
+            Part(extension.Trust.ToString()), Part(command.Name ?? ""), Part(command.Tool ?? ""));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
     }
 
     public bool IsEnabled(CommandContext context, out string? disabledReason)

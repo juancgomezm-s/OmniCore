@@ -814,6 +814,10 @@ public sealed class OmniCliRuntime : IDisposable
         Action<string> diagnostics, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(admitted);
+        if (admitted.NativeInvocationId is { Length: > 0 } nativeInvocationId
+            && admitted.ContinuationInteractionId is null)
+            return await ExecutePersistedNativeCommandAsync(admitted, nativeInvocationId, diagnostics,
+                cancellationToken).ConfigureAwait(false);
         if (!Guid.TryParse(admitted.SessionId, out var sessionGuid)
             || !Guid.TryParse(admitted.RunId, out var runGuid)) return 1;
         var server = Server();
@@ -924,13 +928,86 @@ public sealed class OmniCliRuntime : IDisposable
                 .Select(item => ((TurnStarted)item.Payload).TurnId).ToHashSet();
             var completed = journal.Where(item => item.Payload is TurnCompleted)
                 .Select(item => ((TurnCompleted)item.Payload).TurnId).ToHashSet();
-            return started.Intersect(completed).Any(turnId => (continuationTurnId is null || turnId == continuationTurnId)
+            var turnCompleted = started.Intersect(completed).Any(turnId => (continuationTurnId is null || turnId == continuationTurnId)
                 && journal.Any(item =>
                 item.Payload is AssistantMessageRecorded assistant && assistant.TurnId == turnId
-                || item.Payload is AssistantImagesRecorded images && images.TurnId == turnId)) ? 0 : 1;
+                || item.Payload is AssistantImagesRecorded images && images.TurnId == turnId));
+            if (turnCompleted && admitted.NativeInvocationId is { Length: > 0 } completedInvocation
+                && Guid.TryParseExact(completedInvocation, "D", out var completedGuid))
+                server.FinishNativeCommand(new CommandId(completedGuid), "completed");
+            return turnCompleted ? 0 : 1;
         }
-        if (journal.Any(item => item.Payload is TurnInterrupted)) return 130;
+        if (journal.Any(item => item.Payload is TurnInterrupted))
+        {
+            if (admitted.NativeInvocationId is { Length: > 0 } cancelledInvocation
+                && Guid.TryParseExact(cancelledInvocation, "D", out var cancelledGuid))
+                server.FinishNativeCommand(new CommandId(cancelledGuid), "cancelled");
+            return 130;
+        }
+        if (exitCode != 3 && admitted.NativeInvocationId is { Length: > 0 } failedInvocation
+            && Guid.TryParseExact(failedInvocation, "D", out var failedGuid))
+            server.FinishNativeCommand(new CommandId(failedGuid), "failed");
         return exitCode == 130 ? 1 : exitCode;
+    }
+
+    private async Task<int> ExecutePersistedNativeCommandAsync(PersistedConversationCommand admitted,
+        string invocationText, Action<string> diagnostics, CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParseExact(admitted.SessionId, "D", out var sessionGuid)
+            || !Guid.TryParseExact(admitted.RunId, "D", out var runGuid)
+            || !Guid.TryParseExact(invocationText, "D", out var invocationGuid)) return 1;
+        var server = Server();
+        var session = new SessionId(sessionGuid);
+        var run = new RunId(runGuid);
+        var receipt = server.ReceiptStore?.ReadCommandReceipt(admitted.CommandId);
+        if (server.LastSessionId() != session || server.LastRunId() != run
+            || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(session) != run
+            || receipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed, OutcomeKind: "Accepted" }
+            || !string.Equals(receipt.RequestHash, admitted.RequestHash, StringComparison.Ordinal)
+            || !string.Equals(receipt.SessionId, session.ToString(), StringComparison.Ordinal)
+            || receipt.FirstSequence != admitted.FirstSequence || receipt.LastSequence != admitted.LastSequence)
+            return 1;
+        if (!server.TryBeginNativeCommand(new CommandId(invocationGuid), admitted.ExplicitNativeCommandRecovery,
+                out var admission, out var payload)
+            || admission.RunId != run || admission.SessionId != session || payload.Kind != admitted.NativeCommandKind)
+            return 1;
+
+        int exitCode;
+        try
+        {
+            if (payload.Kind == "compiledWorkflow")
+            {
+                if (payload.WorkflowId is not { Length: > 0 } workflowId
+                    || payload.WorkflowVersion is not { Length: > 0 } workflowVersion) return 1;
+                exitCode = await ExecuteWorkflowAsync(new WorkflowRequestDto(workflowId, workflowVersion,
+                    payload.Arguments), invocationGuid.ToString("D"), diagnostics, cancellationToken).ConfigureAwait(false);
+            }
+            else if (payload.Kind is "prompt" or "forcedExtension")
+            {
+                if (payload.Prompt is not { } prompt) return 1;
+                var act = server.CurrentRunMode() == RunMode.Act;
+                if (payload.Kind == "forcedExtension" && !act) return 1;
+                exitCode = await RunTurnAsync(prompt, act, diagnostics, cancellationToken,
+                    expectedSession: session, expectedRun: run,
+                    forcedInitialToolName: payload.ForcedToolName,
+                    allowDeferredNativePermission: admitted.NativeChoiceCapability).ConfigureAwait(false);
+            }
+            else return 1;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { exitCode = 130; }
+        catch (Exception exception)
+        {
+            diagnostics(RedactSensitive(exception.Message));
+            exitCode = 1;
+        }
+
+        if (exitCode == 0)
+            server.FinishNativeCommand(new CommandId(invocationGuid), "completed");
+        else if (exitCode == 3)
+            return exitCode; // The existing conversation runner retains this binding for human interaction.
+        else
+            server.FinishNativeCommand(new CommandId(invocationGuid), exitCode == 130 ? "cancelled" : "failed");
+        return exitCode;
     }
 
     private static bool TryValidateChoiceContinuation(OmniServer server, SessionId session, RunId run,

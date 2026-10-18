@@ -15,6 +15,8 @@ public sealed record CommandDescriptor(string Id, string Name, IReadOnlyList<str
 {
     /// <summary>Optional literal presentation translations supplied by an extension; never execution input.</summary>
     public IReadOnlyDictionary<string, string>? UiDescriptions { get; init; }
+    /// <summary>Exact package identity used to fence native invocation of external command sources.</summary>
+    public string? SourceFingerprint { get; init; }
     public void Validate()
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(Id);

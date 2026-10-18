@@ -3,6 +3,8 @@ namespace OmniCore.Host;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Protocol;
+using System.Security.Cryptography;
+using System.Text;
 
 /// <summary>Host command registry for PromptCommand and WorkflowCommand (ADR-0024 §3).</summary>
 public sealed class CommandRegistry
@@ -85,6 +87,22 @@ public sealed class CommandService
 
     public CommandRegistry Registry => _registry;
 
+    public ICommandHandler ResolveCanonical(string id) => _registry.Resolve(id);
+
+    public static string Fingerprint(CommandDescriptor descriptor)
+    {
+        if (descriptor.SourceFingerprint is { Length: 64 } sourceFingerprint
+            && sourceFingerprint.All(Uri.IsHexDigit)) return sourceFingerprint.ToUpperInvariant();
+        static string Part(string value) => value.Length.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + ":" + value;
+        var source = descriptor.Source;
+        var canonical = string.Concat(Part(descriptor.Id), Part(descriptor.Name), Part(descriptor.Kind.ToString()),
+            Part(descriptor.Description), Part(string.Join("\n", descriptor.Arguments)), Part(source.Kind.ToString()),
+            Part(source.Scope.ToString()), Part(source.Trust.ToString()), Part(source.Owner), Part(source.Version),
+            Part(source.ContentIdentity ?? ""));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+    }
+
     public async ValueTask<HostCommandOutcome> InvokeAsync(CommandInvocation invocation, CommandContext context,
         CancellationToken cancellationToken)
     {
@@ -125,7 +143,8 @@ public sealed class CommandService
         return new CommandCatalogEntry(descriptor.Id, descriptor.Name, descriptor.Aliases,
             descriptor.Kind.ToString(), descriptor.Description, descriptor.Arguments,
             descriptor.Source.Kind + ":" + descriptor.Source.Owner + "@" + descriptor.Source.Version,
-            enabled, enabled ? null : reason) { UiDescriptions = descriptor.UiDescriptions };
+            enabled, enabled ? null : reason)
+        { UiDescriptions = descriptor.UiDescriptions, SourceFingerprint = Fingerprint(descriptor) };
     }).ToArray());
 
     private static CommandRegistry CreateDefaultRegistry()

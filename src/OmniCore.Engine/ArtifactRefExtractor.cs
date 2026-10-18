@@ -102,6 +102,10 @@ internal static class ArtifactRefExtractor
                 if (u.Attachments is not null) AddRange(refs, u.Attachments);
                 break;
 
+            case NativeCommandInvocationAdmitted command:
+                refs.Add(command.ProtectedPayload);
+                break;
+
             case AssistantMessageRecorded a when a.ContentRef is not null:
                 refs.Add(a.ContentRef!);
                 break;
