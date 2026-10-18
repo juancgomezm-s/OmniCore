@@ -518,7 +518,7 @@ public sealed class M3CoderGatesTests
                 interaction => interaction.Kind == InteractionKind.WeakSandboxConsent ? "consent_once" : "allow_once",
                 interactive: true, locale: "en", cancellationToken: TestContext.Current.CancellationToken,
                 skillValidators: validator,
-                subsequentTurnFactory: _ =>
+                subsequentTurnFactory: attempt =>
                 {
                     subsequentTurnCreated = true;
                     return CreateTurn(context, CompleteModel, out _);
