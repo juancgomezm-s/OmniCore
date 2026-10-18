@@ -1304,7 +1304,20 @@ public sealed partial class StdioTransportTests
         Assert.Equal(StdioProtocol.NativeQueries.Count, StdioProtocol.NativeQueries.Select(query => query.Name).Distinct(StringComparer.Ordinal).Count());
         Assert.Equal(StdioProtocol.SupportedCapabilities.Length, StdioProtocol.SupportedCapabilities.Distinct(StringComparer.Ordinal).Count());
         Assert.Equal(StdioProtocol.TrustedUserActionCapabilities.Length, StdioProtocol.TrustedUserActionCapabilities.Distinct(StringComparer.Ordinal).Count());
-        Assert.All(StdioProtocol.NativeCommands, command => Assert.True(StdioProtocol.IsSupportedCommand(command.Name)));
+        Assert.All(StdioProtocol.NativeCommands, command =>
+            Assert.True(StdioProtocol.IsSupportedCommand(command.WireName ?? command.Name)));
+        var questionnaire = Assert.Single(StdioProtocol.NativeCommands,
+            command => command.Name == "interaction.respond");
+        Assert.Equal("interaction.respond", questionnaire.WireName);
+        Assert.Equal("questionnaire", questionnaire.Variant);
+        Assert.Equal("command.conversation.questionnaire.respond.user", questionnaire.Capability);
+        var choice = Assert.Single(StdioProtocol.NativeCommands,
+            command => command.Name == "interaction.respond.choice");
+        Assert.Equal("interaction.respond", choice.WireName);
+        Assert.Equal("choice", choice.Variant);
+        Assert.Equal("command.conversation.interaction.choice.respond.user", choice.Capability);
+        Assert.Equal("native-confirmation+hmac+session-run-interaction-option+policy-revision+receipt+resume",
+            choice.Authority);
     }
 
     [Fact]

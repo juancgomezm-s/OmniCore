@@ -3195,6 +3195,7 @@ public sealed class CliEndToEndTests
             Assert.Contains(payloads, evt => evt is InteractionRequested request && request.Kind == InteractionKind.Permission);
             Assert.Contains(payloads, evt => evt is RunAwaitingInput);
             Assert.DoesNotContain(payloads, evt => evt is InteractionResolved);
+            Assert.DoesNotContain(payloads, evt => evt is PermissionGranted);
             Assert.DoesNotContain(payloads, evt => evt is ToolCallStarted started && started.EffectClass != EffectClass.None);
             AssertNoLeaks(result.Output);
         });
