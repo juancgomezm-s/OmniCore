@@ -389,6 +389,25 @@ nativos, procesos persistentes/ConPTY, paridad TUI restante y aceptaciones live/
 siguen abiertos. Los textos del formulario tienen catálogos es/en/fr/it según navegador; todavía no
 acreditan preferencia efectiva ni cambio en caliente. M8 permanece abierto para pruebas del usuario.
 
+#### Siguiente bloque nativo: selección de modelo y ruta por Session
+
+**En diseño; no construido.** Tras reparar los dos fallos de integración de
+`6953dde`, conectar la elección de modelos/rutas Core desde OmniCoder. La
+selección actual de `ModelPolicyService` pertenece al workspace; no debe
+reutilizarse como elección de una conversación. Hace falta binding canónico,
+durable y revisionado por Session, catálogo local acotado sin probes de red,
+comando humano firmado y consumo del binding en el Turn siguiente/reapertura.
+
+La selección no amplía el techo de seguridad, ni grants ni presupuestos. Las
+rutas fuera del snapshot autorizado mantienen consentimiento exacto; modificar
+el modelo no autoriza gasto por sí solo. El binding debe detectar cambios de
+identidad de ruta/configuración, rechazar revisiones obsoletas y respetar el
+modelo original de continuaciones/efectos pendientes. La prevalidación de
+adjuntos y la inferencia deben resolver el mismo modelo. OmniCoder conserva
+Pi separado y sólo presenta una elección como efectiva tras confirmación Core.
+Se requiere cobertura Host real y Electron; un catálogo o selector visual
+aislados no satisfacen el bloque.
+
 ## M10: v1, memoria completa y evaluación
 
 | Bloque restante | Construcción y base reutilizable | Presentación y aceptación |

@@ -3,9 +3,43 @@
 **Estado vigente (2026-10-17):** la reparación `91b07fb` aprobó su matriz completa
 Windows/Ubuntu, npm y paquetes Linux, según el checkpoint de este informe.
 La ampliación posterior de elecciones nativas y recuperación tiene
-[evidencia local propia](validation/m9-native-choices-recovery-20261017.md);
-su nueva CI de integración está pendiente. Los fallos siguientes son el
-diagnóstico histórico, no el estado actual de aquella reparación.
+[evidencia local propia](validation/m9-native-choices-recovery-20261017.md).
+Su integración `6953dde` falló en dos casos comunes de Windows/Ubuntu en
+[run 39090154269](https://github.com/juancgomezm-s/OmniCore/actions/runs/39090154269).
+La reparación se sigue en la sección siguiente. Los 121 fallos del bloque
+anterior son diagnóstico histórico, no el estado de esta integración.
+
+## Seguimiento de elecciones nativas: dos regresiones de integración
+
+La matriz sobre `6953dde` ejecutó 4880 casos por plataforma: Windows
+4869 PASS, 2 FAIL, 9 SKIP; Ubuntu 4856 PASS, 2 FAIL, 22 SKIP. La instalación
+npm de ambas plataformas y los paquetes Linux pasaron. Los fallos exactos son:
+
+- `CliEndToEndTests.Act_permission_ask_without_tty_stays_awaiting_input_without_inventing_answer`:
+  salida esperada 3 (`InputRequired`), real 1. El opt-in diferido nuevo se había
+  cableado sólo al stdio nativo; faltaba en los entrypoints confiables CLI/TUI.
+- `StdioTransportTests.Versioned_golden_frames_are_valid_and_match_the_capability_contract`:
+  el test confunde el ID lógico `interaction.respond.choice` con el wire name
+  `interaction.respond`. La nueva variante exige comprobar el binding completo.
+
+El consumidor OmniCoder `f737d1d` aprobó
+[su CI completa](https://github.com/juancgomezm-s/OmniCode/actions/runs/39090163680).
+Esto no convierte la CI fallida de Core en aprobada ni cierra M9.
+Logs completos descargados en `%TEMP%/m9-ci-39090154269/`.
+
+`f364a48` añade un parámetro explícito `allowDeferredPermission` (default false)
+a `ActAsync`. Sólo los entrypoints CLI/TUI optan por dejar el permiso sin
+respuesta; stdio conserva la negociación y el runtime genérico sigue Deny.
+No se emiten resolución, grant ni efecto al devolver `InputRequired`. La prueba
+CLI comprueba también ausencia de `PermissionGranted`; el test del catálogo
+valida wire name, variante y capability exactos, además de los IDs lógicos.
+
+Build del proyecto de tests y sus referencias Host/CLI: cero advertencias y
+errores, 1m24s. Foco serial: **5 PASS, 0 FAIL, 0 SKIP** (golden, CLI sin TTY,
+NoClient sin opt-in y Permission nativa allow_once/deny). No se repitió la suite
+completa local. Logs `%TEMP%/m9-ci39090154269-f364a48-testbuild-20261017.log`
+y `m9-ci39090154269-f364a48-focused-20261017.log`. La nueva matriz remota debe
+validar esta reparación; no se presenta aún como aprobada.
 
 ## Regresiones detectadas tras seguridad de Session (2026-10-17)
 

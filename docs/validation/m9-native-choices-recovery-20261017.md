@@ -1,8 +1,10 @@
 # M9: elecciones nativas y recuperación explícita
 
 Estado: construido y validado localmente en Core y OmniCoder para la Lane raíz.
-La CI de integración del cambio sigue pendiente. M9 y la aceptación manual de
-M8 permanecen abiertos.
+La CI de OmniCoder `f737d1d` aprobó; la de Core `6953dde` detectó dos fallos
+comunes Windows/Ubuntu, reparados en el foco local 5/5 según
+[seguimiento CI](../ci-failure-analysis.md); la nueva matriz remota queda pendiente.
+M9 y la aceptación manual de M8 permanecen abiertos.
 
 ## Alcance
 
