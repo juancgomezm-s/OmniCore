@@ -81,6 +81,49 @@ public sealed class SessionSkillActivationStore
         }
     }
 
+    public string Revision(SessionId session)
+    {
+        var activations = ReadDetailed(session).OrderBy(pair => pair.Key).ToArray();
+        var suppressions = ReadAutomaticSuppressions(session).OrderBy(item => item.Scope)
+            .ThenBy(item => item.SkillId, StringComparer.Ordinal).ThenBy(item => item.ManifestSha256, StringComparer.Ordinal)
+            .ThenBy(item => item.PackageContentSha256, StringComparer.Ordinal).ToArray();
+        var canonical = new StringBuilder("session-skill-state-v1\n")
+            .Append(session).Append('\n');
+        foreach (var pair in activations)
+            canonical.Append("active|").Append(pair.Key.Scope).Append('|')
+                .Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(pair.Key.Id))).Append('|')
+                .Append(pair.Value.ManifestSha256).Append('|').Append(pair.Value.PackageContentSha256).Append('|')
+                .Append(pair.Value.Origin).Append('\n');
+        foreach (var suppression in suppressions)
+            canonical.Append("suppressed|").Append(suppression.Scope).Append('|')
+                .Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(suppression.SkillId))).Append('|')
+                .Append(suppression.ManifestSha256).Append('|').Append(suppression.PackageContentSha256).Append('\n');
+        return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+            Encoding.UTF8.GetBytes(canonical.ToString())));
+    }
+
+    public IReadOnlyList<SkillAutomaticSuppression> ReadAutomaticSuppressions(SessionId session)
+    {
+        var path = SuppressionPathFor(session);
+        lock (Gate(path))
+        {
+            if (!File.Exists(path)) return [];
+            var result = new List<SkillAutomaticSuppression>();
+            foreach (var line in File.ReadAllLines(path, Encoding.UTF8))
+            {
+                var fields = line.Split('|');
+                if (fields.Length != 4 || !Enum.TryParse(fields[0], ignoreCase: false, out ScopeLevel scope)
+                    || !IsSupportedScope(scope) || !TryDecode(fields[1], out var id)
+                    || !IsSha256(fields[2]) || !IsSha256(fields[3]))
+                    throw new InvalidDataException("The Session skill suppression store is malformed.");
+                result.Add(new(scope, id, fields[2], fields[3]));
+            }
+            if (result.Distinct().Count() != result.Count)
+                throw new InvalidDataException("The Session skill suppression store contains duplicates.");
+            return result;
+        }
+    }
+
     public void Activate(SessionId session, string skillId, string manifestSha256)
         => Activate(session, ScopeLevel.Project, skillId, manifestSha256);
 
@@ -225,6 +268,9 @@ public sealed class SessionSkillActivationStore
 }
 
 public sealed record SkillActivationRecord(string ManifestSha256, string PackageContentSha256, string Origin = "User");
+
+public sealed record SkillAutomaticSuppression(ScopeLevel Scope, string SkillId,
+    string ManifestSha256, string PackageContentSha256);
 
 public sealed record SkillActivationIdentity(ScopeLevel Scope, string Id) : IComparable<SkillActivationIdentity>
 {

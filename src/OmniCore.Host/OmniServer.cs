@@ -903,10 +903,16 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         }
 
         if (commandName is "skills.activate" or "skills.release")
-            return ChangeSessionSkillActivation(command, commandName, fields, trustedUserAction, cancellationToken);
+        {
+            lock (_modeAuthorityMutationGate)
+                return ChangeSessionSkillActivation(command, commandName, fields, trustedUserAction, cancellationToken);
+        }
         if (commandName is "memory.session.add" or "memory.session.forget" or "memory.session.propose"
             or "memory.session.promote" or "memory.session.reject")
-            return ChangeSessionMemory(command, commandName, fields, trustedUserAction, cancellationToken);
+        {
+            lock (_modeAuthorityMutationGate)
+                return ChangeSessionMemory(command, commandName, fields, trustedUserAction, cancellationToken);
+        }
         if (commandName == "external.memory.consent")
         {
             if (!trustedUserAction)
@@ -2554,6 +2560,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         if (_lastSessionId is not { } session || _workspaceRoot is null)
             return new CommandAck(command.MessageId, "error", "An existing Session and Workspace are required.",
                 RuntimeCommandOutcome.Rejected());
+        var hasExpectedSession = fields.ContainsKey("expectedSessionId");
+        var hasExpectedRevision = fields.ContainsKey("expectedRevision");
+        if (hasExpectedRevision && !hasExpectedSession)
+            return new CommandAck(command.MessageId, "error", "sessionPreferences.error.trusted_action_required",
+                RuntimeCommandOutcome.Rejected());
         if (fields.TryGetValue("expectedSessionId", out var expectedSessionId)
             && !string.Equals(expectedSessionId, session.ToString(), StringComparison.Ordinal))
             return new CommandAck(command.MessageId, "error", "sessionPreferences.error.session_changed",
@@ -2562,11 +2573,25 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         {
             var store = new SessionMemoryStore(OmniHost.WorkspaceDataDirectory(_platformPathsFactory(), _workspaceRoot));
             IReadOnlyList<DomainEventPayload> ReadJournal() => _store.ReadFrom(session, 1).Select(_codecs.Decode).ToArray();
+            if (hasExpectedRevision)
+            {
+                var expectedRevision = fields.GetValueOrDefault("expectedRevision");
+                var currentJournal = ReadJournal();
+                var currentRecords = store.Read(MemoryScope.ForSession(session), cancellationToken);
+                var currentCandidates = SessionMemoryPolicy.ProjectForPresentation(currentJournal);
+                var currentRevision = ComputeSessionMemoryRevision(session, currentRecords, currentCandidates);
+                if (!IsSha256(expectedRevision) || !FixedHashEquals(expectedRevision!, currentRevision))
+                    return new CommandAck(command.MessageId, "error", "sessionPreferences.error.memory_changed",
+                        RuntimeCommandOutcome.Rejected());
+            }
             void Emit(DomainEventPayload payload) => new EventStream(_store, _codecs, session)
                 .Append(payload, DurabilityClass.Barrier);
             var memoryPolicy = new SessionMemoryPolicy(session, store, ReadJournal, Emit);
             if (commandName == "memory.session.forget")
             {
+                if (!CanMutateSessionPreference(session))
+                    return new CommandAck(command.MessageId, "busy", "sessionPreferences.error.execution_busy",
+                        RuntimeCommandOutcome.Deferred("session_preferences_busy"));
                 var id = fields.GetValueOrDefault("memoryId") ?? "";
                 var removed = memoryPolicy.Forget(id, cancellationToken);
                 return removed
@@ -2581,12 +2606,18 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                     throw new InvalidOperationException("sessionPreferences.error.memory_supersedes_host_only");
                 var pending = FindPendingMemoryPromotion(session, candidateId)
                     ?? throw new InvalidOperationException("sessionPreferences.error.memory_approval_not_pending");
+                if (!CanMutateSessionPreference(session))
+                    return new CommandAck(command.MessageId, "busy", "sessionPreferences.error.execution_busy",
+                        RuntimeCommandOutcome.Deferred("session_preferences_busy"));
                 var control = new RunControlService(_store, _codecs);
                 ApplyMemoryPromotionDecision(session, pending,
                     commandName == "memory.session.promote" ? "promote" : "reject", command.MessageId, control);
             }
             else
             {
+                if (!CanMutateSessionPreference(session))
+                    return new CommandAck(command.MessageId, "busy", "sessionPreferences.error.execution_busy",
+                        RuntimeCommandOutcome.Deferred("session_preferences_busy"));
                 var content = fields.GetValueOrDefault("content") ?? "";
                 if (content.Length > 2048 || string.IsNullOrWhiteSpace(content))
                     throw new ArgumentException("sessionPreferences.error.memory_invalid");
@@ -2601,11 +2632,63 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         }
     }
 
+    private static string ComputeSessionMemoryRevision(SessionId session,
+        IReadOnlyList<MemoryRecord> records, IReadOnlyList<MemoryCandidateView> candidates)
+    {
+        var canonical = new System.Text.StringBuilder("session-memory-state-v1\n");
+        static void Part(System.Text.StringBuilder target, string? value)
+        {
+            value ??= "";
+            target.Append(value.Length.ToString(CultureInfo.InvariantCulture)).Append(':').Append(value).Append('\n');
+        }
+        Part(canonical, session.ToString());
+        foreach (var record in records.OrderBy(item => item.Id, StringComparer.Ordinal))
+        {
+            Part(canonical, "record"); Part(canonical, record.Id); Part(canonical, record.Scope.Level.ToString());
+            Part(canonical, record.Scope.Id); Part(canonical, record.Kind.ToString()); Part(canonical, record.Content);
+            Part(canonical, record.Importance.ToString("R", CultureInfo.InvariantCulture));
+            Part(canonical, record.Confidence.ToString("R", CultureInfo.InvariantCulture));
+            Part(canonical, record.Source.ToString()); Part(canonical, record.CreatedAt.ToString("O", CultureInfo.InvariantCulture));
+            Part(canonical, record.LastUsedAt?.ToString("O", CultureInfo.InvariantCulture));
+            Part(canonical, record.Expiration.ToString()); Part(canonical, record.ExpiresAt?.ToString("O", CultureInfo.InvariantCulture));
+            Part(canonical, record.ExpireAfterUnusedDays?.ToString(CultureInfo.InvariantCulture)); Part(canonical, record.Supersedes);
+            foreach (var tag in record.Tags) Part(canonical, tag);
+            Part(canonical, "tags-end");
+            foreach (var evidence in record.EvidenceRefs) Part(canonical, evidence);
+            Part(canonical, "evidence-end");
+        }
+        foreach (var candidate in candidates.OrderBy(item => item.Id, StringComparer.Ordinal))
+        {
+            Part(canonical, "candidate"); Part(canonical, candidate.Id); Part(canonical, candidate.Kind.ToString());
+            Part(canonical, candidate.Content); Part(canonical, candidate.Origin); Part(canonical, candidate.Decision);
+            Part(canonical, candidate.Reason); Part(canonical, candidate.ConflictMemoryId);
+            Part(canonical, candidate.Occurrences.ToString(CultureInfo.InvariantCulture));
+            Part(canonical, candidate.ProposedAt.ToString("O", CultureInfo.InvariantCulture));
+        }
+        return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(canonical.ToString())));
+    }
+
+    private static bool IsSha256(string? value) => value is { Length: 64 } && value.All(Uri.IsHexDigit);
+
+    private bool CanMutateSessionPreference(SessionId session)
+    {
+        if (HasSessionSecurityInFlightAuthority(session)) return false;
+        var history = _store.ReadFrom(session, 1);
+        var activeRun = new RunControlService(_store, _codecs).ActiveRun(session);
+        return activeRun is null || !IsSessionTurnInFlight(history, activeRun);
+    }
+
     private CommandAck ChangeSessionSkillActivation(WireEnvelope command, string commandName,
         IReadOnlyDictionary<string, string> fields, bool trustedUserAction, CancellationToken cancellationToken)
     {
         if (_lastSessionId is not { } session)
             return new CommandAck(command.MessageId, "error", "An existing Session is required to activate a skill.",
+                RuntimeCommandOutcome.Rejected());
+        var hasExpectedSession = fields.ContainsKey("expectedSessionId");
+        var hasExpectedRevision = fields.ContainsKey("expectedRevision");
+        if (hasExpectedRevision && !hasExpectedSession)
+            return new CommandAck(command.MessageId, "error", "sessionPreferences.error.trusted_action_required",
                 RuntimeCommandOutcome.Rejected());
         var skillId = fields.GetValueOrDefault("skillId") ?? "";
         var scopeText = fields.GetValueOrDefault("scope") ?? ScopeLevel.Project.ToString();
@@ -2626,23 +2709,28 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             var paths = _platformPathsFactory();
             var workspaceRoot = _workspaceRoot;
             var trusted = workspaceRoot is not null && new WorkspaceTrustStore(paths).IsTrusted(workspaceRoot);
-            if (skillScope == ScopeLevel.Project && !trusted)
-                throw new InvalidOperationException("Trust the workspace before activating Project skills.");
             var workspaceData = workspaceRoot is null ? null : OmniHost.WorkspaceDataDirectory(paths, workspaceRoot);
             var store = new SessionSkillActivationStore(workspaceData ?? paths.DataDirectory);
-            var discovered = DiscoverAllSkillSources(paths, workspaceData, session, trusted, cancellationToken);
+            var expectedRevision = fields.GetValueOrDefault("expectedRevision");
+            if (hasExpectedRevision
+                && (!IsSha256(expectedRevision) || !FixedHashEquals(expectedRevision!, store.Revision(session))))
+                return new CommandAck(command.MessageId, "error", "sessionPreferences.error.selection_changed",
+                    RuntimeCommandOutcome.Rejected());
             if (commandName == "skills.release")
             {
-                if (fields.TryGetValue("expectedManifestSha256", out var expectedReleaseHash))
-                {
-                    var matching = discovered.Where(skill => skill.Scope == skillScope
-                        && string.Equals(skill.Manifest.Id, skillId, StringComparison.Ordinal)).ToArray();
-                    if (matching.Length != 1 || !FixedHashEquals(expectedReleaseHash, matching[0].ManifestSha256))
-                        return new CommandAck(command.MessageId, "error", "sessionPreferences.error.selection_changed",
-                            RuntimeCommandOutcome.Rejected());
-                }
+                if (!CanMutateSessionPreference(session))
+                    return new CommandAck(command.MessageId, "busy", "sessionPreferences.error.execution_busy",
+                        RuntimeCommandOutcome.Deferred("session_preferences_busy"));
                 var releaseIdentity = new SkillActivationIdentity(skillScope, skillId);
                 var prior = store.ReadDetailed(session).GetValueOrDefault(releaseIdentity);
+                if ((hasExpectedRevision && (!fields.ContainsKey("expectedActiveManifestSha256")
+                        || !fields.ContainsKey("expectedActivePackageContentSha256")))
+                    || (fields.TryGetValue("expectedActiveManifestSha256", out var expectedActiveManifest)
+                        && (prior is null || !FixedHashEquals(expectedActiveManifest, prior.ManifestSha256)
+                            || !fields.TryGetValue("expectedActivePackageContentSha256", out var expectedActivePackage)
+                            || !FixedHashEquals(expectedActivePackage, prior.PackageContentSha256))))
+                    return new CommandAck(command.MessageId, "error", "sessionPreferences.error.selection_changed",
+                        RuntimeCommandOutcome.Rejected());
                 var removed = store.Release(session, skillScope, skillId);
                 if (removed && prior is not null)
                 {
@@ -2667,6 +2755,12 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 return new CommandAck(command.MessageId, "ok", removed ? null : "Skill was not active.",
                     RuntimeCommandOutcome.Accepted());
             }
+            if (skillScope == ScopeLevel.Project && !trusted)
+                throw new InvalidOperationException("Trust the workspace before activating Project skills.");
+            if (!CanMutateSessionPreference(session))
+                return new CommandAck(command.MessageId, "busy", "sessionPreferences.error.execution_busy",
+                    RuntimeCommandOutcome.Deferred("session_preferences_busy"));
+            var discovered = DiscoverAllSkillSources(paths, workspaceData, session, trusted, cancellationToken);
             var loader = new SkillManifestLoader();
             var candidates = discovered.Where(skill => skill.Scope == skillScope
                 && string.Equals(skill.Manifest.Id, skillId, StringComparison.Ordinal)).ToArray();
@@ -2675,11 +2769,18 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 ?? throw new InvalidOperationException(candidates.Length == 0
                     ? "No eligible skill has that id in the selected scope."
                     : "Skill activation is ambiguous or shadowed by a sealed or more trusted source.");
-            if (fields.TryGetValue("expectedManifestSha256", out var expectedHash)
-                && !string.Equals(expectedHash, selected.ManifestSha256, StringComparison.Ordinal))
+            if (fields.ContainsKey("expectedRevision") || fields.ContainsKey("expectedManifestSha256"))
+                && (!fields.TryGetValue("expectedManifestSha256", out var expectedHash)
+                    || !string.Equals(expectedHash, selected.ManifestSha256, StringComparison.Ordinal)))
                 return new CommandAck(command.MessageId, "error", "sessionPreferences.error.selection_changed",
                     RuntimeCommandOutcome.Rejected());
             var loadedSkill = loader.Activate(selected); // Explicit activation validates the bounded package.
+            if (fields.ContainsKey("expectedRevision") || fields.ContainsKey("expectedPackageContentSha256"))
+                && (!fields.TryGetValue("expectedPackageContentSha256", out var expectedPackageHash)
+                    || !FixedHashEquals(expectedPackageHash,
+                        loadedSkill.PackageContentSha256 ?? loadedSkill.ContentSha256)))
+                return new CommandAck(command.MessageId, "error", "sessionPreferences.error.selection_changed",
+                    RuntimeCommandOutcome.Rejected());
             var activationIdentity = new SkillActivationIdentity(selected.Scope, selected.Manifest.Id!);
             var previous = store.ReadDetailed(session).GetValueOrDefault(activationIdentity);
             store.Activate(session, selected.Scope, selected.Manifest.Id!, selected.ManifestSha256,
@@ -3030,14 +3131,40 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             var discovered = DiscoverAllSkillSources(paths, workspaceData, _lastSessionId, trusted, cancellationToken);
             var active = _lastSessionId is { } session ? store.ReadDetailed(session)
                 : new Dictionary<SkillActivationIdentity, SkillActivationRecord>();
+            var loader = new SkillManifestLoader();
+            var packageHashes = new Dictionary<SkillActivationIdentity, string?>();
+            foreach (var skill in discovered)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var identity = new SkillActivationIdentity(skill.Scope, skill.Manifest.Id!);
+                if (skill.State is SkillLifecycleState.Conflict or SkillLifecycleState.Released
+                    || skill.Trust is TrustLevel.Untrusted or TrustLevel.ThirdParty)
+                {
+                    packageHashes[identity] = null;
+                    continue;
+                }
+                try
+                {
+                    var loaded = loader.Activate(skill);
+                    packageHashes[identity] = loaded.PackageContentSha256 ?? loaded.ContentSha256;
+                }
+                catch (Exception exception) when (exception is ArgumentException or InvalidOperationException
+                    or InvalidDataException or IOException or UnauthorizedAccessException)
+                {
+                    packageHashes[identity] = null;
+                }
+            }
             var entries = discovered.Select(skill =>
             {
                 var state = skill.State;
                 var diagnostic = skill.Diagnostic;
-                if (state != SkillLifecycleState.Conflict
-                    && active.TryGetValue(new SkillActivationIdentity(skill.Scope, skill.Manifest.Id!), out var hash))
+                var identity = new SkillActivationIdentity(skill.Scope, skill.Manifest.Id!);
+                var packageHash = packageHashes.GetValueOrDefault(identity);
+                if (state != SkillLifecycleState.Conflict && active.TryGetValue(identity, out var hash))
                 {
-                    if (string.Equals(hash.ManifestSha256, skill.ManifestSha256, StringComparison.Ordinal)) state = SkillLifecycleState.Activated;
+                    if (string.Equals(hash.ManifestSha256, skill.ManifestSha256, StringComparison.Ordinal)
+                        && packageHash is not null && FixedHashEquals(hash.PackageContentSha256, packageHash))
+                        state = SkillLifecycleState.Activated;
                     else
                     {
                         state = SkillLifecycleState.Released;
@@ -3059,6 +3186,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 JsonObj.Field("trust", skill.Trust.ToString()),
                 JsonObj.Field("state", state.ToString()),
                 JsonObj.Field("manifestSha256", skill.ManifestSha256),
+                packageHash is null ? "\"packageContentSha256\":null" : JsonObj.Field("packageContentSha256", packageHash),
                 skill.Manifest.Sealed ? "\"sealed\":true" : "\"sealed\":false",
                 "\"budgetTokens\":" + skill.Manifest.BudgetTokens.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 "\"tools\":[" + string.Join(",", (skill.Manifest.Tools ?? []).Select(value => "\"" + JsonObj.Escape(value) + "\"")) + "]",
@@ -3074,9 +3202,37 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 diagnostic is { } message ? JsonObj.Field("diagnostic", message) : "\"diagnostic\":null",
             }) + "}";
             });
+            var activations = active.OrderBy(pair => pair.Key).Select(pair =>
+            {
+                var current = discovered.SingleOrDefault(skill => skill.Scope == pair.Key.Scope
+                    && string.Equals(skill.Manifest.Id, pair.Key.Id, StringComparison.Ordinal));
+                var currentPackageHash = current is null ? null : packageHashes.GetValueOrDefault(pair.Key);
+                var sourceState = current is null ? "missing"
+                    : currentPackageHash is null ? "unavailable"
+                    : string.Equals(current.ManifestSha256, pair.Value.ManifestSha256, StringComparison.Ordinal)
+                        && FixedHashEquals(currentPackageHash, pair.Value.PackageContentSha256) ? "current" : "changed";
+                return "{" + string.Join(",", new[]
+                {
+                    JsonObj.Field("id", pair.Key.Id), JsonObj.Field("scope", pair.Key.Scope.ToString()),
+                    JsonObj.Field("manifestSha256", pair.Value.ManifestSha256),
+                    JsonObj.Field("packageContentSha256", pair.Value.PackageContentSha256),
+                    JsonObj.Field("origin", pair.Value.Origin), JsonObj.Field("sourceState", sourceState),
+                }) + "}";
+            });
+            var suppressions = _lastSessionId is { } suppressionSession
+                ? store.ReadAutomaticSuppressions(suppressionSession) : [];
             return new SessionQueryResult(name, "{\"workspaceTrusted\":" + (trusted ? "true" : "false")
                 + ",\"session\":" + (_lastSessionId is { } currentSession ? "\"" + JsonObj.Escape(currentSession.ToString()) + "\"" : "null")
-                + ",\"skills\":[" + string.Join(",", entries) + "]}");
+                + ",\"sessionId\":" + (_lastSessionId is { } nativeSession ? "\"" + JsonObj.Escape(nativeSession.ToString()) + "\"" : "null")
+                + ",\"activationRevision\":" + (_lastSessionId is { } revisionSession
+                    ? "\"" + store.Revision(revisionSession) + "\"" : "null")
+                + ",\"skills\":[" + string.Join(",", entries) + "]"
+                + ",\"activations\":[" + string.Join(",", activations) + "]"
+                + ",\"suppressions\":[" + string.Join(",", suppressions.Select(item => "{" + string.Join(",", new[]
+                {
+                    JsonObj.Field("id", item.SkillId), JsonObj.Field("scope", item.Scope.ToString()),
+                    JsonObj.Field("manifestSha256", item.ManifestSha256), JsonObj.Field("packageContentSha256", item.PackageContentSha256),
+                }) + "}")) + "]}");
         }
         if (name == "agent.sources")
         {
@@ -3113,12 +3269,13 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         if (name is "memory" or "memory.session")
         {
             if (_workspaceRoot is null || _lastSessionId is not { } session)
-            return new SessionQueryResult("memory.session", "{\"scope\":\"Session\",\"session\":null,\"records\":[],\"candidates\":[]}");
+            return new SessionQueryResult("memory.session", "{\"scope\":\"Session\",\"session\":null,\"sessionId\":null,\"revision\":null,\"records\":[],\"candidates\":[]}");
             var scope = MemoryScope.ForSession(session);
             var store = new SessionMemoryStore(OmniHost.WorkspaceDataDirectory(_platformPathsFactory(), _workspaceRoot));
             var records = store.Read(scope, cancellationToken);
             var journal = _store.ReadFrom(session, 1).Select(_codecs.Decode).ToArray();
             var candidates = SessionMemoryPolicy.ProjectForPresentation(journal);
+            var revision = ComputeSessionMemoryRevision(session, records, candidates);
             var entries = records.Select(record => "{" + string.Join(",", new[]
             {
                 JsonObj.Field("id", record.Id),
@@ -3141,7 +3298,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 JsonObj.Field("proposedAt", candidate.ProposedAt.ToString("O", CultureInfo.InvariantCulture)),
             }) + "}");
             return new SessionQueryResult("memory.session", "{\"scope\":\"Session\","
-                + JsonObj.Field("session", session.ToString()) + ",\"records\":[" + string.Join(",", entries)
+                + JsonObj.Field("session", session.ToString()) + "," + JsonObj.Field("sessionId", session.ToString())
+                + "," + JsonObj.Field("revision", revision)
+                + ",\"records\":[" + string.Join(",", entries)
                 + "],\"candidates\":[" + string.Join(",", candidateJson) + "]}");
         }
         if (name == "modePreference")

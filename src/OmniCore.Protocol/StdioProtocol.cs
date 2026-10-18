@@ -74,6 +74,13 @@ public static class StdioProtocol
         "command.session.security.default.set.user",
         "command.session.model.select.user",
         "command.session.model.route.respond.user",
+        "command.skills.activate.user",
+        "command.skills.release.user",
+        "command.memory.session.add.user",
+        "command.memory.session.propose.user",
+        "command.memory.session.forget.user",
+        "command.memory.session.promote.user",
+        "command.memory.session.reject.user",
         "command.run.interrupt.user",
         "command.run.cancel.user",
         "command.run.mode.select.user",
@@ -171,6 +178,8 @@ public static class StdioProtocol
     public static bool IsSupportedCommand(string name) => name is "sim" or "sim.resume" or "session.input"
         or "conversation.start" or "conversation.new" or "conversation.resume" or "conversation.rename" or "conversation.compact"
         or "session.security.set" or "session.security.default.set" or "session.model.select" or "session.model.route.respond"
+        or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
+        or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
         or "run.interrupt" or "run.cancel" or "run.mode.select"
         or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish"
         or "external.memory.consent" or "interaction.respond" or "interaction.continue";
@@ -194,6 +203,13 @@ public static class StdioProtocol
         new("session.security.default.set", "command.session.security.default.set.user", "native-confirmation+hmac+user-revision", "command.result.lookup", "Set the configured security ceiling for new Sessions"),
         new("session.model.select", "command.session.model.select.user", "native-confirmation+hmac+session+catalog+selection+routing+security-revision", "command.result.lookup", "Select an exact configured model route for the current Session"),
         new("session.model.route.respond", "command.session.model.route.respond.user", "native-confirmation+hmac+session-model-route-consent+revision+receipt", "command.result.lookup", "Accept or reject the exact pending Session model route consent"),
+        new("skills.activate", "command.skills.activate.user", "native-confirmation+hmac+session+activation-revision+manifest-package-cas+receipt", "command.result.lookup", "Activate the exact currently trusted skill package for this Session"),
+        new("skills.release", "command.skills.release.user", "native-confirmation+hmac+session+activation-revision+durable-activation-cas+receipt", "command.result.lookup", "Release this Session's exact durable skill activation, including missing or changed sources"),
+        new("memory.session.add", "command.memory.session.add.user", "native-confirmation+hmac+session+memory-revision+receipt", "command.result.lookup", "Add a user-authored memory candidate to the current Session"),
+        new("memory.session.propose", "command.memory.session.propose.user", "native-confirmation+hmac+session+memory-revision+receipt", "command.result.lookup", "Propose a user-authored memory candidate in the current Session"),
+        new("memory.session.forget", "command.memory.session.forget.user", "native-confirmation+hmac+session+memory-revision+receipt", "command.result.lookup", "Forget one exact memory record from the current Session"),
+        new("memory.session.promote", "command.memory.session.promote.user", "native-confirmation+hmac+session+memory-candidate+revision+interaction+receipt", "command.result.lookup", "Approve the canonical pending promotion for a Session memory candidate"),
+        new("memory.session.reject", "command.memory.session.reject.user", "native-confirmation+hmac+session+memory-candidate+revision+interaction+receipt", "command.result.lookup", "Reject one canonical pending Session memory candidate"),
         new("run.interrupt", "command.run.interrupt.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Interrupt the active Run"),
         new("run.cancel", "command.run.cancel.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Cancel the active Run"),
         new("run.mode.select", "command.run.mode.select.user", "native-confirmation+hmac+session-scope", "command.result.lookup", "Select the active Run mode"),

@@ -203,6 +203,8 @@ public static class StdioProtocolHost
                 var trustedOnly = commandName is "conversation.start" or "conversation.new" or "conversation.resume"
                     or "conversation.rename" or "conversation.compact" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
                     or "session.model.select" or "session.model.route.respond"
+                    or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
+                    or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
                     or "external.memory.consent" or "interaction.respond" or "interaction.continue"
                     or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish";
                 TrustedActionScope? trustedScope = null;
@@ -265,6 +267,8 @@ public static class StdioProtocolHost
                 if (trustedScope is not null && commandName is not ("session.input" or "conversation.start" or "conversation.new" or "conversation.resume"
                     or "conversation.rename" or "conversation.compact" or "session.security.set" or "session.security.default.set"
                     or "session.model.select" or "session.model.route.respond"
+                    or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
+                    or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
                     or "run.interrupt" or "run.cancel" or "run.mode.select" or "external.memory.consent" or "interaction.respond" or "interaction.continue" or "attachment.upload.begin"
                     or "attachment.upload.chunk" or "attachment.upload.finish"))
                     return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_action_not_supported",
@@ -542,6 +546,8 @@ public static class StdioProtocolHost
         if (commandName is not ("session.input" or "conversation.start" or "conversation.new" or "conversation.resume"
             or "conversation.rename" or "conversation.compact" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
             or "session.model.select" or "session.model.route.respond"
+            or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
+            or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
             or "external.memory.consent" or "interaction.respond" or "interaction.continue"
             or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish")) return false;
         if (commandName.StartsWith("attachment.upload.", StringComparison.Ordinal))
@@ -617,6 +623,55 @@ public static class StdioProtocolHost
                 || recoveryRevision.ValueKind != JsonValueKind.Number
                 || !recoveryRevision.TryGetInt64(out var recoveryPolicyRevision) || recoveryPolicyRevision < 1)
                 return false;
+            scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
+                CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
+            return true;
+        }
+        if (commandName is "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
+            or "memory.session.forget" or "memory.session.promote" or "memory.session.reject")
+        {
+            if (expectedSession.Value is null
+                || properties.Distinct(StringComparer.Ordinal).Count() != properties.Length
+                || !payload.RootElement.TryGetProperty("expectedSessionId", out var preferenceSession)
+                || preferenceSession.ValueKind != JsonValueKind.String || preferenceSession.GetString() != expectedSession.Value
+                || !payload.RootElement.TryGetProperty("expectedRevision", out var preferenceRevision)
+                || preferenceRevision.ValueKind != JsonValueKind.String || !IsSha256(preferenceRevision.GetString()))
+                return false;
+
+            bool Exact(params string[] expected) => properties.Length == expected.Length
+                && !properties.Except(expected, StringComparer.Ordinal).Any();
+            bool Text(string name, int maximum, bool allowEmpty = false) =>
+                payload.RootElement.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+                && value.GetString() is { } text && text.Length <= maximum && (allowEmpty || !string.IsNullOrWhiteSpace(text))
+                && !text.Any(char.IsControl);
+            bool Hash(string name) => payload.RootElement.TryGetProperty(name, out var value)
+                && value.ValueKind == JsonValueKind.String && IsSha256(value.GetString());
+
+            var valid = commandName switch
+            {
+                "skills.activate" => Exact("cmd", "skillId", "scope", "expectedSessionId", "expectedRevision",
+                        "expectedManifestSha256", "expectedPackageContentSha256")
+                    && Text("skillId", 128)
+                    && System.Text.RegularExpressions.Regex.IsMatch(payload.RootElement.GetProperty("skillId").GetString()!,
+                        "^[a-z0-9]+(?:[.-][a-z0-9]+)*$", System.Text.RegularExpressions.RegexOptions.CultureInvariant)
+                    && ValidSkillScope(payload.RootElement.GetProperty("scope"))
+                    && Hash("expectedManifestSha256") && Hash("expectedPackageContentSha256"),
+                "skills.release" => Exact("cmd", "skillId", "scope", "expectedSessionId", "expectedRevision",
+                        "expectedActiveManifestSha256", "expectedActivePackageContentSha256")
+                    && Text("skillId", 128)
+                    && System.Text.RegularExpressions.Regex.IsMatch(payload.RootElement.GetProperty("skillId").GetString()!,
+                        "^[a-z0-9]+(?:[.-][a-z0-9]+)*$", System.Text.RegularExpressions.RegexOptions.CultureInvariant)
+                    && ValidSkillScope(payload.RootElement.GetProperty("scope"))
+                    && Hash("expectedActiveManifestSha256") && Hash("expectedActivePackageContentSha256"),
+                "memory.session.add" or "memory.session.propose" => Exact("cmd", "expectedSessionId", "expectedRevision", "content")
+                    && Text("content", 2048),
+                "memory.session.forget" => Exact("cmd", "expectedSessionId", "expectedRevision", "memoryId")
+                    && Text("memoryId", 128),
+                "memory.session.promote" or "memory.session.reject" => Exact("cmd", "expectedSessionId", "expectedRevision", "candidateId")
+                    && Text("candidateId", 128),
+                _ => false,
+            };
+            if (!valid) return false;
             scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
                 CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
             return true;
@@ -817,6 +872,13 @@ public static class StdioProtocolHost
         return (string.Equals(element.GetString(), canonical, StringComparison.Ordinal) ? canonical : null,
             !string.Equals(element.GetString(), canonical, StringComparison.Ordinal));
     }
+
+    private static bool IsSha256(string? value) => value is { Length: 64 } && value.All(Uri.IsHexDigit);
+
+    private static bool ValidSkillScope(JsonElement element) => element.ValueKind == JsonValueKind.String
+        && Enum.TryParse<OmniCore.Domain.ScopeLevel>(element.GetString(), ignoreCase: false, out var scope)
+        && scope is OmniCore.Domain.ScopeLevel.BuiltIn or OmniCore.Domain.ScopeLevel.User
+            or OmniCore.Domain.ScopeLevel.Project or OmniCore.Domain.ScopeLevel.Workspace or OmniCore.Domain.ScopeLevel.Session;
 
     private static bool CanonicalPayloadSession(JsonElement root, string name) =>
         root.TryGetProperty(name, out var element) && element.ValueKind == JsonValueKind.String

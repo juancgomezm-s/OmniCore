@@ -7,7 +7,8 @@ using System.Text.Json;
 public sealed record SessionPreferencesData(string QueryName, string? SessionId, bool? WorkspaceTrusted,
     ContextSnapshotPresentation? Context, IReadOnlyList<ExtensionPresentation> Extensions,
     IReadOnlyList<SkillPresentation> Skills, IReadOnlyList<MemoryPresentation> Memory,
-    bool Available = true, IReadOnlyList<MemoryCandidatePresentation>? MemoryCandidates = null)
+    bool Available = true, IReadOnlyList<MemoryCandidatePresentation>? MemoryCandidates = null,
+    string? Revision = null, IReadOnlyList<SkillActivationPresentation>? SkillActivations = null)
 {
     public static SessionPreferencesData Unavailable(string queryName) =>
         new(queryName, null, null, null, [], [], [], Available: false);
@@ -34,7 +35,10 @@ public sealed record ExtensionPresentation(string Id, string DisplayName, string
 }
 
 public sealed record SkillPresentation(string Id, string DisplayName, string? Version, string Scope,
-    string Trust, string State, string ManifestSha256, bool Sealed, IReadOnlyList<string> Tools, bool ModelInvocable);
+    string Trust, string State, string ManifestSha256, bool Sealed, IReadOnlyList<string> Tools, bool ModelInvocable,
+    string? PackageContentSha256 = null);
+public sealed record SkillActivationPresentation(string Id, string Scope, string ManifestSha256,
+    string PackageContentSha256, string Origin, string SourceState);
 
 public sealed record MemoryPresentation(string Id, string Kind, string Content, string Source,
     double? Importance, double? Confidence, string? CreatedAt, IReadOnlyList<string> Tags);
@@ -59,12 +63,17 @@ public static class SessionPreferencesPresentation
                     && ValidObjectArray(root, "extensions") => new(queryName, session, trusted, null,
                     Array(root, "extensions").Select(DecodeExtension).ToArray(), [], []),
                 "skills" when ValidNullableString(root, "session") && IsBoolean(root, "workspaceTrusted")
-                    && ValidObjectArray(root, "skills") => new(queryName, session, trusted, null, [],
-                    Array(root, "skills").Select(DecodeSkill).Where(item => item is not null).Cast<SkillPresentation>().ToArray(), []),
+                    && ValidObjectArray(root, "skills") && OptionalNullableString(root, "activationRevision")
+                    && (!root.TryGetProperty("activations", out var activations) || activations.ValueKind == JsonValueKind.Array) => new(queryName, session, trusted, null, [],
+                    Array(root, "skills").Select(DecodeSkill).Where(item => item is not null).Cast<SkillPresentation>().ToArray(), [],
+                    Revision: String(root, "activationRevision"), SkillActivations: Array(root, "activations")
+                        .Select(DecodeSkillActivation).Where(item => item is not null).Cast<SkillActivationPresentation>().ToArray()),
                 "memory.session" when ValidNullableString(root, "session") && ValidObjectArray(root, "records")
+                    && OptionalNullableString(root, "revision")
                     && (!root.TryGetProperty("candidates", out var candidates) || candidates.ValueKind == JsonValueKind.Array) => new(queryName, session, trusted, null, [], [],
                     Array(root, "records").Select(DecodeMemory).Where(item => item is not null).Cast<MemoryPresentation>().ToArray(),
-                    MemoryCandidates: Array(root, "candidates").Select(DecodeCandidate).Where(item => item is not null).Cast<MemoryCandidatePresentation>().ToArray()),
+                    MemoryCandidates: Array(root, "candidates").Select(DecodeCandidate).Where(item => item is not null).Cast<MemoryCandidatePresentation>().ToArray(),
+                    Revision: String(root, "revision")),
                 _ => SessionPreferencesData.Unavailable(queryName),
             };
         }
@@ -91,6 +100,9 @@ public static class SessionPreferencesPresentation
 
     private static bool ValidNullableString(JsonElement element, string property) =>
         element.TryGetProperty(property, out var value) && value.ValueKind is JsonValueKind.Null or JsonValueKind.String;
+
+    private static bool OptionalNullableString(JsonElement element, string property) =>
+        !element.TryGetProperty(property, out var value) || value.ValueKind is JsonValueKind.Null or JsonValueKind.String;
 
     private static bool IsBoolean(JsonElement element, string property) =>
         element.TryGetProperty(property, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False;
@@ -132,7 +144,19 @@ public static class SessionPreferencesPresentation
         return new(id, String(item, "displayName") ?? id, String(item, "version"),
             String(item, "scope") ?? "Unknown", String(item, "trust") ?? "Unknown",
             String(item, "state") ?? "Unknown", String(item, "manifestSha256") ?? "", Boolean(item, "sealed") ?? false,
-            Strings(item, "tools"), Boolean(item, "modelInvocable") ?? false);
+            Strings(item, "tools"), Boolean(item, "modelInvocable") ?? false, String(item, "packageContentSha256"));
+    }
+
+    private static SkillActivationPresentation? DecodeSkillActivation(JsonElement item)
+    {
+        var id = String(item, "id");
+        var scope = String(item, "scope");
+        var manifest = String(item, "manifestSha256");
+        var package = String(item, "packageContentSha256");
+        if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(scope)
+            || string.IsNullOrWhiteSpace(manifest) || string.IsNullOrWhiteSpace(package)) return null;
+        return new(id, scope, manifest, package, String(item, "origin") ?? "Unknown",
+            String(item, "sourceState") ?? "unknown");
     }
 
     private static MemoryPresentation? DecodeMemory(JsonElement item)

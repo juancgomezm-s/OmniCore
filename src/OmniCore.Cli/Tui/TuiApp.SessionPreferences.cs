@@ -428,7 +428,8 @@ public sealed partial class TuiApp
     private void SendMemoryCandidate(SessionPreferencesData data, string command, MemoryCandidatePresentation candidate)
     {
         var payload = "{" + JsonObj.Field("cmd", command) + "," + JsonObj.Field("candidateId", candidate.Id)
-            + "," + JsonObj.Field("expectedSessionId", data.SessionId ?? "") + "}";
+            + "," + JsonObj.Field("expectedSessionId", data.SessionId ?? "")
+            + "," + JsonObj.Field("expectedRevision", data.Revision ?? "") + "}";
         SendSessionPreferencePayload(data, payload);
     }
 
@@ -438,7 +439,18 @@ public sealed partial class TuiApp
         var payload = "{" + JsonObj.Field("cmd", command) + "," + JsonObj.Field("skillId", skill.Id)
             + "," + JsonObj.Field("scope", skill.Scope)
             + "," + JsonObj.Field("expectedSessionId", data.SessionId ?? "")
-            + "," + JsonObj.Field("expectedManifestSha256", skill.ManifestSha256) + "}";
+            + "," + JsonObj.Field("expectedRevision", data.Revision ?? "");
+        if (activate)
+            payload += "," + JsonObj.Field("expectedManifestSha256", skill.ManifestSha256)
+                + "," + JsonObj.Field("expectedPackageContentSha256", skill.PackageContentSha256 ?? "");
+        else
+        {
+            var active = data.SkillActivations?.SingleOrDefault(item => item.Id == skill.Id && item.Scope == skill.Scope);
+            if (active is null) return;
+            payload += "," + JsonObj.Field("expectedActiveManifestSha256", active.ManifestSha256)
+                + "," + JsonObj.Field("expectedActivePackageContentSha256", active.PackageContentSha256);
+        }
+        payload += "}";
         SendSessionPreferencePayload(data, payload);
     }
 
@@ -462,7 +474,9 @@ public sealed partial class TuiApp
     private void SendSessionPreferenceCommand(SessionPreferencesData data, string command, string field, string value)
     {
         var payload = "{" + JsonObj.Field("cmd", command) + "," + JsonObj.Field(field, value)
-            + "," + JsonObj.Field("expectedSessionId", data.SessionId ?? "") + "}";
+            + "," + JsonObj.Field("expectedSessionId", data.SessionId ?? "")
+            + (command.StartsWith("memory.session.", StringComparison.Ordinal)
+                ? "," + JsonObj.Field("expectedRevision", data.Revision ?? "") : "") + "}";
         SendSessionPreferencePayload(data, payload);
     }
 
