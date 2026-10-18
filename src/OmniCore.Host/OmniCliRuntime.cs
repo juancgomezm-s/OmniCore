@@ -1580,11 +1580,11 @@ public sealed class OmniCliRuntime : IDisposable
         {
             var requestedBudget = new ReasoningRequest("budget", anthropicBudget);
             var fits = outputLimit is { } limit && (long)anthropicBudget + anthropicReserve <= limit;
-            return new ReasoningResolution(high, fits ? requestedBudget : null, ReasoningSelectionSource.UltraCode,
+            return new ReasoningResolution(requestedBudget, fits ? requestedBudget : null, ReasoningSelectionSource.UltraCode,
                 modeAuthorityRevision: authority.Revision, outputReserveTokens: anthropicReserve,
                 reductions: fits
-                    ? [ReasoningReduction.Capability]
-                    : [ReasoningReduction.Capability, ReasoningReduction.OutputReserve]);
+                    ? Array.Empty<ReasoningReduction>()
+                    : [ReasoningReduction.OutputReserve]);
         }
 
         if (protocol == ProviderFamily.OpenAIResponses && capability.Supported == true
