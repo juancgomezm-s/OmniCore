@@ -694,7 +694,8 @@ public sealed class OmniCliRuntime : IDisposable
         {
             try { _ = Server().ResolveSessionModelSelection(session); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException
-                or InvalidOperationException or ArgumentException or System.Text.Json.JsonException)
+                or InvalidOperationException or ArgumentException or System.Text.Json.JsonException
+                or System.Data.Common.DbException or ConfigValidationException)
             { return "session_model_route_unavailable"; }
         }
         if (attachments.Count == 0) return null;
