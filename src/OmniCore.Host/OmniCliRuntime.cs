@@ -1084,6 +1084,8 @@ public sealed class OmniCliRuntime : IDisposable
                 workflowVersion, payload.Arguments), invocationText,
                 diagnostics, cancellationToken, allowNativeWeakSandboxConsent: admitted.NativeWeakSandboxCapability,
                 weakSandboxContinuation: continuation).ConfigureAwait(false);
+            if (string.Equals(Environment.GetEnvironmentVariable("OMNICORE_WORKFLOW_TRACE"), "1", StringComparison.Ordinal))
+                diagnostics($"M9TRACE weak.workflow.exit.{exitCode}");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { exitCode = 130; }
         catch (Exception exception)
@@ -1384,20 +1386,33 @@ public sealed class OmniCliRuntime : IDisposable
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(diagnostics);
+        void WeakTrace(string marker)
+        {
+            if (weakSandboxContinuation is not null
+                && string.Equals(Environment.GetEnvironmentVariable("OMNICORE_WORKFLOW_TRACE"), "1", StringComparison.Ordinal))
+                diagnostics("M9TRACE " + marker);
+        }
         if (Interlocked.CompareExchange(ref _turnExecutionActive, 1, 0) != 0)
         {
+            WeakTrace("workflow.busy");
             diagnostics(Text(LocalizedText.Of("cli.runtime.workflow.busy")));
             return 1;
         }
         try
         {
+            WeakTrace("workflow.begin");
             var locale = UiLocaleCodes.NormalizeOrDefault(UiLocale);
             var server = Server();
             var authorization = server.AuthorizeWorkflowRequest(
                 new WorkflowRequested(new WorkflowRef(request.WorkflowId, request.Version), request.Arguments), commandId);
+            WeakTrace("workflow.authorized");
             server.EnsureWorkflowCompletionGate(authorization);
+            WeakTrace("workflow.gate.current");
+            WeakTrace("workflow.reconcile.begin");
             server.ReconcileWorkflowPlanProgress(authorization.Session, authorization.Run);
+            WeakTrace("workflow.reconcile.done");
             var context = server.ReadWorkflowContext(authorization);
+            WeakTrace("workflow.context.current");
             PlanItemId? previousPlanItem = null;
             long previousCompletionSequence = 0;
             var stages = Enum.GetValues<WorkflowStage>();
@@ -1410,6 +1425,7 @@ public sealed class OmniCliRuntime : IDisposable
                 var stageAuthorization = server.ForStage(authorization, stage, previousPlanItem,
                     previousCompletionSequence);
                 var found = server.FindWorkflowStage(stageAuthorization, stage);
+                WeakTrace($"stage.{stage}.found.{(found is null ? "no" : found.Value.Phase.ToString())}");
                 if (found is null)
                 {
                     var latestJournal = server.AcquireStore().ReadFrom(authorization.Session, 1);
@@ -1431,12 +1447,14 @@ public sealed class OmniCliRuntime : IDisposable
                     var ack = server.CreateWorkflowClient(stageAuthorization).Send(wire, token);
                     if (ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted)
                     {
+                        WeakTrace($"stage.{stage}.admission.{ack.Outcome?.Kind.ToString() ?? "none"}");
                         diagnostics(Text(Localized("cli.runtime.workflow.admission", ("reason",
                             ExternalDiagnostic(ack.Error is null ? ack.Outcome?.Reason
                                 ?? "authority, capacity, permission, route, or budget unavailable" : ResolveWire(ack.Error))))));
                         return 1;
                     }
                     found = server.FindWorkflowStage(stageAuthorization, stage);
+                    WeakTrace($"stage.{stage}.after-admission.{(found is null ? "no" : found.Value.Phase.ToString())}");
                     if (found is null) throw new InvalidDataException("Workflow admission returned without a durable Plan stage.");
                 }
 
@@ -1468,17 +1486,22 @@ public sealed class OmniCliRuntime : IDisposable
                 }
                 if (phase == PreM6RecordPhase.Created)
                 {
+                    WeakTrace($"stage.{stage}.dispatch.begin");
                     var code = await RunTurnAsync("", false, diagnostics, token,
                         delegationId: delegation.DelegationId,
                         allowNativeWeakSandboxConsent: allowNativeWeakSandboxConsent).ConfigureAwait(false);
+                    WeakTrace($"stage.{stage}.dispatch.exit.{code}");
                     if (code != 0) return code;
+                    WeakTrace($"stage.{stage}.reconcile-after-dispatch.begin");
                     server.ReconcileWorkflowPlanProgress(authorization.Session, authorization.Run);
+                    WeakTrace($"stage.{stage}.reconcile-after-dispatch.done");
                     found = server.FindWorkflowStage(stageAuthorization, stage);
                     if (found is null) throw new InvalidDataException("Workflow stage disappeared after dispatch.");
                     (planItem, delegation, phase) = found.Value;
                 }
                 if (phase == PreM6RecordPhase.Accepted)
                 {
+                    WeakTrace($"stage.{stage}.accepted-continuation.check");
                     if (weakSandboxContinuation is null || stage != WorkflowStage.Verify
                         || weakSandboxContinuation.TaskId != delegation.ChildTaskId.ToString()
                         || weakSandboxContinuation.LaneId != delegation.ChildLaneId.ToString())
@@ -1489,9 +1512,13 @@ public sealed class OmniCliRuntime : IDisposable
                     var continuationCode = await ContinueWeakSandboxDelegationAsync(
                         delegation.DelegationId.ToString(), diagnostics, token, weakSandboxContinuation)
                         .ConfigureAwait(false);
+                    WeakTrace($"stage.{stage}.weak-continuation.exit.{continuationCode}");
                     if (continuationCode != 0) return continuationCode;
+                    WeakTrace($"stage.{stage}.reconcile-after-continuation.begin");
                     server.ReconcileWorkflowPlanProgress(authorization.Session, authorization.Run);
+                    WeakTrace($"stage.{stage}.reconcile-after-continuation.done");
                     found = server.FindWorkflowStage(stageAuthorization, stage);
+                    WeakTrace($"stage.{stage}.after-continuation.{(found is null ? "no" : found.Value.Phase.ToString())}");
                     if (found is null) throw new InvalidDataException("Workflow Verify stage disappeared after its exact consent continuation.");
                     (planItem, delegation, phase) = found.Value;
                     if (phase == PreM6RecordPhase.Accepted)
@@ -1502,6 +1529,7 @@ public sealed class OmniCliRuntime : IDisposable
                 }
                 if (phase != PreM6RecordPhase.Returned)
                 {
+                    WeakTrace($"stage.{stage}.invalid-phase.{phase}");
                     diagnostics(Text(Localized("cli.runtime.workflow.invalid_phase", ("stage", WorkflowStageLabel(stage.ToString())),
                         ("phase", WorkflowPhaseLabel(phase.ToString())))));
                     return 1;
@@ -1515,9 +1543,14 @@ public sealed class OmniCliRuntime : IDisposable
                     diagnostics(Text(Localized("cli.runtime.workflow.binding_wait", ("stage", WorkflowStageLabel(stage.ToString())))));
                     return 3;
                 }
+                WeakTrace($"stage.{stage}.review-returned.begin.{phase}");
                 supervisor.ReviewReturnedResults(token, returnedExecution);
+                WeakTrace($"stage.{stage}.supervisor.reviewed");
+                WeakTrace($"stage.{stage}.reconcile-after-review.begin");
                 server.ReconcileWorkflowPlanProgress(authorization.Session, authorization.Run);
+                WeakTrace($"stage.{stage}.reconcile-after-review.done");
                 found = server.FindWorkflowStage(stageAuthorization, stage);
+                WeakTrace($"stage.{stage}.after-review.{(found is null ? "no" : found.Value.Phase.ToString())}");
                 if (found is null) throw new InvalidDataException("Workflow stage disappeared during supervision.");
                 (planItem, delegation, phase) = found.Value;
                 var own = server.AcquireStore().ReadFrom(authorization.Session, 1)
@@ -1528,12 +1561,14 @@ public sealed class OmniCliRuntime : IDisposable
                     .ToArray();
                 if (dispositions.Length == 0)
                 {
+                    WeakTrace($"stage.{stage}.disposition.none");
                     diagnostics(Text(Localized("cli.runtime.workflow.disposition_wait", ("stage", WorkflowStageLabel(stage.ToString())))));
                     return 3;
                 }
                 var disposition = dispositions[^1].Disposition;
                 if (disposition.Outcome != ResultDispositionOutcome.Accepted || planItem.State != PlanItemState.Completed)
                 {
+                    WeakTrace($"stage.{stage}.disposition.{disposition.Outcome}.plan.{planItem.State}");
                     diagnostics(Text(Localized("cli.runtime.workflow.disposition_failed", ("stage", WorkflowStageLabel(stage.ToString())),
                         ("outcome", DispositionLabel(disposition.Outcome.ToString())),
                         ("reason", ExternalDiagnostic(disposition.Reason)))));
@@ -1544,6 +1579,7 @@ public sealed class OmniCliRuntime : IDisposable
                     server.AcquireCodecs());
                 if (!evidence.Passed)
                 {
+                    WeakTrace($"stage.{stage}.evidence.failed");
                     server.RecordWorkflowGateEvidenceDebt(authorization, contract, contract.Execution!);
                     diagnostics(Text(Localized("cli.runtime.workflow.evidence_failed", ("stage", WorkflowStageLabel(stage.ToString())),
                         ("reason", ExternalDiagnostic(evidence.Reason)))));
@@ -1553,6 +1589,7 @@ public sealed class OmniCliRuntime : IDisposable
                     && !server.VerifyAcceptedImplementationBinding(contract, authorization.Session,
                         authorization.Run, own, token))
                 {
+                    WeakTrace("verify.binding.failed");
                     server.RecordWorkflowGateEvidenceDebt(authorization, contract, contract.Execution!);
                     diagnostics(Text(Localized("host.workflow.verify_binding", [])));
                     return 1;
@@ -1575,6 +1612,7 @@ public sealed class OmniCliRuntime : IDisposable
                     // preview of the completed Implement stage.
                     var verifyAuthorization = server.ForStage(authorization, WorkflowStage.Verify, planItem.Id);
                     var verifyStage = server.FindWorkflowStage(verifyAuthorization, WorkflowStage.Verify);
+                    WeakTrace($"implement.verify-stage.{(verifyStage is null ? "no" : verifyStage.Value.Phase.ToString())}");
                     var verifyBindingIsCurrent = false;
                     if (verifyStage is { } existingVerify
                         && existingVerify.Phase is PreM6RecordPhase.Accepted or PreM6RecordPhase.Returned)
@@ -1586,6 +1624,7 @@ public sealed class OmniCliRuntime : IDisposable
                             && existingVerify.Item.DependsOn[0] == planItem.Id
                             && server.VerifyAcceptedImplementationBinding(verifyContract, authorization.Session,
                                 authorization.Run, own, token);
+                        WeakTrace($"implement.verify-binding.{verifyBindingIsCurrent}");
                         if (!verifyBindingIsCurrent)
                         {
                             if (verifyExecution is { } execution)
@@ -1596,8 +1635,10 @@ public sealed class OmniCliRuntime : IDisposable
                     }
                     if (!verifyBindingIsCurrent)
                     {
+                        WeakTrace("implement.preview.begin");
                         var preview = await WorktreePreviewHost.PreviewAsync(_workspaceRoot,
                             implementationWorktree.OwnershipId, token).ConfigureAwait(false);
+                        WeakTrace($"implement.preview.exit.{preview.Succeeded}.{preview.ErrorCode ?? "none"}");
                         if (!preview.Succeeded)
                         {
                             diagnostics(Text(Localized("host.workflow.manual_recovery", [])));
@@ -1609,8 +1650,10 @@ public sealed class OmniCliRuntime : IDisposable
                 previousCompletionSequence = own.Single(evt => evt.TaskId == contract.Task
                     && server.AcquireCodecs().Decode(evt) is TaskCompleted).Sequence;
             }
+            WeakTrace("workflow.completion-gate.begin");
             BeforeWorkflowCompletionGateForTests?.Invoke(server, authorization);
             server.CompleteWorkflowCompletionGate(authorization);
+            WeakTrace("workflow.completion-gate.complete");
             diagnostics(Text(Localized("host.workflow.completed", [])));
             return 0;
         }
@@ -1622,6 +1665,7 @@ public sealed class OmniCliRuntime : IDisposable
         catch (Exception failure) when (failure is InvalidOperationException or InvalidDataException
             or ArgumentException or KeyNotFoundException)
         {
+            WeakTrace("workflow.exception." + failure.GetType().Name);
             diagnostics(Text(Localized("cli.runtime.workflow.stopped", ("diagnostic", ExternalDiagnostic(failure.Message)))));
             return 1;
         }
