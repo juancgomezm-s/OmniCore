@@ -548,7 +548,7 @@ public sealed partial class OmniServer
     {
         if (!TryReadNativeCommandPayload(invocation, out var admission, out var payloadJson)
             || !TryDecodeNativeCommandPayload(payloadJson, out var payload)) return false;
-        if (admission.Kind == "prompt" && payload.Kind == "prompt") return true;
+        if (admission.Kind is "prompt" or "compiledWorkflow") return admission.Kind == payload.Kind;
         if (admission.Kind != "forcedExtension" || admission.RunId is not { } run
             || payload.Kind != "forcedExtension" || payload.ForcedToolName is not { Length: > 0 } forcedToolName)
             return false;
@@ -559,9 +559,20 @@ public sealed partial class OmniServer
             && item.InvocationId == invocation && item.Kind == "forcedExtension");
         if (started is null) return false;
 
+        var runEvents = history.Where(evt => evt.RunId == run).ToArray();
+        var runProjection = RunProjection.Replay(admission.SessionId, run, _codecs, runEvents);
+        if (runProjection.RootTask is not { } rootTask) return false;
+        var rootLane = LaneProjection.Replay(_codecs, runEvents).ForTask(rootTask).SingleOrDefault()?.Id;
+        if (rootLane is null) return false;
+        var turnStarted = runEvents.FirstOrDefault(evt => evt.Sequence > started.Sequence
+            && evt.LaneId == rootLane && _codecs.Decode(evt) is TurnStarted turn
+            && turn.LaneId == rootLane);
+        if (turnStarted?.TurnId is not { } requiredTurn) return false;
+
         var requested = new HashSet<ToolCallId>();
         var succeeded = new HashSet<ToolCallId>();
-        foreach (var evt in history.Where(evt => evt.Sequence > started.Sequence && evt.RunId == run))
+        foreach (var evt in runEvents.Where(evt => evt.Sequence > turnStarted.Sequence
+            && evt.LaneId == rootLane && evt.TurnId == requiredTurn))
         {
             switch (_codecs.Decode(evt))
             {

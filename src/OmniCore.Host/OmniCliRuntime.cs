@@ -936,7 +936,8 @@ public sealed class OmniCliRuntime : IDisposable
                 && Guid.TryParseExact(completedInvocation, "D", out var completedGuid))
             {
                 var invocation = new CommandId(completedGuid);
-                if (server.NativeCommandRequiredEffectSucceeded(invocation))
+                if (admitted.NativeCommandKind != "forcedExtension"
+                    || server.NativeCommandRequiredEffectSucceeded(invocation))
                     server.FinishNativeCommand(invocation, "completed");
                 else
                 {
@@ -1045,7 +1046,7 @@ public sealed class OmniCliRuntime : IDisposable
         if (exitCode == 0)
         {
             var invocation = new CommandId(invocationGuid);
-            if (!server.NativeCommandRequiredEffectSucceeded(invocation))
+            if (payload.Kind == "forcedExtension" && !server.NativeCommandRequiredEffectSucceeded(invocation))
             {
                 server.FinishNativeCommand(invocation, "failed");
                 return 1;
