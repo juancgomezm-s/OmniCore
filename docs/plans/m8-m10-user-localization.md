@@ -8,10 +8,14 @@ Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petici�
 respuesta/reanudación de cuestionarios ya están cableados en Core y OmniCoder.
 OmniCoder `2b4c0d2` elimina el grant global redundante, conserva controles
 específicos y firma exacta, y tiene [CI completa aprobada](https://github.com/juancgomezm-s/OmniCode/actions/runs/39079686251).
-La suite completa de Core sobre `5c315ba` falló; su reparación y validación serial
-se siguen en [el informe de CI](../ci-failure-analysis.md) y
-[el acta M9-K](../validation/m9-block-k-20261017.md). K continúa abierto hasta
-SEC-CONV-01–13. En L siguen pendientes permisos/PlanApproval, modelos/rutas,
+La reparación de Core `91b07fb` ya tiene [CI completa aprobada](https://github.com/juancgomezm-s/OmniCore/actions/runs/39082408888)
+en Windows/Ubuntu, instalación npm y paquetes Linux; [el informe de CI](../ci-failure-analysis.md)
+y [el acta M9-K](../validation/m9-block-k-20261017.md) conservan evidencia y límites.
+K continúa abierto hasta SEC-CONV-01–13, definidos en el [plan de OmniCoder](https://github.com/juancgomezm-s/OmniCode/blob/2b4c0d24b3bd037c2bc7ecc824a9330bc0283ae6/PLAN_REALISTA.md#L3319).
+En L, Permission/PlanApproval y recuperación explícita de la Lane raíz están construidos y
+validados localmente en Core/SDK/Main/UI; [el acta](../validation/m9-native-choices-recovery-20261017.md)
+registra 18 casos Core, 18 unidades Coder y siete E2E únicos en focos separados. La CI de este
+cambio aún debe comprobarse; no se extrapola la matriz anterior. Siguen pendientes modelos/rutas,
 ejecución de comandos, activación de skills, mutadores de memoria y acciones
 tipadas de plan/lanes/worktrees. M (procesos persistentes/ConPTY) no está
 construido. También faltan adjuntos TUI en ACT, decodificación WebP completa y
@@ -377,7 +381,10 @@ scanner final 146/146/144 y `NO_ORPHANS`. Ver acta K para fallos detectados, cor
 La suite completa Core detectó 120 fallos comunes Windows/Linux más uno de ruta base en Linux;
 se repara por separado, sin extrapolar estos resultados focales.
 
-Esto no cierra SEC-CONV-01–13. Permisos/PlanApproval, modelos/rutas, commands/skills/memoria y otros mutadores
+La reparación posterior `91b07fb` ya tiene matriz Windows/Ubuntu, npm y paquetes Linux aprobada.
+El [slice de elecciones nativas](../validation/m9-native-choices-recovery-20261017.md) añade
+Permission/PlanApproval, recuperación explícita y resultados de denegación para la Lane raíz.
+Esto no cierra SEC-CONV-01–13. Modelos/rutas, commands/skills/memoria y otros mutadores
 nativos, procesos persistentes/ConPTY, paridad TUI restante y aceptaciones live/manual/plataformas
 siguen abiertos. Los textos del formulario tienen catálogos es/en/fr/it según navegador; todavía no
 acreditan preferencia efectiva ni cambio en caliente. M8 permanece abierto para pruebas del usuario.

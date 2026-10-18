@@ -1,5 +1,12 @@
 # Reparación y validación de CI/Linux de OmniCore
 
+**Estado vigente (2026-10-17):** la reparación `91b07fb` aprobó su matriz completa
+Windows/Ubuntu, npm y paquetes Linux, según el checkpoint de este informe.
+La ampliación posterior de elecciones nativas y recuperación tiene
+[evidencia local propia](validation/m9-native-choices-recovery-20261017.md);
+su nueva CI de integración está pendiente. Los fallos siguientes son el
+diagnóstico histórico, no el estado actual de aquella reparación.
+
 ## Regresiones detectadas tras seguridad de Session (2026-10-17)
 
 El run [39077479124](https://github.com/juancgomezm-s/OmniCore/actions/runs/39077479124),
@@ -126,6 +133,30 @@ OmniCoder `2b4c0d2` tiene CI completo aprobado en Windows/Ubuntu y package gate:
 [39079686251](https://github.com/juancgomezm-s/OmniCode/actions/runs/39079686251).
 Core necesita aún la nueva matriz CI serial sobre el checkpoint reparado; no se
 declara CI Core verde ni M9 cerrado con estos resultados focales.
+
+### Resultado remoto del checkpoint reparado
+
+La [CI 39082408888](https://github.com/juancgomezm-s/OmniCore/actions/runs/39082408888),
+sobre `91b07fb`, terminó **success** en los cinco jobs. Esta evidencia sustituye
+el estado pendiente de los párrafos anteriores para ese checkpoint:
+
+| Comprobación | Resultado |
+| --- | --- |
+| Suite completa Windows | 4862 casos: 4853 PASS, 0 FAIL, 9 SKIP; 32m52.184s |
+| Suite completa Ubuntu | 4862 casos: 4840 PASS, 0 FAIL, 22 SKIP; 11m34.333s |
+| Precheck Windows de recuperación/Git/aislamiento | 9 PASS, 0 FAIL, 0 SKIP |
+| Instalación y actualización npm Windows/Ubuntu | Ambos jobs PASS |
+| Paquetes Linux | PASS |
+
+Logs de suites descargados como `117541912666-job.log` (Windows) y
+`117541912830-job.log` (Ubuntu) en el mismo directorio de evidencia local anterior.
+En Ubuntu también se verificaron las líneas PASS de los cinco casos clave:
+dos ACT CLI, rework del gate configurado, skill que no sustituye Build/Test y
+admisión que distingue recuperación bloqueada de lease ocupada.
+Las omisiones no se cuentan como aceptación de proveedores/manual. Se cierran
+las regresiones de CI de este checkpoint, no M9: la construcción posterior de
+respuestas nativas Permission/PlanApproval y recuperación explícita requiere
+su propio build, pruebas e integración.
 
 ## Reparación focal de integración (2026-10-17)
 

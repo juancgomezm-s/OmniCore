@@ -65,11 +65,16 @@ proveedor del usuario ni cierra todos los escenarios SEC-CONV.
 
 La suite completa de Core sobre `5c315ba` detectó 121 fallos de 4860 casos en Ubuntu. El análisis y
 la reparación se siguen en [el informe de CI](../ci-failure-analysis.md). No se extrapolan los
-resultados focales a esa suite y K permanece abierto hasta corregir las regresiones y completar
-SEC-CONV-01–13.
+resultados focales a esa suite. La reparación publicada `91b07fb` ya tiene
+[CI completa aprobada](https://github.com/juancgomezm-s/OmniCore/actions/runs/39082408888):
+Windows 4853 PASS/9 SKIP, Ubuntu 4840 PASS/22 SKIP y cero fallos, además de instalación
+npm y paquetes Linux. K permanece abierto hasta completar SEC-CONV-01–13 y los
+consumidores pendientes; esa matriz no acredita cambios posteriores en construcción.
 
 La propiedad de Sessions importadas requiere un importador Core real; hasta entonces no se anuncia
-ruta de importación. El cuestionario sí tiene consumidor y validación integrada; permisos,
-PlanApproval, modelos/rutas y los demás mutadores de L siguen pendientes. M (ConPTY/procesos
+ruta de importación. El cuestionario, Permission y PlanApproval de la Lane raíz tienen consumidor
+y validación integrada; [el acta de elecciones](../validation/m9-native-choices-recovery-20261017.md)
+registra recuperación explícita, denegación en el contexto del modelo y sus límites. Modelos/rutas,
+acciones de Lanes hijas y los demás mutadores de L siguen pendientes. M (ConPTY/procesos
 persistentes) no está construido. La aceptación manual de M8 corresponde al usuario y permanece
 pendiente.
