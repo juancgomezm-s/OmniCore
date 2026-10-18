@@ -1146,7 +1146,10 @@ public sealed partial class OmniServer
             ? new TaskCancelled(scope.TaskId!) : new TaskFailed(scope.TaskId!, "Child execution failed"));
         if (!StateMachines.IsLaneTerminal(laneState)) childEvents.Add(cancelled
             ? new LaneCancelled(scope.LaneId!) : new LaneFailed(scope.LaneId!, "Child execution failed"));
-        var childScope = scope with { TurnId = null, ToolCallId = null };
+        // Keep the legacy failure event envelope unchanged. The native denied child carries
+        // the exact Turn/ToolCall only for its Turn-scoped terminal; execution/task/lane facts
+        // use the canonical child scope without those conversational IDs.
+        var childScope = deniedTurn is null ? scope : scope with { TurnId = null, ToolCallId = null };
         var batch = new List<DomainEventPayload>();
         if (deniedTurn is not null)
             batch.AddRange(childEvents.Where(evt => evt is TurnSteeringDropped or TurnAbandoned));
