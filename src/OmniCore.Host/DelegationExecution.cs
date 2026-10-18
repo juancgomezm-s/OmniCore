@@ -741,10 +741,15 @@ public sealed partial class OmniServer
                 || denialCause.CommandId.ToString() != continuation.ResponseCommandId
             : permissionDenials.Length != 0) return false;
 
-        var openToolCalls = scoped.Where(evt => evt.TaskId == delegation.ChildTaskId
-                && evt.LaneId == delegation.ChildLaneId && evt.TurnId == turn
-                && codecs.Decode(evt) is ToolCallRequested)
-            .Select(evt => evt.ToolCallId).Where(id => id is not null).Distinct().ToArray();
+        // A Verify stage may perform successful reads before asking for weak-sandbox consent.
+        // Count only canonical tool lifecycles that are still open in this exact child Turn and
+        // execution; historical ToolCallRequested events are not evidence of concurrent work.
+        var openToolCalls = callEvents.Where(item => item.Payload is ToolCallRequested)
+            .Select(item => ((ToolCallRequested)item.Payload).ToolCallId)
+            .Distinct()
+            .Where(callId => HasOpenToolCall(callEvents.Where(item => item.Event.ToolCallId == callId)
+                .Select(item => item.Event).ToArray()))
+            .ToArray();
         if (openToolCalls.Length != 1 || openToolCalls[0] != toolCall) return false;
 
         var responseReceipt = ReceiptStore?.ReadCommandReceipt(continuation.ResponseCommandId);
