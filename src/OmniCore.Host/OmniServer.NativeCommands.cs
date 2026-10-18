@@ -6,6 +6,7 @@ using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Engine;
 using OmniCore.Protocol;
+using OmniCore.Infrastructure;
 using System.Text.Json;
 
 public sealed partial class OmniServer
@@ -36,7 +37,7 @@ public sealed partial class OmniServer
             || !TryNativeNullableRevision(root, "expectedRoutingPolicyRevision", out var expectedRouting)
             || !WireString(root, "catalogRevision", out var expectedCatalog)
             || !WireString(root, "sourceFingerprint", out var expectedSource)
-            || !IsSha256(expectedCatalog) || !IsSha256(expectedSource))
+            || !NativeCommandIsSha256(expectedCatalog) || !NativeCommandIsSha256(expectedSource))
             return NativeCommandRejected(command.MessageId, "command.invalid_request");
 
         if (_lastSessionId != new SessionId(sessionGuid))
@@ -246,7 +247,7 @@ public sealed partial class OmniServer
     private static CommandAck NativeCommandRejected(string commandId, string reason) =>
         new(commandId, "error", reason, RuntimeCommandOutcome.Rejected());
 
-    private static bool IsSha256(string value) => value.Length == 64 && value.All(Uri.IsHexDigit);
+    private static bool NativeCommandIsSha256(string value) => value.Length == 64 && value.All(Uri.IsHexDigit);
 
     private static bool TryNativeNullableId(JsonElement root, string name, out RunId? run)
     {
