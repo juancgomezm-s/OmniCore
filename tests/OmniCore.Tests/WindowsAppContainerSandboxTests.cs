@@ -277,7 +277,7 @@ public sealed class WindowsAppContainerSandboxTests
         var selector = new PlatformSandboxProcessLauncher(runtime,
             new FixedCapabilitiesProbe(new SandboxCapabilities(false, true, true, "unavailable")),
             new FakeSandboxLauncher());
-        await Assert.ThrowsAsync<NotSupportedException>(async () =>
+        await Assert.ThrowsAsync<StrongSandboxUnavailableBeforeLaunchException>(async () =>
             await selector.StartAsync(Spec(SandboxStrength.Strong), CancellationToken.None));
         Assert.Equal(0, runtime.Starts);
     }
