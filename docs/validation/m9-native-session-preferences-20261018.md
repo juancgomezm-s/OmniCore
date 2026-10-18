@@ -3,6 +3,13 @@
 Estado: construido, cableado y validado localmente en Host y consumidor.
 M9 sigue abierto. M8 espera la aceptación manual del usuario.
 
+Publicado Core `38b81f4`, con [CI completa aprobada](https://github.com/juancgomezm-s/OmniCore/actions/runs/39108921103).
+OmniCoder se publicó en `a1f213a`; la reparación test-only `b2eced1` y su
+documentación quedaron en `c2c64a3`. Tests Windows/Ubuntu aprobaron allí; el
+package-gate falló en la cancelación Git histórica T11.6, después de generar y
+validar el paquete. La reparación se sigue en el informe CI y no modifica la
+evidencia local del recorrido de skills/memoria.
+
 ## Construcción
 
 Core `716bb37` + `6ba1e93` + `619353e` reutilizan los servicios de skills y

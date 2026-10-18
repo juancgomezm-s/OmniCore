@@ -31,6 +31,20 @@ existentes con HMAC, CAS y readback. Core aprobó 13 casos más uno de quiescenc
 Coder aprobó un foco SDK y una E2E real de activar/retirar contexto y resolver
 conflictos, con build app y procesos limpios. [Evidencia y límites](../validation/m9-native-session-preferences-20261018.md).
 `command.invoke` requiere un bloque separado de ejecución/continuación durable.
+Publicación Core `38b81f4` con [CI completa aprobada](https://github.com/juancgomezm-s/OmniCore/actions/runs/39108921103).
+El consumidor Coder `c2c64a3` pasó Windows/Ubuntu; su package-gate detectó el
+fallo de cancelación Git que se repara antes de la siguiente publicación.
+
+**Bloque de comandos, avance validado:** primer Explain y recuperación explícita
+previa al inicio están construidos y cableados desde OmniCoder al runtime Core
+([ADR-0059](../adr/0059-native-command-handoff.md)). Core fuente `37bdf4f`
+aprobó 2/2 casos seriales, Coder bundle `a8b9bd8` un E2E real 1/1 sin chat previo,
+misma Session/Run y cierre durable. Las pruebas encontraron y corrigieron
+capability incorrecta, rechazo HMAC sin Run y recreación legacy de Session/Run.
+[Evidencia y límites](../validation/m9-native-command-handoff-20261018.md).
+Extensión con efecto/Ask y acceso/continuación workflow todavía no están
+aceptados: OmniCoder aún no habilita Orchestrate y un workflow iniciado que
+espera no tiene continuación nativa. Publicación de este slice en preparación.
 
 **M9-F2 implementado e integrado; aceptación live sigue pendiente (2026-10-15):**
 incorpora imágenes generadas como salida del modelo, separa capacidades de

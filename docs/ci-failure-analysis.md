@@ -1,5 +1,22 @@
 # Reparación y validación de CI/Linux de OmniCore
 
+**Checkpoint vigente de publicación (2026-10-18):** Core `38b81f4` aprobó
+[la matriz completa 39108921103](https://github.com/juancgomezm-s/OmniCore/actions/runs/39108921103):
+tests Windows/Ubuntu, instalación npm Windows/Ubuntu y paquetes Linux. Incluye
+skills/memoria Session y la reparación EOL `eb03d4a` del test de modelos.
+Los fallos y checkpoints inferiores se conservan como historial; esta matriz
+no acredita las fuentes posteriores de comandos nativos todavía en validación.
+
+OmniCoder `c2c64a3` aprobó Windows/Ubuntu, pero su
+[package-gate 39109171682](https://github.com/juancgomezm-s/OmniCode/actions/runs/39109171682)
+falló durante la prueba T11.6 de cancelación Git, tras PACKAGE_OK, GATE_OK y
+NO_ORPHANS. Se diagnosticó el orden de terminación del wrapper/árbol Windows;
+el primer intento `7813b9e` expuso una regresión F17 (cancelación antes del
+evento spawn), corregida en `2cbb325`. Sin relajar assertions, F17 6/6,
+propagación 7/7 y T11.6 1/1 aprobaron localmente. Log:
+`%TEMP%/m9-command-git-refreeze-2cbb325-20261018.log`. La CI del siguiente
+consumidor sigue pendiente; no se presenta ese run fallido como aprobado.
+
 **Estado vigente (2026-10-17):** la reparación `91b07fb` aprobó su matriz completa
 Windows/Ubuntu, npm y paquetes Linux, según el checkpoint de este informe.
 La ampliación posterior de elecciones nativas y recuperación tiene
