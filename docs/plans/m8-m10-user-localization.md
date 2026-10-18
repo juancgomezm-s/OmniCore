@@ -2,7 +2,22 @@
 
 Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petición del usuario. Complementa la fuente de verdad [arquitectura §24](../architecture/arquitectura.md#24-roadmap-m1m10-fuente-de-verdad) y el [plan de preferencias e idiomas](preferences-and-localization.md). Define trabajo restante y aceptación; no declara construido lo que sólo tiene contrato o pantalla. La petición comprende traducciones y convenciones regionales de presentación.
 
-## Estado vigente (2026-10-15)
+## Estado vigente (2026-10-17)
+
+**Seguimiento de cierre M9 (2026-10-17):** el lifecycle de conversaciones y la
+respuesta/reanudación de cuestionarios ya están cableados en Core y OmniCoder.
+OmniCoder `2b4c0d2` elimina el grant global redundante, conserva controles
+específicos y firma exacta, y tiene [CI completa aprobada](https://github.com/juancgomezm-s/OmniCode/actions/runs/39079686251).
+La suite completa de Core sobre `5c315ba` falló; su reparación y validación serial
+se siguen en [el informe de CI](../ci-failure-analysis.md) y
+[el acta M9-K](../validation/m9-block-k-20261017.md). K continúa abierto hasta
+SEC-CONV-01–13. En L siguen pendientes permisos/PlanApproval, modelos/rutas,
+ejecución de comandos, activación de skills, mutadores de memoria y acciones
+tipadas de plan/lanes/worktrees. M (procesos persistentes/ConPTY) no está
+construido. También faltan adjuntos TUI en ACT, decodificación WebP completa y
+las aceptaciones de medios/idioma descritas en las actas. Estos pendientes tienen
+precedencia sobre los checkpoints históricos siguientes. M8 permanece abierto
+hasta las pruebas manuales del usuario.
 
 **M9-F2 implementado e integrado; aceptación live sigue pendiente (2026-10-15):**
 incorpora imágenes generadas como salida del modelo, separa capacidades de

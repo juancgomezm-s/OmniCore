@@ -30,8 +30,102 @@ La inspección inicial agrupa los fallos, sin presentarlos todavía como reparad
 Log completo descargado en el equipo de trabajo:
 `C:/Users/juanc/.codex/omnicode-ci-repair-20261013/117527528666-job.log`
 y `117527528701-job.log` en el mismo directorio.
-La reparación y su evidencia focal siguen pendientes; no se declara CI verde ni
-M9 cerrado por los resultados focales del checkpoint anterior.
+### Reparación y validación local
+
+`4b1091a` conserva el rechazo de journals sin Session canónica y distingue
+`session_security.recovery_blocked` (Rejected) de `session_writer_owned` (Deferred)
+en Host, stdio y el diagnóstico CLI/TUI. La prueba nueva comprueba ambos motivos
+y recuperación. Las fixtures declaran su Session y autorizan FullAgent sólo donde
+su escenario requiere delegación o escritura; la política de modelo se guarda
+antes del primer ModelStep. No se amplía el default de producción ni se restauran
+grants de lectura desde el journal.
+
+Build de solución `4b1091a`: **0 errores, 0 advertencias**, 1m37.06s,
+`%TEMP%\m9-core-4b1091ac-build.log`. El primer foco local de 28 clases dio
+228 casos: 214 PASS, 11 FAIL y 3 omitidos opt-in/live. **Esa invocación omitió
+`--parallel none`, presente en CI**; sus fixtures de entorno global podían competir.
+Se conserva el resultado como diagnóstico y no como equivalente a la matriz CI.
+Log: `%TEMP%\m9-core-4b1091ac-focused-tests.log`.
+
+`d051c128` aísla la configuración de plataforma de SessionInput y añade snapshots
+de seguridad desde la creación a fixtures nativas que no prueban migración.
+Repara también el setup de LiveMailbox: Session/modelo explícitos antes del Run.
+El foco de los 11 casos pendientes con `--parallel none` dio **9 PASS, 2 FAIL,
+0 omitidos**, 24.414s, en `%TEMP%\m9-core-d051c128-11-focus.log`.
+SessionInput pasa con aislamiento temporal y ejecución serial; no se atribuye
+su resultado anterior a una sola causa, pues cambiaron ambas condiciones.
+
+Los dos ACT restantes aplicaban el parche pero omitían gates de Session vigentes.
+El diagnóstico acotado (`8cf93f9`) comprobó `run.validation_rejected`, gates
+`post-edit-validation` y `plan`; no era un fallo de ejecución del tool.
+`4b35a0e` verifica ahora ese contrato: archivo modificado, barrera antes del efecto,
+evidencia real de fiabilidad, rechazo exacto de gates y ausencia de `RunCompleted`.
+No se desactiva la validación de Session para forzar un código de salida cero.
+La prueba del primer escenario se renombra para expresar el resultado bloqueado.
+El foco siguiente detectó 16 rechazos del mismo Run: el bucle ACT acotado repetía
+la propuesta de cierre aunque no había ningún validador admisible. No se cambió
+la aserción para aceptar esa repetición.
+
+El ajuste inicial `cf24851` conserva el rechazo durable y evita reenviar al
+modelo el mismo bloqueo externo cuando no encuentra una fuente de validación.
+Su detección incluía skills/hook como posibles sustitutos, supuesto corregido
+por la auditoría adicional descrita abajo. Este commit intermedio no acredita
+el cierre de esa auditoría.
+
+Build de solución `cf24851`: **0 errores, 0 advertencias**, 49.27s, log
+`%TEMP%\m9-core-cf248510-solution-build.log`. El foco serial de ACT, gates M3 y
+comandos de completion dio **28 PASS, 0 FAIL, 0 omitidos**, 17.169s, log
+`%TEMP%\m9-core-cf248510-act-gates-focus.log`. La prueba adicional por el loop
+real encontró un error de su propio setup: respondía `allow_once` al diálogo
+`WeakSandboxConsent`, que requiere `consent_once`. Se corrige la respuesta por
+tipo de interacción, sin cambiar seguridad de producción ni aceptar una
+denegación como validación exitosa.
+
+El caso adaptado en `46ceee8` pasa **1/1**, cero omisiones, por `RunActLoop`
+real con callback de disponibilidad `false`: el gate `git diff --check` falla,
+su salida llega al modelo, éste repara el archivo y el gate permite completar.
+Se comprueban un rechazo inicial, seis requests y `RunCompleted`. Es el mismo
+caso reforzado de la clase M3, no un caso único adicional a los 28 anteriores.
+Build de tests limpio y foco aislado en
+`%TEMP%\m9-core-cf248510-loopfixture-build4.log` y
+`%TEMP%\m9-core-cf248510-loopfixture-focused3.log`.
+
+La variante adicional sin Build/Test encontró el límite contractual real:
+`PostEditValidationConsumed`, su proyección y `RunCoupon` sólo aceptan `build`
+o `test` para consumir deuda de edición. Un skill validator aprobado es un
+gate adicional y no cubre esa deuda. Por ello se retira el callback de skills
+elegibles del ajuste inicial y se exige configurar Build/Test en el diagnóstico.
+No se cambia el evento, la proyección ni el criterio de cierre para hacer pasar
+la prueba. El caso incompatible se sustituye por una comprobación negativa:
+un skill real aprobado no permite completar sin el Build/Test obligatorio.
+
+El ajuste de producción final es `7c55714`; los tests se congelan en `069bc74`.
+El caso negativo conserva también el gate `plan`: el objetivo raíz no se cierra
+mientras falle validación. No se altera `RunCoupon` ni se amplía qué evidencia
+puede consumir `PostEditValidationConsumed`.
+
+Build final de solución: **0 errores, 0 advertencias**, 49.09s, log
+`%TEMP%\m9-core-7c557142-solution-build.log`. El foco serial de 29 casos dio
+**28 PASS, 1 FAIL, 0 omitidos**, en
+`%TEMP%\m9-core-7c557142-act-gates-focus29.log`. El único fallo fue la
+aserción del diagnóstico del caso nuevo: ese fixture no instala localizer y
+`LocalizedText.Render()` devuelve la clave estable, no la frase inglesa.
+Las comprobaciones de gates, deuda post-edición y archivo real ya pasaban.
+Se corrige únicamente la expectativa de presentación del test; no cambia
+la validación de producción.
+
+La expectativa corregida está en `ce83d56`. Build del proyecto de tests:
+**0 errores, 0 advertencias**, log
+`%TEMP%\m9-core-7c557142-skill-test-build.log`. Sólo se repitió el caso que
+había fallado: **1 PASS, 0 FAIL, 0 omitidos**, con `--parallel none`, log
+`%TEMP%\m9-core-7c557142-skill-test-focused.log`. Son 29 casos únicos del
+foco comprobados entre esas dos ejecuciones; no una única ejecución limpia
+de 29/29. No se repitieron los otros 28 casos verdes por un cambio de aserción.
+
+OmniCoder `2b4c0d2` tiene CI completo aprobado en Windows/Ubuntu y package gate:
+[39079686251](https://github.com/juancgomezm-s/OmniCode/actions/runs/39079686251).
+Core necesita aún la nueva matriz CI serial sobre el checkpoint reparado; no se
+declara CI Core verde ni M9 cerrado con estos resultados focales.
 
 ## Reparación focal de integración (2026-10-17)
 

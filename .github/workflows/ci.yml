@@ -44,7 +44,7 @@ jobs:
       - name: Windows crash recovery, Git, isolation and managed-server regression checks
         if: runner.os == 'Windows'
         shell: bash
-        run: dotnet test --project tests/OmniCore.Tests/OmniCore.Tests.csproj --no-build --no-restore --parallel none --output Detailed --no-progress --filter 'FullyQualifiedName~WindowsWalRecoveryTests|FullyQualifiedName~Unread_ack_reconnect_lookup_and_unknown_reservation|FullyQualifiedName~Crash_receipt_recovery_stress|FullyQualifiedName~Failing_test_gate_returns_output_feedback|FullyQualifiedName~Strong_process_reads_allowed_workspace_but_not_outside_file|FullyQualifiedName~Managed_fixture_accepts_authenticated_readiness|FullyQualifiedName~Managed_local_server_is_launched' < /dev/null
+        run: dotnet test --project tests/OmniCore.Tests/OmniCore.Tests.csproj --no-build --no-restore --parallel none --output Detailed --no-progress --filter 'FullyQualifiedName~WindowsWalRecoveryTests|FullyQualifiedName~Unread_ack_reconnect_lookup_and_unknown_reservation|FullyQualifiedName~Crash_receipt_recovery_stress|FullyQualifiedName~Configured_test_gate_reworks_in_act_loop_when_skill_validator_activation_is_unavailable|FullyQualifiedName~Strong_process_reads_allowed_workspace_but_not_outside_file|FullyQualifiedName~Managed_fixture_accepts_authenticated_readiness|FullyQualifiedName~Managed_local_server_is_launched' < /dev/null
       - name: All tests, including architecture and process recovery
         shell: bash
         run: dotnet test --solution OmniCore.slnx --no-build --no-restore --max-parallel-test-modules 1 --parallel none --output Detailed --no-progress < /dev/null

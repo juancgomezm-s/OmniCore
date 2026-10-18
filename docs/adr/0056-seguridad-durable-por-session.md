@@ -60,7 +60,7 @@ lifecycle. Pasaron el E2E real Electron→Host→fixture HTTP de dos Sessions y 
 cuestionario en el mismo Run, además de las pruebas focales registradas. La matriz de CI de ese
 checkpoint pasó en Windows/Ubuntu y su package gate. El checkpoint posterior `2b4c0d2` retira grants
 y confirmaciones redundantes con siete E2E únicos en focos separados y conservación del ACK
-probada; el acta K recoge la evidencia y su CI pendiente. Esto no acredita inferencia de un
+probada; el acta K recoge la evidencia y la CI completa aprobada. Esto no acredita inferencia de un
 proveedor del usuario ni cierra todos los escenarios SEC-CONV.
 
 La suite completa de Core sobre `5c315ba` detectó 121 fallos de 4860 casos en Ubuntu. El análisis y
