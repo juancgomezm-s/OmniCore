@@ -2742,8 +2742,8 @@ public sealed partial class CliEndToEndTests
             Assert.Equal("image/png", persisted.MediaType);
             Assert.Equal(attachment.Size, persisted.Size);
             var codecs = EventCodecs.Create();
-            var turnStarted = Assert.Single(ReadCurrentSessionJournalEvents(workspace)
-                .Where(evt => codecs.Decode(evt) is TurnStarted));
+            var turnStarted = Assert.Single(ReadCurrentSessionJournalEvents(workspace),
+                evt => codecs.Decode(evt) is TurnStarted);
             Assert.Equal<RunId?>(run.RunId, turnStarted.RunId);
             Assert.False(Assert.IsType<TurnStarted>(codecs.Decode(turnStarted))
                 .InstructionSnapshot!.ConversationOnly);
