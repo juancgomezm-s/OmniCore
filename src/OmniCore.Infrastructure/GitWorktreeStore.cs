@@ -1350,8 +1350,11 @@ public sealed partial class GitWorktreeStore
         if (environment is not null) foreach (var pair in environment) env[pair.Key] = pair.Value;
         try
         {
+            // The Host may own a persistent stdin pipe for its native protocol. Git must never
+            // inherit that pipe: commands without explicit input get a closed, redirected stdin;
+            // commands that intentionally consume input retain their supplied payload.
             var handle = _processes.Launch(new ProcessLaunch("git", args, workingDirectory, env, true)
-                { InitialStandardInput = standardInput }, cancellationToken);
+                { InitialStandardInput = standardInput ?? string.Empty }, cancellationToken);
             using var registration = cancellationToken.Register(() => CancelTree(handle));
             ProcessResult result;
             try

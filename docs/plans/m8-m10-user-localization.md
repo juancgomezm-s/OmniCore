@@ -49,6 +49,20 @@ del compositor y sus 2 variantes de proyección del Host. También pasan 70 prue
 de políticas/seguridad/presupuestos y 11 de evidencia de mutaciones, actualizadas
 para distinguir una edición normalizada de una creación o reemplazo amplio.
 
+La [CI de `69dd0c3`](https://github.com/juancgomezm-s/OmniCore/actions/runs/39507076923)
+aprobó la suite completa Linux (4.979 aprobadas, 26 omitidas, cero fallos), ambas
+instalaciones npm y el paquete Linux. Windows encontró cuatro variantes del mismo
+recorrido de aprobación de planes: el checkpoint posterior al Turn esperaba a Git,
+que heredaba la entrada persistente del Host. El repro dirigido pasó de agotar 20
+segundos a completar en 2,58 segundos al proporcionar y cerrar una entrada propia
+a Git. La corrección conserva la entrada explícita de los comandos que la necesitan,
+las capturas dentro del lease y la aprobación obligatoria.
+Build fresco sin advertencias/errores; las cuatro opciones de aprobación pasan en
+Windows y las seis pruebas de panel/snapshots/alternativas también aprueban.
+Aprueban además la inspección Git sin repositorio/HEAD y la captura de working tree
+que conserva índice real y excluye secretos ignorados. Son focos dirigidos, no una
+declaración de que se ejecutó nuevamente toda la clase de worktrees.
+
 **Integración y auditoría de herramientas (2026-10-19):** las ramas pendientes de
 OmniCore se consolidaron y publicaron en `main` con el merge `89ac853`, conservando
 recuperación de workflows, conversación original, selección de modelos/OpenRouter

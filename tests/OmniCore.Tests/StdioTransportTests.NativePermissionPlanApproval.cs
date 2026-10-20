@@ -725,7 +725,19 @@ public sealed partial class StdioTransportTests
                     })
                     .TakeLast(32);
                 var receipt = store.ReadCommandReceipt(start.MessageId);
-                var diagnostic = $"providerRequests={Provider.RequestCount}; startReceipt={receipt?.State}/{receipt?.OutcomeKind}/{receipt?.ExecutionState}/{receipt?.ExecutionCode}; events=[{string.Join(";", safeEvents)}]";
+                var projection = RunProjection.Replay(OmniCore.Domain.SessionId.Parse(scope.SessionId), run,
+                    codecs, store.ReadFrom(OmniCore.Domain.SessionId.Parse(scope.SessionId), 1));
+                var allRunEvents = store.ReadFrom(OmniCore.Domain.SessionId.Parse(scope.SessionId), 1)
+                    .Where(item => item.RunId == run).ToArray();
+                var runPayloads = allRunEvents.Select(item => codecs.Decode(item)).ToArray();
+                var rootLaneStates = projection.RootTask is { } rootTask
+                    ? string.Join(",", LaneProjection.Replay(codecs, allRunEvents).ForTask(rootTask)
+                        .Select(lane => lane.State)) : "none";
+                var proposalCalls = runPayloads.OfType<ToolCallRequested>()
+                    .Where(call => call.ToolName == "plan.propose").Select(call => call.ToolCallId).ToHashSet();
+                var acceptedProposals = runPayloads.OfType<ToolCallSucceeded>()
+                    .Count(call => proposalCalls.Contains(call.ToolCallId));
+                var diagnostic = $"providerRequests={Provider.RequestCount}; startReceipt={receipt?.State}/{receipt?.OutcomeKind}/{receipt?.ExecutionState}/{receipt?.ExecutionCode}; projection={projection.Mode}/{projection.State}; rootLanes={rootLaneStates}; acceptedProposals={acceptedProposals}; events=[{string.Join(";", safeEvents)}]";
                 throw new TimeoutException("The native Host did not persist the expected interaction choice. " + diagnostic);
             }
             finally { store.Close(); }
