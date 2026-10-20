@@ -97,6 +97,13 @@ if (args.Length == 3 && args[0] == "environment-probe")
 
 if (args.Length == 1 && args[0] == "stdin-state") return StandardInputProbe.Run();
 
+if (args.Length == 1 && args[0] == "stdin-eof")
+{
+    var input = Console.In.ReadToEnd();
+    Console.Write(input.Length == 0 ? "EOF" : "DATA");
+    return input.Length == 0 ? 0 : 29;
+}
+
 if (args.Length == 1 && args[0] is "mcp" or "mcp-error" or "mcp-stall")
 {
     var line = Console.ReadLine();

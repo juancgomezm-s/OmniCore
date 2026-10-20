@@ -63,6 +63,17 @@ Aprueban además la inspección Git sin repositorio/HEAD y la captura de working
 que conserva índice real y excluye secretos ignorados. Son focos dirigidos, no una
 declaración de que se ejecutó nuevamente toda la clase de worktrees.
 
+La [CI de `07641d5`](https://github.com/juancgomezm-s/OmniCore/actions/runs/39515291452)
+detectó una regresión Linux en 20 casos de worktrees: el runtime escribía un salto
+de línea incluso para entrada vacía, compitiendo con procesos Git de salida rápida.
+El ajuste posterior cierra directamente la entrada vacía como EOF y conserva el
+envío histórico de payloads no vacíos. Build Windows sin advertencias/errores;
+aprueban la nueva prueba de EOF/salida rápida, la compatibilidad de entrada
+explícita y las cuatro opciones de aprobación. En Linux WSL aprueban 64 pruebas
+reales de Git/worktrees/CLI y cuatro variantes de integración de lane/workflow.
+Son focos locales con Git y SDK Linux y ensamblados portables; el helper nativo de
+EOF se validó en Windows y la compilación/aceptación Linux completa permanece en CI.
+
 **Integración y auditoría de herramientas (2026-10-19):** las ramas pendientes de
 OmniCore se consolidaron y publicaron en `main` con el merge `89ac853`, conservando
 recuperación de workflows, conversación original, selección de modelos/OpenRouter
