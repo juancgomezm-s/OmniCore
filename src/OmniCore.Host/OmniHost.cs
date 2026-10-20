@@ -549,6 +549,9 @@ public sealed class OmniHost
 
     // Examples must not count as configured connections: doing so would disable
     // ConfigLoader's unconfigured local model before onboarding has registered one.
+    public static void InitializeUserConfigurationExamples() =>
+        InitializeUserConfigurationExamples(CreatePlatformPaths().ConfigDirectory);
+
     public static void InitializeUserConfigurationExamples(string configDirectory)
     {
         var providersPath = Path.Combine(configDirectory, "providers.example.yaml");

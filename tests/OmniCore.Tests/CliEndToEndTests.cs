@@ -227,8 +227,9 @@ public sealed partial class CliEndToEndTests
             Assert.Contains("activada", inspected.Output, StringComparison.OrdinalIgnoreCase);
             var result = await Run("ask", "read the approved and unapproved files");
             Assert.Equal(0, result.Code);
-            Assert.Contains("filesystem.read", requestBody!, StringComparison.Ordinal);
+            Assert.NotEqual("filesystem.read", DisclosedChatToolName(requestBody!, "filesystem.read"));
             var events = ReadCurrentSessionEvents(workspace);
+            Assert.Equal(2, events.OfType<ToolCallRequested>().Count(item => item.ToolName == "filesystem.read"));
             Assert.Contains(events.OfType<SkillActivationChanged>(), item => item.Activated);
             var activeFingerprint = Assert.Single(events.OfType<TurnStarted>().Last().Fingerprint!.Components,
                 item => item.Name == "skills.active");
@@ -245,7 +246,8 @@ public sealed partial class CliEndToEndTests
             string RecordAndCall(string request, string id, string path)
             {
                 requestBody = request;
-                return ToolCallResponse(id, "filesystem.read", System.Text.Json.JsonSerializer.Serialize(new { path }));
+                return ToolCallResponse(id, DisclosedChatToolName(request, "filesystem.read"),
+                    System.Text.Json.JsonSerializer.Serialize(new { path }));
             }
         });
     }
@@ -1820,7 +1822,7 @@ public sealed partial class CliEndToEndTests
             provider.RespondWith((index, body) =>
             {
                 request ??= body;
-                return index == 0 ? ToolCallResponse("recommend-mode", "mode.propose",
+                return index == 0 ? ToolCallResponse("recommend-mode", DisclosedChatToolName(body, "mode.propose"),
                     """{"mode":"orq","reason":"Independent review would help"}""")
                     : TextResponse("Recomiendo ORQ; seguimos en PLAN hasta que lo autorices.");
             });
@@ -1829,7 +1831,7 @@ public sealed partial class CliEndToEndTests
             Assert.Equal(0, await host.ExecuteAsync("¿Conviene otra forma de trabajo?", output.Add,
                 TestContext.Current.CancellationToken));
             Assert.Equal(2, provider.RequestCount);
-            Assert.Contains("mode.propose", request!);
+            Assert.NotEqual("mode.propose", DisclosedChatToolName(request!, "mode.propose"));
             var journal = ReadCurrentSessionJournalEvents(workspace);
             var codecs = EventCodecs.Create();
             var created = Assert.Single(journal.Select(codecs.Decode).OfType<RunCreated>());
@@ -3532,6 +3534,15 @@ public sealed partial class CliEndToEndTests
         if (process.ExitCode != 0)
             throw new InvalidOperationException("Git fixture setup failed: " + stderr.GetAwaiter().GetResult());
         _ = stdout.GetAwaiter().GetResult();
+    }
+
+    private static string DisclosedChatToolName(string request, string canonicalName)
+    {
+        var wireName = ToolNameWireMap.Create([canonicalName], 64).ToWire(canonicalName);
+        using var document = JsonDocument.Parse(request);
+        Assert.Contains(document.RootElement.GetProperty("tools").EnumerateArray(),
+            tool => tool.GetProperty("function").GetProperty("name").GetString() == wireName);
+        return wireName;
     }
 
     private static string ToolCallResponse(string id, string name, string arguments)
