@@ -126,6 +126,78 @@ public sealed class PriorReadEnforcementTests
         RmDir(ws);
     }
 
+    [Fact]
+    public void Partial_read_does_not_authorize_direct_patch_outside_emitted_range()
+    {
+        var ws = TempDir();
+        var original = string.Concat(Enumerable.Range(1, 20).Select(i => $"linea-{i}\n"));
+        var path = Path.Combine(ws, "doc.txt");
+        File.WriteAllText(path, original);
+        try
+        {
+            var boundary = new ModelCapabilityBoundary(PatchOnlyPolicy());
+            var executor = PatchPipeline(ws, boundary);
+            var firstPage = new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.read"), "pc-read",
+                "{\"path\":\"doc.txt\",\"offset\":1,\"limit\":2}");
+            Assert.True(executor.ExecuteToolWithoutJournal(firstPage, false,
+                TestContext.Current.CancellationToken).Succeeded);
+
+            var result = executor.ExecuteToolWithoutJournal(
+                PatchCall("doc.txt", VersionOf(original), "linea-18", "linea-18-X"), false,
+                TestContext.Current.CancellationToken);
+
+            Assert.False(result.Succeeded, result.Summary);
+            Assert.Contains("PRIOR_READ_REQUIRED", result.Summary);
+            Assert.Equal(original, File.ReadAllText(path));
+        }
+        finally { RmDir(ws); }
+    }
+
+    [Fact]
+    public void Require_prior_read_opt_out_still_allows_localized_write_normalization()
+    {
+        var ws = TempDir();
+        var original = "one\ntwo\nthree\n";
+        var path = Path.Combine(ws, "doc.txt");
+        File.WriteAllText(path, original);
+        try
+        {
+            var key = ModelPolicyKey.For("p", "m");
+            var mutation = new FileMutationPolicy(FileMutationMode.PatchAndCreate,
+                DestructiveActionPolicy.Deny, DestructiveActionPolicy.Deny, 4, 100, 1.0,
+                requirePriorRead: false, requireExpectedVersionToken: true,
+                requirePostEditValidation: false, allowParallelMutations: false);
+            var model = new UserModelPolicy(ModelPolicyCategory.Custom,
+                new ModelToolPolicy(ToolMode.Direct, 10, false, new HashSet<ModelToolCapability>
+                {
+                    ModelToolCapability.WorkspaceRead, ModelToolCapability.PatchExisting,
+                    ModelToolCapability.CreateFile, ModelToolCapability.ReplaceFile,
+                }), mutation, "test", null);
+            var effective = EffectiveModelPolicy.Resolve(key,
+                new StoredModelPolicy(key, 1, model, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch),
+                new HarnessPolicy(ToolCallFormat.Native, ToolMode.Direct, 10, GuidanceLevel.Full, 3,
+                    PlanControl.ModelDriven, 8));
+            var boundary = new ModelCapabilityBoundary(effective);
+            var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
+            var policy = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>
+            {
+                ["filesystem.write"] = PermissionDecision.Allow,
+                ["filesystem.patch"] = PermissionDecision.Allow,
+            });
+            var executor = ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(), policy, ws, boundary);
+            var desired = "one\ntwo-edited\nthree\n";
+
+            var result = executor.ExecuteToolWithoutJournal(
+                new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.write"), "write",
+                    System.Text.Json.JsonSerializer.Serialize(new { path = "doc.txt", content = desired,
+                        expectedVersion = VersionOf(original) })), false, TestContext.Current.CancellationToken);
+
+            Assert.True(result.Succeeded, result.Summary);
+            Assert.Equal(desired, File.ReadAllText(path));
+        }
+        finally { RmDir(ws); }
+    }
+
     // ============ 3. Read de otra ruta / read fallido => rechazo ============
 
     [Fact]

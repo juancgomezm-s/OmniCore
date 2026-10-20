@@ -2,7 +2,41 @@
 
 Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petición del usuario. Complementa la fuente de verdad [arquitectura §24](../architecture/arquitectura.md#24-roadmap-m1m10-fuente-de-verdad) y el [plan de preferencias e idiomas](preferences-and-localization.md). Define trabajo restante y aceptación; no declara construido lo que sólo tiene contrato o pantalla. La petición comprende traducciones y convenciones regionales de presentación.
 
-## Estado vigente (2026-10-19)
+## Estado vigente (2026-10-20)
+
+**Write existente → edición nativa (2026-10-20):** implementado en el pipeline
+compartido de herramientas y validado con fixtures offline. Conserva la solicitud y
+ToolCallId originales, combina permisos de write y de la edición efectiva en una
+sola aprobación, calcula el diff después del permiso y publica un solo efecto con
+un cargo agregado. PatchOnly puede editar mediante write sin adquirir capacidad
+de crear archivos. La lectura previa por defecto acredita intervalos realmente
+mostrados para la misma versión; varias páginas acumulan cobertura. Se conserva
+el opt-out explícito `RequirePriorRead=false`, sin relajar token, permisos ni
+presupuesto. El editor preserva identidad, encoding/BOM y contenido no modificado.
+
+El diff separa hunks con un algoritmo acotado a un millón de celdas; entradas
+mayores conservan las líneas iniciales/finales sin cambios y usan un span
+conservador entre ellas; pueden exigir lectura o presupuesto más amplios para
+cambios separados. No se promete diff mínimo universal. El consentimiento de una escritura
+normalizada con Ask es de una llamada; no crea automáticamente grants durables
+para dos identidades de herramienta. El historial durable de borrado/movimiento,
+recreación y la paridad con escritores de worktree/procesos o futuros wrappers
+dinámicos siguen pendientes en M9-L-MUT-01. No se introducen herramientas nuevas
+de borrado/movimiento ni una prohibición general de write.
+
+Evidencia: build de solución y build final de pruebas con cero advertencias/errores;
+103 casos dirigidos del constructor, 30 regresiones independientes de permisos,
+preimages/recibos/atribución y una integración completa modelo→Host→archivo
+aprobados. La revisión final añadió una regresión de archivo de 1.500 líneas con
+cupo de dos líneas cambiadas; ese caso y ocho recorridos relacionados aprobaron
+tras ajustar el fallback. No se suman repeticiones como casos nuevos ni se
+extrapola esta evidencia a inferencia live, clipboard físico o aceptación manual.
+
+La corrección de la CI anterior está publicada en `d8691aa`, conservando el nuevo
+commit de OmniCoder `8948557`: los tres fallos previos de ambos sistemas pasan en
+pruebas dirigidas, y las 27 pruebas de consultas/checkpoints también pasan. La
+[CI de ese checkpoint](https://github.com/juancgomezm-s/OmniCore/actions/runs/39502557009)
+conserva su resultado independiente del bloque de normalización posterior.
 
 **Integración y auditoría de herramientas (2026-10-19):** las ramas pendientes de
 OmniCore se consolidaron y publicaron en `main` con el merge `89ac853`, conservando
@@ -49,7 +83,7 @@ reabren capacidades ya integradas ni sustituyen estas aceptaciones:
 | Explain nativo y recuperación previa a inicio | Integrado, con CI aprobada en el checkpoint publicado | Conservar recibos, scope y recuperación explícita al ampliar comandos. |
 | Workflow Explore/Implement/Verify desde OmniCoder | Publicado en Core `c56123e`, Coder `2c31071`; bundle `1fb3639`. Reapertura con deny PASS 47.404 s y consentimiento único PASS 84.825 s; misma Session/Run, consultas pasivas, cero inicio tras deny y un único verificador exitoso tras consentir. Build 0W/0E, preflight 7/7, sin huérfanos. CI completa aprobada en ambos: cinco jobs Core y tres Coder | Conservar aceptación al ampliar comandos. La fixture local acredita cableado; inferencia live y los otros bloques M9 conservan su aceptación independiente. |
 | Extensiones con procesos escritores | Sin aceptación; falta atribución de mutaciones | Aislamiento, diff acotado, ledger/CAS durable y pruebas allow/deny con efecto real. No lo cubre el permiso del verificador. |
-| M9-L-MUT-01: normalización segura de write y borrado/recreación | Acordada con el usuario; pendiente de construir y cablear | Write existente → edición por diff; recreación → reemplazo contra preimagen durable. Sin prohibición global de write/borrado. Lectura del modelo, permisos, presupuesto y publicación aislada comunes a todas las vías; criterios debajo. |
+| M9-L-MUT-01: normalización segura de write y borrado/recreación | Normalización nativa construida/cableada y validada offline. Continuidad durable entre modalidades pendiente | Conservar lectura por cobertura, permisos y cargo único; construir recreación contra preimagen durable y control común de worktrees/procesos. Sin prohibición global de write/borrado; criterios debajo. |
 | Controladores de plan/lanes/worktrees y procesos persistentes/ConPTY | Pendientes | Construir consumidores y operaciones efectivas, sin confundir DTOs/catálogos con acciones disponibles. |
 | Adjuntos TUI en ACT | Publicados en main Core `330c51b`: producción `f2318d9`, tests `c75e50f`; cuatro focos únicos y frontera binaria CLI aprobados, build 0W/0E, sin huérfanos. Conserva autoridad/gates ACT y entrada canónica con objetivo+refs | CI posterior pendiente de comprobar; no se extrapola la de `c56123e`. Clipboard físico, aceptación manual y comprensión visual live conservan su evidencia pendiente en el acta M9-F. |
 | Paridad restante TUI/medios e idiomas | Parcial | WebP completo, preferencia efectiva/cambio de idioma y recorridos de aceptación pendientes en sus actas. |
@@ -62,7 +96,7 @@ usuario; este avance de M9 no lo cierra.
 
 ### M9-L-MUT-01 — normalización segura de escrituras y recreaciones
 
-**Alta por petición del usuario (2026-10-18), estado: pendiente de construcción.**
+**Alta por petición del usuario (2026-10-18), estado: implementación parcial nativa (2026-10-20).**
 Se incorpora al workflow de seguridad de mutaciones de M9-L, antes de aceptar
 procesos escritores generales. También aplica al cierre de las tools nativas y
 de `worktree.integrate`; no queda resuelto por habilitar una extensión o pasar CI.
@@ -85,7 +119,9 @@ Flujo de construcción y cableado:
 5. Cablear el mismo control en tools nativas, worktrees y procesos/delegados;
    mantener recibos/deduplicación y mensajes ES/EN/FR/IT en CLI/TUI/OmniCoder.
 
-Criterios de aceptación pendientes; cada uno debe demostrar efecto o rechazo real:
+Criterios del bloque completo; la normalización nativa descrita arriba cubre sólo
+las filas de edición/creación y sus controles, sin cerrar la continuidad durable
+de borrado/recreación entre canales. Cada criterio debe demostrar efecto o rechazo real:
 
 | Caso | Resultado exigido |
 |---|---|

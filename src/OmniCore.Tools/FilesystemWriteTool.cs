@@ -5,8 +5,8 @@ using OmniCore.Abstractions;
 using OmniCore.Domain;
 
 /// <summary>
-/// filesystem.write (M3 EPIC-021, ADR-0044 §5): escritura COMPLETA de un archivo dentro del
-/// workspace.
+/// filesystem.write accepts complete desired content and normalizes existing destinations to
+/// guarded edits (ADR-0044 §5.1). New destinations use the ordinary authorized create path.
 ///
 ///  - CREACIÓN: si el archivo no existe, lo crea (directorios padre incluidos) en UTF-8 sin
 ///    BOM. No exige token: no hay estado previo que verificar.
@@ -18,10 +18,9 @@ using OmniCore.Domain;
 /// Cuando el pipeline activa la política del modelo (registry por-Run cableado), aplica
 /// ADR-0044 §5 ANTES de escribir nada:
 ///
-///  - modo de mutación: el reemplazo exige <c>FileMutationMode.Full</c>; la creación exige al
-///    menos <c>PatchAndCreate</c> (la frontera de capacidad expone filesystem.write create-only
-///    en ese modo; esta verificación en la tool es defensa en profundidad porque aquí ya se
-///    sabe si el destino existe) → MUTATION_REFUSED;
+///  - effective capability: localized existing-file edits use PatchExisting, creation uses
+///    CreateFile, and a Full replacement still requires its effective ceiling. The complete
+///    diff is validated and charged once, independently of the payload's shape;
 ///  - límites por Turn: MaxFilesPerTurn y MaxChangedLinesPerTurn (líneas borradas +
 ///    insertadas acumuladas) → LIMIT_EXCEEDED;
 ///  - MaxRewriteRatio: fracción de las líneas ORIGINALES que esta operación reescribe;
@@ -30,9 +29,10 @@ using OmniCore.Domain;
 ///  - registra la validación post-edición pendiente si la política la exige
 ///    (<c>RequirePostEditValidation</c>).
 ///
-/// Escrito atómico (bloqueante 1 de auditoría, igual que filesystem.patch): temporal hermano
-/// con apertura EXCLUSIVA + FileOptions.WriteThrough y publicación vía reemplazo atómico. Los
-/// metadatos de reconciliación viajan en el <c>ToolCallStarted</c> (Barrier, ADR-0002 §2):
+/// Existing files use the shared patch editor and preserve their identity. A durable pre-image
+/// supports rollback/reconciliation; a process interruption can leave a Conflict, not an atomic
+/// rename. New files publish through a sibling temporary and an exclusive move. The
+/// reconciliation metadata travels in <c>ToolCallStarted</c> (Barrier, ADR-0002 §2):
 /// para una creación el pre-hash es el centinela <c>absent</c> (no hay estado previo), así un
 /// crash entre el Barrier y la publicación reconcilia Applied/NotApplied sin duplicar
 /// (ADR-0004 §4). La frontera de paths y los destinos de secretos se revalidan en Execute
@@ -49,7 +49,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         _boundary = boundary;
         _descriptor = new ToolDescriptor(
             new ToolId("filesystem.write"),
-            "Writes a complete file within the workspace: creates it if it does not exist, or replaces existing content after verifying expectedVersion. Use filesystem.patch for localized changes.",
+            "Creates a new workspace file or normalizes complete desired content into edits of an existing file. Existing files require expectedVersion and visible read coverage when prior reads are required; the complete diff obeys permissions and mutation limits.",
             new InputSchema("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"},\"expectedVersion\":{\"type\":[\"string\",\"null\"]}},\"required\":[\"path\",\"content\"]}"),
             new[] { "write" },
             readOnly: false,
@@ -61,6 +61,120 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
     }
 
     public ToolDescriptor Descriptor => _descriptor;
+
+    /// <summary>Runtime-only metadata classification, called after pure Prepare and before any
+    /// permission decision. This never reads file contents and never mutates the filesystem.</summary>
+    internal ToolIntent ClassifyTargetForAuthorization(ToolIntent intent, string workspaceRoot)
+    {
+        var (path, _, _) = ParseArguments(intent.NormalizedArgumentsJson);
+        if (string.IsNullOrWhiteSpace(path)) return intent;
+        var full = JoinPath(workspaceRoot, path);
+        if (!_boundary.IsWithin(full, workspaceRoot)) return intent;
+        var operation = File.Exists(full) ? ModelToolCapability.PatchExisting : ModelToolCapability.CreateFile;
+        return new ToolIntent(intent.ToolCallId, intent.ToolId, intent.NormalizedArgumentsJson,
+            intent.Effect, intent.Claims, intent.Risk, intent.Reconciliation, operation);
+    }
+
+    /// <summary>Permission identity for the effective patch delegated by an existing-file write.</summary>
+    internal static ToolIntent? EffectivePatchAuthorizationIntent(ToolIntent intent) =>
+        intent.ToolId.ToString() == "filesystem.write"
+        && intent.EffectiveMutationOperation == ModelToolCapability.PatchExisting
+            ? new ToolIntent(intent.ToolCallId, new ToolId("filesystem.patch"), intent.NormalizedArgumentsJson,
+                intent.Effect, intent.Claims, intent.Risk, null, ModelToolCapability.PatchExisting)
+            : null;
+
+    /// <summary>After the original permission has been resolved, inspect the existing file and
+    /// derive the capability required by the actual diff. This is read-only and occurs before
+    /// ToolCallStarted; stale targets stop before the effect barrier.</summary>
+    internal bool TryDetermineAuthorizedOperation(ToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken, out ModelToolCapability operation, out ToolErrorCode? error,
+        out string? reason)
+    {
+        operation = intent.EffectiveMutationOperation ?? ModelToolCapability.CreateFile;
+        error = null;
+        reason = null;
+        var (path, expectedVersion, desired) = ParseArguments(intent.NormalizedArgumentsJson);
+        if (string.IsNullOrWhiteSpace(path) || desired is null)
+        {
+            error = ToolErrorCode.InvalidArguments;
+            reason = "Write arguments changed before normalization.";
+            return false;
+        }
+        var full = JoinPath(context.WorkspaceRoot, path);
+        if (!_boundary.IsWithin(full, context.WorkspaceRoot)
+            || SecretPathGuard.IsSecretTarget(_boundary, full, context.WorkspaceRoot))
+        {
+            error = ToolErrorCode.PermissionDenied;
+            reason = "Write target is outside the authorized workspace or is protected.";
+            return false;
+        }
+        if (operation == ModelToolCapability.CreateFile)
+        {
+            if (File.Exists(full))
+            {
+                error = ToolErrorCode.StaleWrite;
+                reason = "The destination appeared after create authorization; reread it before editing.";
+                return false;
+            }
+            return true;
+        }
+        if (!File.Exists(full))
+        {
+            error = ToolErrorCode.StaleWrite;
+            reason = "The destination disappeared after edit authorization; it was not recreated.";
+            return false;
+        }
+        if (string.IsNullOrWhiteSpace(expectedVersion))
+        {
+            error = ToolErrorCode.InvalidArguments;
+            reason = "expectedVersion is required for an existing file.";
+            return false;
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        byte[] bytes;
+        FileVersion.DecodedFile decoded;
+        try
+        {
+            bytes = File.ReadAllBytes(full);
+            if (FileVersion.VersionToken(bytes) != expectedVersion)
+            {
+                error = ToolErrorCode.StaleWrite;
+                reason = FileVersion.StaleWriteMessage(FileVersion.VersionToken(bytes));
+                return false;
+            }
+            decoded = FileVersion.Decode(bytes);
+        }
+        catch (UnsupportedEncodingException ex)
+        {
+            error = ToolErrorCode.ToolFailure;
+            reason = ex.Message;
+            return false;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            error = ToolErrorCode.ToolFailure;
+            reason = "Could not inspect the authorized write target: " + ex.GetType().Name;
+            return false;
+        }
+
+        var hunks = FileVersion.CreateEditHunks(decoded.Text, desired);
+        operation = DetermineOperation(decoded.Text, hunks, context.ReadRegistry?.Ledger.MutationPolicy);
+        return true;
+    }
+
+    /// <summary>Recheck target identity before the durable start barrier. An appearance or
+    /// disappearance since authorization must not switch create/edit capabilities.</summary>
+    internal bool TargetMatchesAuthorizedClassification(ToolIntent intent, string workspaceRoot)
+    {
+        if (intent.EffectiveMutationOperation is not (ModelToolCapability.CreateFile
+            or ModelToolCapability.PatchExisting or ModelToolCapability.ReplaceFile)) return false;
+        var (path, _, _) = ParseArguments(intent.NormalizedArgumentsJson);
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        var full = JoinPath(workspaceRoot, path);
+        if (!_boundary.IsWithin(full, workspaceRoot)) return false;
+        var exists = File.Exists(full);
+        return intent.EffectiveMutationOperation == ModelToolCapability.CreateFile ? !exists : exists;
+    }
 
     public ToolPreparation Prepare(ValidatedToolCall call, ToolPreparationContext context)
     {
@@ -233,9 +347,20 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
 
         if (File.Exists(full))
         {
+            if (intent.Intent.EffectiveMutationOperation == ModelToolCapability.CreateFile)
+                return ToolResult.Error(ToolErrorCode.StaleWrite,
+                    "El destino apareció después de autorizar una creación; relee el archivo antes de editarlo.");
+            if (intent.Intent.EffectiveMutationOperation == ModelToolCapability.PatchExisting
+                && !File.Exists(full))
+                return ToolResult.Error(ToolErrorCode.StaleWrite,
+                    "El destino desapareció después de autorizar la edición; no se creó un archivo nuevo.");
             return await ReplaceFile(path, full, expectedVersion, content!, ledger, intent, context,
                 cancellationToken).ConfigureAwait(false);
         }
+
+        if (intent.Intent.EffectiveMutationOperation is ModelToolCapability.PatchExisting or ModelToolCapability.ReplaceFile)
+            return ToolResult.Error(ToolErrorCode.StaleWrite,
+                "El destino desapareció después de autorizar la edición; no se creó un archivo nuevo.");
 
         return await CreateFile(path, full, content!, ledger, intent, context, cancellationToken)
             .ConfigureAwait(false);
@@ -292,34 +417,48 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
             return ToolResult.Error(ToolErrorCode.ToolFailure, ex.Message);
         }
 
-        if (decoded.Text == content)
-        {
-            return ToolResult.Error(ToolErrorCode.InvalidArguments,
-                "El contenido es idéntico al actual: no hay cambio que aplicar (un reemplazo sin cambio no es un efecto válido)");
-        }
-
         if (content.Length == 0)
         {
             return ToolResult.Error(ToolErrorCode.InvalidArguments,
                 "No se permite vaciar un archivo existente con filesystem.write: conserva contenido o usa filesystem.patch");
         }
 
-        // Presupuesto de la política (ADR-0044 §5) ANTES de escribir nada: modo (el reemplazo
-        // completo exige Full), archivos/líneas por Turn y ratio de reescritura.
-        FileVersion.ChangedLines(decoded.Text, content, out var deleted, out var inserted);
-        var originalLines = FileVersion.CountLines(decoded.Text);
-        var refusal = ledger?.RefuseMutation(ModelToolCapability.ReplaceFile, path, targetExists: true,
-            deleted, inserted, originalLines);
-        if (refusal is not null)
-        {
-            return ToolResult.Error(refusal.Code, refusal.Message);
-        }
+        var hunks = FileVersion.CreateEditHunks(decoded.Text, content);
+        if (hunks.Count == 0)
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "El contenido es idéntico al actual: no hay cambio que aplicar.");
+        var operation = DetermineOperation(decoded.Text, hunks, ledger?.MutationPolicy);
+        var patch = new FilesystemPatchTool(_boundary);
+        var patchResult = await patch.ExecuteNormalizedWriteAsync(intent, context, path, expectedVersion, hunks,
+            operation, cancellationToken, TestFailureHook, TestAfterPublishHook).ConfigureAwait(false);
+        if (patchResult.IsError) return patchResult;
+        var afterState = patchResult.AfterStateBytes;
+        if (afterState is null) return patchResult;
+        var deletedLines = hunks.Sum(hunk => hunk.DeletedLines);
+        var insertedLines = hunks.Sum(hunk => hunk.InsertedLines);
+        var summary = "Archivo reemplazado: " + path + " (" + deletedLines + " líneas eliminadas, "
+            + insertedLines + " insertadas) [version:" + FileVersion.VersionToken(afterState) + "]";
+        return new ToolResult(summary, patchResult.Preview, patchResult.Artifact, patchResult.OriginalSize,
+            patchResult.WasExternalized, patchResult.EffectOutcome)
+        { AfterStateBytes = afterState };
+    }
 
-        var newBytes = FileVersion.Encode(content, decoded.Encoding);
-        return await Publish(path, full, newBytes, ledger, intent, context, created: false,
-            expectedVersion, deletedLines: deleted, insertedLines: inserted,
-            summaryPrefix: "Archivo reemplazado: " + path + " (" + originalLines + "→"
-                + FileVersion.CountLines(content) + " líneas)", cancellationToken, originalLines).ConfigureAwait(false);
+    private static ModelToolCapability DetermineOperation(string original,
+        IReadOnlyList<TextEditHunk> hunks, FileMutationPolicy? policy)
+    {
+        var originalLines = FileVersion.CountLines(original);
+        var deleted = hunks.Sum(hunk => hunk.DeletedLines);
+        var fullSpan = original.Length > 0 && hunks.Count == 1 && hunks[0].Offset == 0
+            && hunks[0].OldText.Length == original.Length;
+        var ratioRequiresReplace = policy is { Mode: FileMutationMode.Full, MaxRewriteRatio: < 1.0 }
+            && originalLines > 0 && deleted / (double)originalLines > policy.MaxRewriteRatio;
+        // In PatchAndCreate a whole-file-shaped payload can still be a diff whose effective
+        // capability is PatchExisting. The ledger applies the configured rewrite ratio to
+        // every hunk; only Full (or the legacy unbounded path) may classify a full-span edit as
+        // ReplaceFile.
+        var fullReplacementAuthorized = fullSpan && (policy is null || policy.Mode == FileMutationMode.Full);
+        return fullReplacementAuthorized || ratioRequiresReplace
+            ? ModelToolCapability.ReplaceFile : ModelToolCapability.PatchExisting;
     }
 
     /// <summary>CREACIÓN de un archivo nuevo (directorios padre incluidos), UTF-8 sin BOM.</summary>

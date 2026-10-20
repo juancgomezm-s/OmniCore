@@ -138,6 +138,28 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
     {
         cancellationToken.ThrowIfCancellationRequested();
         var (path, expectedVersion, oldText, newText) = ParseArguments(intent.Intent.NormalizedArgumentsJson);
+        return await ExecutePatchAsync(intent, context, path, expectedVersion, oldText, newText,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Runs the exact same guarded patch path for a filesystem.write request normalized
+    /// by ToolRuntime. The original authorized intent and CallId remain the causal identity.</summary>
+    internal Task<ToolResult> ExecuteNormalizedWriteAsync(AuthorizedToolIntent originalIntent,
+        ToolExecutionContext context, string path, string expectedVersion, IReadOnlyList<TextEditHunk> hunks,
+        ModelToolCapability operation, CancellationToken cancellationToken,
+        Action<string, string>? beforePublish = null, Action<string, string>? afterPublish = null) => ExecutePatchAsync(originalIntent,
+            context, path, expectedVersion, "", "", cancellationToken, operation,
+            normalizedWrite: true, exactOffset: 0, normalizedHunks: hunks,
+            beforePublish: beforePublish, afterPublish: afterPublish);
+
+    private async Task<ToolResult> ExecutePatchAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
+        string? path, string? expectedVersion, string? oldText, string? newText,
+        CancellationToken cancellationToken, ModelToolCapability operation = ModelToolCapability.PatchExisting,
+        bool normalizedWrite = false, int? exactOffset = null,
+        IReadOnlyList<TextEditHunk>? normalizedHunks = null,
+        Action<string, string>? beforePublish = null, Action<string, string>? afterPublish = null)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         if (path is null)
         {
             return ToolResult.Error(ToolErrorCode.InvalidArguments,
@@ -218,13 +240,13 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
 
         // Bloqueante 2: no se permite un oldText que sea el contenido completo del archivo, ni un
         // newText que vacíe el archivo (un parche localizado nunca sustituye el archivo completo).
-        if (oldText! == content)
+        if (!normalizedWrite && oldText! == content)
         {
             return ToolResult.Error(ToolErrorCode.InvalidArguments,
                 "oldText es el contenido completo del archivo: no se permite sustituir el archivo entero con un patch localizado");
         }
 
-        if (newText!.Length == 0)
+        if (!normalizedWrite && newText!.Length == 0)
         {
             return ToolResult.Error(ToolErrorCode.InvalidArguments,
                 "newText vacío: no se permite vaciar el archivo con un patch");
@@ -232,20 +254,57 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
 
         // Localización: oldText debe aparecer exactamente una vez. Cero ocurrencias → no se
         // aplica; varias → ambiguo, se rechaza para no pisar contenido no relacionado.
-        var first = content.IndexOf(oldText!, StringComparison.Ordinal);
+        var first = exactOffset ?? content.IndexOf(oldText!, StringComparison.Ordinal);
         if (first < 0)
         {
             return ToolResult.Error(ToolErrorCode.InvalidArguments,
                 "oldText no encontrado en el archivo: el patch no se aplicó");
         }
 
-        if (content.IndexOf(oldText!, first + oldText!.Length, StringComparison.Ordinal) >= 0)
+        if (exactOffset is null && !normalizedWrite
+            && content.IndexOf(oldText!, first + oldText!.Length, StringComparison.Ordinal) >= 0)
         {
             return ToolResult.Error(ToolErrorCode.InvalidArguments,
                 "oldText es ambiguo: aparece más de una vez en el archivo");
         }
 
-        var updated = content.Substring(0, first) + newText! + content.Substring(first + oldText!.Length);
+        // The version token proves identity, not that these characters were visible to the
+        // model. Direct patches and write→patch normalization both require continuous visible
+        // coverage of the exact changed span. Legacy explicit RecordRead(path, token) callers
+        // retain full-read semantics.
+        if (context.ReadRegistry is not null
+            && (context.ReadRegistry.Ledger.MutationPolicy?.RequirePriorRead ?? true)
+            && (operation == ModelToolCapability.ReplaceFile
+                ? !context.ReadRegistry.HasCompleteVisibleRead(path!, expectedVersion!)
+                : normalizedHunks is not null
+                    ? normalizedHunks.Any(hunk => !context.ReadRegistry.HasVisibleCoverage(path!, expectedVersion!,
+                        hunk.Offset, hunk.OldText.Length))
+                    : !context.ReadRegistry.HasVisibleCoverage(path!, expectedVersion!, first, oldText!.Length)))
+        {
+            context.ReadRegistry.Ledger.RecordTokenViolation(path!, ModelToolCapability.PatchExisting);
+            return ToolResult.Error(ToolErrorCode.PriorReadRequired,
+                "PRIOR_READ_REQUIRED: " + ToolArgumentDiagnostic.Invalid("tool.error.prior_read_coverage",
+                    ("path", path!)));
+        }
+
+        string updated;
+        if (normalizedHunks is null)
+        {
+            updated = content.Substring(0, first) + newText! + content.Substring(first + oldText!.Length);
+        }
+        else
+        {
+            updated = content;
+            foreach (var hunk in normalizedHunks.OrderByDescending(hunk => hunk.Offset))
+            {
+                if (hunk.Offset < 0 || hunk.Offset + hunk.OldText.Length > content.Length
+                    || !content.AsSpan(hunk.Offset, hunk.OldText.Length).SequenceEqual(hunk.OldText.AsSpan()))
+                    return ToolResult.Error(ToolErrorCode.StaleWrite,
+                        FileVersion.StaleWriteMessage(actualVersion));
+                updated = updated.Remove(hunk.Offset, hunk.OldText.Length)
+                    .Insert(hunk.Offset, hunk.NewText);
+            }
+        }
 
         // Sin reescritura completa: el resultado difiere solo en el rango del parche y conserva
         // el contenido no relacionado. No se aplica si el resultado coincide con el contenido
@@ -260,9 +319,21 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         // modo de mutación, MaxFilesPerTurn y MaxChangedLinesPerTurn (por Turn) y
         // MaxRewriteRatio (por operación, sobre las líneas originales que no sobreviven). Sin
         // política activa (frontera sin cablear) esta capa no restringe: manda el techo.
-        FileVersion.ChangedLines(content, updated, out var deletedLines, out var insertedLines);
+        var deletedLines = 0;
+        var insertedLines = 0;
+        if (normalizedHunks is not null)
+        {
+            deletedLines = normalizedHunks.Sum(hunk => hunk.DeletedLines);
+            insertedLines = normalizedHunks.Sum(hunk => hunk.InsertedLines);
+        }
+        else
+        {
+            var actualHunks = FileVersion.CreateEditHunks(content, updated);
+            deletedLines = actualHunks.Sum(hunk => hunk.DeletedLines);
+            insertedLines = actualHunks.Sum(hunk => hunk.InsertedLines);
+        }
         var refusal = context.ReadRegistry?.Ledger.RefuseMutation(
-            ModelToolCapability.PatchExisting, path!, targetExists: true,
+            operation, path!, targetExists: true,
             deletedLines, insertedLines, FileVersion.CountLines(content));
         if (refusal is not null)
         {
@@ -309,6 +380,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
             // Costura de test: permite mutar el destino después de la comprobación inicial y
             // antes de la comparación final protegida (o cancelar antes del commit).
             TestFailureHook?.Invoke(tempPath, full);
+            beforePublish?.Invoke(tempPath, full);
 
             using (FilePublishLock.Acquire(full, cancellationToken))
             {
@@ -387,6 +459,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
                     }
                 }
                 TestAfterPublishHook?.Invoke(tempPath, full);
+                afterPublish?.Invoke(tempPath, full);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -426,7 +499,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         // Contabiliza SOLO tras el efecto durable (y registra la validación post-edición si la
         // política la exige, ADR-0044 §5).
         context.ReadRegistry?.Ledger.RecordMutation(path!, deletedLines, insertedLines,
-            intent.Intent.ToolCallId, ModelToolCapability.PatchExisting, FileVersion.CountLines(content),
+            intent.Intent.ToolCallId, operation, FileVersion.CountLines(content),
             context.EmitEvent);
 
         return new ToolResult(summary, null, null, updated.Length, false, EffectOutcome.Applied)

@@ -369,8 +369,13 @@ public sealed class ToolIntent
 
     public ReconciliationSpec? Reconciliation { get; }
 
+    /// <summary>Optional runtime-derived operation used only while authorizing a normalized
+    /// existing-file write. It is never accepted from model arguments.</summary>
+    public ModelToolCapability? EffectiveMutationOperation { get; }
+
     public ToolIntent(ToolCallId toolCallId, ToolId toolId, string normalizedArgumentsJson, EffectClass effect,
-        ResourceClaims claims, ToolRisk risk, ReconciliationSpec? reconciliation)
+        ResourceClaims claims, ToolRisk risk, ReconciliationSpec? reconciliation,
+        ModelToolCapability? effectiveMutationOperation = null)
     {
         ToolCallId = toolCallId;
         ToolId = toolId;
@@ -379,6 +384,7 @@ public sealed class ToolIntent
         Claims = claims;
         Risk = risk;
         Reconciliation = reconciliation;
+        EffectiveMutationOperation = effectiveMutationOperation;
     }
 }
 

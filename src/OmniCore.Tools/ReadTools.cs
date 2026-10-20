@@ -118,6 +118,7 @@ public sealed class ReadFileTool : ITool
         var lineRanges = GetLineRanges(decoded.Text);
         var start = Math.Min(offset - 1, lineRanges.Count);
         var pageCount = Math.Min(limit, lineRanges.Count - start);
+        var pageStart = pageCount == 0 ? decoded.Text.Length : lineRanges[start].Start;
         var page = pageCount == 0 ? "" : decoded.Text.Substring(lineRanges[start].Start,
             lineRanges[start + pageCount - 1].End - lineRanges[start].Start);
         var content = page;
@@ -142,7 +143,10 @@ public sealed class ReadFileTool : ITool
         // registrar y el comportamiento de M2 se conserva.
         if (context.ReadRegistry is not null)
         {
-            context.ReadRegistry!.RecordRead(path, version);
+            var completeRead = pageStart == 0 && content.Length == decoded.Text.Length
+                && !contentTruncated && !hasMore;
+            context.ReadRegistry.RecordRead(path, version, pageStart, content.Length, decoded.Text.Length,
+                completeRead);
         }
 
         return System.Threading.Tasks.Task.FromResult(new ToolResult(

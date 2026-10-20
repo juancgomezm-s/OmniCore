@@ -182,6 +182,13 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
                 "tool sin clasificar en la política de capacidad: " + toolName, null);
         }
 
+        // ToolRuntime attaches this non-model-supplied classification only to a prepared
+        // filesystem.write intent after checking target metadata. The policy ceiling follows
+        // the effective operation (create, localized edit, or full replacement), not payload
+        // shape. Namespaced extension tools cannot claim this core identity.
+        if (toolName == "filesystem.write" && intent.EffectiveMutationOperation is { } effectiveOperation)
+            capability = effectiveOperation;
+
         if (toolName == "worktree.integrate")
         {
             // A batch may create, replace, or delete depending on the immutable proposal.
@@ -203,7 +210,8 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
 
         // Legacy replacement-classified integrations retain their historical mode mapping.
         // filesystem.write is independently classified CreateFile and cannot replace files.
-        if (capability == ModelToolCapability.ReplaceFile)
+        if (capability == ModelToolCapability.ReplaceFile
+            && intent.EffectiveMutationOperation != ModelToolCapability.ReplaceFile)
         {
             var writeCapability = WriteCapabilityForMode();
             if (writeCapability is null)
@@ -292,6 +300,8 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
 
         if (!_toolCapabilities.TryGetValue(toolName, out var capability))
             return ModelCapabilityDecision.Reject("tool has no Session security classification: " + toolName, null);
+        if (toolName == "filesystem.write" && intent.EffectiveMutationOperation is { } effectiveOperation)
+            capability = effectiveOperation;
         if (toolName == "worktree.integrate")
         {
             var required = new[] { ModelToolCapability.CreateFile, ModelToolCapability.ReplaceFile,
@@ -304,7 +314,8 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             if (ceiling.DeletePolicy == DestructiveActionPolicy.Ask)
                 requiresAsk = true;
         }
-        if (capability == ModelToolCapability.ReplaceFile)
+        if (capability == ModelToolCapability.ReplaceFile
+            && intent.EffectiveMutationOperation != ModelToolCapability.ReplaceFile)
         {
             if (ceiling.FileMutationMode == FileMutationMode.PatchAndCreate)
                 capability = ModelToolCapability.CreateFile;
@@ -464,6 +475,16 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
     private int DisclosurePriority(string toolName)
     {
         if (!_toolCapabilities.TryGetValue(toolName, out var capability)) return 100;
+        // filesystem.write is conditional: an existing target may be a localized edit even
+        // when creation is outside the profile. Keep it alongside the other authorized edits;
+        // Evaluate classifies the concrete target and rejects any forbidden create/replace.
+        if (toolName == "filesystem.write") capability = ModelToolCapability.PatchExisting;
+        // In PatchOnly, write is the sole model-facing way to submit a complete desired file
+        // that the runtime can normalize into the authorized localized edit. Keep it in the
+        // primary read/edit disclosure tier so a small visible-tool cap cannot hide it behind
+        // optional tools (while Execute still classifies creation separately).
+        if (toolName == "filesystem.write"
+            && _policy.MutationPolicy.Mode == FileMutationMode.PatchExisting) return 1;
         return capability switch
         {
             ModelToolCapability.PlanProposal when toolName == "user.ask" => 0,
@@ -501,6 +522,19 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         {
             return false;
         }
+
+        // filesystem.write is conditional on target existence. Disclose it when either a
+        // create or localized edit is authorized; the runtime classifies the actual target
+        // after Prepare, so exposing the call cannot grant the other operation.
+        if (toolName == "filesystem.write")
+            return IsCapabilityVisible(toolName, ModelToolCapability.CreateFile)
+                || IsCapabilityVisible(toolName, ModelToolCapability.PatchExisting);
+
+        return IsCapabilityVisible(toolName, capability);
+    }
+
+    private bool IsCapabilityVisible(string toolName, ModelToolCapability capability)
+    {
 
         // Compatibility mapping for legacy replacement-classified tools.
         if (capability == ModelToolCapability.ReplaceFile)

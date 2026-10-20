@@ -185,11 +185,14 @@ La restricción se aplica dos veces:
 
 Reglas obligatorias:
 
-- Comportamiento vigente hasta aceptar §5.1: `filesystem.write` sobre un archivo existente cuenta como reemplazo completo; en `PatchOnly` y
-  `ScopedCoder` se rechaza. En estos perfiles solo se expone `filesystem.patch`; `write` puede ser
-  create-only cuando la categoría permite crear.
-- Todo patch a un archivo existente requiere una lectura previa de esa versión y
-  `ExpectedVersionToken`; un token viejo produce `STALE_WRITE`.
+- Actualización nativa 2026-10-20 (§5.1): `filesystem.write` sobre un archivo existente
+  se normaliza a edición y se expone también cuando el perfil permite PatchExisting.
+  El diff efectivo, no la forma del payload, determina el alcance/cargo; crear sigue
+  exigiendo CreateFile y una sustitución amplia sigue sujeta al techo efectivo.
+- Por defecto, todo patch a un archivo existente requiere una lectura previa de esa versión
+  con cobertura del contenido editado y `ExpectedVersionToken`; un token viejo produce
+  `STALE_WRITE`. El opt-out explícito/versionado RequirePriorRead=false se conserva sin
+  relajar la comprobación de versión, permisos o presupuesto.
 - El runtime calcula el diff resultante antes de aplicar y hace cumplir límites de archivos,
   líneas y `MaxRewriteRatio`.
 - Requisito pendiente de enforcement durable (§5.1): borrar y crear la misma ruta, o moverla y
@@ -204,13 +207,35 @@ Reglas obligatorias:
 
 <a id="write-edit-normalization"></a>
 
-### 5.1. Normalización de write y continuidad de identidad — acordada, pendiente de construcción M9
+### 5.1. Normalización de write y continuidad de identidad — implementación nativa parcial M9
 
 **Decisión del usuario (2026-10-18):** simplificar el contrato permitiendo que el arnés convierta
 un `write` sobre un archivo existente en una edición controlada, sin introducir una prohibición
-general de write ni de borrar/recrear. El cambio está planificado como **M9-L-MUT-01**; todavía
-no está implementado ni aceptado. Sustituirá la clasificación fija de write existente de §5
-sólo cuando el recorrido completo tenga enforcement y evidencia.
+general de write ni de borrar/recrear. El bloque **M9-L-MUT-01** sigue abierto: su
+normalización nativa está implementada y validada offline el 2026-10-20; la
+continuidad durable de borrado/movimiento y la paridad entre canales siguen pendientes.
+
+La ruta nativa conserva la solicitud original y evalúa también filesystem.patch
+antes de autorizar un write existente. Un Deny de cualquiera impide el efecto;
+Ask se resuelve en una sola aprobación de una llamada. La clasificación por
+existencia queda ligada al fingerprint de esa aprobación y se revalida antes del
+efecto. Sólo después del permiso se leen bytes y se calcula el diff completo;
+la operación real vuelve a comprobarse contra todas las fronteras. La lectura
+del modelo acredita intervalos visibles por versión (no el I/O interno), con el
+opt-out explícito RequirePriorRead=false conservado. Patch directo comparte ese
+control de cobertura por defecto.
+
+Los hunks se validan juntos y generan un cargo y un efecto sobre el handle
+existente. Se conservan encoding/BOM y la preimagen de recuperación. Esta edición
+no promete un rename atómico: un corte puede dejar un conflicto que exige
+reconciliación, y un fallo ordinario intenta restaurar la preimagen. El cálculo
+LCS tiene un máximo de un millón de celdas; para entradas mayores conserva líneas
+iniciales/finales sin cambios y usa un span conservador entre ellas. No garantiza
+el diff mínimo universal. Las aprobaciones de otras tools
+conservan su fingerprint anterior.
+
+El alcance objetivo restante y sus garantías, que no se consideran aceptadas por
+esta implementación parcial, son:
 
 - El Host normaliza el cambio antes de autorizar su efecto: destino nuevo sin historia protegida
   → creación; destino existente → diff de edición; destino borrado/movido y luego recreado →

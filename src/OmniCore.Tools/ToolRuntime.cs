@@ -234,6 +234,17 @@ public sealed class ToolRuntime
             return new Outcome(false, "approved tool intent changed", ToolCallState.Rejected, EffectOutcome.None);
         }
 
+        // Existing writes retain the model's filesystem.write request/permission identity, but
+        // their capability classification is derived from target metadata and a second effective
+        // permission identity (filesystem.patch). This happens after pure Prepare and before any
+        // content read or filesystem effect.
+        ToolIntent? effectiveIntent = null;
+        if (tool is FilesystemWriteTool writeTool)
+        {
+            intent = writeTool.ClassifyTargetForAuthorization(intent, prepContext.WorkspaceRoot);
+            effectiveIntent = FilesystemWriteTool.EffectivePatchAuthorizationIntent(intent);
+        }
+
         // La resolución se realiza entre Prepare (puro) y la evaluación del Permission Engine,
         // para que Security autorice el ejecutable real, nunca el nombre solicitado (ADR-0015).
         if (intent.Claims.Process is { } processClaim)
@@ -282,7 +293,7 @@ public sealed class ToolRuntime
         if ((resumedPermission is not null || resumedWeakSandboxConsent is not null)
             && (expectedIntentFingerprint is not { Length: 64 }
                 || !expectedIntentFingerprint.All(Uri.IsHexDigit)
-                || !string.Equals(IntentFingerprint(intent), expectedIntentFingerprint,
+                || !string.Equals(IntentFingerprint(intent, effectiveIntent), expectedIntentFingerprint,
                     StringComparison.OrdinalIgnoreCase)))
         {
             _emit(new PermissionDenied(validated.ToolCallId,
@@ -295,9 +306,12 @@ public sealed class ToolRuntime
         // La frontera restringe; jamás autoriza (INV-018): una tool fuera del techo de la
         // categoría muere aquí aunque el Permission Engine la permitiría.
         var boundaryAsk = false;
+        IReadOnlyList<ToolIntent> authorizationIntents = effectiveIntent is null
+            ? [intent] : [intent, effectiveIntent];
         foreach (var activeBoundary in ActiveBoundaries())
+        foreach (var boundaryIntent in authorizationIntents)
         {
-            var boundaryDecision = activeBoundary.Evaluate(intent);
+            var boundaryDecision = activeBoundary.Evaluate(boundaryIntent);
             boundaryAsk |= boundaryDecision.RequiresAsk;
             if (!boundaryDecision.Allowed)
             {
@@ -316,6 +330,8 @@ public sealed class ToolRuntime
         try
         {
             decision = _policy.Evaluate(intent);
+            if (effectiveIntent is not null)
+                decision = CombinePermissionDecisions(decision, _policy.Evaluate(effectiveIntent), "effective filesystem.patch");
         }
         catch (Exception ex)
         {
@@ -391,6 +407,13 @@ public sealed class ToolRuntime
                 "allow_workspace" => GrantLifetime.Workspace,
                 _ => throw new InvalidOperationException("Unsupported Permission choice."),
             };
+            if (effectiveIntent is not null && lifetime != GrantLifetime.Once)
+            {
+                _emit(new PermissionDenied(validated.ToolCallId,
+                    "A normalized existing-file write requires a one-call approval."));
+                return new Outcome(false, "persistent grant unavailable for normalized write",
+                    ToolCallState.Rejected, EffectOutcome.None);
+            }
             GrantId? grant = null;
             if (lifetime != GrantLifetime.Once)
             {
@@ -411,10 +434,11 @@ public sealed class ToolRuntime
             _emit(new PermissionGranted(validated.ToolCallId, grant, lifetime));
             try
             {
-                var authorized = _policy.AuthorizeApproved(intent, grant);
+                var authorized = AuthorizeIntents(intent, effectiveIntent, grant, approved: true);
                 _emit(new ToolCallAuthorized(validated.ToolCallId));
                 return Execute(validated, authorized, intent, tool, execContext, cancellationToken,
-                    boundaryAskApproved: decision.Final == PermissionDecision.Ask);
+                    boundaryAskApproved: decision.Final == PermissionDecision.Ask,
+                    effectiveIntent: effectiveIntent, permissionAskApproved: true);
             }
             catch (OmniCore.Domain.PermissionDeniedException ex)
             {
@@ -430,8 +454,9 @@ public sealed class ToolRuntime
             // ADR-0034/0036 §5: el Ask abre un InteractionRequest con sujeto y opciones del
             // servidor. El default es Deny (más restrictiva, ADR-0034 §1).
             var interaction = new InteractionRequested(interactionId, InteractionKind.Permission,
-                SubjectJson(intent, execContext.ProtectedSubstitution),
-                OptionsJson(_policy is IGrantablePermissionPolicy { CanCreatePersistentGrants: true }
+                SubjectJson(intent, effectiveIntent, execContext.ProtectedSubstitution),
+                OptionsJson(effectiveIntent is null
+                    && _policy is IGrantablePermissionPolicy { CanCreatePersistentGrants: true }
                     && IsGrantableAsk(decision.Layers)),
                 "deny", null, null, null, null, 0, 1);
             _emit(interaction);
@@ -463,7 +488,7 @@ public sealed class ToolRuntime
             }
 
             var optionId = selectedOption;
-            var effectiveLifetime = optionId switch
+            var effectiveLifetime = effectiveIntent is not null ? GrantLifetime.Once : optionId switch
             {
                 "allow_once" => GrantLifetime.Once,
                 "allow_run" => GrantLifetime.Run,
@@ -471,7 +496,7 @@ public sealed class ToolRuntime
                 _ => GrantLifetime.Once,
             };
             GrantId? approvedGrant = effectiveLifetime == GrantLifetime.Once ? null : GrantId.New();
-            if (effectiveLifetime != GrantLifetime.Once)
+            if (effectiveLifetime != GrantLifetime.Once && effectiveIntent is null)
             {
                 if (_policy is not IGrantablePermissionPolicy grantable)
                 {
@@ -500,10 +525,11 @@ public sealed class ToolRuntime
             // nuevo permiso. La política de Security comprueba de nuevo que no exista Deny.
             try
             {
-                var approved = _policy.AuthorizeApproved(intent, approvedGrant);
+                var approved = AuthorizeIntents(intent, effectiveIntent, approvedGrant, approved: true);
                 _emit(new ToolCallAuthorized(validated.ToolCallId));
                 return Execute(validated, approved, intent, tool, execContext, cancellationToken,
-                    boundaryAskApproved: boundaryAsk);
+                    boundaryAskApproved: boundaryAsk, effectiveIntent: effectiveIntent,
+                    permissionAskApproved: true);
             }
             catch (OmniCore.Domain.PermissionDeniedException ex)
             {
@@ -515,10 +541,11 @@ public sealed class ToolRuntime
         // 3. Solo el Permission Engine construye el intent autorizado (INV-018).
         try
         {
-            var authorized = _policy.Authorize(intent);
+            var authorized = AuthorizeIntents(intent, effectiveIntent, null, approved: false);
             _emit(new ToolCallAuthorized(validated.ToolCallId));
         return Execute(validated, authorized, intent, tool, execContext, cancellationToken,
-                boundaryAskApproved: boundaryAsk);
+                boundaryAskApproved: boundaryAsk, effectiveIntent: effectiveIntent,
+                permissionAskApproved: false);
         }
         catch (OmniCore.Domain.PermissionDeniedException ex)
         {
@@ -528,13 +555,51 @@ public sealed class ToolRuntime
     }
 
     private Outcome Execute(ValidatedToolCall call, AuthorizedToolIntent authorized, ToolIntent intent, ITool tool,
-        ToolExecutionContext execContext, CancellationToken cancellationToken, bool boundaryAskApproved)
+        ToolExecutionContext execContext, CancellationToken cancellationToken, bool boundaryAskApproved,
+        ToolIntent? effectiveIntent = null, bool permissionAskApproved = false)
     {
+        if (tool is FilesystemWriteTool writeTool)
+        {
+            if (!writeTool.TargetMatchesAuthorizedClassification(intent, execContext.WorkspaceRoot))
+            {
+                const string cause = "filesystem.write target changed after its effective operation was authorized.";
+                _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.StaleWrite));
+                return new Outcome(false, cause, null, ToolCallState.Failed, EffectOutcome.None);
+            }
+            if (!writeTool.TryDetermineAuthorizedOperation(intent, execContext, cancellationToken,
+                    out var actualOperation, out var preflightError, out var preflightReason))
+            {
+                var cause = preflightReason ?? "filesystem.write normalization preflight failed.";
+                _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None,
+                    preflightError ?? ToolErrorCode.ToolFailure));
+                return new Outcome(false, cause, null, ToolCallState.Failed, EffectOutcome.None);
+            }
+            intent = new ToolIntent(intent.ToolCallId, intent.ToolId, intent.NormalizedArgumentsJson,
+                intent.Effect, intent.Claims, intent.Risk, intent.Reconciliation, actualOperation);
+        }
+
+        IReadOnlyList<ToolIntent> effectiveIntents = effectiveIntent is null
+            ? [intent] : [intent, effectiveIntent];
+        var currentPermission = _policy.Evaluate(intent);
+        if (effectiveIntent is not null)
+            currentPermission = CombinePermissionDecisions(currentPermission,
+                _policy.Evaluate(effectiveIntent), "effective filesystem.patch");
+        if (currentPermission.Final == PermissionDecision.Deny
+            || currentPermission.Final == PermissionDecision.Ask && !permissionAskApproved)
+        {
+            var cause = currentPermission.Final == PermissionDecision.Deny
+                ? "Permission was denied before the effect barrier."
+                : "Permission approval is required before the effect barrier.";
+            _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.PermissionDenied));
+            return new Outcome(false, cause, null, ToolCallState.Failed, EffectOutcome.None);
+        }
+
         // 4a. Frontera de capacidad otra vez antes de ejecutar (ADR-0044 §5): el intent ya está
         // autorizado; si el techo cambió o la primera evaluación se saltó, Authorized → Failed.
         foreach (var activeBoundary in ActiveBoundaries())
+        foreach (var boundaryIntent in effectiveIntents)
         {
-            var boundaryDecision = activeBoundary.Evaluate(intent);
+            var boundaryDecision = activeBoundary.Evaluate(boundaryIntent);
             if (!boundaryDecision.Allowed)
             {
                 _emit(new ToolCallFailed(call.ToolCallId,
@@ -707,9 +772,23 @@ public sealed class ToolRuntime
         using (intent.Effect != EffectClass.None || call.ToolId.ToString() == "core.agents.mailbox.receive"
             ? execContext.AcquireSessionSecurityAdmission?.Invoke() : null)
         {
-            foreach (var activeBoundary in ActiveBoundaries())
+            var finalPermission = _policy.Evaluate(intent);
+            if (effectiveIntent is not null)
+                finalPermission = CombinePermissionDecisions(finalPermission,
+                    _policy.Evaluate(effectiveIntent), "effective filesystem.patch");
+            if (finalPermission.Final == PermissionDecision.Deny
+                || finalPermission.Final == PermissionDecision.Ask && !permissionAskApproved)
             {
-                var boundaryDecision = activeBoundary.Evaluate(intent);
+                _emit(new ToolCallFailed(call.ToolCallId,
+                    "Permission changed before the effect barrier.", EffectOutcome.None,
+                    ToolErrorCode.PermissionDenied));
+                return new Outcome(false, "permission changed before effect", null, ToolCallState.Failed,
+                    EffectOutcome.None);
+            }
+            foreach (var activeBoundary in ActiveBoundaries())
+            foreach (var boundaryIntent in effectiveIntents)
+            {
+                var boundaryDecision = activeBoundary.Evaluate(boundaryIntent);
                 if (!boundaryDecision.Allowed || (boundaryDecision.RequiresAsk && !boundaryAskApproved))
                 {
                     _emit(new ToolCallFailed(call.ToolCallId,
@@ -943,7 +1022,8 @@ public sealed class ToolRuntime
     }
 
     /// <summary>Sujeto de la interacción (redactado; ADR-0034 §1, ADR-0018).</summary>
-    private static string SubjectJson(ToolIntent intent, ProtectedToolSubstitution? substitution = null)
+    private static string SubjectJson(ToolIntent intent, ToolIntent? effectiveIntent = null,
+        ProtectedToolSubstitution? substitution = null)
     {
         var reason = substitution?.SourceToolId == "mcp.first-effect"
             ? "mcp.first_effect" : "permission.required";
@@ -961,7 +1041,9 @@ public sealed class ToolRuntime
             writer.WriteString("operation", intent.ToolId.ToString());
             writer.WriteString("risk", intent.Risk.ToString().ToLowerInvariant());
             writer.WriteString("reason", reason);
-            writer.WriteString("intentFingerprint", IntentFingerprint(intent));
+            writer.WriteString("intentFingerprint", IntentFingerprint(intent, effectiveIntent));
+            if (effectiveIntent is not null)
+                writer.WriteString("effectiveOperation", effectiveIntent.ToolId.ToString());
             if (substitution is not null && substitution.SourceToolId != "mcp.first-effect")
             {
                 writer.WriteStartObject("toolPreferenceSubstitution");
@@ -982,7 +1064,9 @@ public sealed class ToolRuntime
         return System.Text.Encoding.UTF8.GetString(output.ToArray());
     }
 
-    internal static string IntentFingerprint(ToolIntent intent)
+    internal static string IntentFingerprint(ToolIntent intent) => IntentFingerprint(intent, null);
+
+    internal static string IntentFingerprint(ToolIntent intent, ToolIntent? effectiveIntent)
     {
         using var output = new System.IO.MemoryStream();
         using (var writer = new System.Text.Json.Utf8JsonWriter(output))
@@ -992,6 +1076,8 @@ public sealed class ToolRuntime
             writer.WriteString("arguments", intent.NormalizedArgumentsJson);
             writer.WriteString("effect", intent.Effect.ToString());
             writer.WriteString("risk", intent.Risk.ToString());
+            if (intent.EffectiveMutationOperation is { } operation)
+                writer.WriteString("effectiveMutationOperation", operation.ToString());
             WriteStrings(writer, "reads", intent.Claims.Reads);
             WriteStrings(writer, "writes", intent.Claims.Writes);
             writer.WriteStartArray("network");
@@ -1019,7 +1105,35 @@ public sealed class ToolRuntime
             else writer.WriteNull("process");
             writer.WriteEndObject();
         }
-        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(output.ToArray()));
+        var primary = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(output.ToArray()));
+        return effectiveIntent is null ? primary : Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.ASCII.GetBytes(
+                primary + ":" + IntentFingerprint(effectiveIntent))));
+    }
+
+    private static PermissionDecisionRecord CombinePermissionDecisions(PermissionDecisionRecord primary,
+        PermissionDecisionRecord effective, string label)
+    {
+        static PermissionDecision Min(PermissionDecision left, PermissionDecision right) =>
+            left == PermissionDecision.Deny || right == PermissionDecision.Deny ? PermissionDecision.Deny
+            : left == PermissionDecision.Ask || right == PermissionDecision.Ask ? PermissionDecision.Ask
+            : PermissionDecision.Allow;
+        var layers = primary.Layers.Concat(effective.Layers.Select(layer =>
+            new LayerDecision(label + ":" + layer.Layer, layer.Decision, layer.Rule))).ToArray();
+        return new PermissionDecisionRecord(Min(primary.Final, effective.Final), layers,
+            primary.AppliedGrant ?? effective.AppliedGrant);
+    }
+
+    private AuthorizedToolIntent AuthorizeIntents(ToolIntent primary, ToolIntent? effective,
+        GrantId? approvedGrant, bool approved)
+    {
+        var authorized = approved ? _policy.AuthorizeApproved(primary, approvedGrant) : _policy.Authorize(primary);
+        if (effective is not null)
+        {
+            if (approved) _ = _policy.AuthorizeApproved(effective, approvedGrant);
+            else _ = _policy.Authorize(effective);
+        }
+        return authorized;
     }
 
     private static void WriteStrings(System.Text.Json.Utf8JsonWriter writer, string name,

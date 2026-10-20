@@ -121,6 +121,130 @@ public static class FileVersion
         inserted = newLines.Count - matched;
     }
 
+    /// <summary>Conservative line charge for one atomic contiguous text edit. Unlike
+    /// <see cref="ChangedLines"/>, this charges moved/reordered lines inside the edited span and
+    /// newline-only edits instead of treating them as free multiset matches.</summary>
+    public static void ChangedLinesInEditSpan(string oldSpan, string newSpan, out int deleted, out int inserted)
+    {
+        deleted = CountLines(oldSpan);
+        inserted = CountLines(newSpan);
+    }
+
+    /// <summary>Build a bounded set of non-overlapping text hunks. Unchanged full lines anchor
+    /// separate edits so a pair of small changes does not charge or require coverage of the text
+    /// between them. Large inputs fall back to one conservative prefix/suffix span.</summary>
+    internal static IReadOnlyList<TextEditHunk> CreateEditHunks(string original, string updated)
+    {
+        if (original == updated) return [];
+        var oldLines = GetLineRanges(original);
+        var newLines = GetLineRanges(updated);
+        if ((long)(oldLines.Count + 1) * (newLines.Count + 1) > 1_000_000)
+            return [CreateSingleHunk(original, updated, oldLines, newLines)];
+        var oldTexts = oldLines.Select(range => LineText(original, range)).ToArray();
+        var newTexts = newLines.Select(range => LineText(updated, range)).ToArray();
+
+        var lcs = new int[oldLines.Count + 1, newLines.Count + 1];
+        for (var i = oldLines.Count - 1; i >= 0; i--)
+        for (var j = newLines.Count - 1; j >= 0; j--)
+            lcs[i, j] = oldTexts[i] == newTexts[j]
+                ? lcs[i + 1, j + 1] + 1 : Math.Max(lcs[i + 1, j], lcs[i, j + 1]);
+
+        var hunks = new List<TextEditHunk>();
+        var oldIndex = 0;
+        var newIndex = 0;
+        var oldBlockStart = -1;
+        var newBlockStart = -1;
+        while (oldIndex < oldLines.Count || newIndex < newLines.Count)
+        {
+            if (oldIndex < oldLines.Count && newIndex < newLines.Count
+                && oldTexts[oldIndex] == newTexts[newIndex])
+            {
+                AddBlock(oldIndex, newIndex);
+                oldIndex++;
+                newIndex++;
+                continue;
+            }
+            if (oldBlockStart < 0) { oldBlockStart = oldIndex; newBlockStart = newIndex; }
+            if (newIndex >= newLines.Count || oldIndex < oldLines.Count
+                && lcs[oldIndex + 1, newIndex] >= lcs[oldIndex, newIndex + 1]) oldIndex++;
+            else newIndex++;
+        }
+        AddBlock(oldIndex, newIndex);
+        return hunks;
+
+        void AddBlock(int oldEndIndex, int newEndIndex)
+        {
+            if (oldBlockStart < 0) return;
+            var oldStart = oldBlockStart < oldLines.Count ? oldLines[oldBlockStart].Start : original.Length;
+            var oldEnd = oldEndIndex < oldLines.Count ? oldLines[oldEndIndex].Start : original.Length;
+            var newStart = newBlockStart < newLines.Count ? newLines[newBlockStart].Start : updated.Length;
+            var newEnd = newEndIndex < newLines.Count ? newLines[newEndIndex].Start : updated.Length;
+            var hunk = TrimCommonEdges(original, updated, oldStart, oldEnd, newStart, newEnd);
+            if (hunk.OldText.Length > 0 || hunk.NewText.Length > 0) hunks.Add(hunk);
+            oldBlockStart = -1;
+            newBlockStart = -1;
+        }
+    }
+
+    private static TextEditHunk CreateSingleHunk(string original, string updated,
+        IReadOnlyList<LineRange> oldLines, IReadOnlyList<LineRange> newLines)
+    {
+        // Even the bounded fallback must retain unchanged leading/trailing lines. Charging
+        // the entire file here would refuse a one-line edit solely because the file is large.
+        var prefix = 0;
+        while (prefix < oldLines.Count && prefix < newLines.Count
+            && SameLine(original, oldLines[prefix], updated, newLines[prefix])) prefix++;
+        var oldEnd = oldLines.Count;
+        var newEnd = newLines.Count;
+        while (oldEnd > prefix && newEnd > prefix
+            && SameLine(original, oldLines[oldEnd - 1], updated, newLines[newEnd - 1]))
+        { oldEnd--; newEnd--; }
+        return TrimCommonEdges(original, updated,
+            prefix < oldLines.Count ? oldLines[prefix].Start : original.Length,
+            oldEnd < oldLines.Count ? oldLines[oldEnd].Start : original.Length,
+            prefix < newLines.Count ? newLines[prefix].Start : updated.Length,
+            newEnd < newLines.Count ? newLines[newEnd].Start : updated.Length);
+    }
+
+    private static bool SameLine(string left, LineRange leftRange, string right, LineRange rightRange) =>
+        left.AsSpan(leftRange.Start, leftRange.End - leftRange.Start)
+            .SequenceEqual(right.AsSpan(rightRange.Start, rightRange.End - rightRange.Start));
+
+    private static TextEditHunk TrimCommonEdges(string original, string updated, int oldStart, int oldEnd,
+        int newStart, int newEnd)
+    {
+        // Charge the complete changed-line blocks before trimming their common characters for
+        // exact application/coverage. Otherwise changing "line" to "line + suffix" would look
+        // like a free insertion and evade rewrite-ratio and changed-line budgets.
+        ChangedLinesInEditSpan(original.Substring(oldStart, oldEnd - oldStart),
+            updated.Substring(newStart, newEnd - newStart), out var deleted, out var inserted);
+        while (oldStart < oldEnd && newStart < newEnd && original[oldStart] == updated[newStart])
+        { oldStart++; newStart++; }
+        while (oldEnd > oldStart && newEnd > newStart && original[oldEnd - 1] == updated[newEnd - 1])
+        { oldEnd--; newEnd--; }
+        var oldText = original.Substring(oldStart, oldEnd - oldStart);
+        var newText = updated.Substring(newStart, newEnd - newStart);
+        return new TextEditHunk(oldStart, oldText, newText, deleted, inserted);
+    }
+
+    private static string LineText(string text, LineRange range) => text.Substring(range.Start, range.End - range.Start);
+
+    private readonly record struct LineRange(int Start, int End);
+
+    private static List<LineRange> GetLineRanges(string text)
+    {
+        var lines = new List<LineRange>();
+        var start = 0;
+        for (var index = 0; index < text.Length; index++)
+        {
+            if (text[index] != '\n') continue;
+            lines.Add(new LineRange(start, index + 1));
+            start = index + 1;
+        }
+        if (start < text.Length) lines.Add(new LineRange(start, text.Length));
+        return lines;
+    }
+
     /// <summary>Segmentos de texto entre saltos de línea; el tramo final sin salto cuenta como línea.</summary>
     private static List<string> SplitLines(string text)
     {
@@ -260,6 +384,9 @@ public static class FileVersion
         return true;
     }
 }
+
+internal readonly record struct TextEditHunk(int Offset, string OldText, string NewText,
+    int DeletedLines, int InsertedLines);
 
 /// <summary>Encoding no soportado (p. ej. UTF-32): el archivo se rechaza sin modificar.</summary>
 public sealed class UnsupportedEncodingException : Exception

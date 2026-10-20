@@ -40,7 +40,8 @@ using OmniCore.Domain;
 /// </summary>
 public sealed class FileReadRegistry
 {
-    private readonly Dictionary<string, string> _readByPath;
+    private readonly Dictionary<string, ReadCoverage> _readByPath;
+    private readonly object _readLock = new();
     private readonly string? _workspaceRoot;
 
     /// <summary>
@@ -59,7 +60,7 @@ public sealed class FileReadRegistry
     public FileReadRegistry(string? workspaceRoot = null)
     {
         _workspaceRoot = string.IsNullOrEmpty(workspaceRoot) ? null : workspaceRoot;
-        _readByPath = new Dictionary<string, string>(
+        _readByPath = new Dictionary<string, ReadCoverage>(
             OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
                 ? StringComparer.OrdinalIgnoreCase
                 : StringComparer.Ordinal);
@@ -102,15 +103,99 @@ public sealed class FileReadRegistry
     /// </summary>
     public void RecordRead(string path, string versionToken)
     {
-        _readByPath[Canonical(path)] = versionToken;
+        // Historical callers explicitly mean a complete read. Production filesystem.read uses
+        // the range overload below so a token marker alone never claims unseen content.
+        lock (_readLock) _readByPath[Canonical(path)] = new ReadCoverage(versionToken, 0, full: true);
+    }
+
+    /// <summary>Record only the characters actually emitted to the model. A version change
+    /// invalidates old ranges; multiple pages from the same version accumulate.</summary>
+    public void RecordRead(string path, string versionToken, int start, int length, int totalLength,
+        bool complete)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentException.ThrowIfNullOrWhiteSpace(versionToken);
+        if (start < 0 || length < 0 || totalLength < 0 || (long)start + length > totalLength)
+            throw new ArgumentOutOfRangeException(nameof(start), "Read coverage must be a valid range within the file.");
+        if (complete && (start != 0 || length != totalLength))
+            throw new ArgumentException("A complete read must cover the entire file from offset zero.", nameof(complete));
+        var key = Canonical(path);
+        lock (_readLock)
+        {
+            if (!_readByPath.TryGetValue(key, out var existing)
+                || !string.Equals(existing.Version, versionToken, StringComparison.Ordinal))
+                existing = new ReadCoverage(versionToken, totalLength, full: false);
+            else if (existing.TotalLength != totalLength)
+                existing = new ReadCoverage(versionToken, totalLength, full: false);
+            if (length > 0) AddMergedRange(existing.Ranges, start, checked(start + length));
+            if (complete) existing.Full = true;
+            _readByPath[key] = existing;
+        }
+    }
+
+    /// <summary>True only when every character in the proposed mutation span was shown to the
+    /// model for the same file version. The zero-length insertion point must be within or at
+    /// the edge of a visible range.</summary>
+    public bool HasVisibleCoverage(string path, string expectedVersion, int start, int length)
+    {
+        if (start < 0 || length < 0) return false;
+        lock (_readLock)
+        {
+            if (!_readByPath.TryGetValue(Canonical(path), out var read)
+                || !string.Equals(read.Version, expectedVersion, StringComparison.Ordinal)) return false;
+            if (read.Full) return true;
+            long endLong = (long)start + length;
+            if (endLong > read.TotalLength) return false;
+            var end = (int)endLong;
+            var cursor = start;
+            foreach (var range in read.Ranges.OrderBy(range => range.Start))
+            {
+                if (range.End < cursor) continue;
+                if (range.Start > cursor) return false;
+                if (range.End >= end) return true;
+                cursor = range.End;
+            }
+            return length == 0 && read.Ranges.Any(range => range.Start <= start && start <= range.End);
+        }
+    }
+
+    /// <summary>True when a complete visible read of this exact version was recorded.</summary>
+    public bool HasCompleteVisibleRead(string path, string expectedVersion)
+    {
+        lock (_readLock)
+        {
+            if (!_readByPath.TryGetValue(Canonical(path), out var read)
+                || !string.Equals(read.Version, expectedVersion, StringComparison.Ordinal)) return false;
+            return read.Full || read.TotalLength == 0
+                || read.Ranges.Count == 1 && read.Ranges[0].Start == 0
+                    && read.Ranges[0].End == read.TotalLength;
+        }
+    }
+
+    private static void AddMergedRange(List<(int Start, int End)> ranges, int start, int end)
+    {
+        var mergedStart = start;
+        var mergedEnd = end;
+        for (var index = ranges.Count - 1; index >= 0; index--)
+        {
+            var current = ranges[index];
+            if (current.End < mergedStart || current.Start > mergedEnd) continue;
+            mergedStart = Math.Min(mergedStart, current.Start);
+            mergedEnd = Math.Max(mergedEnd, current.End);
+            ranges.RemoveAt(index);
+        }
+        ranges.Add((mergedStart, mergedEnd));
+        ranges.Sort((left, right) => left.Start.CompareTo(right.Start));
     }
 
     /// <summary>True si el modelo leyó efectivamente <c>path</c> en este Run.</summary>
-    public bool HasRead(string path) => _readByPath.ContainsKey(Canonical(path));
+    public bool HasRead(string path) { lock (_readLock) return _readByPath.ContainsKey(Canonical(path)); }
 
     /// <summary>Token expuesto por la última lectura exitosa de <c>path</c> en este Run; null si no la hay.</summary>
-    public string? VersionOf(string path) =>
-        _readByPath.TryGetValue(Canonical(path), out var v) ? v : null;
+    public string? VersionOf(string path)
+    {
+        lock (_readLock) return _readByPath.TryGetValue(Canonical(path), out var value) ? value.Version : null;
+    }
 
     /// <summary>
     /// True solo si este Run contiene una lectura exitosa de EXACTAMENTE <c>path</c> cuyo token
@@ -134,7 +219,15 @@ public sealed class FileReadRegistry
     }
 
     /// <summary>Número de rutas leídas efectivamente (diagnóstico / tests).</summary>
-    public int Size() => _readByPath.Count;
+    public int Size() { lock (_readLock) return _readByPath.Count; }
+
+    private sealed class ReadCoverage(string version, int totalLength, bool full)
+    {
+        public string Version { get; } = version;
+        public int TotalLength { get; } = totalLength;
+        public bool Full { get; set; } = full;
+        public List<(int Start, int End)> Ranges { get; } = [];
+    }
 
     /// <summary>Forma canónica de una ruta como clave de contabilidad (misma normalización que las lecturas).</summary>
     internal string CanonicalKey(string path) => Canonical(path);

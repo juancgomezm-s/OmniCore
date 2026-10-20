@@ -101,14 +101,16 @@ public sealed class FilesystemWriteToolTests
 
     /// <summary>Pipeline real con tools de mutación: sin frontera (semántica M2) o con la frontera
     /// de capacidad del modelo (ADR-0044 §5), que viaja junto al registro por-Run.</summary>
-    private static ScriptedToolExecutor Pipeline(string ws, ModelCapabilityBoundary? boundary)
+    private static ScriptedToolExecutor Pipeline(string ws, ModelCapabilityBoundary? boundary,
+        PermissionDecision writeDecision = PermissionDecision.Allow,
+        PermissionDecision patchDecision = PermissionDecision.Allow)
     {
         var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
         var policy = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>
         {
             ["filesystem.read"] = PermissionDecision.Allow,
-            ["filesystem.write"] = PermissionDecision.Allow,
-            ["filesystem.patch"] = PermissionDecision.Allow,
+            ["filesystem.write"] = writeDecision,
+            ["filesystem.patch"] = patchDecision,
         });
         return ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(), policy, ws, boundary);
     }
@@ -482,8 +484,8 @@ public sealed class FilesystemWriteToolTests
     {
         Assert.False(new ModelCapabilityBoundary(EffectiveFor(ModelPolicyCategory.ObserveOnly))
             .IsToolVisible("filesystem.write"));
-        Assert.False(new ModelCapabilityBoundary(EffectiveFor(ModelPolicyCategory.PatchOnly))
-            .IsToolVisible("filesystem.write"), "PatchOnly no expone filesystem.write");
+        Assert.True(new ModelCapabilityBoundary(EffectiveFor(ModelPolicyCategory.PatchOnly))
+            .IsToolVisible("filesystem.write"), "PatchOnly expone filesystem.write como edición localizada");
         Assert.True(new ModelCapabilityBoundary(EffectiveFor(ModelPolicyCategory.ScopedCoder))
             .IsToolVisible("filesystem.write"), "ScopedCoder expone filesystem.write create-only");
         Assert.True(new ModelCapabilityBoundary(EffectiveFor(ModelPolicyCategory.FullAgent))
@@ -513,7 +515,7 @@ public sealed class FilesystemWriteToolTests
     }
 
     [Fact]
-    public void ScopedCoder_write_is_create_only_replacing_existing_is_refused()
+    public void ScopedCoder_write_can_edit_locally_but_rewrite_ratio_blocks_broad_replacement()
     {
         var ws = TempDir();
         var original = EightLineFile();
@@ -529,8 +531,8 @@ public sealed class FilesystemWriteToolTests
                 TestContext.Current.CancellationToken);
             Assert.True(read.Succeeded, "summary=" + read.Summary);
 
-            // La frontera pasa el intento como CreateFile (create-only); el archivo EXISTE, así
-            // que la tool lo rechaza: MUTATION_REFUSED tipado y archivo intacto.
+            // An existing file is normalized as PatchExisting. The desired full text changes
+            // every old line, so the ScopedCoder rewrite ratio blocks it before publication.
             var token = VersionOf(original);
             var outcome = executor.ExecuteToolWithoutJournal(
                 WriteCall("doc.txt", "reemplazo completo\n", token), true,
@@ -538,7 +540,7 @@ public sealed class FilesystemWriteToolTests
 
             Assert.False(outcome.Succeeded, "summary=" + outcome.Summary);
             Assert.Equal(ToolCallState.Failed, outcome.FinalState);
-            Assert.StartsWith("MUTATION_REFUSED:", outcome.Summary);
+            Assert.StartsWith("LIMIT_EXCEEDED:", outcome.Summary);
             Assert.Equal(original, File.ReadAllText(Path.Combine(ws, "doc.txt")));
         }
         finally
@@ -680,6 +682,99 @@ public sealed class FilesystemWriteToolTests
         {
             RmDir(ws);
         }
+    }
+
+    [Fact]
+    public void RequirePriorRead_false_allows_localized_existing_write_without_prior_read()
+    {
+        var ws = TempDir();
+        var original = EightLineFile();
+        var path = Path.Combine(ws, "doc.txt");
+        File.WriteAllText(path, original);
+        try
+        {
+            var boundary = new ModelCapabilityBoundary(CustomEffective(
+                Mutation(FileMutationMode.PatchAndCreate, 10, 100, 1.0, requirePriorRead: false)));
+            var executor = Pipeline(ws, boundary);
+            var desired = original.Replace("linea-6", "linea-6-local", StringComparison.Ordinal);
+            var result = executor.ExecuteToolWithoutJournal(WriteCall("doc.txt", desired, VersionOf(original)), false,
+                TestContext.Current.CancellationToken);
+
+            Assert.True(result.Succeeded, result.Summary);
+            Assert.Equal(desired, File.ReadAllText(path));
+        }
+        finally { RmDir(ws); }
+    }
+
+    [Fact]
+    public void Patch_only_boundary_exposes_write_for_edits_but_still_rejects_creation()
+    {
+        var ws = TempDir();
+        var original = EightLineFile();
+        var path = Path.Combine(ws, "doc.txt");
+        File.WriteAllText(path, original);
+        try
+        {
+            var boundary = new ModelCapabilityBoundary(EffectiveFor(ModelPolicyCategory.PatchOnly));
+            var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeMutationTools: true);
+            var catalog = hostTools.Catalog();
+            var permissions = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>
+            {
+                ["filesystem.read"] = PermissionDecision.Allow,
+                ["filesystem.write"] = PermissionDecision.Allow,
+                ["filesystem.patch"] = PermissionDecision.Allow,
+            });
+            var executor = ScriptedToolExecutor.WithWorkspace(catalog, permissions, ws, boundary);
+            Assert.True(boundary.IsToolVisible("filesystem.write"));
+            var definitions = catalog.RegisteredTools().Select(tool => new ToolDefinition(
+                tool.Descriptor.Id.ToString(), tool.Descriptor.Description, tool.Descriptor.InputSchema.ToString()));
+            var listed = boundary.VisibleTools(definitions)
+                .Any(tool => tool.Name == "filesystem.write");
+            Assert.True(listed, "A profile that permits PatchExisting must receive the conditional writer.");
+            Assert.True(executor.ExecuteToolWithoutJournal(ReadCall("doc.txt"), false,
+                TestContext.Current.CancellationToken).Succeeded);
+
+            var edit = executor.ExecuteToolWithoutJournal(WriteCall("doc.txt",
+                original.Replace("linea-2", "linea-2-local", StringComparison.Ordinal), VersionOf(original)), false,
+                TestContext.Current.CancellationToken);
+            Assert.True(edit.Succeeded, edit.Summary);
+
+            var create = executor.ExecuteToolWithoutJournal(WriteCall("new.txt", "new\n"), false,
+                TestContext.Current.CancellationToken);
+            Assert.False(create.Succeeded, create.Summary);
+            Assert.Equal(ToolCallState.Rejected, create.FinalState);
+            Assert.False(File.Exists(Path.Combine(ws, "new.txt")));
+        }
+        finally { RmDir(ws); }
+    }
+
+    [Fact]
+    public void Write_target_appearance_or_disappearance_invalidates_prepared_classification()
+    {
+        var ws = TempDir();
+        var path = Path.Combine(ws, "doc.txt");
+        var tool = new FilesystemWriteTool(new PathBoundaryValidator());
+        try
+        {
+            var createCall = WriteCall("doc.txt", "new\n");
+            var create = Assert.IsType<Prepared>(tool.Prepare(createCall,
+                new ToolPreparationContext(ws, DateTimeOffset.UnixEpoch)));
+            var createIntent = tool.ClassifyTargetForAuthorization(create.Intent, ws);
+            Assert.Equal(ModelToolCapability.CreateFile, createIntent.EffectiveMutationOperation);
+            File.WriteAllText(path, "appeared\n");
+            Assert.False(tool.TargetMatchesAuthorizedClassification(createIntent, ws));
+
+            var original = File.ReadAllText(path);
+            var editCall = WriteCall("doc.txt", "changed\n", VersionOf(original));
+            var edit = Assert.IsType<Prepared>(tool.Prepare(editCall,
+                new ToolPreparationContext(ws, DateTimeOffset.UnixEpoch)));
+            var editIntent = tool.ClassifyTargetForAuthorization(edit.Intent, ws);
+            Assert.Equal(ModelToolCapability.PatchExisting, editIntent.EffectiveMutationOperation);
+            File.Delete(path);
+            Assert.False(tool.TargetMatchesAuthorizedClassification(editIntent, ws));
+            Assert.False(File.Exists(path));
+        }
+        finally { RmDir(ws); }
     }
 
     [Fact]
@@ -934,6 +1029,200 @@ public sealed class FilesystemWriteToolTests
         {
             RmDir(ws);
         }
+    }
+
+    [Fact]
+    public void Existing_write_is_normalized_to_one_authorized_patch_with_one_charge()
+    {
+        var ws = TempDir();
+        var original = EightLineFile();
+        var path = Path.Combine(ws, "doc.txt");
+        File.WriteAllText(path, original);
+        try
+        {
+            // PatchAndCreate permits a localized edit to an existing file without granting
+            // ReplaceFile. The model performs an ordinary read then sends its complete desired
+            // content through filesystem.write; the runtime must apply only the changed hunk.
+            var boundary = new ModelCapabilityBoundary(CustomEffective(
+                Mutation(FileMutationMode.PatchAndCreate, 10, 4, 0.25, requirePriorRead: true)));
+            var executor = Pipeline(ws, boundary);
+            var read = executor.ExecuteToolWithoutJournal(ReadCall("doc.txt"), false,
+                TestContext.Current.CancellationToken);
+            Assert.True(read.Succeeded, read.Summary);
+
+            var desired = original.Replace("linea-4", "linea-4-editada", StringComparison.Ordinal);
+            var result = executor.ExecuteToolWithoutJournal(WriteCall("doc.txt", desired, VersionOf(original)), false,
+                TestContext.Current.CancellationToken);
+
+            Assert.True(result.Succeeded, result.Summary);
+            Assert.Equal(desired, File.ReadAllText(path));
+            var charges = result.Events.OfType<MutationBudgetCharged>().ToArray();
+            Assert.Single(charges);
+            Assert.Equal(2, charges[0].ChangedLines);
+            Assert.Equal(2, boundary.ReadRegistry().Ledger.ChangedLinesThisTurn);
+        }
+        finally { RmDir(ws); }
+    }
+
+    [Fact]
+    public void Large_file_write_preserves_unchanged_lines_in_the_bounded_diff_fallback()
+    {
+        var ws = TempDir();
+        var original = string.Concat(Enumerable.Range(1, 1500).Select(i => $"linea-{i}\n"));
+        var path = Path.Combine(ws, "doc.txt");
+        File.WriteAllText(path, original);
+        try
+        {
+            var boundary = new ModelCapabilityBoundary(CustomEffective(
+                Mutation(FileMutationMode.PatchAndCreate, 10, 2, 0.01, requirePriorRead: true)));
+            var executor = Pipeline(ws, boundary);
+            Assert.True(executor.ExecuteToolWithoutJournal(ReadCall("doc.txt"), false,
+                TestContext.Current.CancellationToken).Succeeded);
+            var desired = original.Replace("linea-5\n", "linea-5-X\n", StringComparison.Ordinal);
+
+            var result = executor.ExecuteToolWithoutJournal(WriteCall("doc.txt", desired, VersionOf(original)), false,
+                TestContext.Current.CancellationToken);
+
+            Assert.True(result.Succeeded, result.Summary);
+            Assert.Equal(desired, File.ReadAllText(path));
+            Assert.Single(result.Events.OfType<MutationBudgetCharged>());
+            Assert.Equal(2, boundary.ReadRegistry().Ledger.ChangedLinesThisTurn);
+        }
+        finally { RmDir(ws); }
+    }
+
+    [Fact]
+    public void Existing_write_rejects_a_hunk_outside_the_visible_read_page()
+    {
+        var ws = TempDir();
+        var original = string.Concat(Enumerable.Range(1, 20).Select(i => $"linea-{i}\n"));
+        var path = Path.Combine(ws, "doc.txt");
+        File.WriteAllText(path, original);
+        try
+        {
+            var boundary = new ModelCapabilityBoundary(CustomEffective(
+                Mutation(FileMutationMode.Full, 10, 100, 1.0, requirePriorRead: true)));
+            var executor = Pipeline(ws, boundary);
+            var firstPage = new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.read"), "pc-read",
+                "{\"path\":\"doc.txt\",\"offset\":1,\"limit\":2}");
+            Assert.True(executor.ExecuteToolWithoutJournal(firstPage, false,
+                TestContext.Current.CancellationToken).Succeeded);
+
+            var desired = original.Replace("linea-18", "linea-18-editada", StringComparison.Ordinal);
+            var result = executor.ExecuteToolWithoutJournal(WriteCall("doc.txt", desired, VersionOf(original)), false,
+                TestContext.Current.CancellationToken);
+
+            Assert.False(result.Succeeded, result.Summary);
+            Assert.Contains("PRIOR_READ_REQUIRED", result.Summary);
+            Assert.Equal(original, File.ReadAllText(path));
+            Assert.Equal(0, boundary.ReadRegistry().Ledger.MutationsThisRun);
+        }
+        finally { RmDir(ws); }
+    }
+
+    [Fact]
+    public void Existing_write_respects_patch_permission_deny_even_when_write_is_allowed()
+    {
+        var ws = TempDir();
+        var original = EightLineFile();
+        var path = Path.Combine(ws, "doc.txt");
+        File.WriteAllText(path, original);
+        try
+        {
+            var boundary = new ModelCapabilityBoundary(CustomEffective(
+                Mutation(FileMutationMode.PatchAndCreate, 10, 100, 1.0, requirePriorRead: false)));
+            var executor = Pipeline(ws, boundary, patchDecision: PermissionDecision.Deny);
+            var result = executor.ExecuteToolWithoutJournal(
+                WriteCall("doc.txt", original.Replace("linea-3", "linea-3-X", StringComparison.Ordinal), VersionOf(original)),
+                false, TestContext.Current.CancellationToken);
+
+            Assert.False(result.Succeeded, result.Summary);
+            Assert.Equal(ToolCallState.Rejected, result.FinalState);
+            Assert.Equal(original, File.ReadAllText(path));
+            Assert.Equal(0, boundary.ReadRegistry().Ledger.MutationsThisRun);
+        }
+        finally { RmDir(ws); }
+    }
+
+    [Fact]
+    public void Existing_write_patch_ask_uses_one_approval_and_one_mutation_effect()
+    {
+        var ws = TempDir();
+        var original = EightLineFile();
+        var path = Path.Combine(ws, "doc.txt");
+        File.WriteAllText(path, original);
+        try
+        {
+            var boundary = new ModelCapabilityBoundary(CustomEffective(
+                Mutation(FileMutationMode.PatchAndCreate, 10, 100, 1.0, requirePriorRead: false)));
+            var executor = Pipeline(ws, boundary, patchDecision: PermissionDecision.Ask);
+            var result = executor.ExecuteToolWithoutJournal(
+                WriteCall("doc.txt", original.Replace("linea-3", "linea-3-X", StringComparison.Ordinal), VersionOf(original)),
+                true, TestContext.Current.CancellationToken);
+
+            Assert.True(result.Succeeded, result.Summary);
+            Assert.Single(result.Events.OfType<InteractionRequested>());
+            Assert.Single(result.Events.OfType<ToolCallAuthorized>());
+            Assert.Single(result.Events.OfType<MutationBudgetCharged>());
+            Assert.Contains("linea-3-X", File.ReadAllText(path));
+        }
+        finally { RmDir(ws); }
+    }
+
+    [Theory]
+    [InlineData("a\nb\n", "a\nb\nend\n")]
+    [InlineData("a\nb\n", "start\na\nb\n")]
+    [InlineData("", "empty-file-content\n")]
+    [InlineData("same\nsame\n", "same\nsame-edited\n")]
+    [InlineData("a", "b")]
+    public void Existing_write_diff_hunks_handle_edges_empty_files_and_repeated_lines(string original, string desired)
+    {
+        var ws = TempDir();
+        var path = Path.Combine(ws, "doc.txt");
+        File.WriteAllText(path, original);
+        try
+        {
+            var boundary = new ModelCapabilityBoundary(CustomEffective(
+                Mutation(FileMutationMode.PatchAndCreate, 10, 20, 1.0, requirePriorRead: true)));
+            var executor = Pipeline(ws, boundary);
+            Assert.True(executor.ExecuteToolWithoutJournal(ReadCall("doc.txt"), false,
+                TestContext.Current.CancellationToken).Succeeded);
+
+            var result = executor.ExecuteToolWithoutJournal(WriteCall("doc.txt", desired, VersionOf(original)), false,
+                TestContext.Current.CancellationToken);
+            Assert.True(result.Succeeded, result.Summary);
+            Assert.Equal(desired, File.ReadAllText(path));
+            Assert.Single(result.Events.OfType<MutationBudgetCharged>());
+        }
+        finally { RmDir(ws); }
+    }
+
+    [Fact]
+    public void Existing_write_charges_two_separated_hunks_without_the_unchanged_gap()
+    {
+        var ws = TempDir();
+        var original = string.Concat(Enumerable.Range(1, 100).Select(i => $"linea-{i}\n"));
+        var path = Path.Combine(ws, "doc.txt");
+        File.WriteAllText(path, original);
+        try
+        {
+            var boundary = new ModelCapabilityBoundary(CustomEffective(
+                Mutation(FileMutationMode.PatchAndCreate, 10, 4, 0.05, requirePriorRead: true)));
+            var executor = Pipeline(ws, boundary);
+            Assert.True(executor.ExecuteToolWithoutJournal(ReadCall("doc.txt"), false,
+                TestContext.Current.CancellationToken).Succeeded);
+            var desired = original.Replace("linea-5\n", "linea-5-X\n", StringComparison.Ordinal)
+                .Replace("linea-95\n", "linea-95-X\n", StringComparison.Ordinal);
+
+            var result = executor.ExecuteToolWithoutJournal(WriteCall("doc.txt", desired, VersionOf(original)), false,
+                TestContext.Current.CancellationToken);
+
+            Assert.True(result.Succeeded, result.Summary);
+            Assert.Equal(desired, File.ReadAllText(path));
+            Assert.Single(result.Events.OfType<MutationBudgetCharged>());
+            Assert.Equal(4, boundary.ReadRegistry().Ledger.ChangedLinesThisTurn);
+        }
+        finally { RmDir(ws); }
     }
 
     // ==================================================================== 6. Validación post-edición
