@@ -229,7 +229,7 @@ public sealed class ProcessExecToolsTests
     }
 
     [Fact]
-    public void Output_is_capped_and_known_secrets_are_redacted()
+    public void Output_is_capped_while_private_results_preserve_known_secrets()
     {
         var workspace = TempDir();
         try
@@ -246,7 +246,7 @@ public sealed class ProcessExecToolsTests
                 new ToolPreparationContext(workspace, DateTimeOffset.UtcNow), new ToolExecutionContext(workspace),
                 false, CancellationToken.None);
             Assert.True(outcome.Succeeded);
-            Assert.DoesNotContain("known-secret-value-123", outcome.Preview);
+            Assert.Contains("known-secret-value-123", outcome.Preview);
             Assert.Contains("output capped", outcome.Preview);
             Assert.True(outcome.Preview!.Length < 16_500);
         }

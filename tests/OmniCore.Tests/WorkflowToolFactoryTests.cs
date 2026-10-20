@@ -2,6 +2,7 @@ using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Engine;
 using OmniCore.Execution;
+using OmniCore.Extensions;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
 using OmniCore.Protocol;
@@ -30,6 +31,28 @@ public sealed class WorkflowToolFactoryTests
         Assert.NotNull(implement.Find(new ToolId("filesystem.write")));
         Assert.NotNull(implement.Find(new ToolId("filesystem.patch")));
         Assert.Null(verify.Find(new ToolId("shell.exec")));
+    }
+
+    [Fact]
+    public void Production_boundary_classifies_skill_load_under_plan_proposal_without_other_grants()
+    {
+        var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
+            includeMutationTools: false);
+        var session = SessionId.New();
+        hostTools.RegisterSkillLoadTool(new SkillLoadTool(session,
+            new SessionSkillActivationStore(Path.Combine(Path.GetTempPath(), "skill-boundary-" + Guid.NewGuid().ToString("N"))),
+            new SkillManifestLoader(), Array.Empty<DiscoveredSkill>(), new SkillSelectionLimits(2, 2048)));
+        var catalog = hostTools.Catalog();
+        var boundary = OmniCliRuntime.CreateBoundary(EffectiveObservePolicy(), Path.GetTempPath(), catalog);
+        var skill = catalog.Find(new ToolId("skill.load"));
+        Assert.NotNull(skill);
+        Assert.True(boundary.IsToolVisible("skill.load"));
+        var decision = boundary.Evaluate(new ToolIntent(ToolCallId.New(), skill!.Descriptor.Id, "{}",
+            EffectClass.None, ResourceClaims.Empty(), ToolRisk.Low, null));
+        Assert.True(decision.Allowed, decision.Reason);
+        Assert.Equal(ModelToolCapability.PlanProposal, ModelCapabilityBoundary.CoreTools["skill.load"]);
+        Assert.False(boundary.IsToolVisible("process.exec"));
+        Assert.False(boundary.IsToolVisible("filesystem.write"));
     }
 
     [Fact]

@@ -63,7 +63,6 @@ public sealed class AgentProfileSuspensionIntegrationTests
                 userPreferenceRevision: 1);
             const string fixtureSecret = "sk-super-secret-value";
             var instruction = change == "redacted" ? "system " + fixtureSecret : "system";
-            var safeInstruction = new RedactionPolicy().Redact(instruction);
             var schema = new QuestionnaireSchema("Choose", null,
                 [new QuestionField("choice", "Which?", null, QuestionKind.SingleChoice,
                     [new QuestionOption("safe", "Safe", null)], null, true, null, null, null)]);
@@ -77,9 +76,10 @@ public sealed class AgentProfileSuspensionIntegrationTests
                     calls++;
                     Assert.Equal(requested, request.Reasoning);
                     Assert.True(resolution.IsEquivalentTo(request.Model.ReasoningResolution));
-                    Assert.Contains(safeInstruction, request.Instructions!, StringComparison.Ordinal);
+                    Assert.Contains(instruction, request.Instructions!, StringComparison.Ordinal);
                     Assert.DoesNotContain("changed current instruction", request.Instructions!, StringComparison.Ordinal);
-                    Assert.DoesNotContain(fixtureSecret, request.Instructions!, StringComparison.Ordinal);
+                    if (change == "redacted")
+                        Assert.Contains(fixtureSecret, request.Instructions!, StringComparison.Ordinal);
                     if (suspend)
                         return new ModelResponse([new ToolCallBlock(ToolCallId.New(), "fixture-question", "user.ask",
                             QuestionnaireCodec.EncodeSchema(schema))], StopReason.ToolUse, new TokenUsage(2, 1, 0, 0, 0),
@@ -107,9 +107,11 @@ public sealed class AgentProfileSuspensionIntegrationTests
                 component => component.Name == "agent.profile").Version);
             Assert.Equal(1, calls);
             Assert.Equal(1, durableStarts);
-            Assert.Equal(new TurnInstructionSnapshot(true, safeInstruction), original.InstructionSnapshot);
-            Assert.DoesNotContain(fixtureSecret, Assert.Single(store.ReadFrom(session, 1),
-                evt => codecs.Decode(evt) is TurnStarted).PayloadJson, StringComparison.Ordinal);
+            Assert.Equal(new TurnInstructionSnapshot(true, instruction), original.InstructionSnapshot);
+            var originalStartPayload = Assert.Single(store.ReadFrom(session, 1),
+                evt => codecs.Decode(evt) is TurnStarted).PayloadJson;
+            if (change == "redacted")
+                Assert.Contains(fixtureSecret, originalStartPayload, StringComparison.Ordinal);
             Assert.True(resolution.IsEquivalentTo(original.ReasoningResolution));
             var resolvedComponent = Assert.Single(original.Fingerprint.Components,
                 component => component.Name == "model.reasoning.resolved");

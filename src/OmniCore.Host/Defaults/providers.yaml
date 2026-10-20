@@ -1,7 +1,0 @@
-# Configuración inicial local. Agrega las conexiones desde la interfaz o edita este archivo.
-# Los ejemplos de conexiones de nube están en docs/examples/providers.yaml.
-providers:
-  local:
-    family: OpenAiChatCompatible
-    baseUrl: http://127.0.0.1:8080
-    billingMode: Local

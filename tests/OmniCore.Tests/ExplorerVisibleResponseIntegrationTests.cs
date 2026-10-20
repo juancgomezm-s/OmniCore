@@ -41,7 +41,7 @@ public sealed class ExplorerVisibleResponseIntegrationTests
                 new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), root);
             var requests = new List<ModelRequest>();
             var redaction = new RedactionPolicy();
-            var expected = redaction.Redact(first + second);
+            var expected = first + second;
             var response = new ModelResponse([
                 new ReasoningBlock("private fixture reasoning", ReasoningVisibility.Full, null),
                 new TextBlock(first), new TextBlock(second)], StopReason.EndTurn,

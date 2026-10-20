@@ -49,6 +49,44 @@ public sealed class OpenAiChatCompatibleMediaSerializationTests
             part.GetProperty("image_url").GetProperty("url").GetString()));
     }
 
+    [Fact]
+    public async System.Threading.Tasks.Task Dotted_tool_names_map_in_choice_and_history_and_restore_stream_results()
+    {
+        const string canonical = "filesystem.read";
+        var call = new ToolCallBlock(ToolCallId.New(), "old-call", canonical, "{}");
+        var request = new ModelRequest(new ModelSelection(new ModelIdValue("fixture-model"), 4096,
+                ToolMode.Direct, null),
+            [new ModelMessage(MessageRole.Assistant, [call]),
+                new ModelMessage(MessageRole.Tool, [new ToolResultBlock(call.Id, [new TextBlock("ok")], false)]),
+                new ModelMessage(MessageRole.User, [new TextBlock("again")])],
+            null, [new ToolDefinition(canonical, "read", "{\"type\":\"object\"}")], ToolChoice.Exact(canonical),
+            null, null, null, null);
+        var names = ToolNameWireMap.ForRequest(request, 64);
+        var alias = names.ToWire(canonical);
+        Assert.NotEqual(canonical, alias);
+        Assert.DoesNotContain('.', alias);
+        var handler = new CaptureHandler("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"new-call\",\"function\":{\"name\":\"" + alias + "\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n");
+        var provider = new OpenAiChatCompatibleProvider(new ProviderDescriptor("fixture",
+            ProviderFamily.OpenAiChatCompatible, "https://fixture.invalid/v1", AuthConfig.None(), false, false, true),
+            new NoSecrets(), () => new HttpClient(handler, disposeHandler: false));
+
+        var events = new List<ModelStreamEvent>();
+        await foreach (var item in provider.StreamAsync(request, TestContext.Current.CancellationToken)) events.Add(item);
+
+        using var body = JsonDocument.Parse(handler.Body!);
+        var root = body.RootElement;
+        Assert.Equal(alias, root.GetProperty("tools")[0].GetProperty("function").GetProperty("name").GetString());
+        Assert.Equal(alias, root.GetProperty("tool_choice").GetProperty("function").GetProperty("name").GetString());
+        var historical = root.GetProperty("messages")[0].GetProperty("tool_calls")[0]
+            .GetProperty("function").GetProperty("name").GetString();
+        Assert.Equal(alias, historical);
+        var responseCall = Assert.Single(Assert.IsType<ResponseCompleted>(events[^1]).Response.Content
+            .OfType<ToolCallBlock>());
+        Assert.Equal(canonical, responseCall.ToolName);
+        Assert.Equal(canonical, Assert.Single(events.OfType<BlockCompleted>()
+            .Select(item => item.Block).OfType<ToolCallBlock>()).ToolName);
+    }
+
     private sealed class NoSecrets : ISecretProvider
     {
         public Secret GetSecret(string secretRef, CancellationToken cancellationToken) => Secret.Of("");
@@ -57,13 +95,16 @@ public sealed class OpenAiChatCompatibleMediaSerializationTests
     private sealed class CaptureHandler : HttpMessageHandler
     {
         public string? Body { get; private set; }
+        private readonly string _response;
+        public CaptureHandler(string? response = null) => _response = response ??
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
         protected override async System.Threading.Tasks.Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             Body = await request.Content!.ReadAsStringAsync(cancellationToken);
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+                Content = new StringContent(_response,
                     Encoding.UTF8, "text/event-stream"),
             };
         }

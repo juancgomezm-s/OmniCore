@@ -111,8 +111,8 @@ public sealed class ExplorerCommandTests
             var run = server.LastRunId()!;
             var inputStream = new EventStream(store, codecs, session);
             inputStream.Append(new UserInputReceived(run, "\"kept initial context\"", null));
-            var longHistory = string.Join(" ", Enumerable.Repeat("prior-context-material-that-must-be-trimmed", 600));
-            for (var i = 0; i < 5; i++)
+            var longHistory = string.Join(" ", Enumerable.Repeat("prior-context-material-that-must-be-trimmed", 100));
+            for (var i = 0; i < 20; i++)
                 inputStream.Append(new UserInputReceived(run, "\"" + JsonObj.Escape(longHistory) + "\"", null));
 
             var tools = OmniHost.CreateExplorerTools();
@@ -122,10 +122,12 @@ public sealed class ExplorerCommandTests
             var fingerprint = new ExecutionFingerprint("context-test", "h", "t", "c", "o", "M2");
             var turn = new ExplorerTurn((request, token) => FakeResponses.PlanThenEnd(request), executor,
                 tools.Catalog(), new ContextMaterializer(new FakeTokenCounter(), Array.Empty<IContextContributor>()),
-                fingerprint, new ModelSelection(new ModelIdValue("context-test"), 256, ToolMode.Direct, null),
+                fingerprint, new ModelSelection(new ModelIdValue("context-test"), 1536, ToolMode.Direct, null),
                 store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy());
-            turn.Ask(objective, "Explain. {context}", session, run, server.LastLaneId()!,
+            var turnResult = turn.Ask(objective, "Explain. {context}", session, run, server.LastLaneId()!,
                 "runtime-owned", CancellationToken.None);
+            Assert.True(turnResult.StopReason == StopReason.EndTurn,
+                turnResult.FinalText ?? turnResult.FailureDiagnostic ?? turnResult.StopReason.ToString());
 
             var result = server.Query("context", CancellationToken.None)!.Json;
             using var snapshot = System.Text.Json.JsonDocument.Parse(result);
@@ -143,8 +145,8 @@ public sealed class ExplorerCommandTests
             Assert.Equal("estimated", item.GetProperty("tokenAccuracy").GetString());
             Assert.False(item.TryGetProperty("content", out _));
             Assert.Contains(root.GetProperty("diagnostics").EnumerateArray(), diagnostic =>
-                diagnostic.GetProperty("decision").GetString() == "OmittedByBudget"
-                && diagnostic.GetProperty("reason").GetString() == "omitted by context budget");
+                diagnostic.GetProperty("decision").GetString() == "Compacted"
+                && diagnostic.GetProperty("reason").GetString() == "covered by context checkpoint");
         }
         finally
         {

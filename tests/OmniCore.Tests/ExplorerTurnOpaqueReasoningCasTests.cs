@@ -95,18 +95,17 @@ public sealed class ExplorerTurnOpaqueReasoningCasTests
             Assert.Equal(new[] { "valid", "missing", "corrupt", "kind", "sensitivity", "algorithm", "size", "redacted" },
                 reasonings.Select(item => item.VisibleText!.Split(' ')[0]));
             Assert.Equal(valid, reasonings[0].OpaquePayload);
-            Assert.DoesNotContain("sk-super-secret-value", reasonings[0].VisibleText);
+            Assert.Contains("sk-super-secret-value", reasonings[0].VisibleText);
             foreach (var invalid in reasonings.Skip(1))
             {
                 Assert.Null(invalid.OpaquePayload);
-                Assert.DoesNotContain("sk-super-secret-value", invalid.VisibleText);
+                Assert.Contains("sk-super-secret-value", invalid.VisibleText);
             }
             Assert.Equal("[estado opaco del provider omitido]", Assert.IsType<TextBlock>(blocks[9]).Text);
             var retainedCall = Assert.IsType<ToolCallBlock>(blocks[10]);
             var trailing = Assert.IsType<TextBlock>(blocks[11]);
             Assert.StartsWith("after", trailing.Text, StringComparison.Ordinal);
-            foreach (var visible in blocks.OfType<TextBlock>())
-                Assert.DoesNotContain("sk-super-secret-value", visible.Text);
+            Assert.Contains("sk-super-secret-value", string.Join(" ", blocks.OfType<TextBlock>().Select(block => block.Text)));
             Assert.DoesNotContain(blocks, block => block is ProviderOpaqueBlock);
             Assert.Equal("fake.read", retainedCall.ToolName);
 

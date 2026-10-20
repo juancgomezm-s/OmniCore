@@ -100,7 +100,10 @@ public sealed record SessionSecurityPolicySet(
             || CapabilityCeiling is null || CapabilityCeiling.Count > Enum.GetValues<ModelToolCapability>().Length
             || CapabilityCeiling.Any(capability => !Enum.IsDefined(capability))
             || CapabilityCeiling.Distinct().Count() != CapabilityCeiling.Count
-            || MaxVisibleTools is < 0 or > 64
+            // FullAgent's explicit full catalog uses the same unbounded sentinel as
+            // ModelToolPolicy. Other numeric caps and categories retain their bounds.
+            || MaxVisibleTools < 0 || MaxVisibleTools > 64
+                && !(Category == ModelPolicyCategory.FullAgent && MaxVisibleTools == int.MaxValue)
             || MaxFilesPerTurn < 0 || MaxChangedLinesPerTurn < 0
             || !double.IsFinite(MaxRewriteRatio) || MaxRewriteRatio is < 0 or > 1
             || FileMutationMode == OmniCore.Domain.FileMutationMode.None && (MaxFilesPerTurn != 0 || MaxChangedLinesPerTurn != 0)

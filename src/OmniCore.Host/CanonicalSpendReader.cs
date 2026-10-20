@@ -30,7 +30,10 @@ internal sealed class CanonicalSpendReader(IEventCodecRegistry codecs, IArtifact
                 {
                     if (string.IsNullOrWhiteSpace(start.InvocationId) || string.IsNullOrWhiteSpace(start.Operation)
                         || string.IsNullOrWhiteSpace(start.ModelFingerprint) || evt.RunId != start.RunId
-                        || start.InputArtifact is not { } input || input.Kind != ArtifactKind.Other
+                        // Current summaries retain their private input as context snapshots;
+                        // older journals used Other. Both still require verified CAS evidence.
+                        || start.InputArtifact is not { } input
+                        || input.Kind is not (ArtifactKind.ContextSnapshot or ArtifactKind.Other)
                         || !artifacts.Verify(input.Hash, input.Size)
                         || !starts.TryAdd((evt.SessionId, start.InvocationId), (evt, start))) incomplete = true;
                     continue;

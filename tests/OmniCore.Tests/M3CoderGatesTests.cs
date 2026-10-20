@@ -97,7 +97,7 @@ public sealed class M3CoderGatesTests
         var ack = server.Send(WireEnvelope.Command(Ids.NewV7(), "{" + JsonObj.Field("cmd", "act") + ","
             + JsonObj.Field("objective", "corrige este test") + "," + JsonObj.Field("workspace", workspace) + "}"),
             CancellationToken.None);
-        Assert.Equal("ok", ack.Status);
+        Assert.True(ack.Status == "ok", ack.Error);
         var events = store.ReadFrom(server.LastSessionId()!, 1);
         var run = RunProjection.Replay(server.LastSessionId()!, server.LastRunId()!, EventCodecs.Create(), events);
         return new RunContext(server, store, server.LastSessionId()!, server.LastRunId()!,

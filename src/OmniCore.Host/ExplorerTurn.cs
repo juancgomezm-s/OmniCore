@@ -698,6 +698,7 @@ public sealed class ExplorerTurn
             return new TurnResult("Cannot execute Turn: durable AgentProfile revision or content differs from its applied configuration.",
                 StopReason.Error, 0, new TokenUsage(0, 0, 0, 0, 0), Array.Empty<ToolUseTrace>(), null);
         var discoveredToolIds = new HashSet<string>(StringComparer.Ordinal);
+        var discoveredToolOrder = new List<string>();
         var lifecycleAnnotations = new List<ContextItem>();
         var lifecycleAnnotationIds = new HashSet<string>(StringComparer.Ordinal);
         var lifecycleDeniedToolIds = new HashSet<string>(StringComparer.Ordinal);
@@ -722,7 +723,13 @@ public sealed class ExplorerTurn
                 new HookContext(point, toolId, redactedArguments, point.ToString()), cancellationToken)
                 .AsTask().GetAwaiter().GetResult();
             foreach (var annotation in result.Annotations)
-                if (lifecycleAnnotationIds.Add(annotation.Id)) lifecycleAnnotations.Add(annotation);
+                if (lifecycleAnnotationIds.Add(annotation.Id))
+                    // Hook annotations are derived context, not canonical conversation.
+                    // Keep their existing credential boundary without altering user/model text.
+                    lifecycleAnnotations.Add(new ContextItem(annotation.Id, annotation.Kind,
+                        _redaction.Redact(annotation.Content), annotation.EstimatedTokens,
+                        annotation.Priority, annotation.Retention, annotation.Provenance,
+                        annotation.PreserveWhenTrimming, annotation.TokenBudgetOverhead));
             lifecycleDeniedTurn |= result.Denied;
             lifecycleDeniedToolIds.UnionWith(result.DeniedToolIds);
             foreach (var validation in result.Validations)
@@ -796,7 +803,7 @@ public sealed class ExplorerTurn
             return allPassed;
         }
         var preparedTurnFingerprint = _recordEffectiveFingerprint
-            ? RuntimeFingerprintFactory.PrepareTurnConfiguration(_fingerprint, _catalog, VisibleTools(discoveredToolIds),
+            ? RuntimeFingerprintFactory.PrepareTurnConfiguration(_fingerprint, _catalog, VisibleTools(discoveredToolIds, discoveredToolOrder),
                 EffectiveSystemPrompt(instruction), PlanProjection.Replay(_codecs, initialPlanEvents).Latest(), _artifacts,
                 laneProfileId, _activeSkills, _resolvedAgentProfile, fingerprintAuthority, instructionSnapshot,
                 reasoningResolution, _toolPreferences)
@@ -821,7 +828,7 @@ public sealed class ExplorerTurn
         string? recoveredPlanError = null;
         if (isResume && _selection.ToolMode == ToolMode.Discovered
             && TryRecoverDiscoveredToolPlan(stream, new TurnId(resumedTurnId!.Value), instruction, initialPlanEvents, laneProfileId,
-                fingerprintAuthority, instructionSnapshot, reasoningResolution, discoveredToolIds,
+                fingerprintAuthority, instructionSnapshot, reasoningResolution, discoveredToolIds, discoveredToolOrder,
                 out recoveredPlan, out recoveredPlanError))
         {
             stepFingerprint = recoveredPlan!.Fingerprint;
@@ -861,7 +868,7 @@ public sealed class ExplorerTurn
         IReadOnlyList<ToolDefinition> RequestTools() => dedicatedImageRoute
             ? Array.Empty<ToolDefinition>()
             : ReadTurnToolCallCount(stream, turnId) >= EffectiveMaxToolCalls()
-            ? Array.Empty<ToolDefinition>() : VisibleTools(discoveredToolIds)
+            ? Array.Empty<ToolDefinition>() : VisibleTools(discoveredToolIds, discoveredToolOrder)
                 .Where(tool => !lifecycleDeniedToolIds.Contains(tool.Name)).ToArray();
         void RefreshStepFingerprint(IReadOnlyList<ToolDefinition> requestTools)
         {
@@ -1736,7 +1743,8 @@ public sealed class ExplorerTurn
                 // Se mantiene la redacción vigente; el replay opaco requiere una política aparte.
                 messages.Add(PreserveMessage(new ModelMessage(MessageRole.Assistant, resolved.Content)));
 
-                var pendingDiscoveredToolIds = new HashSet<string>(StringComparer.Ordinal);
+                var pendingDiscoveredToolIds = new List<string>();
+                var pendingDiscoveredToolIdSet = new HashSet<string>(StringComparer.Ordinal);
                 foreach (ToolCallBlock call in toolBlocks)
                 {
                     if (lifecycleDeniedTurn)
@@ -1758,7 +1766,7 @@ public sealed class ExplorerTurn
                         call.ProviderCallId ?? call.Id.ToString(), call.ArgumentsJson);
                     var exposed = ReadTurnToolCallCount(stream, turnId) < EffectiveMaxToolCalls()
                         && !lifecycleDeniedToolIds.Contains(call.ToolName)
-                        && VisibleTools(discoveredToolIds).Any(tool => tool.Name == call.ToolName);
+                        && VisibleTools(discoveredToolIds, discoveredToolOrder).Any(tool => tool.Name == call.ToolName);
                     var redactedArguments = SafeToolArguments(call.ToolName, call.ArgumentsJson);
                     var hookDecision = exposed
                         ? DispatchLifecycle(LifecyclePoint.BeforeTool, call.ToolName, redactedArguments)
@@ -1847,7 +1855,7 @@ public sealed class ExplorerTurn
                                     var tool = _catalog.Find(new ToolId(toolId));
                                     if (tool is not null && tool.Descriptor.Source.Trust != TrustLevel.Untrusted
                                         && (_boundary is null || _boundary.IsToolVisible(toolId)))
-                                        pendingDiscoveredToolIds.Add(toolId);
+                                        if (pendingDiscoveredToolIdSet.Add(toolId)) pendingDiscoveredToolIds.Add(toolId);
                                 }
                             }
                         }
@@ -2076,13 +2084,23 @@ public sealed class ExplorerTurn
                 // Apply catalog selections only after this entire model response has been handled.
                 // A tool discovered by one call cannot authorize a sibling call from the same response.
                 var addedDiscoveredTool = false;
+                var newlyDiscoveredInOrder = new List<string>();
                 foreach (var toolId in pendingDiscoveredToolIds)
-                    addedDiscoveredTool |= discoveredToolIds.Add(toolId);
+                {
+                    var wasKnown = !discoveredToolIds.Add(toolId);
+                    var oldIndex = discoveredToolOrder.IndexOf(toolId);
+                    if (wasKnown && oldIndex == 0) continue;
+                    if (oldIndex >= 0) discoveredToolOrder.RemoveAt(oldIndex);
+                    newlyDiscoveredInOrder.Add(toolId);
+                    addedDiscoveredTool = true;
+                }
+                if (newlyDiscoveredInOrder.Count > 0)
+                    discoveredToolOrder.InsertRange(0, newlyDiscoveredInOrder);
                 if (addedDiscoveredTool)
                 {
                     var replayedPlan = PlanProjection.Replay(_codecs, initialPlanEvents).Latest();
                     var preparedStepFingerprint = RuntimeFingerprintFactory.PrepareTurnConfiguration(_fingerprint,
-                        _catalog, VisibleTools(discoveredToolIds), EffectiveSystemPrompt(instruction), replayedPlan,
+                        _catalog, VisibleTools(discoveredToolIds, discoveredToolOrder), EffectiveSystemPrompt(instruction), replayedPlan,
                         _artifacts, laneProfileId, _activeSkills, _resolvedAgentProfile, fingerprintAuthority,
                 instructionSnapshot, reasoningResolution, _toolPreferences);
                     stepFingerprint = preparedStepFingerprint.Fingerprint;
@@ -3461,6 +3479,7 @@ public sealed class ExplorerTurn
         IReadOnlyList<DomainEvent> initialPlanEvents, ProfileId? laneProfileId,
         RunModeAuthority? fingerprintAuthority, TurnInstructionSnapshot? instructionSnapshot,
         ReasoningResolution? reasoningResolution, HashSet<string> discoveredToolIds,
+        List<string> discoveredToolOrder,
         out RuntimeFingerprintFactory.PreparedRuntimeFingerprint? recovered, out string? error)
     {
         recovered = null;
@@ -3516,14 +3535,14 @@ public sealed class ExplorerTurn
                     || _boundary is not null && !_boundary.IsToolVisible(toolId))
                     throw new InvalidDataException("Persisted request tool is no longer eligible.");
                 savedDefinitions.Add(new ToolDefinition(visibleName!, description, schema));
-                if (!initialIds.Contains(toolId)) discoveredToolIds.Add(toolId);
+                if (!initialIds.Contains(toolId) && discoveredToolIds.Add(toolId)) discoveredToolOrder.Add(toolId);
             }
 
             // A ModelStep can intentionally receive no tools when the per-Turn call cap is
             // exhausted. Otherwise its persisted request set must still be the exact live plan.
             if (savedDefinitions.Count > 0)
             {
-                var expected = VisibleTools(discoveredToolIds);
+                var expected = VisibleTools(discoveredToolIds, discoveredToolOrder);
                 if (!EquivalentToolDefinitions(savedDefinitions, expected))
                     throw new InvalidDataException("Persisted request tool schemas differ from the current effective plan.");
             }
@@ -4460,7 +4479,8 @@ public sealed class ExplorerTurn
             throw new InvalidOperationException("El Run no admite input en estado " + state);
     }
 
-    private IReadOnlyList<ToolDefinition> VisibleTools(IReadOnlySet<string>? discoveredToolIds = null)
+    private IReadOnlyList<ToolDefinition> VisibleTools(IReadOnlySet<string>? discoveredToolIds = null,
+        IReadOnlyList<string>? discoveredToolOrder = null)
     {
         var definitions = _catalog.Definitions();
         if (_selection.ToolMode != ToolMode.Discovered)
@@ -4513,7 +4533,9 @@ public sealed class ExplorerTurn
                 throw new WorkflowStageToolDisclosureException(workflowStage.Stage,
                     "visible_tool_limit_too_small");
 
-            var stagePriority = prerequisites.Concat(required).Distinct(StringComparer.Ordinal).ToArray();
+            var stagePriority = prerequisites.Concat(required)
+                .Concat(DiscoveryPromotion(discoveredToolIds, discoveredToolOrder))
+                .Distinct(StringComparer.Ordinal).ToArray();
             if (_boundary is not null)
                 visible = _boundary.VisibleTools(definitions, ranks, stagePriority);
             else
@@ -4530,11 +4552,26 @@ public sealed class ExplorerTurn
                 throw new WorkflowStageToolDisclosureException(workflowStage.Stage,
                     "required_tool_not_disclosed");
         }
-        else if (_boundary is not null) visible = _boundary.VisibleTools(definitions, ranks);
+        else if (_boundary is not null)
+        {
+            var promotion = DiscoveryPromotion(discoveredToolIds, discoveredToolOrder);
+            visible = promotion.Count == 0
+                ? _boundary.VisibleTools(definitions, ranks)
+                : _boundary.VisibleTools(definitions, ranks, promotion);
+        }
         else
         {
             IEnumerable<ToolDefinition> all = definitions;
-            if (ranks is not null) all = all.OrderBy(tool => ranks.GetValueOrDefault(tool.Name, int.MaxValue));
+            var promotion = DiscoveryPromotion(discoveredToolIds, discoveredToolOrder);
+            if (promotion.Count > 0)
+            {
+                var promotedRanks = promotion.Select((name, index) => (name, index))
+                    .ToDictionary(item => item.name, item => item.index, StringComparer.Ordinal);
+                all = all.OrderBy(tool => promotedRanks.GetValueOrDefault(tool.Name, int.MaxValue))
+                    .ThenBy(tool => ranks?.GetValueOrDefault(tool.Name, int.MaxValue) ?? int.MaxValue);
+            }
+            else if (ranks is not null)
+                all = all.OrderBy(tool => ranks.GetValueOrDefault(tool.Name, int.MaxValue));
             var limited = new List<ToolDefinition>();
             foreach (var tool in all)
             {
@@ -4542,6 +4579,33 @@ public sealed class ExplorerTurn
                 limited.Add(tool);
             }
             visible = limited;
+        }
+
+        IReadOnlyList<string> DiscoveryPromotion(IReadOnlySet<string>? discoveredToolIds,
+            IReadOnlyList<string>? discoveredToolOrder)
+        {
+            if (discoveredToolIds is null || discoveredToolIds.Count == 0) return Array.Empty<string>();
+            // Keep the newest candidate ahead of older discoveries so the visible cap cannot
+            // permanently starve a newly found tool. Reserve the next slot for tool.search
+            // when no filesystem.read prerequisite is needed, allowing another search under
+            // small caps. Existing boundary filtering and cap still apply after ordering.
+            var ordered = discoveredToolOrder is { Count: > 0 }
+                ? discoveredToolOrder.Where(discoveredToolIds.Contains)
+                    .Concat(discoveredToolIds.Except(discoveredToolOrder, StringComparer.Ordinal).Order(StringComparer.Ordinal))
+                : discoveredToolIds.Order(StringComparer.Ordinal);
+            var recentCandidate = ordered.FirstOrDefault();
+            var needsRead = recentCandidate is "filesystem.patch" or "filesystem.write"
+                or "filesystem.delete" or "filesystem.move";
+            var visibleLimit = _boundary?.MaxVisibleTools() ?? _harness?.MaxVisibleTools ?? Int32.MaxValue;
+            if (needsRead && visibleLimit < 2)
+                throw new InvalidOperationException(
+                    "Cannot disclose discovered file mutation tools: the visible-tool cap cannot include both filesystem.read and the candidate.");
+            var recent = ordered.Take(1).ToArray();
+            return (needsRead ? new[] { "filesystem.read" } : Array.Empty<string>())
+                .Concat(recent)
+                .Concat(new[] { "tool.search" })
+                .Concat(ordered.Skip(recent.Length))
+                .Distinct(StringComparer.Ordinal).ToArray();
         }
 
         // An explicitly selected human extension command may be outside the ordinary

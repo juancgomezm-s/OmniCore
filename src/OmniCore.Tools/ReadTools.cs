@@ -91,8 +91,8 @@ public sealed class ReadFileTool : ITool
         }
 
         // Token de versión: SHA-256 de los BYTES REALES (no del string decodificado), calculado
-        // ANTES de redactar/truncar, para que coincida con la verificación de filesystem.patch
-        // (ADR-0044 §5) aunque el contenido expuesto al modelo se recorte o se redacta.
+        // ANTES de paginar/truncar, para que coincida con la verificación de filesystem.patch
+        // (ADR-0044 §5) aunque el contenido expuesto al modelo se recorte.
         var bytes = File.ReadAllBytes(full);
         var version = FileVersion.VersionToken(bytes);
 
@@ -114,7 +114,7 @@ public sealed class ReadFileTool : ITool
                     ("offset", offsetValue), ("limit", limitValue))));
 
         // Las páginas siempre son líneas completas. Offset es 1-based y el token identifica
-        // los bytes del archivo entero, aunque solo se devuelva una página redactada.
+        // los bytes del archivo entero, aunque solo se devuelva una página.
         var lineRanges = GetLineRanges(decoded.Text);
         var start = Math.Min(offset - 1, lineRanges.Count);
         var pageCount = Math.Min(limit, lineRanges.Count - start);
@@ -250,6 +250,7 @@ public sealed class ReadFileTool : ITool
 /// </summary>
 public sealed class ListDirectoryTool : ITool
 {
+    private const int HardCapMaxEntries = 2000;
     private readonly ToolDescriptor _descriptor;
     private readonly IPathBoundaryValidator _boundary;
 
@@ -259,7 +260,7 @@ public sealed class ListDirectoryTool : ITool
         _descriptor = new ToolDescriptor(
             new ToolId("filesystem.list"),
             "Lists entries in a directory within the workspace (read-only).",
-            new InputSchema("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"recursive\":{\"type\":\"boolean\"},\"maxEntries\":{\"type\":\"integer\"}},\"additionalProperties\":false}"),
+            new InputSchema("{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"recursive\":{\"type\":\"boolean\"},\"maxEntries\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":2000}},\"additionalProperties\":false}"),
             new string[] { "read" }, true, false, ToolRisk.Low, ComponentSource.Core(), ToolProtection.None);
     }
 
@@ -270,6 +271,10 @@ public sealed class ListDirectoryTool : ITool
         // Prepare es puro: declara las claims de lectura de la ruta concreta pedida (ADR-0014 §3),
         // para que Security evalúe la resource path real (no vacío). La lectura ocurre en Execute.
         var path = ExtractPath(call.NormalizedArgumentsJson) ?? ".";
+        var maxEntries = ExtractInt(call.NormalizedArgumentsJson, "maxEntries", 200);
+        if (maxEntries is < 1 or > HardCapMaxEntries)
+            return new PreparationRejected("maxEntries must be between 1 and " + HardCapMaxEntries + ".", null,
+                ToolErrorCode.InvalidArguments);
 
         // ADR-0018 §4: rutas de secretos (.env, PEM/SSH, credenciales) se REJECT en Prepare:
         // nunca se llega a ejecutar la tool (el journal termina en ToolCallRejected, sin
@@ -293,8 +298,7 @@ public sealed class ListDirectoryTool : ITool
         var path = ExtractPath(intent.Intent.NormalizedArgumentsJson) ?? ".";
         var recursive = ExtractBool(intent.Intent.NormalizedArgumentsJson, "recursive", false);
         var maxEntries = ExtractInt(intent.Intent.NormalizedArgumentsJson, "maxEntries", 200);
-        const int HardCap = 2000;
-        if (maxEntries > HardCap) maxEntries = HardCap;
+        if (maxEntries > HardCapMaxEntries) maxEntries = HardCapMaxEntries;
 
         var full = JoinPath(context.WorkspaceRoot, path);
         if (!_boundary.IsWithin(full, context.WorkspaceRoot))
@@ -517,12 +521,15 @@ public sealed class ListDirectoryTool : ITool
 ///  - un enlace de archivo solo se busca si su destino físico queda dentro del workspace, y la
 ///    coincidencia se reporta en la ruta relativa del enlace;
 ///  - salta archivos de secretos (ADR-0018): su contenido nunca se devuelve;
-///  - salta archivos binarios (byte NUL en los primeros 8 KB) y encodings no soportados;
-///  - el texto de cada coincidencia se trunca a 300 caracteres y se redacta (ADR-0018 §4).
+///  - salta archivos binarios (byte NUL en los primeros 8 KB); los archivos no legibles o con
+///    encoding no soportado se reportan como resultado incompleto con un contador acotado;
+///  - el texto de cada coincidencia se trunca a 300 caracteres; su resultado privado conserva
+///    el contenido literal autorizado (ADR-0018 §4).
 ///
 /// Output JSON serializado con Utf8JsonWriter (nunca concatenación de strings):
-/// {"matches":[{"path":...,"line":...,"text":...}],"truncated":bool}, con path relativo al
-/// workspace (barras '/'), line 1-based y truncated=true si se cortó la búsqueda por el tope.
+/// {"matches":[{"path":...,"line":...,"text":...}],"truncated":bool,"incomplete":bool,
+/// "skipped":n}, con path relativo al workspace (barras '/'), line 1-based y truncated=true si
+/// se cortó la búsqueda por el tope. Incomplete señala entradas que no pudieron leerse.
 /// </summary>
 public sealed class SearchTextTool : ITool
 {
@@ -540,7 +547,7 @@ public sealed class SearchTextTool : ITool
         _descriptor = new ToolDescriptor(
             new ToolId("search.text"),
             "Searches workspace files recursively for a text pattern (read-only) and returns matching lines.",
-            new InputSchema("{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"regex\":{\"type\":\"boolean\"},\"path\":{\"type\":\"string\"},\"glob\":{\"type\":\"string\"},\"maxResults\":{\"type\":\"integer\"},\"caseSensitive\":{\"type\":\"boolean\"}},\"required\":[\"pattern\"],\"additionalProperties\":false}"),
+            new InputSchema("{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"regex\":{\"type\":\"boolean\"},\"path\":{\"type\":\"string\"},\"glob\":{\"type\":\"string\"},\"maxResults\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":1000},\"caseSensitive\":{\"type\":\"boolean\"}},\"required\":[\"pattern\"],\"additionalProperties\":false}"),
             new string[] { "read" },
             true,
             false,
@@ -556,7 +563,11 @@ public sealed class SearchTextTool : ITool
         // Prepare es puro (ADR-0014 §3): solo declara la claim de lectura de la ruta pedida.
         // La búsqueda ocurre en Execute. ADR-0018 §4: una ruta de secretos (.env, claves,
         // credenciales) se rechaza aquí, antes de ejecutar nada (journal → ToolCallRejected).
-        var path = ParseArguments(call.NormalizedArgumentsJson).Path ?? ".";
+        var args = ParseArguments(call.NormalizedArgumentsJson);
+        var path = args.Path ?? ".";
+        if (args.MaxResults is < 1 or > HardCapMaxResults)
+            return new PreparationRejected("maxResults must be between 1 and " + HardCapMaxResults + ".", null,
+                ToolErrorCode.InvalidArguments);
 
         if (path.Length > 0 && new RedactionPolicy().IsSecretPath(path))
         {
@@ -644,6 +655,9 @@ public sealed class SearchTextTool : ITool
 
         var matches = new List<SearchMatch>();
         var truncated = false;
+        var incomplete = false;
+        var skipped = 0;
+        ToolErrorCode? scanFailure = null;
 
         try
         {
@@ -654,7 +668,11 @@ public sealed class SearchTextTool : ITool
                 if (target is not null && MatchesGlob(Path.GetFileName(full), args.Glob))
                 {
                     SearchFile(target, RelativePath(context.WorkspaceRoot, full), pattern, regex,
-                        args.CaseSensitive, maxResults, matches, ref truncated);
+                        args.CaseSensitive, maxResults, matches, ref truncated, ref incomplete, ref skipped,
+                        ref scanFailure);
+                    if (incomplete)
+                        return System.Threading.Tasks.Task.FromResult(ToolResult.Error(scanFailure ?? ToolErrorCode.ToolFailure,
+                            "No se pudo leer el archivo objetivo de la búsqueda: " + path));
                 }
             }
             else
@@ -665,7 +683,8 @@ public sealed class SearchTextTool : ITool
                 if (!IsLink(full))
                 {
                     SearchDirectory(full, NormalizeRelativeBase(path), pattern, regex, args.CaseSensitive,
-                        args.Glob, maxResults, matches, context.WorkspaceRoot, ref truncated);
+                        args.Glob, maxResults, matches, context.WorkspaceRoot, ref truncated,
+                        ref incomplete, ref skipped, ref scanFailure);
                 }
             }
         }
@@ -687,9 +706,10 @@ public sealed class SearchTextTool : ITool
             return byPath != 0 ? byPath : a.Line.CompareTo(b.Line);
         });
 
-        var json = SerializeMatches(matches, truncated);
+        var json = SerializeMatches(matches, truncated, incomplete, skipped);
         return System.Threading.Tasks.Task.FromResult(new ToolResult(
-            truncated ? "truncated (" + matches.Count + " matches)" : "ok (" + matches.Count + " matches)",
+            incomplete ? "partial (" + matches.Count + " matches; skipped " + skipped + ")"
+                : truncated ? "truncated (" + matches.Count + " matches)" : "ok (" + matches.Count + " matches)",
             json,
             null,
             json.Length,
@@ -701,7 +721,7 @@ public sealed class SearchTextTool : ITool
 
     private void SearchDirectory(string fullDir, string relativeDir, string pattern, Regex? regex,
         bool caseSensitive, string? glob, int maxResults, List<SearchMatch> matches, string workspaceRoot,
-        ref bool truncated)
+        ref bool truncated, ref bool incomplete, ref int skipped, ref ToolErrorCode? scanFailure)
     {
         if (truncated)
         {
@@ -719,10 +739,16 @@ public sealed class SearchTextTool : ITool
         }
         catch (UnauthorizedAccessException)
         {
-            return; // subdirectorio ilegible: se omite y se sigue con el resto
+            incomplete = true;
+            skipped = Math.Min(1000, skipped + 1);
+            scanFailure ??= ToolErrorCode.PermissionDenied;
+            return;
         }
         catch (IOException)
         {
+            incomplete = true;
+            skipped = Math.Min(1000, skipped + 1);
+            scanFailure ??= ToolErrorCode.ToolFailure;
             return;
         }
 
@@ -792,14 +818,14 @@ public sealed class SearchTextTool : ITool
                 }
 
                 SearchFile(target, relPath, pattern, regex, caseSensitive, maxResults, matches,
-                    ref truncated);
+                    ref truncated, ref incomplete, ref skipped, ref scanFailure);
                 continue;
             }
 
             if (entry is DirectoryInfo sub)
             {
                 SearchDirectory(sub.FullName, relPath, pattern, regex, caseSensitive, glob, maxResults, matches,
-                    workspaceRoot, ref truncated);
+                    workspaceRoot, ref truncated, ref incomplete, ref skipped, ref scanFailure);
                 continue;
             }
 
@@ -809,12 +835,13 @@ public sealed class SearchTextTool : ITool
             }
 
             SearchFile(fullEntryPath, relPath, pattern, regex, caseSensitive, maxResults, matches,
-                ref truncated);
+                ref truncated, ref incomplete, ref skipped, ref scanFailure);
         }
     }
 
     private static void SearchFile(string filePath, string reportPath, string pattern, Regex? regex,
-        bool caseSensitive, int maxResults, List<SearchMatch> matches, ref bool truncated)
+        bool caseSensitive, int maxResults, List<SearchMatch> matches, ref bool truncated,
+        ref bool incomplete, ref int skipped, ref ToolErrorCode? scanFailure)
     {
         byte[] bytes;
         try
@@ -823,10 +850,16 @@ public sealed class SearchTextTool : ITool
         }
         catch (IOException)
         {
-            return; // el archivo desapareció entre enumeración y lectura: se omite
+            incomplete = true;
+            skipped = Math.Min(1000, skipped + 1);
+            scanFailure ??= ToolErrorCode.ToolFailure;
+            return;
         }
         catch (UnauthorizedAccessException)
         {
+            incomplete = true;
+            skipped = Math.Min(1000, skipped + 1);
+            scanFailure ??= ToolErrorCode.PermissionDenied;
             return;
         }
 
@@ -847,7 +880,10 @@ public sealed class SearchTextTool : ITool
         }
         catch (UnsupportedEncodingException)
         {
-            return; // encoding no soportado o bytes corruptos: se omite
+            incomplete = true;
+            skipped = Math.Min(1000, skipped + 1);
+            scanFailure ??= ToolErrorCode.ToolFailure;
+            return;
         }
 
         var lines = SplitLines(content);
@@ -966,7 +1002,7 @@ public sealed class SearchTextTool : ITool
         return Regex.IsMatch(fileName, pattern, RegexOptions.CultureInvariant);
     }
 
-    private static string SerializeMatches(List<SearchMatch> matches, bool truncated)
+    private static string SerializeMatches(List<SearchMatch> matches, bool truncated, bool incomplete, int skipped)
     {
         // Serializador real (Utf8JsonWriter): escapado correcto, sin concatenación de strings.
         using var output = new MemoryStream();
@@ -985,6 +1021,8 @@ public sealed class SearchTextTool : ITool
 
             writer.WriteEndArray();
             writer.WriteBoolean("truncated", truncated);
+            writer.WriteBoolean("incomplete", incomplete);
+            writer.WriteNumber("skipped", skipped);
             writer.WriteEndObject();
         }
 

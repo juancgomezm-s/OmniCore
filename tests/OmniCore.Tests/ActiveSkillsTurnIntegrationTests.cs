@@ -42,6 +42,13 @@ public sealed class ActiveSkillsTurnIntegrationTests
             var tool = new SkillLoadTool(session, activations, loader, [skill],
                 new SkillSelectionLimits(2, 2048));
             var catalog = new FakeCatalog().Add(tool);
+            var policyKey = ModelPolicyKey.For("fixture", "fixture");
+            var effectivePolicy = EffectiveModelPolicy.Resolve(policyKey,
+                new StoredModelPolicy(policyKey, 1, ModelPolicyPresets.ObserveOnly(), DateTimeOffset.UnixEpoch,
+                    DateTimeOffset.UnixEpoch),
+                new HarnessPolicy(ToolCallFormat.Native, ToolMode.Discovered, 8, GuidanceLevel.Full, 3,
+                    PlanControl.Assisted, 4));
+            var boundary = OmniCliRuntime.CreateBoundary(effectivePolicy, root, catalog);
             var firstRequests = new List<ModelRequest>();
             var responseIndex = 0;
             var firstTurn = new ExplorerTurn((request, _) =>
@@ -54,11 +61,12 @@ public sealed class ActiveSkillsTurnIntegrationTests
                     : new ModelResponse([new TextBlock("loaded")], StopReason.EndTurn,
                         new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null));
             }, ScriptedToolExecutor.WithWorkspace(catalog,
-                    new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()).WithModeDefaults(RunMode.Plan), root), catalog,
+                    new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()).WithModeDefaults(RunMode.Plan), root, boundary), catalog,
                 new ContextMaterializer(new FakeTokenCounter(), [new SkillIndexContributor(session, [skill], true)]),
                 new ExecutionFingerprint("fixture", "h", "t", "c", "o", "fixture-build"),
                 new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null),
-                store, codecs, new FileArtifactStore(root), new InMemoryAuditSink(), new RedactionPolicy());
+                store, codecs, new FileArtifactStore(root), new InMemoryAuditSink(), new RedactionPolicy(),
+                boundary: boundary);
             Assert.Equal(StopReason.EndTurn,
                 firstTurn.Ask("Use compile.safe", "system", session, run.RunId, run.RootLane, "", CancellationToken.None).StopReason);
             Assert.Contains(firstRequests[0].Tools, definition => definition.Name == "skill.load");

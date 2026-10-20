@@ -1013,6 +1013,7 @@ public sealed class CliApp
 
     private static Task<int> RunTui(string[] args)
     {
+        OmniHost.InitializeUserConfigurationExamples(OmniHost.CreatePlatformPaths().ConfigDirectory);
         var client = Runtime.Connect(CancellationToken.None);
         if (args.Any(a => a == "--sim"))
         {

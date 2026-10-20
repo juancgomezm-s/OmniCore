@@ -5,6 +5,7 @@ using OmniCore.Client;
 using OmniCore.Domain;
 using OmniCore.Engine;
 using OmniCore.Execution;
+using OmniCore.Extensions;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
 using OmniCore.Security;
@@ -257,6 +258,7 @@ public sealed class ToolDiscoveryTurnIntegrationTests
         try
         {
             var catalog = new FakeCatalog().Add(FakeTool.Read("fixture.git.read"));
+            catalog.Add(new ReadFileTool(new PathBoundaryValidator()));
             catalog.Add(new ToolSearchTool(catalog));
             var store = new InMemoryEventStore();
             var codecs = EventCodecs.Create();
@@ -293,7 +295,7 @@ public sealed class ToolDiscoveryTurnIntegrationTests
                 baseline,
                 new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Discovered, null),
                 store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
-                new HarnessPolicy(ToolCallFormat.Native, ToolMode.Discovered, 8, GuidanceLevel.Full, 1,
+                new HarnessPolicy(ToolCallFormat.Native, ToolMode.Discovered, 2, GuidanceLevel.Full, 1,
                     PlanControl.Assisted, 4), recordEffectiveFingerprint: true);
 
             var result = turn.Ask("inspect git history", "fixture system", session, run.RunId,
@@ -304,6 +306,8 @@ public sealed class ToolDiscoveryTurnIntegrationTests
             Assert.Contains(requests[0].Tools, tool => tool.Name == "tool.search");
             Assert.DoesNotContain(requests[0].Tools, tool => tool.Name == "fixture.git.read");
             var discovered = Assert.Single(requests[1].Tools, tool => tool.Name == "fixture.git.read");
+            Assert.Contains(requests[1].Tools, tool => tool.Name == "tool.search");
+            Assert.Equal(2, requests[1].Tools.Count);
             Assert.Contains("fixture.git.read", discovered.Name);
             Assert.False(string.IsNullOrWhiteSpace(discovered.InputSchemaJson));
             Assert.Contains(result.ToolCalls, call => call.ToolName == "fixture.git.read" && !call.Succeeded);
@@ -330,6 +334,101 @@ public sealed class ToolDiscoveryTurnIntegrationTests
             }
         }
         finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void Recent_discovery_survives_effective_cap_and_search_remains_available()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-tool-discovery-recent-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        File.WriteAllText(Path.Combine(root, "readme.txt"), "real workspace read");
+        try
+        {
+            var artifacts = new FileArtifactStore(root);
+            var catalog = new FakeCatalog().Add(new ReadFileTool(new PathBoundaryValidator()));
+            var workflow = new CompiledWorkflowDescriptor(new WorkflowRef("core:discover", "1"), ComponentSource.Core());
+            var alpha = WorkflowToolFactory.Register(catalog, workflow, "alpha", "Reads alpha fixture evidence.",
+                ModelToolCapability.WorkspaceRead, new ReadFileTool(new PathBoundaryValidator()));
+            var beta = WorkflowToolFactory.Register(catalog, workflow, "beta", "Reads beta fixture evidence.",
+                ModelToolCapability.WorkspaceRead, new ReadFileTool(new PathBoundaryValidator()));
+            catalog.Add(new ToolSearchTool(catalog));
+            var effective = ObservePolicy(maxVisibleTools: 2);
+            var boundary = OmniCliRuntime.CreateBoundary(effective, root, catalog);
+            var requests = new List<ModelRequest>();
+            var responseIndex = 0;
+            var store = new InMemoryEventStore();
+            var codecs = EventCodecs.Create();
+            var session = SessionId.New();
+            var run = TestRun.Open(store, session);
+            var permissions = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>
+            {
+                ["tool.search"] = PermissionDecision.Allow,
+                [alpha.Descriptor.Id.ToString()] = PermissionDecision.Allow,
+                [beta.Descriptor.Id.ToString()] = PermissionDecision.Allow,
+            });
+            var turn = new ExplorerTurn((request, _) =>
+            {
+                requests.Add(request);
+                return responseIndex++ switch
+                {
+                    0 => new ModelResponse([new ToolCallBlock(ToolCallId.New(), "search-alpha", "tool.search",
+                        "{\"query\":\"alpha\"}")], StopReason.ToolUse, new TokenUsage(1, 1, 0, 0, 0), null,
+                        new ProviderMetadata("fixture", "fixture", null)),
+                    1 => new ModelResponse([new ToolCallBlock(ToolCallId.New(), "search-beta", "tool.search",
+                        "{\"query\":\"beta\"}")], StopReason.ToolUse, new TokenUsage(1, 1, 0, 0, 0), null,
+                        new ProviderMetadata("fixture", "fixture", null)),
+                    2 => new ModelResponse([new ToolCallBlock(ToolCallId.New(), "read-beta", beta.Descriptor.Id.ToString(),
+                        "{\"path\":\"readme.txt\"}")], StopReason.ToolUse, new TokenUsage(1, 1, 0, 0, 0), null,
+                        new ProviderMetadata("fixture", "fixture", null)),
+                    3 => new ModelResponse([new ToolCallBlock(ToolCallId.New(), "search-alpha-again", "tool.search",
+                        "{\"query\":\"alpha\"}")], StopReason.ToolUse, new TokenUsage(1, 1, 0, 0, 0), null,
+                        new ProviderMetadata("fixture", "fixture", null)),
+                    4 => new ModelResponse([new ToolCallBlock(ToolCallId.New(), "read-alpha", alpha.Descriptor.Id.ToString(),
+                        "{\"path\":\"readme.txt\"}")], StopReason.ToolUse, new TokenUsage(1, 1, 0, 0, 0), null,
+                        new ProviderMetadata("fixture", "fixture", null)),
+                    _ => new ModelResponse([new TextBlock("read complete")], StopReason.EndTurn,
+                        new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null)),
+                };
+            }, ScriptedToolExecutor.WithWorkspace(catalog, permissions, root, boundary), catalog,
+                new ContextMaterializer(new FakeTokenCounter(), []),
+                new ExecutionFingerprint("fixture", "h", "t", "c", "o", "fixture-build"),
+                new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Discovered, null),
+                store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(),
+                boundary: boundary);
+
+            var result = turn.Ask("find and read beta", "system", session, run.RunId, run.RootLane, "",
+                CancellationToken.None);
+
+            Assert.Equal(StopReason.EndTurn, result.StopReason);
+            Assert.Equal(6, requests.Count);
+            Assert.Equal(2, requests[1].Tools.Count);
+            Assert.Contains(requests[1].Tools, tool => tool.Name == alpha.Descriptor.Id.ToString());
+            Assert.Contains(requests[1].Tools, tool => tool.Name == "tool.search");
+            Assert.Equal(2, requests[2].Tools.Count);
+            Assert.Contains(requests[2].Tools, tool => tool.Name == beta.Descriptor.Id.ToString());
+            Assert.Contains(requests[2].Tools, tool => tool.Name == "tool.search");
+            Assert.DoesNotContain(requests[2].Tools, tool => tool.Name == alpha.Descriptor.Id.ToString());
+            Assert.Contains(result.ToolCalls, call => call.ToolName == beta.Descriptor.Id.ToString() && call.Succeeded);
+            Assert.Equal(2, requests[3].Tools.Count);
+            Assert.Contains(requests[3].Tools, tool => tool.Name == beta.Descriptor.Id.ToString());
+            Assert.Contains(requests[3].Tools, tool => tool.Name == "tool.search");
+            Assert.Equal(2, requests[4].Tools.Count);
+            Assert.Contains(requests[4].Tools, tool => tool.Name == alpha.Descriptor.Id.ToString());
+            Assert.Contains(requests[4].Tools, tool => tool.Name == "tool.search");
+            Assert.DoesNotContain(requests[4].Tools, tool => tool.Name == beta.Descriptor.Id.ToString());
+            Assert.Contains(result.ToolCalls, call => call.ToolName == alpha.Descriptor.Id.ToString() && call.Succeeded);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    private static EffectiveModelPolicy ObservePolicy(int maxVisibleTools)
+    {
+        var key = ModelPolicyKey.For("fixture", "fixture");
+        return EffectiveModelPolicy.Resolve(key,
+            new StoredModelPolicy(key, 1, ModelPolicyPresets.ObserveOnly(), DateTimeOffset.UnixEpoch,
+                DateTimeOffset.UnixEpoch),
+            new HarnessPolicy(ToolCallFormat.Native, ToolMode.Discovered, maxVisibleTools, GuidanceLevel.Full, 1,
+                PlanControl.Assisted, 4));
     }
 
     private sealed class SourcedReadTool(string id, TrustLevel trust, string? description = null) : ITool

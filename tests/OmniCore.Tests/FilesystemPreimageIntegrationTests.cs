@@ -194,7 +194,7 @@ public sealed class FilesystemPreimageIntegrationTests
         try
         {
             var secret = "preimage-fixture-" + Guid.NewGuid().ToString("N") + "\"\\\nα";
-            SecretRedactorRegistry.Install(new SecretRedactor());
+            SecretRedactorRegistry.Install(SecretRedactor.Shared);
             Secret.Of(secret);
             var artifacts = new FileArtifactStore(root);
             var bytes = FileVersion.Encode("prefix " + secret + " suffix", encoding);

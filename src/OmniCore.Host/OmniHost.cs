@@ -539,8 +539,6 @@ public sealed class OmniHost
 
     public static LoadedUserConfiguration LoadUserConfiguration(string configDirectory)
     {
-        EnsureDefaultProvidersFile(configDirectory);
-
         var providersPath = Path.Combine(configDirectory, "providers.yaml");
         var modelsPath = Path.Combine(configDirectory, "models.yaml");
         var settingsPath = Path.Combine(configDirectory, "settings.yaml");
@@ -549,9 +547,11 @@ public sealed class OmniHost
             File.Exists(settingsPath) ? File.ReadAllText(settingsPath) : null);
     }
 
-    private static void EnsureDefaultProvidersFile(string configDirectory)
+    // Examples must not count as configured connections: doing so would disable
+    // ConfigLoader's unconfigured local model before onboarding has registered one.
+    public static void InitializeUserConfigurationExamples(string configDirectory)
     {
-        var providersPath = Path.Combine(configDirectory, "providers.yaml");
+        var providersPath = Path.Combine(configDirectory, "providers.example.yaml");
         if (File.Exists(providersPath))
         {
             return;

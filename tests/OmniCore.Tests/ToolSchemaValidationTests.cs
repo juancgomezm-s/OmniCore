@@ -27,10 +27,10 @@ public sealed class ToolSchemaValidationTests
         public int ExecuteCalls => Volatile.Read(ref _executeCalls);
         public ToolDescriptor Descriptor { get; }
 
-        public RecordingTool(string name, string schema)
+        public RecordingTool(string name, string schema, ComponentSource? source = null)
         {
             Descriptor = new ToolDescriptor(new ToolId(name), "rec", new InputSchema(schema),
-                Array.Empty<string>(), true, false, ToolRisk.Low, ComponentSource.Core(), ToolProtection.None);
+                Array.Empty<string>(), true, false, ToolRisk.Low, source ?? ComponentSource.Core(), ToolProtection.None);
         }
 
         public ToolPreparation Prepare(ValidatedToolCall call, ToolPreparationContext context)
@@ -79,10 +79,10 @@ public sealed class ToolSchemaValidationTests
         + "\"flag\":{\"type\":\"boolean\"}},\"required\":[\"path\"]}";
 
     private static (ToolRuntime.Outcome Outcome, RecordingTool Tool, EventSink Sink) Run(string argsJson,
-        string? schema = null)
+        string? schema = null, ComponentSource? source = null)
     {
         var sink = new EventSink();
-        var tool = new RecordingTool("recorded", schema ?? StrictSchema);
+        var tool = new RecordingTool("recorded", schema ?? StrictSchema, source);
         var runtime = ToolRuntime.For(new FakeCatalog().Add(tool),
             ScriptedPermissionPolicy.WithTool("recorded", PermissionDecision.Allow), sink.Emit);
         var outcome = runtime.Run(
@@ -268,5 +268,48 @@ public sealed class ToolSchemaValidationTests
         Assert.NotNull(ToolSchemaValidator.Validate("{\"regex\":true}", schema));
         Assert.NotNull(ToolSchemaValidator.Validate("{\"pattern\":\"needle\",\"surprise\":1}", schema));
         Assert.NotNull(ToolSchemaValidator.Validate("{\"pattern\":\"needle\",\"maxResults\":\"10\"}", schema));
+    }
+
+    [Fact]
+    public void Bounded_schema_subset_checks_numeric_limits_and_boolean_child_schemas()
+    {
+        var bounded = new InputSchema("""{"type":"object","properties":{"n":{"type":"number","maximum":10},"items":{"type":"array","items":false},"nested":{"type":"object","additionalProperties":false}},"additionalProperties":false}""");
+        Assert.Null(ToolSchemaValidator.Validate("{\"n\":9,\"items\":[],\"nested\":{}}", bounded));
+        Assert.NotNull(ToolSchemaValidator.Validate("{\"n\":1e100}", bounded));
+        Assert.NotNull(ToolSchemaValidator.Validate("{\"n\":1e1000}", bounded));
+        Assert.NotNull(ToolSchemaValidator.Validate("{\"value\":1e1000}",
+            new InputSchema("""{"properties":{"value":{"enum":[1e2000]}}}""")));
+        Assert.NotNull(ToolSchemaValidator.Validate("{\"items\":[1]}", bounded));
+        Assert.NotNull(ToolSchemaValidator.Validate("{\"nested\":{\"x\":1}}", bounded));
+
+        var external = new InputSchema("""{"type":"object","properties":{"known":{"type":"string"}}}""");
+        Assert.Null(ToolSchemaValidator.Validate("{\"known\":\"ok\",\"providerField\":true}", external,
+            allowAdditionalPropertiesByDefault: true));
+        var (externalOutcome, externalTool, _) = Run("{\"known\":\"ok\",\"providerField\":true}",
+            external.ToString(), new ComponentSource(SourceKind.Mcp, ScopeLevel.User, TrustLevel.ThirdParty,
+                "fixture", "1"));
+        Assert.True(externalOutcome.Succeeded, externalOutcome.Summary);
+        Assert.Equal(1, externalTool.ExecuteCalls);
+        Assert.NotNull(ToolSchemaValidator.Validate("{}",
+            new InputSchema("""{"type":"object","properties":{"unused":{"type":42}}}""")));
+        Assert.NotNull(ToolSchemaValidator.Validate("{}",
+            new InputSchema("""{"type":"object","properties":{"unused":{"type":"string","minLength":"x"}}}""")));
+        var semanticEnum = new InputSchema("""{"type":"object","properties":{"value":{"enum":["a",{"x":1,"y":[true]}]}},"additionalProperties":false}""");
+        Assert.Null(ToolSchemaValidator.Validate("{\"value\":\"\\u0061\"}", semanticEnum));
+        Assert.Null(ToolSchemaValidator.Validate("{\"value\":{\"y\":[true],\"x\":1}}", semanticEnum));
+        Assert.NotNull(ToolSchemaValidator.Validate("{\"value\":20}",
+            new InputSchema("""{"type":"object","properties":{"value":{"enum":[20],"maximum":10}}}""")));
+    }
+
+    [Fact]
+    public void Malformed_registered_schema_is_a_typed_rejection_before_tool_execution()
+    {
+        var (outcome, tool, sink) = Run("{}", "{\"type\":\"object\",\"properties\":{\"unused\":{\"type\":42}}}");
+        Assert.False(outcome.Succeeded);
+        Assert.Equal(ToolCallState.Rejected, outcome.FinalState);
+        Assert.StartsWith("INVALID_ARGUMENTS: ", outcome.Summary, StringComparison.Ordinal);
+        Assert.Equal(0, tool.PrepareCalls);
+        Assert.Equal(0, tool.ExecuteCalls);
+        Assert.True(sink.Count("toolcall.rejected") == 1);
     }
 }

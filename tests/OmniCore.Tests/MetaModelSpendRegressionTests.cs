@@ -86,7 +86,8 @@ public sealed class MetaModelSpendRegressionTests
         }, reservations: reservations);
         var result = turn.Ask("continue", "system", fixture.Session, fixture.Run.RunId,
             fixture.Run.RootLane, "", CancellationToken.None);
-        Assert.Equal(expectedPrimary == 0 ? StopReason.Cancelled : StopReason.EndTurn, result.StopReason);
+        Assert.True(result.StopReason == (expectedPrimary == 0 ? StopReason.Cancelled : StopReason.EndTurn),
+            result.FinalText ?? result.FailureDiagnostic ?? result.StopReason.ToString());
         Assert.Equal(1, meta.Calls);
         Assert.Equal(expectedPrimary, primary);
         var completedMeta = Assert.Single(fixture.Payloads().OfType<MetaModelInvocationCompleted>());

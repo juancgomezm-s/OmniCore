@@ -61,19 +61,17 @@ public sealed class SessionMemoryTurnIntegrationTests
             Assert.Contains(store.ReadFrom(session, 1).Select(codecs.Decode), item => item is MemoryPromoted);
             Assert.Contains(memoryStore.Read(MemoryScope.ForSession(session), CancellationToken.None),
                 item => item.Content == "Run dotnet test for focused checks.");
-            var persisted = store.ReadFrom(session, 1).Select(codecs.Decode).ToArray();
-            Assert.DoesNotContain(store.ReadFrom(session, 1), item => item.PayloadJson.Contains("alice@example.com", StringComparison.Ordinal));
-            foreach (var reference in persisted.SelectMany(payload => payload switch
-                {
-                    ModelStepCompleted { ResponseArtifact: { } response } => new[] { response },
-                    ModelStepStarted { ContextSnapshotRef: { } snapshot } => new[] { snapshot },
-                    TurnStarted { ContextSnapshotRef: { } snapshot } => new[] { snapshot },
-                    AssistantMessageRecorded { ContentRef: { } conversation } => new[] { conversation },
-                    ModelCompleted { ResponseArtifact: { } response } => new[] { response },
-                    _ => Array.Empty<ArtifactRef>(),
-                }))
-                Assert.DoesNotContain("alice@example.com", artifacts.GetText(reference.Hash) ?? "",
-                    StringComparison.Ordinal);
+            var memoryEvents = store.ReadFrom(session, 1).Where(item => codecs.Decode(item) is
+                MemoryCandidateProposed or MemoryPromoted);
+            Assert.DoesNotContain(memoryEvents,
+                item => item.PayloadJson.Contains("alice@example.com", StringComparison.Ordinal));
+            var memoryRequests = store.ReadFrom(session, 1).Select(codecs.Decode)
+                .OfType<ToolCallRequested>().Where(item => item.ToolName == "memory.propose").ToArray();
+            Assert.Equal(2, memoryRequests.Length);
+            Assert.All(memoryRequests, request => Assert.Equal("{\"screenedByMemoryPolicy\":true}",
+                request.ArgumentsJson));
+            Assert.DoesNotContain(memoryStore.Read(MemoryScope.ForSession(session), CancellationToken.None),
+                item => item.Content.Contains("alice@example.com", StringComparison.Ordinal));
         }
         finally { Directory.Delete(root, recursive: true); }
     }

@@ -84,6 +84,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        var wireNames = ToolNameWireMap.ForRequest(request, 64);
         var halfOpenProbe = _resilience.EnterCircuit();
         HttpResponseMessage response;
         HttpClient http;
@@ -103,7 +104,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
             await foreach (var item in ReadSseAsync(response, request, cancellationToken).ConfigureAwait(false))
             {
                 if (item is ResponseCompleted) { completed = true; _resilience.MarkSuccess(); }
-                yield return item;
+                yield return wireNames.Restore(item);
             }
             if (!completed) throw new ModelProviderException("ProviderUnavailable", "El stream terminó sin completar la respuesta.");
         }
@@ -134,6 +135,17 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
         }
         catch (JsonException ex) { throw new ModelProviderException("ProviderError", "Respuesta JSON inválida: " + ex.Message, null, ex); }
         return ToModelResponse(response, "", "");
+    }
+
+    internal static ModelResponse ParseChatCompletion(string json, ModelRequest request)
+    {
+        var response = ParseChatCompletion(json);
+        var wireNames = ToolNameWireMap.ForRequest(request, 64);
+        return response with
+        {
+            Content = response.Content.Select(block => block is ToolCallBlock call
+                ? (ContentBlock)(call with { ToolName = wireNames.ToCanonical(call.ToolName) }) : block).ToArray(),
+        };
     }
 
     private async IAsyncEnumerable<ModelStreamEvent> ReadSseAsync(HttpResponseMessage response,
@@ -266,6 +278,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
 
     private string BuildBody(ModelRequest request)
     {
+        var wireNames = ToolNameWireMap.ForRequest(request, 64);
         var reasoning = request.Reasoning ?? request.Model.Reasoning;
         request.Model.Route?.ReasoningCapability.ValidateRequest(reasoning);
         // Response reasoning_content does not establish a request-side dialect for
@@ -288,10 +301,10 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
                 while (index < request.Messages.Count && request.Messages[index].Role == MessageRole.Tool)
                     batch.AddRange(request.Messages[index++].Content);
                 index--;
-                messages.AddRange(MapMessage(new ModelMessage(MessageRole.Tool, batch), serverIds));
+                messages.AddRange(MapMessage(new ModelMessage(MessageRole.Tool, batch), serverIds, wireNames));
                 continue;
             }
-            messages.AddRange(MapMessage(message, serverIds));
+            messages.AddRange(MapMessage(message, serverIds, wireNames));
         }
 
         // ProviderState is the existing durable opaque-continuation carrier: this adapter stores
@@ -321,7 +334,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
         {
             Function = new ChatRequestFunction
             {
-                Name = tool.Name,
+                Name = wireNames.ToWire(tool.Name),
                 Description = tool.Description,
                 Parameters = ParseJsonElementOrEmpty(tool.InputSchemaJson),
             },
@@ -337,7 +350,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
             {
                 "none" => JsonSerializer.SerializeToElement("none", OpenAiJsonContext.Default.String),
                 "exact" => JsonSerializer.SerializeToElement(
-                    new ChatToolChoice { Type = "function", Function = new ChatToolChoiceFunction { Name = request.ToolChoice.ToolName ?? "" } },
+                    new ChatToolChoice { Type = "function", Function = new ChatToolChoiceFunction { Name = wireNames.ToWire(request.ToolChoice.ToolName ?? "") } },
                     OpenAiJsonContext.Default.ChatToolChoice),
                 _ => JsonSerializer.SerializeToElement("auto", OpenAiJsonContext.Default.String),
             },
@@ -345,7 +358,8 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
         return JsonSerializer.Serialize(dto, OpenAiJsonContext.Default.ChatRequestDto);
     }
 
-    private static IEnumerable<ChatRequestMessage> MapMessage(ModelMessage message, Dictionary<string, string> ids)
+    private static IEnumerable<ChatRequestMessage> MapMessage(ModelMessage message, Dictionary<string, string> ids,
+        ToolNameWireMap wireNames)
     {
         // A ContentBlock is not a conversation turn. Chat Completions expects all
         // calls from one assistant turn together, followed by one result per call.
@@ -363,7 +377,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
                     Type = "function",
                     Function = new ChatRequestFunctionCall
                     {
-                        Name = call.ToolName, Arguments = call.ArgumentsJson,
+                        Name = wireNames.ToWire(call.ToolName), Arguments = call.ArgumentsJson,
                     },
                 }).ToList(),
             };

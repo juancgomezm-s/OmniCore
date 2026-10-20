@@ -61,7 +61,6 @@ public sealed class ReasoningReplayResumeTests
                 ArtifactKind.ProviderOpaqueState, Sensitivity.Sensitive);
             var totalCalls = 0;
             var visibleText = scenario == "visible-secret" ? "visible sk-super-secret-value" : "visible reasoning";
-            var safeVisibleText = new RedactionPolicy().Redact(visibleText);
 
             ExecutionFingerprint Fingerprint()
             {
@@ -105,8 +104,7 @@ public sealed class ReasoningReplayResumeTests
             Assert.Contains("visibleContent", persisted, StringComparison.Ordinal);
             if (scenario == "visible-secret")
             {
-                Assert.DoesNotContain("sk-super-secret-value", persisted, StringComparison.Ordinal);
-                Assert.Contains("[REDACTED]", persisted, StringComparison.Ordinal);
+                Assert.Contains("visible sk-super-secret-value", persisted, StringComparison.Ordinal);
             }
 
             store.Close();
@@ -125,7 +123,7 @@ public sealed class ReasoningReplayResumeTests
             foreach (var _ in new[] { 0, 1 })
             {
                 var replay = explorer.LoadConversation(eventStream, run.RunId, firstStep.TurnId, run.RootLane);
-                Assert.Equal(safeVisibleText, Assert.Single(replay.SelectMany(m => m.Content)
+                Assert.Equal(visibleText, Assert.Single(replay.SelectMany(m => m.Content)
                     .OfType<ReasoningBlock>()).VisibleText);
                 Assert.Single(replay.SelectMany(m => m.Content).OfType<ToolCallBlock>());
                 Assert.Single(replay.SelectMany(m => m.Content).OfType<ToolResultBlock>());
@@ -182,7 +180,7 @@ public sealed class ReasoningReplayResumeTests
                 if (shouldReplay) Assert.Equal(continuationState, request.Continuation);
                 else Assert.Null(request.Continuation);
                 var reasoning = Assert.Single(request.Messages.SelectMany(message => message.Content).OfType<ReasoningBlock>());
-                Assert.Equal(safeVisibleText, reasoning.VisibleText);
+                Assert.Equal(visibleText, reasoning.VisibleText);
                 Assert.Equal(ReasoningVisibility.Full, reasoning.Visibility);
                 Assert.Null(reasoning.OpaquePayload); // the visible projection never contains opaque bytes/refs
                 if (scenario == "interleaved-visible")

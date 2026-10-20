@@ -69,14 +69,19 @@ public sealed class MemoryProposalReceiptBoundaryTests
         AssertRejectedRewrite("{\"count\":1}",
             value => value.Replace(":1}", ":1.0}", StringComparison.Ordinal));
 
-        var redactedSession = SessionId.New();
-        var redactedStore = new InMemoryEventStore();
-        var redactedStream = new EventStream(redactedStore, EventCodecs.Create(), redactedSession);
-        var redactedArguments = "{\"path\":\"src/FeatureApp/FeatureModule.cs\",\"content\":\"Bearer fixture-secret-value\"}";
-        Assert.Throws<InvalidDataException>(() => redactedStream.AppendToolCallRequestAdmitted(
-            new ToolCallRequested(ToolCallId.New(), "provider-call", "filesystem.write", redactedArguments), _ => { }));
-        Assert.DoesNotContain("fixture-secret-value", redactedStore.ReadFrom(redactedSession, 1).Single().PayloadJson,
-            StringComparison.Ordinal);
+        var literalSession = SessionId.New();
+        var literalStore = new InMemoryEventStore();
+        var literalCodecs = EventCodecs.Create();
+        var literalStream = new EventStream(literalStore, literalCodecs, literalSession);
+        var literalId = ToolCallId.New();
+        var literalArguments = "{\"path\":\"src/FeatureApp/FeatureModule.cs\",\"content\":\"Bearer fixture-secret-value\"}";
+        var literalReceipt = literalStream.AppendToolCallRequestAdmitted(new ToolCallRequested(
+            literalId, "provider-call", "filesystem.write", literalArguments), _ => { });
+        Assert.True(literalReceipt.MatchesCall(new ValidatedToolCall(literalId, new ToolId("filesystem.write"),
+            "provider-call", literalArguments)));
+        var literalRequest = Assert.IsType<ToolCallRequested>(literalCodecs.Decode(
+            literalStore.ReadFrom(literalSession, 1).Single()));
+        Assert.Equal(literalArguments, literalRequest.ArgumentsJson);
 
         void AssertRejectedRewrite(string originalArguments, Func<string, string> rewrite)
         {

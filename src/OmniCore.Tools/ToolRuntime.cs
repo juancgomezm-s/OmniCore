@@ -192,7 +192,8 @@ public sealed class ToolRuntime
         // campos requeridos, tipos y sin campos desconocidos. La tool NUNCA llega a Prepare ni
         // a ejecutarse con argumentos que no conforman su schema; el rechazo es un error tipado
         // que alimenta el repair loop (spec §71). El estado sigue en Requested → Rejected.
-        var schemaError = ToolSchemaValidator.Validate(validated.NormalizedArgumentsJson, tool.Descriptor.InputSchema);
+        var schemaError = ToolSchemaValidator.Validate(validated.NormalizedArgumentsJson, tool.Descriptor.InputSchema,
+            allowAdditionalPropertiesByDefault: tool.Descriptor.Source.Kind is SourceKind.Mcp or SourceKind.Extension);
         if (schemaError is not null)
         {
             var reason = ToolSchemaValidator.InvalidArgumentsCode + ": " + schemaError;

@@ -2,7 +2,44 @@
 
 Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petición del usuario. Complementa la fuente de verdad [arquitectura §24](../architecture/arquitectura.md#24-roadmap-m1m10-fuente-de-verdad) y el [plan de preferencias e idiomas](preferences-and-localization.md). Define trabajo restante y aceptación; no declara construido lo que sólo tiene contrato o pantalla. La petición comprende traducciones y convenciones regionales de presentación.
 
-## Estado vigente (2026-10-18)
+## Estado vigente (2026-10-19)
+
+**Integración y auditoría de herramientas (2026-10-19):** las ramas pendientes de
+OmniCore se consolidaron y publicaron en `main` con el merge `89ac853`, conservando
+recuperación de workflows, conversación original, selección de modelos/OpenRouter
+y edición localizada que preserva identidad. El acuerdo posterior de §M9-L-MUT-01
+prevalece sobre el bloqueo create-only de la rama histórica: se conserva el write
+existente autorizado hasta construir su normalización, sin prohibición global.
+
+El bloque correctivo posterior cubre clasificación y activación efectiva de
+`skill.load`, alias reversibles Anthropic/Chat compatibles también en historial,
+serialización íntegra de `plan.propose`, búsquedas parciales/objetivos ilegibles,
+rangos de list/search y promoción de herramientas bajo cupo con redescubrimiento.
+El validador comprueba un subconjunto JSON Schema acotado (tipos, campos, enum,
+límites, arrays y objetos anidados); los keywords complejos no implementados no
+se anuncian como validados. MCP/extensiones mantienen propiedades adicionales
+abiertas cuando no declaran lo contrario. No se amplían permisos ni cupos.
+
+La compilación local del bloque terminó con cero errores/advertencias y 122 focos
+aprobados, incluidos skills y descubrimiento con frontera real, casos adversariales
+y dos recuperaciones stdio dirigidas. No se hicieron llamadas pagadas/live.
+La CI completa del merge detectó incompatibilidades que el bloque posterior
+corrige: el ejemplo de configuración ya no se activa como conexión ni altera una
+lectura de configuración; la política de sesión admite el centinela FullAgent
+sin abrir otros perfiles; los diagnósticos derivados de hooks y propuestas de
+modo conservan su redacción; y la contabilidad reconoce el tipo ContextSnapshot
+de la entrada de compactación junto con el formato histórico Other, manteniendo
+verificación CAS y rechazo de evidencia incompleta. Las pruebas antiguas de
+conversación se alinean con ADR-0018, conservando los controles de recibos y el
+cribado específico de propuestas de memoria. La revisión final dirigida aprobó
+82 casos de contabilidad, topes entre workspaces y cobertura de reintentos;
+también aprobaron los focos de recibos, memoria, perfiles, hooks, propuestas de
+modo, validador numérico, resize TUI Windows y consulta de contexto. Esta última
+exige compactación anunciada en vez de descarte silencioso de mensajes. El build
+final de pruebas terminó con cero advertencias/errores. Las instalaciones npm
+Windows/Linux y el paquete Linux del merge sí aprobaron. Esta evidencia no
+equivale a CI completa aprobada de la revisión posterior ni a aceptación manual
+o de inferencia real; M8 y los pendientes efectivos de M9 siguen abiertos.
 
 Resumen de pendientes efectivos de M9; los checkpoints históricos inferiores no
 reabren capacidades ya integradas ni sustituyen estas aceptaciones:

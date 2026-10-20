@@ -219,7 +219,9 @@ public sealed partial class StdioTransportTests
             firstHost = StartRawHost(cliDll, workspace);
             WireFrame.Write(firstHost.StandardInput.BaseStream,
                 "{\"version\":\"1.0\",\"messageType\":\"hello\",\"messageId\":\"hello-lost-ack\",\"payload\":{\"supportedVersions\":[\"1.0\"],\"client\":\"test\"}}");
-            var hello = WireEnvelope.FromJson(WireFrame.Read(firstHost.StandardOutput.BaseStream)!);
+            var helloFrame = WireFrame.Read(firstHost.StandardOutput.BaseStream);
+            Assert.NotNull(helloFrame);
+            var hello = WireEnvelope.FromJson(helloFrame);
             Assert.Equal("response", hello.MessageType);
             var request = WireEnvelope.Command("outer-lost-ack", "{\"operation\":\"command\",\"command\":"
                 + command.ToJson() + "}");

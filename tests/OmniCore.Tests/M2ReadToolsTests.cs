@@ -255,6 +255,19 @@ public sealed class M2ReadToolsTests
         Cleanup(ws);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void ListDirectory_prepare_rejects_nonpositive_limits(int maxEntries)
+    {
+        var tool = new ListDirectoryTool(new PathBoundaryValidator());
+        var call = new ValidatedToolCall(ToolCallId.New(), tool.Descriptor.Id, "bad-limit",
+            "{\"path\":\".\",\"maxEntries\":" + maxEntries + "}");
+        var rejected = Assert.IsType<PreparationRejected>(tool.Prepare(call,
+            new ToolPreparationContext(Path.GetTempPath(), DateTimeOffset.UtcNow)));
+        Assert.Equal(ToolErrorCode.InvalidArguments, rejected.ErrorCode);
+    }
+
     [Fact]
     public void ListDirectory_nonexistent_directory_fails()
     {
@@ -571,6 +584,51 @@ public sealed class M2ReadToolsTests
             Assert.Equal(i + 1, matches[i].GetProperty("line").GetInt32());
         }
 
+        Cleanup(ws);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Search_prepare_rejects_nonpositive_limits(int maxResults)
+    {
+        var tool = new SearchTextTool(new PathBoundaryValidator());
+        var call = new ValidatedToolCall(ToolCallId.New(), tool.Descriptor.Id, "bad-limit",
+            "{\"pattern\":\"needle\",\"maxResults\":" + maxResults + "}");
+        var rejected = Assert.IsType<PreparationRejected>(tool.Prepare(call,
+            new ToolPreparationContext(Path.GetTempPath(), DateTimeOffset.UtcNow)));
+        Assert.Equal(ToolErrorCode.InvalidArguments, rejected.ErrorCode);
+    }
+
+    [Fact]
+    public void Search_reports_blocked_target_and_partial_directory_instead_of_false_complete_success()
+    {
+        var ws = TempDir();
+        var lockedPath = Path.Combine(ws, "a.txt");
+        File.WriteAllText(lockedPath, "needle blocked\n");
+        File.WriteAllText(Path.Combine(ws, "b.txt"), "needle visible\n");
+        using (new FileStream(lockedPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            var direct = SearchExecutor(ws).ExecuteToolWithoutJournal(SearchCall("needle", path: "a.txt"), false,
+                CancellationToken.None);
+            Assert.False(direct.Succeeded);
+            Assert.Contains("archivo objetivo", direct.Summary!, StringComparison.OrdinalIgnoreCase);
+
+            var partial = SearchExecutor(ws).ExecuteToolWithoutJournal(SearchCall("needle"), false,
+                CancellationToken.None);
+            Assert.True(partial.Succeeded, partial.Summary);
+            Assert.Contains("partial", partial.Summary!, StringComparison.Ordinal);
+            using var payload = JsonDocument.Parse(partial.Preview!);
+            Assert.True(payload.RootElement.GetProperty("incomplete").GetBoolean());
+            Assert.True(payload.RootElement.GetProperty("skipped").GetInt32() >= 1);
+            Assert.Contains(payload.RootElement.GetProperty("matches").EnumerateArray(), match =>
+                match.GetProperty("path").GetString() == "b.txt");
+        }
+
+        var complete = SearchExecutor(ws).ExecuteToolWithoutJournal(SearchCall("needle", path: "b.txt"), false,
+            CancellationToken.None);
+        using var completePayload = JsonDocument.Parse(complete.Preview!);
+        Assert.False(completePayload.RootElement.GetProperty("incomplete").GetBoolean());
         Cleanup(ws);
     }
 

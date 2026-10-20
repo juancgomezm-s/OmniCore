@@ -95,6 +95,7 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        var wireNames = ToolNameWireMap.ForRequest(request, 128);
         var halfOpenProbe = _resilience.EnterCircuit();
         HttpResponseMessage response;
         HttpClient http;
@@ -149,7 +150,7 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
             await foreach (var item in ReadSseAsync(response, request, cancellationToken).ConfigureAwait(false))
             {
                 if (item is ResponseCompleted) { completed = true; _resilience.MarkSuccess(); }
-                yield return item;
+                yield return wireNames.Restore(item);
             }
             if (!completed) throw new ModelProviderException("ProviderUnavailable", "El stream terminó sin completar la respuesta.");
         }
@@ -229,6 +230,7 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
     /// <summary>Construye el body de la Messages API (público para tests deterministas).</summary>
     internal static string BuildBody(ModelRequest request, AnthropicProviderOptions options)
     {
+        var wireNames = ToolNameWireMap.ForRequest(request, 128);
         var reasoning = request.Reasoning ?? request.Model.Reasoning;
         request.Model.Route?.ReasoningCapability.ValidateRequest(reasoning);
         // This adapter currently represents explicit manual budgets, not effort labels.
@@ -272,7 +274,7 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
                 w.WriteEndArray();
             }
 
-            WriteMessages(w, request);
+            WriteMessages(w, request, wireNames);
 
             if (request.Tools.Count > 0 && request.ToolChoice.Mode != "none")
             {
@@ -280,7 +282,7 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
                 foreach (var tool in request.Tools)
                 {
                     w.WriteStartObject();
-                    w.WriteString("name", tool.Name);
+                    w.WriteString("name", wireNames.ToWire(tool.Name));
                     w.WriteString("description", tool.Description);
                     w.WritePropertyName("input_schema");
                     WriteRawJsonOrEmptyObject(w, tool.InputSchemaJson);
@@ -291,7 +293,7 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
                 if (request.ToolChoice.Mode == "exact" && request.ToolChoice.ToolName is not null)
                 {
                     w.WriteString("type", "tool");
-                    w.WriteString("name", request.ToolChoice.ToolName);
+                    w.WriteString("name", wireNames.ToWire(request.ToolChoice.ToolName));
                 }
                 else
                 {
@@ -315,7 +317,7 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
     /// Anthropic exige alternar user/assistant: los mensajes consecutivos del mismo rol se unen y
     /// los resultados de tools viajan como bloques <c>tool_result</c> en un mensaje user.
     /// </summary>
-    private static void WriteMessages(Utf8JsonWriter w, ModelRequest request)
+    private static void WriteMessages(Utf8JsonWriter w, ModelRequest request, ToolNameWireMap wireNames)
     {
         var turns = new List<(string Role, List<ContentBlock> Blocks)>();
         foreach (var message in request.Messages)
@@ -375,7 +377,7 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
                         w.WriteStartObject();
                         w.WriteString("type", "tool_use");
                         w.WriteString("id", ids[call.Id.ToString()]);
-                        w.WriteString("name", call.ToolName);
+                        w.WriteString("name", wireNames.ToWire(call.ToolName));
                         w.WritePropertyName("input");
                         WriteRawJsonOrEmptyObject(w, call.ArgumentsJson);
                         w.WriteEndObject();

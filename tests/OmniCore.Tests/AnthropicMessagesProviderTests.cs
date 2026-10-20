@@ -118,11 +118,62 @@ data: {"type":"message_stop"}
         Assert.True(root.GetProperty("stream").GetBoolean());
         Assert.Equal(8192, root.GetProperty("max_tokens").GetInt32());
         Assert.Equal("You are OmniCore.", root.GetProperty("system")[0].GetProperty("text").GetString());
-        Assert.Equal("filesystem.read", root.GetProperty("tools")[0].GetProperty("name").GetString());
+        var wireName = root.GetProperty("tools")[0].GetProperty("name").GetString();
+        Assert.StartsWith("omni_", wireName);
         Assert.Equal("object", root.GetProperty("tools")[0].GetProperty("input_schema").GetProperty("type").GetString());
         Assert.Equal("auto", root.GetProperty("tool_choice").GetProperty("type").GetString());
         Assert.False(root.TryGetProperty("functions", out _));
         Assert.All(root.GetProperty("messages").EnumerateArray(), m => Assert.NotEqual("system", m.GetProperty("role").GetString()));
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Dotted_tool_names_are_mapped_in_definitions_choice_history_and_stream_results()
+    {
+        var canonical = "filesystem.read";
+        var priorCall = new ToolCallBlock(ToolCallId.New(), "old-call", canonical, "{\"path\":\"a.cs\"}");
+        var hiddenCall = new ToolCallBlock(ToolCallId.New(), "hidden-call", "extension.hidden.tool", "{}");
+        var priorMessages = new ModelMessage[]
+        {
+            new(MessageRole.Assistant, [priorCall, hiddenCall]),
+            new(MessageRole.Tool, [new ToolResultBlock(priorCall.Id, [new TextBlock("done")], false),
+                new ToolResultBlock(hiddenCall.Id, [new TextBlock("old result")], false)]),
+            new(MessageRole.User, [new TextBlock("read again")]),
+        };
+        var definition = new ToolDefinition(canonical, "read", "{\"type\":\"object\"}");
+        var request = new ModelRequest(Request().Model, priorMessages, null,
+            [definition, new ToolDefinition("custom_tool-2", "valid wire name", "{\"type\":\"object\"}")], ToolChoice.Exact(canonical),
+            null, null, null, null);
+        var names = ToolNameWireMap.ForRequest(request, 128);
+        var alias = names.ToWire(canonical);
+        var hiddenAlias = names.ToWire("extension.hidden.tool");
+        var handler = new QueueHandler(_ => Sse(TextAndToolStream.Replace("\"name\":\"filesystem.read\"",
+            "\"name\":\"" + alias + "\"", StringComparison.Ordinal)));
+
+        var events = await Collect(CreateProvider(handler).StreamAsync(request, TestContext.Current.CancellationToken));
+
+        using var body = JsonDocument.Parse(handler.Requests.Single().Body);
+        var root = body.RootElement;
+        Assert.Equal(alias, root.GetProperty("tools")[0].GetProperty("name").GetString());
+        Assert.Equal("custom_tool-2", root.GetProperty("tools")[1].GetProperty("name").GetString());
+        Assert.Equal(alias, root.GetProperty("tool_choice").GetProperty("name").GetString());
+        var historical = root.GetProperty("messages").EnumerateArray()
+            .SelectMany(message => message.TryGetProperty("content", out var content)
+                && content.ValueKind == JsonValueKind.Array ? content.EnumerateArray() : Enumerable.Empty<JsonElement>())
+            .First(block => block.TryGetProperty("type", out var type) && type.GetString() == "tool_use");
+        Assert.Equal(alias, historical.GetProperty("name").GetString());
+        var hiddenHistory = root.GetProperty("messages").EnumerateArray()
+            .SelectMany(message => message.TryGetProperty("content", out var content)
+                && content.ValueKind == JsonValueKind.Array ? content.EnumerateArray() : Enumerable.Empty<JsonElement>())
+            .Single(block => block.TryGetProperty("type", out var type) && type.GetString() == "tool_use"
+                && block.GetProperty("id").GetString() == "hidden-call");
+        Assert.Equal(hiddenAlias, hiddenHistory.GetProperty("name").GetString());
+        Assert.DoesNotContain('.', hiddenAlias);
+        Assert.DoesNotContain(root.GetProperty("tools").EnumerateArray(), tool =>
+            tool.GetProperty("name").GetString() == hiddenAlias);
+        Assert.Equal(canonical, Assert.Single(events.OfType<BlockCompleted>()
+            .Select(item => item.Block).OfType<ToolCallBlock>()).ToolName);
+        Assert.Equal(canonical, Assert.Single(Assert.IsType<ResponseCompleted>(events[^1]).Response.Content
+            .OfType<ToolCallBlock>()).ToolName);
     }
 
     [Fact]

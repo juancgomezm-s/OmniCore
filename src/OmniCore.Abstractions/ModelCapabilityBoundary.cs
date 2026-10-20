@@ -61,6 +61,10 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             { "reference.resolve", ModelToolCapability.ReferenceResolve },
             { "plan.propose", ModelToolCapability.PlanProposal },
             { "mode.propose", ModelToolCapability.PlanProposal },
+            // Activates one already eligible skill for this Session's next turn. It is a
+            // bounded session-scoped proposal and uses the existing PlanProposal ceiling;
+            // it grants neither filesystem/process capabilities nor permission grants.
+            { "skill.load", ModelToolCapability.PlanProposal },
             { "filesystem.patch", ModelToolCapability.PatchExisting },
             { "filesystem.write", ModelToolCapability.CreateFile },
             { "filesystem.delete", ModelToolCapability.DeleteFile },

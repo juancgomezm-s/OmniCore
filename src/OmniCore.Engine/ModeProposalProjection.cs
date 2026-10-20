@@ -40,7 +40,10 @@ public static class ModeProposalProjection
                 if (requests.Length != 1 || successes.Length != 1
                     || !SameScope(evt, requests[0]) || !SameScope(evt, successes[0])
                     || !ModeProposeTool.TryParse(((ToolCallRequested)codecs.Decode(requests[0])).ArgumentsJson,
-                        out var target, out var reason) || target != proposed.To || reason != proposed.Reason
+                        out var target, out var reason) || target != proposed.To
+                    // The canonical tool request remains literal; the advisory event is
+                    // diagnostic metadata and retains its existing redacted reason.
+                    || new PiiRedactor().Redact(reason) != proposed.Reason
                     || !seen.Add(proposed.ToolCallId))
                     throw Invalid("proposal lacks a unique matching model tool receipt");
                 if (proposed.RunId == runId) result.Add(proposed);

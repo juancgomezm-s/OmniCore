@@ -10,6 +10,21 @@ namespace OmniCore.Tests;
 
 public sealed class SessionSecurityPolicyTests
 {
+    [Fact]
+    public void Full_catalog_sentinel_preserves_full_agent_authority_and_rejects_other_unbounded_categories()
+    {
+        var full = SessionSecurityPolicySet.FromPreset(SessionId.New(), 1, ModelPolicyCategory.FullAgent,
+            SessionSecurityProvenance.Native, SessionSecurityPolicySource.UserSelection, DateTimeOffset.UtcNow);
+        full.Validate();
+        Assert.Equal(int.MaxValue, full.MaxVisibleTools);
+        var narrowed = full with { MaxVisibleTools = 6, PolicyRevision = full.PolicyRevision + 1 };
+        narrowed.Validate();
+        Assert.True(full.IsMonotonicTightening(narrowed));
+        Assert.False(narrowed.IsMonotonicTightening(full));
+        Assert.Throws<InvalidDataException>(() => (full with { MaxVisibleTools = 65 }).Validate());
+        Assert.Throws<InvalidDataException>(() => (full with { Category = ModelPolicyCategory.ObserveOnly }).Validate());
+    }
+
     private sealed class TestPaths(string root) : IPlatformPaths
     {
         public string DataDirectory => Path.Combine(root, "data");

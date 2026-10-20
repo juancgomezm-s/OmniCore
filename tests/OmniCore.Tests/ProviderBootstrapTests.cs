@@ -5,16 +5,31 @@ namespace OmniCore.Tests;
 public sealed class ProviderBootstrapTests
 {
     [Fact]
-    public void Fresh_configuration_persists_the_existing_local_default_without_cloud_credentials()
+    public void Fresh_configuration_materializes_examples_without_disabling_the_unconfigured_local_model()
     {
         var directory = Path.Combine(Path.GetTempPath(), "omni-provider-bootstrap-" + Guid.NewGuid().ToString("N"));
         try
         {
+            OmniHost.InitializeUserConfigurationExamples(directory);
             var loaded = OmniHost.LoadUserConfiguration(directory);
-            Assert.True(File.Exists(Path.Combine(directory, "providers.yaml")));
+            Assert.True(File.Exists(Path.Combine(directory, "providers.example.yaml")));
+            Assert.False(File.Exists(Path.Combine(directory, "providers.yaml")));
             Assert.Equal("http://127.0.0.1:8080", loaded.Registry.Provider("local")!.BaseUrl);
+            Assert.Equal("local-worker", loaded.Registry.ResolveDefault().Id);
             Assert.Null(loaded.Registry.Provider("openrouter"));
             Assert.Null(loaded.Registry.Provider("anthropic"));
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
+    }
+
+    [Fact]
+    public void Loading_configuration_does_not_create_files_or_change_onboarding_state()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "omni-provider-bootstrap-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Assert.Equal("local-worker", OmniHost.LoadUserConfiguration(directory).Registry.ResolveDefault().Id);
+            Assert.False(Directory.Exists(directory));
         }
         finally { if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true); }
     }

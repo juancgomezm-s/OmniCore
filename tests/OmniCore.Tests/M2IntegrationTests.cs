@@ -185,7 +185,7 @@ public sealed class M2IntegrationTests
     }
 
     [Fact]
-    public async System.Threading.Tasks.Task Journal_redacts_nested_tool_arguments_without_breaking_replay()
+    public async System.Threading.Tasks.Task Journal_preserves_nested_tool_arguments_without_breaking_replay()
     {
         var store = new InMemoryEventStore();
         var codecs = EventCodecs.Create();
@@ -195,10 +195,11 @@ public sealed class M2IntegrationTests
             "{\"path\":\"README.md\",\"authorization\":\"Bearer VerySecretToken123\"}"));
 
         var evt = store.ReadFrom(sessionId, 1).Single();
-        Assert.DoesNotContain("VerySecretToken123", evt.PayloadJson);
+        Assert.Contains("VerySecretToken123", evt.PayloadJson);
         var replayed = (ToolCallRequested)codecs.Decode(evt);
         using var args = System.Text.Json.JsonDocument.Parse(replayed.ArgumentsJson);
         Assert.Equal("README.md", args.RootElement.GetProperty("path").GetString());
+        Assert.Equal("Bearer VerySecretToken123", args.RootElement.GetProperty("authorization").GetString());
     }
 
     [Fact]
@@ -293,7 +294,7 @@ public sealed class M2IntegrationTests
     private static TaskId CreatenRootTask() => TaskId.New();
 
     [Fact]
-    public async System.Threading.Tasks.Task Filesystem_read_blocks_secret_paths_and_redacts_content()
+    public async System.Threading.Tasks.Task Filesystem_read_blocks_secret_paths_and_preserves_private_result_content()
     {
         // Requisito 3 + P0-2: rutas de secretos (.env, .pem, .key, .ssh/) se REJECT en Prepare
         // (nunca toolcall.succeeded); el archivo normal se lee DENTRO del workspace y su
@@ -320,7 +321,7 @@ public sealed class M2IntegrationTests
         Assert.False(secretTypes.Contains("toolcall.succeeded"), "nunca toolcall.succeeded para un secreto");
         File.Delete(Path.Combine(wsDir, ".env"));
 
-        // 2. Archivo normal (dentro del workspace) con Bearer: se lee REAL y se redacta.
+        // 2. Archivo normal (dentro del workspace) con Bearer: el resultado privado conserva el contenido literal.
         File.WriteAllText(Path.Combine(wsDir, "normal.txt"), "Bearer VOtOkEn123secret contenido normal");
         var okCall = new ValidatedToolCall(ToolCallId.New(), new OmniCore.Abstractions.ToolId("filesystem.read"),
             "pc-ok", "{\"path\":\"normal.txt\"}");
@@ -328,7 +329,7 @@ public sealed class M2IntegrationTests
         Assert.True(outcomeOk.Succeeded, "Un archivo normal dentro del workspace se lee. summary=" + outcomeOk.Summary);
         Assert.True(outcomeOk.Preview is not null, "El content leído vuelve como Preview (no es un fallo silencioso)");
         Assert.True(outcomeOk.Preview!.Contains("contenido normal"), "El contenido del archivo se leyó de verdad");
-        Assert.False(outcomeOk.Preview!.Contains("VOtOkEn123secret"), "El tool result va redactado (sin Bearer/keys)");
+        Assert.Contains("VOtOkEn123secret", outcomeOk.Preview!);
         File.Delete(Path.Combine(wsDir, "normal.txt"));
 
         // 3. Archivo inexistente no es un éxito.

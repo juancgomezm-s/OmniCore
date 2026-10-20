@@ -2,6 +2,8 @@ namespace OmniCore.Engine;
 
 using OmniCore.Abstractions;
 using OmniCore.Domain;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 /// <summary>
 /// Tool Core `plan.propose` (ADR-0016 §3): el modelo propone mutaciones del plan; la tool
@@ -21,8 +23,9 @@ public sealed class PlanProposeTool : ITool
         _descriptor = new ToolDescriptor(
             new ToolId("plan.propose"),
             "Proposes a Plan mutation for the runtime to validate and apply (read-only for the model).",
-            new InputSchema("{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\"},"
-                + "\"itemId\":{\"type\":\"string\"},\"reason\":{\"type\":\"string\"}}}"),
+            new InputSchema("{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\",\"enum\":[\"start\",\"complete\",\"block\",\"unblock\",\"fail\",\"skip\",\"cancel\",\"revise\"],\"description\":\"Plan mutation to propose.\"},"
+                + "\"itemId\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":128,\"description\":\"Symbolic plan item id such as P1.\"},"
+                + "\"reason\":{\"type\":\"string\",\"maxLength\":512,\"description\":\"Optional short reason.\"}},\"required\":[\"kind\",\"itemId\"],\"additionalProperties\":false}"),
             new string[] { "core" }, true, false, ToolRisk.Low, ComponentSource.Core(), ToolProtection.None);
     }
 
@@ -30,6 +33,9 @@ public sealed class PlanProposeTool : ITool
 
     public ToolPreparation Prepare(ValidatedToolCall call, ToolPreparationContext context)
     {
+        if (!TryParseArguments(call.NormalizedArgumentsJson, out _, out _, out _))
+            return new PreparationRejected("plan.propose requires a known kind, a 1–128 character itemId, and an optional reason up to 512 characters.",
+                null, ToolErrorCode.InvalidArguments);
         var intent = new ToolIntent(call.ToolCallId, call.ToolId, call.NormalizedArgumentsJson, EffectClass.None,
             ResourceClaims.Empty(), ToolRisk.Low, null);
         return new Prepared(intent);
@@ -39,26 +45,14 @@ public sealed class PlanProposeTool : ITool
         CancellationToken cancellationToken)
     {
         // 1. Sintaxis: los argumentos deben ser una mutación válida (kind conocido).
-        var args = ArgsJson2.Parse(intent.Intent.NormalizedArgumentsJson);
-        var kind = args.TryGetValue("kind", out var k) ? k : null;
-        if (kind is null || ParseKind(kind!) is null)
+        if (!TryParseArguments(intent.Intent.NormalizedArgumentsJson, out var kind, out var itemId, out var reason))
         {
             return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
-                "plan.propose: 'kind' requerido y conocido (start|complete|block|unblock|fail|skip|cancel|revise)"));
+                "plan.propose: known kind, itemId, and bounded optional reason are required"));
         }
-
-        // 2. Semántica básica: los kinds con item requieren itemId.
-        var itemId = args.TryGetValue("itemId", out var id) ? id : null;
-        var reason = args.TryGetValue("reason", out var r) ? r : null;
-        if (RequiresItem(kind!) && (itemId is null || itemId!.Length == 0))
-        {
-            return System.Threading.Tasks.Task.FromResult(ToolResult.Error(
-                "plan.propose: " + kind! + " requiere 'itemId'"));
-        }
-
         // 3. Declaración: devuelve la mutación canónica serializada como efecto aplicado.
         //    El engine invoca PlanService.Apply con esta mutación (INV-017 sigue intacto).
-        var mutationJson = Mutations.CanonicalJson(kind!, itemId, reason);
+        var mutationJson = Mutations.CanonicalJson(kind, itemId, reason);
         return System.Threading.Tasks.Task.FromResult(new ToolResult(
             "plan.propose: mutación declarada", mutationJson, null, mutationJson.Length, false,
             EffectOutcome.Applied));
@@ -80,8 +74,35 @@ public sealed class PlanProposeTool : ITool
         }
     }
 
-    private static bool RequiresItem(string kind) =>
-        kind != "add" && kind != "reorder";
+    private static bool TryParseArguments(string json, out string kind, out string itemId, out string? reason)
+    {
+        kind = itemId = string.Empty;
+        reason = null;
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return false;
+            var properties = root.EnumerateObject().ToArray();
+            if (properties.Select(property => property.Name).Distinct(StringComparer.Ordinal).Count() != properties.Length
+                || properties.Any(property => property.Name is not ("kind" or "itemId" or "reason"))
+                || !root.TryGetProperty("kind", out var kindValue) || kindValue.ValueKind != JsonValueKind.String
+                || !root.TryGetProperty("itemId", out var itemValue) || itemValue.ValueKind != JsonValueKind.String)
+                return false;
+            kind = kindValue.GetString() ?? string.Empty;
+            itemId = itemValue.GetString() ?? string.Empty;
+            if (ParseKind(kind) is null || string.IsNullOrWhiteSpace(itemId) || itemId.Length > 128) return false;
+            if (root.TryGetProperty("reason", out var reasonValue))
+            {
+                if (reasonValue.ValueKind != JsonValueKind.String) return false;
+                reason = reasonValue.GetString();
+                if (reason is { Length: > 512 }) return false;
+            }
+            return true;
+        }
+        catch (JsonException) { return false; }
+    }
+
 }
 
 /// <summary>Serialización canónica de las mutaciones que declara plan.propose.</summary>
@@ -89,19 +110,8 @@ public sealed class Mutations
 {
     public static string CanonicalJson(string kind, string? itemId, string? reason)
     {
-        var parts = new List<string>();
-        parts.Add("\"kind\":\"" + kind + "\"");
-        if (itemId is not null && itemId!.Length > 0)
-        {
-            parts.Add("\"itemId\":\"" + itemId! + "\"");
-        }
-
-        if (reason is not null && reason!.Length > 0)
-        {
-            parts.Add("\"reason\":" + Json.Esc(reason!));
-        }
-
-        return "{" + string.Join(",", parts.ToArray()) + "}";
+        return JsonSerializer.Serialize(new PlanMutationArguments(kind, itemId, reason),
+            PlanMutationArgumentsJsonContext.Default.PlanMutationArguments);
     }
 
     public static bool RequiresItem(PlanMutationKind kind)
@@ -128,26 +138,36 @@ public sealed class Mutations
     /// </summary>
     public static PlanMutation? ResolveDeclared(string json, Dictionary<string, PlanItemId> symbolicItems)
     {
-        var args = ArgsJson2.Parse(json);
-        var kind = args.TryGetValue("kind", out var k) ? k : null;
-        var itemId = args.TryGetValue("itemId", out var id) ? id : null;
-        var reason = args.TryGetValue("reason", out var r) ? r : null;
-        var parsedKind = PlanProposeTool.ParseKind(kind is null ? "" : kind!);
-        if (parsedKind is PlanMutationKind pk)
+        try
         {
-            return ResolveWithKind(json, pk, symbolicItems);
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+            var properties = root.EnumerateObject().ToArray();
+            if (properties.Select(property => property.Name).Distinct(StringComparer.Ordinal).Count() != properties.Length
+                || properties.Any(property => property.Name is not ("kind" or "itemId" or "reason"))
+                || !root.TryGetProperty("kind", out var kindValue) || kindValue.ValueKind != JsonValueKind.String
+                || !root.TryGetProperty("itemId", out var itemValue) || itemValue.ValueKind != JsonValueKind.String)
+                return null;
+            var kind = PlanProposeTool.ParseKind(kindValue.GetString() ?? string.Empty);
+            if (kind is null) return null;
+            var itemId = itemValue.GetString();
+            if (string.IsNullOrWhiteSpace(itemId) || itemId.Length > 128) return null;
+            string? reason = null;
+            if (root.TryGetProperty("reason", out var reasonValue))
+            {
+                if (reasonValue.ValueKind is not (JsonValueKind.String or JsonValueKind.Null)) return null;
+                reason = reasonValue.ValueKind == JsonValueKind.String ? reasonValue.GetString() : null;
+                if (reason is { Length: > 512 }) return null;
+            }
+            return ResolveWithValues(json, kind.Value, itemId, reason, symbolicItems);
         }
-
-        return null;
+        catch (JsonException) { return null; }
     }
 
-    private static PlanMutation? ResolveWithKind(string json, PlanMutationKind pk,
+    private static PlanMutation? ResolveWithValues(string json, PlanMutationKind pk, string? itemId, string? reason,
         Dictionary<string, PlanItemId> symbolicItems)
     {
-        var args = ArgsJson2.Parse(json);
-        var itemId = args.TryGetValue("itemId", out var id) ? id : null;
-        var reason = args.TryGetValue("reason", out var r) ? r : null;
-
         PlanItemId? item = null;
         if (RequiresItem(pk))
         {
@@ -214,6 +234,12 @@ public sealed class Mutations
         }
     }
 }
+
+[JsonSourceGenerationOptions(GenerationMode = JsonSourceGenerationMode.Serialization)]
+[JsonSerializable(typeof(PlanMutationArguments))]
+internal sealed partial class PlanMutationArgumentsJsonContext : JsonSerializerContext;
+
+internal sealed record PlanMutationArguments(string kind, string? itemId, string? reason);
 
 /// <summary>Mini parser de objetos JSON planos para argumentos de tools.</summary>
 internal sealed class ArgsJson2
