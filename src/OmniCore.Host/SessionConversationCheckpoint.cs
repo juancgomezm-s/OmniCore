@@ -52,6 +52,10 @@ public sealed partial class OmniServer
         if (older.Length == 0) return new(command.MessageId, "ok", null, RuntimeCommandOutcome.NoOp());
         var lines = new List<string>();
         if (previous is not null) lines.Add(previous.Summary);
+        else if (journal.Select(_codecs.Decode).OfType<ConversationHistoryImported>().SingleOrDefault() is { } imported)
+            foreach (var message in imported.Messages)
+                lines.Add(message.Role == "tool" ? "Tool " + message.ToolName + ": " + message.Text
+                    : (message.Role == "user" ? "User: " : "Assistant: ") + message.Text);
         var firstSequence = messages[0].Sequence;
         var through = older[^1].Sequence;
         var scoped = journal.Where(scope.CanRead).ToArray();

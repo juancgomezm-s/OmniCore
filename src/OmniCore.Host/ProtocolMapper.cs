@@ -216,6 +216,12 @@ public sealed class ProtocolMapper
             ["reasoningBudgetTokens"] = e.ReasoningBudgetTokens?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "",
         },
         UserInputReceived e => InputFields(e),
+        ConversationHistoryImported e => new()
+        {
+            ["sourceSessionId"] = e.SourceSessionId, ["sourceWorkspace"] = e.SourceWorkspace,
+            ["checkpointId"] = e.CheckpointId,
+            ["messages"] = System.Text.Json.JsonSerializer.Serialize(e, WorkspacePanelJson.Default.ConversationHistoryImported),
+        },
         ContextCheckpointRecorded e => new()
         {
             ["checkpointId"] = e.CheckpointId,

@@ -28,6 +28,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.RunStarted())
             .Plus(Typed.RunAwaitingInput())
             .Plus(Typed.UserInputReceived())
+            .Plus(Typed.ConversationHistoryImported())
             .Plus(Typed.FollowUpQueued())
             .Plus(Typed.FollowUpPromoted())
             .Plus(Typed.TurnSteeringReceived())
@@ -362,7 +363,7 @@ public sealed class TypedCodec<T> : IDomainEventCodec where T : class, DomainEve
         var redactor = OmniCore.Abstractions.SecretRedactorRegistry.Current;
         // Por valor y respetando ids: sustituir sobre el JSON crudo podía corromper un GUID que
         // contuviera un secreto corto y dejar el evento ilegible.
-        var conversation = payload is UserInputReceived or FollowUpQueued or TurnSteeringReceived
+        var conversation = payload is UserInputReceived or ConversationHistoryImported or FollowUpQueued or TurnSteeringReceived
             or ToolCallRequested or ToolCallSucceeded or InteractionRequested or InteractionResolved or RunCreated or TurnStarted;
         return conversation || redactor is null ? json : JournalRedaction.RedactStringValues(json, redactor);
     }
@@ -411,6 +412,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(RunStarted))]
 [JsonSerializable(typeof(RunAwaitingInput))]
 [JsonSerializable(typeof(UserInputReceived))]
+[JsonSerializable(typeof(ConversationHistoryImported))]
 [JsonSerializable(typeof(FollowUpQueued))]
 [JsonSerializable(typeof(FollowUpPromoted))]
 [JsonSerializable(typeof(TurnSteeringReceived))]
@@ -618,6 +620,9 @@ public sealed class Typed
 
     public static CodecPair UserInputReceived() =>
         Of(EventType.Of("user_input.received"), EventJsonContext.Default.UserInputReceived, currentVersion: 3);
+
+    public static CodecPair ConversationHistoryImported() =>
+        Of(EventType.Of("conversation.history_imported"), EventJsonContext.Default.ConversationHistoryImported);
 
     public static CodecPair FollowUpQueued() =>
         Of(EventType.Of("followup.queued"), EventJsonContext.Default.FollowUpQueued);

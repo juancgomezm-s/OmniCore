@@ -3079,7 +3079,7 @@ public sealed class OmniCliRuntime : IDisposable
                                 context, requested));
                             return outcomes;
                         }
-                        : null);
+                        : null) { WorkspaceCheckpointRecorder = server.RecordToolWorkspaceCheckpoint };
             }
 
             var turn = BuildTurn(productReasoning, reasoningResolution);

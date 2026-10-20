@@ -204,6 +204,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         // still find old provisioning failures in that workspace's durable journal history.
         // The sweeper independently verifies the root binding and ownership before any cleanup.
         if (!_writerOwnershipUnavailable) RecoverExpiredWorktreesAtStartup();
+        if (!_writerOwnershipUnavailable) RecoverAlternativePreparations();
     }
 
     internal void ConfigurePlatformPaths(Func<IPlatformPaths> factory) =>
@@ -800,6 +801,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
         using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
         var commandName = fields.TryGetValue("cmd", out var c) ? c : null;
+        if (commandName == "conversation.alternative")
+            return CreateWorkspaceAlternative(command, fields, trustedUserAction, cancellationToken);
         if (commandName is "command.invoke.user" or "command.continue" or "workflow.continue")
             return trustedUserAction ? HandleNativeCommandAction(command, commandName, cancellationToken)
                 : new CommandAck(command.MessageId, "error", "trusted_user_action_required", RuntimeCommandOutcome.Rejected());
@@ -2924,6 +2927,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (name == "workspace.panel" || name.StartsWith("workspace.panel:", StringComparison.Ordinal))
+            return QueryWorkspacePanel(name, cancellationToken);
         if (name == "models.catalog")
             return new SessionQueryResult(name, EncodeSessionModelCatalog(cancellationToken));
         if (name == "session.model.selection")
@@ -3910,6 +3915,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                                 throw new FormatException("mode de session.input inválido");
                         }
                         startsRun = control.ActiveRun(session) is null;
+                        RecordWorkspaceCheckpoint(session, _store.CurrentSequence(session), "before-instruction");
                         _lastRunId = control.SendInput(session, text, mode, ConsumePromptOrigin(), attachments);
                     }
                     if (startsRun && _lastRunId is { } startedRun)

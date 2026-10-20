@@ -212,7 +212,7 @@ public static class StdioProtocolHost
                     throw new InvalidDataException();
                 var commandName = nameElement.GetString()!;
                 var trustedOnly = commandName is "conversation.start" or "conversation.new" or "conversation.resume"
-                    or "conversation.rename" or "conversation.compact" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
+                    or "conversation.rename" or "conversation.compact" or "conversation.alternative" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
                     or "session.model.select" or "session.model.route.respond"
                     or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
                     or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
@@ -288,7 +288,7 @@ public static class StdioProtocolHost
                             RuntimeCommandOutcome.Rejected()));
                 }
                 if (trustedScope is not null && commandName is not ("session.input" or "conversation.start" or "conversation.new" or "conversation.resume"
-                    or "conversation.rename" or "conversation.compact" or "session.security.set" or "session.security.default.set"
+                    or "conversation.rename" or "conversation.compact" or "conversation.alternative" or "session.security.set" or "session.security.default.set"
                     or "session.model.select" or "session.model.route.respond"
                     or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
                     or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
@@ -576,7 +576,7 @@ public static class StdioProtocolHost
         if (!payload.RootElement.TryGetProperty("cmd", out var cmd) || cmd.ValueKind != JsonValueKind.String) return false;
         var commandName = cmd.GetString();
         if (commandName is not ("session.input" or "conversation.start" or "conversation.new" or "conversation.resume"
-            or "conversation.rename" or "conversation.compact" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
+            or "conversation.rename" or "conversation.compact" or "conversation.alternative" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
             or "session.model.select" or "session.model.route.respond"
             or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
             or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
@@ -816,7 +816,7 @@ public static class StdioProtocolHost
                 CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
             return true;
         }
-        if (commandName is "conversation.new" or "conversation.resume" or "conversation.compact" or "conversation.rename")
+        if (commandName is "conversation.new" or "conversation.resume" or "conversation.compact" or "conversation.rename" or "conversation.alternative")
         {
             if (properties.Distinct(StringComparer.Ordinal).Count() != properties.Length) return false;
             var valid = commandName switch
@@ -827,6 +827,15 @@ public static class StdioProtocolHost
                     && CanonicalPayloadSession(payload.RootElement, "sessionId"),
                 "conversation.compact" => properties.Length == 1 && properties[0] == "cmd"
                     && expectedSession.Value is not null,
+                "conversation.alternative" => properties.Length == 3
+                    && !properties.Except(["cmd", "checkpointId", "instruction"], StringComparer.Ordinal).Any()
+                    && expectedSession.Value is not null
+                    && payload.RootElement.TryGetProperty("checkpointId", out var checkpoint)
+                    && checkpoint.ValueKind == JsonValueKind.String && checkpoint.GetString() is { Length: > 0 and <= 160 } checkpointId
+                    && checkpointId.StartsWith(expectedSession.Value + "-", StringComparison.Ordinal)
+                    && checkpointId.All(c => char.IsAsciiLetterOrDigit(c) || c == '-')
+                    && payload.RootElement.TryGetProperty("instruction", out var instruction)
+                    && instruction.ValueKind == JsonValueKind.String && instruction.GetString()!.Length <= 16000,
                 "conversation.rename" => properties.Length == 4
                     && !properties.Except(["cmd", "sessionId", "title", "expectedSequence"], StringComparer.Ordinal).Any()
                     && expectedSession.Value is not null

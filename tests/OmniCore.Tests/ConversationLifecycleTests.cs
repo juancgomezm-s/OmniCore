@@ -185,6 +185,25 @@ public sealed class ConversationLifecycleTests
     }
 
     [Fact]
+    public void Manual_compaction_keeps_imported_checkpoint_history_and_first_native_request()
+    {
+        WithHistory((server, store, codecs, artifacts, opened, turn, requests) =>
+        {
+            var source = SessionId.New();
+            new EventStream(store, codecs, opened.SessionId).Append(new ConversationHistoryImported("source-workspace",
+                source.ToString(), 5, source + "-5-after-turn", [new("user", "seed-user-ñ"), new("assistant", "seed-answer-á")], null));
+            for (var index = 0; index < 8; index++)
+                turn.Ask("question-" + index, "Follow the task.", opened.SessionId, opened.RunId, opened.RootLane, "state", CancellationToken.None);
+            Assert.Equal("ok", Command(server, "conversation.resume", opened.SessionId.ToString()).Status);
+            Assert.Equal("ok", Command(server, "conversation.compact").Status);
+            turn.Ask("continue-after-compaction", "Follow the task.", opened.SessionId, opened.RunId, opened.RootLane, "state", CancellationToken.None);
+            Assert.Contains("seed-answer-á", requests[^1].Instructions);
+            Assert.Contains(requests[^1].Messages, message => message.Content.OfType<TextBlock>().Any(text => text.Text == "seed-user-ñ"));
+            Assert.Contains(requests[^1].Messages, message => message.Content.OfType<TextBlock>().Any(text => text.Text == "question-0"));
+        });
+    }
+
+    [Fact]
     public void Manual_compaction_preserves_journal_and_is_consumed_on_next_turn_and_next_run()
     {
         WithHistory((server, store, codecs, artifacts, opened, turn, requests) =>

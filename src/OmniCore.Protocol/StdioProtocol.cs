@@ -53,6 +53,7 @@ public static class StdioProtocol
         "query.modePreferences",
         "query.reasoningPreferences",
         "query.workspaceStatus",
+        "query.workspacePanel",
         "query.turnContext",
         "query.openRouterStatus",
         "query.uiPreferences",
@@ -67,6 +68,7 @@ public static class StdioProtocol
         "command.conversation.resume.user",
         "command.conversation.rename.user",
         "command.conversation.compact.user",
+        "command.conversation.alternative.user",
         "command.conversation.questionnaire.respond.user",
         "command.conversation.interaction.choice.respond.user",
         "command.conversation.weak-sandbox.respond.user",
@@ -132,6 +134,7 @@ public static class StdioProtocol
         new("reasoningPreference", "query.reasoningPreferences", "User reasoning preference", "user", "configuration-read", true),
         new("runReasoningPreference", "query.reasoningPreferences", "Current Run reasoning selection", "session", "session-read", true),
         new("workspaceStatus", "query.workspaceStatus", "Workspace identity, trust and runtime status", "workspace", "workspace-read", true),
+        new("workspace.panel", "query.workspacePanel", "Bounded files, Git, timeline and checkpoint read models", "workspace", "workspace-read", true),
         new("context", "query.turnContext", "Last persisted model context snapshot", "session", "session-read", true),
         new("turnFingerprint", "query.turnContext", "Effective current-turn capability fingerprint", "session", "session-read", true),
         new("openrouter", "query.openRouterStatus", "OpenRouter connection status", "user", "configuration-read", true),
@@ -142,12 +145,14 @@ public static class StdioProtocol
     public static bool IsSupportedQuery(string name) => name == "humanActionScope"
         ? true
         : NativeQueries.Any(query => query.Name == name || query.WireName == name)
-            || name.StartsWith("sessionObservability:", StringComparison.Ordinal);
+            || name.StartsWith("sessionObservability:", StringComparison.Ordinal)
+            || name.StartsWith("workspace.panel:", StringComparison.Ordinal);
 
     public static bool TryGetQuery(string name, out NativeQueryDescriptor descriptor)
     {
         descriptor = NativeQueries.FirstOrDefault(query => query.Name == name || query.WireName == name
-            || query.Name == "sessionObservability" && name.StartsWith("sessionObservability:", StringComparison.Ordinal))!;
+            || query.Name == "sessionObservability" && name.StartsWith("sessionObservability:", StringComparison.Ordinal)
+            || query.Name == "workspace.panel" && name.StartsWith("workspace.panel:", StringComparison.Ordinal))!;
         return descriptor is not null;
     }
 
@@ -180,13 +185,13 @@ public static class StdioProtocol
         return "{\"apiVersion\":1,\"protocolVersion\":\"1.0\",\"queries\":[" + queries
             + "],\"commands\":[" + commands + "],\"eventApis\":[" + streams + "],\"artifactApis\":[" + artifacts + "]"
             + ",\"features\":" + features
-            + ",\"excluded\":[{\"id\":\"diff.open\",\"availability\":\"not_exposed\",\"reason\":\"Path-parameterized artifact reads require a dedicated bounded contract.\"},"
+            + ",\"excluded\":[{\"id\":\"diff.open\",\"availability\":\"not_exposed\",\"reason\":\"Legacy artifact diffs are not exposed; workspace.panel provides bounded workspace and checkpoint diffs.\"},"
             + "{\"id\":\"complete\",\"availability\":\"not_exposed\",\"reason\":\"Filesystem completion can read arbitrary paths and has no native scoped request DTO yet.\"},"
             + "{\"id\":\"humanActionScope\",\"availability\":\"trusted_connection_only\",\"capability\":\"query.humanActionScope\"}]}";
     }
 
     public static bool IsSupportedCommand(string name) => name is "sim" or "sim.resume" or "session.input"
-        or "conversation.start" or "conversation.new" or "conversation.resume" or "conversation.rename" or "conversation.compact"
+        or "conversation.start" or "conversation.new" or "conversation.resume" or "conversation.rename" or "conversation.compact" or "conversation.alternative"
         or "session.security.set" or "session.security.default.set" or "session.model.select" or "session.model.route.respond"
         or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
         or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
@@ -205,6 +210,7 @@ public static class StdioProtocol
         new("conversation.resume", "command.conversation.resume.user", "native-confirmation+hmac+workspace-session-scope+lease+receipt", "command.result.lookup", "Resume a Session in the current workspace"),
         new("conversation.rename", "command.conversation.rename.user", "native-confirmation+hmac+session-sequence-cas+receipt", "command.result.lookup", "Set the current Session title with compare-and-set"),
         new("conversation.compact", "command.conversation.compact.user", "native-confirmation+hmac+session-scope+receipt", "command.result.lookup", "Compact the current Session context while retaining history"),
+        new("conversation.alternative", "command.conversation.alternative.user", "native-confirmation+hmac+session-scope+receipt", "command.result.lookup", "Create an isolated worktree and derived Session from an exact recoverable checkpoint"),
         new("interaction.respond", "command.conversation.questionnaire.respond.user", "native-confirmation+hmac+session-run-interaction-scope+policy-revision+receipt+resume", "command.result.lookup", "Answer a pending questionnaire and continue its existing Run")
             { WireName = "interaction.respond", Variant = "questionnaire" },
         new("interaction.respond.choice", "command.conversation.interaction.choice.respond.user", "native-confirmation+hmac+session-run-interaction-option+policy-revision+receipt+resume", "command.result.lookup", "Choose a server-defined option for a pending Permission or PlanApproval and continue its existing Run")
@@ -242,8 +248,9 @@ public sealed record NativeQueryDescriptor(string Name, string Capability, strin
 {
     public string WireName => Name == "ui.locale" ? "uiLocaleSettings" : Name;
     public string ResultName => WireName;
-    public string DispatchName(string requestedName) => Name == "sessionObservability"
+    public string DispatchName(string requestedName) => (Name == "sessionObservability"
         && requestedName.StartsWith("sessionObservability:", StringComparison.Ordinal)
+        || Name == "workspace.panel" && requestedName.StartsWith("workspace.panel:", StringComparison.Ordinal))
         ? requestedName : WireName;
 }
 

@@ -22,6 +22,7 @@ using PersistedSpend = OmniCore.Host.CanonicalSpendReader.Snapshot;
 /// </summary>
 public sealed class ExplorerTurn
 {
+    public Action<SessionId, RunId, LaneId, long, string>? WorkspaceCheckpointRecorder { get; init; }
     private const string MemoryProposalJournalArgumentsJson = "{\"screenedByMemoryPolicy\":true}";
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IEventStore,
         System.Collections.Concurrent.ConcurrentDictionary<(SessionId, RunId, LaneId?), SemaphoreSlim>> RunExecutionGates = new();
@@ -1964,7 +1965,9 @@ public sealed class ExplorerTurn
                             ValidateUltraCode(toolCall: call.Id);
                         });
                     else
-                        stream.AppendBatch(toPersist, DurabilityClass.Standard);
+                    stream.AppendBatch(toPersist, DurabilityClass.Standard);
+                    if (outcome.Events.OfType<ToolCallStarted>().Any(evt => evt.EffectClass != EffectClass.None))
+                        WorkspaceCheckpointRecorder?.Invoke(sessionId, runId, laneId, _store.CurrentSequence(sessionId), "after-tool");
 
                     if (!ResolvePendingLifecycleValidations())
                         lifecycleDeniedTurn = true;
@@ -2342,6 +2345,7 @@ public sealed class ExplorerTurn
             "turn ended without another model step").ToList();
         batch.Add(terminal);
         stream.AppendBatch(batch, DurabilityClass.Barrier);
+        WorkspaceCheckpointRecorder?.Invoke(session, run, lane, _store.CurrentSequence(session), "after-turn");
     }
 
     private ModelMessage SteeringMessage(string partsJson)
@@ -3042,6 +3046,18 @@ public sealed class ExplorerTurn
             historySequences.Add(currentHistorySequence);
             messageOwners?.Add(message, currentHistoryRun);
         }
+        if (conversationScope.AllowsSessionHistory)
+            foreach (var imported in journal.Select(_codecs.Decode).OfType<ConversationHistoryImported>())
+                foreach (var message in imported.Messages)
+                {
+                    if (message.Role == "tool" && message.CallId is { } callId && message.ToolName is { } tool)
+                    {
+                        AppendHistory(new ModelMessage(MessageRole.Assistant, new ContentBlock[] { new ToolCallBlock(ToolCallId.Parse(callId), callId, tool, message.Arguments ?? "{}") }));
+                        AppendHistory(new ModelMessage(MessageRole.Tool, new ContentBlock[] { new ToolResultBlock(ToolCallId.Parse(callId), new ContentBlock[] { new TextBlock(message.Text) }, message.IsError) }));
+                    }
+                    else AppendHistory(new ModelMessage(message.Role == "user" ? MessageRole.User : MessageRole.Assistant,
+                        new ContentBlock[] { new TextBlock(message.Text) }));
+                }
         var steeringInputs = new Dictionary<SteeringId, TurnSteeringReceived>();
         var questionnaireCalls = new HashSet<string>(StringComparer.Ordinal);
         var questionnaireResults = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -3286,7 +3302,9 @@ public sealed class ExplorerTurn
         var checkpoint = SessionConversationCheckpoint.Read(journal, _codecs, _artifacts, runId, activeLaneId);
         if (checkpoint is null) return history;
         var firstInput = history.FindIndex(message => message.Role == MessageRole.User);
-        return history.Where((_, index) => index == firstInput || historySequences[index] > checkpoint.ThroughSequence).ToList();
+        var firstCanonicalInput = journal.FirstOrDefault(evt => conversationScope.CanRead(evt) && _codecs.Decode(evt) is UserInputReceived)?.Sequence;
+        return history.Where((_, index) => index == firstInput || historySequences[index] == firstCanonicalInput
+            || historySequences[index] > checkpoint.ThroughSequence).ToList();
     }
 
     private TurnId? FindOpenTurn(EventStream stream, RunId runId, LaneId laneId)

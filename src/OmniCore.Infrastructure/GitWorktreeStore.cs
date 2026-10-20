@@ -15,7 +15,7 @@ using Task = System.Threading.Tasks.Task;
 /// the seven-day ref expiry sweep are intentionally deferred; refs are retained past seven days
 /// until a later explicit retention worker can verify ownership and age.
 /// </summary>
-public sealed class GitWorktreeStore
+public sealed partial class GitWorktreeStore
 {
     private static readonly TimeSpan GitTimeout = TimeSpan.FromMinutes(2);
     private const int CapturedOutputLimit = 1_048_576;
@@ -1329,7 +1329,7 @@ public sealed class GitWorktreeStore
     }
 
     private async Task<GitResult> Git(string workingDirectory, IReadOnlyList<string> command, IReadOnlyDictionary<string, string>? environment,
-        CancellationToken cancellationToken, bool allowConflictExit = false)
+        CancellationToken cancellationToken, bool allowConflictExit = false, string? standardInput = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var disabledHooksPath = OperatingSystem.IsWindows() ? "NUL" : "/dev/null";
@@ -1350,7 +1350,8 @@ public sealed class GitWorktreeStore
         if (environment is not null) foreach (var pair in environment) env[pair.Key] = pair.Value;
         try
         {
-            var handle = _processes.Launch(new ProcessLaunch("git", args, workingDirectory, env, true), cancellationToken);
+            var handle = _processes.Launch(new ProcessLaunch("git", args, workingDirectory, env, true)
+                { InitialStandardInput = standardInput }, cancellationToken);
             using var registration = cancellationToken.Register(() => CancelTree(handle));
             ProcessResult result;
             try

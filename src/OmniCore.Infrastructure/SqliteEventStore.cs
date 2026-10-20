@@ -28,12 +28,17 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader, IDi
 
     public SqliteEventStore(string filePath) : this(filePath, readOnly: false) { }
 
-    internal SqliteEventStore(string filePath, bool readOnly)
+    /// <summary>Private journal initialization whose failed transaction may remove the file before publication.</summary>
+    public static SqliteEventStore OpenUnpooled(string filePath) => new(filePath, readOnly: false, disablePooling: true);
+
+    internal SqliteEventStore(string filePath, bool readOnly) : this(filePath, readOnly, disablePooling: readOnly) { }
+
+    private SqliteEventStore(string filePath, bool readOnly, bool disablePooling)
     {
         _journalPath = Path.GetFullPath(filePath);
-        var connString = readOnly ? new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+        var connString = disablePooling ? new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
         {
-            DataSource = _journalPath, Mode = Microsoft.Data.Sqlite.SqliteOpenMode.ReadOnly,
+            DataSource = _journalPath, Mode = readOnly ? Microsoft.Data.Sqlite.SqliteOpenMode.ReadOnly : Microsoft.Data.Sqlite.SqliteOpenMode.ReadWriteCreate,
             Pooling = false,
         }.ToString() : "DataSource=" + filePath;
         _conn = Microsoft.Data.Sqlite.SqliteFactory.Instance!.CreateDataSource(connString)!.OpenConnection()!;
