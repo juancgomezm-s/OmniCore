@@ -520,8 +520,11 @@ public sealed partial class TuiApp
                 token => Task.FromResult(catalogHost.RegisterOpenRouterModels(providerId, [model.Id], token)),
                 added =>
                 {
+                    _policies.ReloadModels();
                     CloseOverlay();
-                    ShowProviderConnections(_localization.Resolve("openrouter.catalog.registered",
+                    if (_preferencesProvider is { } target && target.ProviderId == providerId)
+                        ShowProviderPreferences(target);
+                    else ShowProviderConnections(_localization.Resolve("openrouter.catalog.registered",
                         new Dictionary<string, string> { ["0"] = model.Id }) + (added == 0 ? "" : " · +" + added), providerId);
                 });
         };

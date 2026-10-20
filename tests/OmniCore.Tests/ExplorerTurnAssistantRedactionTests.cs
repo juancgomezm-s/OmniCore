@@ -11,17 +11,8 @@ using OmniCore.Tools;
 
 namespace OmniCore.Tests;
 
-/// <summary>
-/// M55 redaction of the retained whole assistant response. This Fact encodes the DESIRED shape of
-/// the second ModelRequest of a two-call Ask whose first response embeds a synthetic Bearer
-/// secret in BOTH the preamble text and the reasoning: exactly ONE assistant message carrying the
-/// three blocks in original order (text → reasoning → tool call, same id/arguments) before the
-/// matching tool result, where the retained text/reasoning equal exactly
-/// new RedactionPolicy().Redact(original), the raw token is absent from both retained strings
-/// and from the second request's Instructions, and the ordinary prose survives so the redaction
-/// is non-vacuous. It must NOT be weakened to bless a leak. No production code is touched by
-/// this file.
-/// </summary>
+/// <summary>Private canonical assistant text and visible reasoning reach subsequent calls
+/// verbatim, including credential-like examples. Diagnostic redaction remains independent.</summary>
 public sealed class ExplorerTurnAssistantRedactionTests
 {
     private static readonly ExecutionFingerprint Fingerprint = new("scripted", "h", "t", "c", "o", "M3");
@@ -40,7 +31,7 @@ public sealed class ExplorerTurnAssistantRedactionTests
         string Journal);
 
     [Fact]
-    public void Second_request_retains_grouped_assistant_blocks_redacted_without_leaking_the_secret()
+    public void Second_request_retains_grouped_assistant_blocks_verbatim_with_independent_diagnostic_redaction()
     {
         var call = new ToolCallBlock(ToolCallId.New(), "call-redact-a", "filesystem.read",
             "{\"path\":\"" + FixtureFileName + "\"}");
@@ -75,18 +66,19 @@ public sealed class ExplorerTurnAssistantRedactionTests
             Assert.True(Array.IndexOf(flat, blocks[0]) < Array.IndexOf(flat, result),
                 "the grouped assistant message must precede the matching tool result");
 
-            // Exact redaction: both retained strings equal the policy applied to the originals.
+            // Exact conversational fidelity, with no secret-like string replacement.
             var retainedText = Assert.IsType<TextBlock>(blocks[0]).Text;
             var retainedReasoning = Assert.IsType<ReasoningBlock>(blocks[1]).VisibleText;
             Assert.NotNull(retainedReasoning);
             var policy = new RedactionPolicy();
-            Assert.Equal(policy.Redact(OriginalText), retainedText);
-            Assert.Equal(policy.Redact(OriginalReasoning), retainedReasoning);
+            Assert.Equal(OriginalText, retainedText);
+            Assert.Equal(OriginalReasoning, retainedReasoning);
 
-            // The raw synthetic secret must not survive in either retained string nor in the
-            // replayed Instructions of the second request.
-            Assert.DoesNotContain(Secret, retainedText, StringComparison.Ordinal);
-            Assert.DoesNotContain(Secret, retainedReasoning, StringComparison.Ordinal);
+            // Private conversation retains synthetic examples; diagnostic copies remain sanitized.
+            Assert.Contains(Secret, retainedText, StringComparison.Ordinal);
+            Assert.DoesNotContain(Secret, policy.Redact(retainedText), StringComparison.Ordinal);
+            Assert.Contains(Secret, retainedReasoning, StringComparison.Ordinal);
+            Assert.DoesNotContain(Secret, policy.Redact(retainedReasoning!), StringComparison.Ordinal);
             Assert.DoesNotContain(Secret, outcome.Requests[1].Instructions ?? string.Empty,
                 StringComparison.Ordinal);
 

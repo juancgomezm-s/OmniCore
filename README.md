@@ -438,6 +438,41 @@ una sola acción; se conservan el historial y el mensaje original. El permiso no
 se reutiliza para conexiones modificadas ni para repetir una petición ya atendida.
 [Validación del cambio de modelo](docs/validation/model-route-resume-20261016.md).
 
+La [prueba real Luna → DeepSeek v4 Flash](tests/OmniCore.Tests/TuiWiringTests.LiveFileHandoff.cs)
+comprueba la creación de un archivo, el cambio con `/modelo` y su edición mediante
+`filesystem.patch`: una línea modificada y otras 19 intactas, en la misma sesión y
+sin reenviar la petición. También verifica una clave que sólo figura en la conversación.
+Es una prueba opt-in (`OMNI_LIVE_FILE_HANDOFF=1`); requiere conexiones reales y consume
+la suscripción de Luna y créditos de OpenRouter. Sus datos y políticas se aíslan del uso normal.
+
+
+En **F4 → Modelos y perfiles → Activar modelos…** puedes buscar en la lista
+completa, incluidos los modelos del catálogo de OpenRouter, y encender o apagar
+cada uno con su interruptor: `[   █]` encendido, `[█   ]` apagado. Clic, Enter o
+Espacio guardan el cambio inmediatamente; las flechas sólo recorren la lista.
+La preferencia se conserva al reiniciar y apagar el modelo actual no lo sustituye.
+
+Usa **`/modelo`** para elegir con cuál trabajar: muestra únicamente los encendidos.
+**F3** abre ese mismo selector. Activar un modelo no lo elige ni inicia una consulta.
+
+El perfil **FullAgent**, concedido explícitamente al modelo, expone todo el catálogo
+de herramientas disponible sin reducirlo por rasgos provisionales de cualificación.
+Los permisos del proyecto y las restricciones guardadas siguen aplicándose.
+`filesystem.write` crea archivos nuevos y conserva el reemplazo de existentes cuando
+la política efectiva lo autoriza, con lectura previa y token vigente. Se prefieren
+parches localizados: conservan el archivo original, su codificación y el contenido
+ajeno al cambio. La normalización de write a edición sigue pendiente en M9-L-MUT-01;
+los procesos no pueden ampliar permisos ni evadir presupuestos de mutación.
+[Contrato de edición y recuperación](docs/validation/frontier-file-identity-20261017.md).
+
+Los modelos de **OpenRouter** activados también aparecen en **`/modelo` y F3**. Busca `OpenRouter`,
+recorre el catálogo y pulsa Enter para elegir uno; la aplicación registra sólo
+ese modelo, conserva la conversación y no realiza inferencia al seleccionarlo.
+**Actualizar OpenRouter** consulta el catálogo oficial cuando necesites renovarlo;
+abrir F3 utiliza la copia guardada. No hace falta registrar cada modelo desde
+Preferencias antes de poder encontrarlo en el selector; su interruptor debe estar encendido.
+[Validación del catálogo y selector](docs/validation/openrouter-model-picker-20261016.md).
+
 Las opciones disponibles en **F4** se administran desde su menú y no se repiten
 como comandos en el autocompletado, el catálogo o la ayuda de la TUI. Los comandos
 visibles se reservan para el trabajo de la conversación. Los nombres antiguos
@@ -520,7 +555,14 @@ cantidad de elementos sigue disponible como protección adicional del perfil:
 por defecto resume cada 24 elementos antiguos y conserva 12 recientes. Los
 elementos incluyen mensajes y resultados de herramientas, no sólo turnos completos.
 Si el contenido protegido no cabe, el turno se detiene con un desbordamiento
-explícito. El historial original permanece en el journal.
+explícito. Cada checkpoint automático muestra un aviso en la conversación, sin
+pedir confirmación. El resumen se guarda por separado: los mensajes y resultados
+originales permanecen intactos en el journal y sus artifacts, también al reabrir.
+Los mensajes recientes no se truncan ni se sustituyen para hacerlos caber.
+
+La compactación está activa de forma predeterminada. En el `settings.yaml` de
+usuario puede desactivarse con `conversation: { autoCompact: false }`; entonces
+sólo `/compactar` crea resúmenes y un desbordamiento detiene la solicitud.
 
 El contexto reúne instrucciones, estado vigente del trabajo, contribuciones
 habilitadas, historial reciente y checkpoints. Las trazas de razonamiento
@@ -529,10 +571,14 @@ opaca conserva las restricciones de ruta, modelo y proveedor que exija el
 adaptador. Los contadores de la interfaz corresponden a las solicitudes
 efectivamente enviadas; compactar no inventa una medición nueva.
 
-Los resultados de herramientas de más de 4096 caracteres se guardan íntegros,
-redactados, en un artifact recuperable con `artifact.read`. Su vista acotada
-incluye el inicio, líneas de errores o verificaciones y el final; las líneas
-repetidas no ocupan varias veces esa vista. Los resultados cortos se conservan.
+Los mensajes privados de usuario, las respuestas y los resultados autorizados
+de herramientas conservan su texto literal: no se sustituyen ejemplos de claves,
+correos u otros patrones por máscaras antes de guardarlos, mostrarlos o enviarlos.
+Los artifacts originales pueden consultarse con `artifact.read`, sujeto a los
+permisos de la sesión. Los resúmenes pueden abreviar trazas de herramientas como
+parte de la compactación anunciada, sin alterar sus originales. Los diagnósticos,
+la auditoría y los errores de autenticación conservan su redacción de secretos;
+las credenciales siguen almacenándose mediante sus proveedores de secretos.
 Los resúmenes periódicos incorporan el checkpoint anterior y las novedades,
 priorizando instrucciones, decisiones, cambios, fallos, pruebas y pendientes.
 El resumen se envía una vez, sin repetir sus secciones como otro bloque.

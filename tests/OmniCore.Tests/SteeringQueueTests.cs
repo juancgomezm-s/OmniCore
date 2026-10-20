@@ -9,7 +9,7 @@ using Xunit;
 public sealed class SteeringQueueTests
 {
     [Fact]
-    public void Receive_is_redacted_idempotent_and_pending_is_fifo()
+    public void Receive_is_verbatim_idempotent_and_pending_is_fifo()
     {
         var fixture = new Fixture();
         var first = SteeringId.New();
@@ -26,7 +26,7 @@ public sealed class SteeringQueueTests
         Assert.Equal(fixture.Run, receivedEvents[0].RunId);
         Assert.Equal(fixture.Lane, receivedEvents[0].LaneId);
         Assert.Equal(fixture.Turn, receivedEvents[0].TurnId);
-        Assert.DoesNotContain("sk-secret-value", receivedEvents[0].PayloadJson, StringComparison.Ordinal);
+        Assert.Contains("sk-secret-value", receivedEvents[0].PayloadJson, StringComparison.Ordinal);
 
         var beforeReplay = fixture.Store.CurrentSequence(fixture.Session);
         Assert.True(SteeringQueue.TryReceive(fixture.Store, fixture.Codecs, fixture.Session, first,

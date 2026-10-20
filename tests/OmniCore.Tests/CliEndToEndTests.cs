@@ -1323,6 +1323,9 @@ public sealed partial class CliEndToEndTests
                     <ImplicitUsings>disable</ImplicitUsings>
                     <Nullable>enable</Nullable>
                     <NuGetAudit>false</NuGetAudit>
+                    <!-- The verifier runs in a bounded process job. A shared compiler must
+                         not outlive that job and leave later builds waiting on a frozen server. -->
+                    <UseSharedCompilation>false</UseSharedCompilation>
                   </PropertyGroup>
                 </Project>
                 """);
@@ -1559,7 +1562,12 @@ public sealed partial class CliEndToEndTests
                 var plan = PlanProjection.Replay(codecs, journal);
                 var stageItems = plan.Items().Where(item => item.Metadata.ContainsKey(WorkflowStageContract.WorkflowIdKey))
                     .OrderBy(item => item.Metadata[WorkflowStageContract.StageKey], StringComparer.Ordinal).ToArray();
-                Assert.Equal(3, stageItems.Length);
+                Assert.True(stageItems.Length == 3,
+                    "Expected all three workflow stages; actual=" + stageItems.Length
+                    + "\nFailures=" + string.Join(" | ", events.Where(item => item is TaskFailed
+                        or ToolCallFailed or ToolCallRejected or TurnAbandoned or InteractionRequested))
+                    + "\nDiagnostics=" + string.Join(" | ", diagnostics)
+                    + "\nProvider request count=" + requests.Count);
                 Assert.Equal(connectModule ? 3 : 2,
                     stageItems.Count(item => item.State == PlanItemState.Completed));
                 Assert.Contains(stageItems, item => item.Metadata[WorkflowStageContract.StageKey] == "Verify");

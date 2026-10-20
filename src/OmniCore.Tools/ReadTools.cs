@@ -120,7 +120,7 @@ public sealed class ReadFileTool : ITool
         var pageCount = Math.Min(limit, lineRanges.Count - start);
         var page = pageCount == 0 ? "" : decoded.Text.Substring(lineRanges[start].Start,
             lineRanges[start + pageCount - 1].End - lineRanges[start].Start);
-        var content = new OmniCore.Domain.RedactionPolicy().Redact(page);
+        var content = page;
         const int maxPreviewChars = 8000;
         var contentTruncated = content.Length > maxPreviewChars;
         if (contentTruncated) content = content.Substring(0, maxPreviewChars);
@@ -873,8 +873,7 @@ public sealed class SearchTextTool : ITool
 
             var text = line.Length > MaxMatchTextChars ? line.Substring(0, MaxMatchTextChars) : line;
 
-            // ADR-0018 §4: el texto expuesto al modelo se redacta igual que en filesystem.read.
-            text = new RedactionPolicy().Redact(text);
+            // Authorized search text is private conversation content, like filesystem.read.
             matches.Add(new SearchMatch(reportPath, i + 1, text));
         }
     }

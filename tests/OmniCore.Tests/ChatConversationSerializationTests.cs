@@ -10,6 +10,17 @@ namespace OmniCore.Tests;
 
 public sealed class ChatConversationSerializationTests
 {
+    [Theory]
+    [InlineData(MessageRole.User)]
+    [InlineData(MessageRole.Assistant)]
+    public async Task Private_conversation_text_reaches_http_payload_verbatim(MessageRole role)
+    {
+        const string original = "  Español <>&\r\nBearer fixture-token-123456\r\npassword=example123  e\u0301 é\t  ";
+        using var body = await Serialize([new(role, [new TextBlock(original)])]);
+        Assert.Equal(original, Assert.Single(body.RootElement.GetProperty("messages").EnumerateArray())
+            .GetProperty("content").GetString());
+    }
+
     [Fact]
     public async Task Assistant_text_and_parallel_calls_remain_one_turn_with_matching_results()
     {

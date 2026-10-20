@@ -23,6 +23,13 @@ resize conserva el borrador sin persistirlo. Las consultas no se disparan al nav
 Los accesos `/openrouter` y login no se ofrecen en autocompletado ni catálogo TUI.
 Se conserva la CLI de automatización y el protocolo, sin modificar su autoridad.
 
+La revisión posterior corrige la ausencia de modelos tras conectar: F3 incorpora
+el catálogo OpenRouter guardado, permite actualizarlo explícitamente y registra
+la elección al pulsar Enter. La aceptación con la conexión existente obtuvo
+469 modelos oficiales y verificó su selección sin inferencia. No sustituye las
+aceptaciones de créditos ni de respuesta de modelo pendientes en OR5.
+[Causa, implementación y evidencia](../validation/openrouter-model-picker-20261016.md).
+
 Windows usa entrada nativa del terminal cuando no existe un driver explícito; se
 conserva la selección de plataforma en Unix. Los clics se prueban pasando por el
 enrutador de mouse de la aplicación, además del teclado. La aceptación de mouse en

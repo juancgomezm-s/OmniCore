@@ -531,7 +531,7 @@ public sealed partial class TuiApp
             .Read().CommandAliases);
         var names = ReadStringArray(commandCatalogJson, "commands")
             .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode", "reasoning",
-                "cancel", "interrupt", "preferences", "models", "sidebar", "agents", "delegate", "agent", "join", "fanout", "animation", "images",
+                "cancel", "interrupt", "preferences", "model", "models", "sidebar", "agents", "delegate", "agent", "join", "fanout", "animation", "images",
                 "new", "sessions", "resume-session", "rename-session", "clear", "compact" })
             .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name))
             .Where(name => !TuiMenuCommands.IsMenuOwned(name, aliases));
@@ -542,7 +542,7 @@ public sealed partial class TuiApp
         // Show one spelling in the effective UI language. Canonical commands remain accepted
         // when typed explicitly, without duplicating the localized browsing surface.
         if (draft == "/") suggestions = suggestions.DistinctBy(suggestion => suggestion.Value)
-            .OrderBy(suggestion => HumanCommandAliases.NormalizeSlashHead(suggestion.Value) switch { "/help" => 0, "/act" => 1, "/mode" => 2, "/models" => 3, "/agents" => 4, _ => 5 }).ToArray();
+            .OrderBy(suggestion => HumanCommandAliases.NormalizeSlashHead(suggestion.Value) switch { "/help" => 0, "/act" => 1, "/mode" => 2, "/model" => 3, "/agents" => 4, _ => 5 }).ToArray();
         else if (draft[0] == '/') suggestions = suggestions
             .OrderBy(suggestion => suggestion.Value == draft ? 0
                 : HumanCommandAliases.NormalizeSlashHead(suggestion.Value) == suggestion.Value ? 1 : 2).ToArray();
@@ -591,7 +591,7 @@ public sealed partial class TuiApp
         "/runmode" => _localization.Resolve("shell.change_the_active_run_s_mode"),
         "/ultracode" => _localization.Resolve("shell.explicit_adaptive_authority_with_finite_limits_plan_current_covers_onl"),
         "/reasoning" => _localization.Resolve("shell.persistent_preference_run_selection_or_one_turn_boost"),
-        "/models" => _localization.Resolve("shell.select_model"),
+        "/model" or "/models" => _localization.Resolve("shell.select_model"),
         "/preferences" => _localization.Resolve("shell.open_settings"),
         "/animation" => _localization.Resolve("shell.activity_and_preview"),
         "/login" => _localization.Resolve("shell.chatgpt_account_and_connection"),
@@ -889,7 +889,7 @@ public sealed partial class TuiApp
         if (input == "/preferences") { ShowPreferences(); _composer.Text = ""; return; }
         if (input == "/openrouter") { ShowPreferences("accounts_connections", categoryPage: true); _composer.Text = ""; return; }
         if (input == "/login") { ShowAccount(fromPreferences: false); _composer.Text = ""; return; }
-        if (input == "/models") { ShowModelPicker(); _composer.Text = ""; return; }
+        if (input is "/model" or "/models") { ShowModelPicker(refreshCatalog: false); _composer.Text = ""; return; }
         if (input == "/sidebar") { ToggleSidebar(); _composer.Text = ""; return; }
         if (input.StartsWith("/sidebar ", StringComparison.Ordinal))
         {
@@ -1842,7 +1842,7 @@ public sealed partial class TuiApp
     private void ApplyTheme(View view, string surface = "#061822", bool dimmed = false, bool preferences = false)
     {
         preferences |= view is FrameView && view.Id is { } preferenceId
-            && (preferenceId.Contains("preferences", StringComparison.Ordinal) || preferenceId.StartsWith("model-catalog-", StringComparison.Ordinal)
+            && (preferenceId.Contains("preferences", StringComparison.Ordinal) || preferenceId == "model-toggles" || preferenceId.StartsWith("model-catalog-", StringComparison.Ordinal)
                 || preferenceId.StartsWith("claude-account", StringComparison.Ordinal));
         var information = preferences && view is Label && (view is MenuInformationLabel || view.Id is "omni-detail"
             || view.Id is { } labelId && new[] { "-help", "-hint", "-notice", "-status", "-summary", "-intro", "-details", "-metadata", "-note", "-description", "-modes" }
@@ -2038,7 +2038,31 @@ public sealed partial class TuiApp
     {
         if (_window is null || _overlay is not null) return;
         _policies.ReloadModels();
-        var available = _policies.Models.Where(m => _policies.IsVisibleInPicker(m.ProviderId, m.Id)).ToArray();
+        IReadOnlyList<OpenRouterPickerModel> routerModels = [];
+        ProviderConnectionMenuRow[] routerProviders = [];
+        string? routerError = null;
+        if (_providerConnectionHost is ITuiOpenRouterCatalogHost routerCatalog)
+        {
+            try
+            {
+                routerProviders = _providerConnectionHost.List(CancellationToken.None)
+                    .Where(row => row.Backend == "openrouter" && row.CanDiscoverModels).ToArray();
+                routerModels = routerCatalog.CachedOpenRouterPickerModels(CancellationToken.None);
+            }
+            catch (Exception) { routerError = _localization.Resolve("openrouter.catalog.failed"); }
+        }
+        var configured = _policies.Models.ToArray();
+        var available = AllPickerModels(configured, routerModels)
+            .Where(m => _policies.IsVisibleInPicker(m.ProviderId, m.Id)).ToArray();
+        string ModelName(ModelRegistryModelDescriptor model) => CatalogDisplay(_policies.DisplayName(model.Id)
+            ?? routerModels.FirstOrDefault(row => row.ProviderId == model.ProviderId && row.Id == model.Id)?.Name
+            ?? model.Id, 160);
+        string ProviderLabel(ModelRegistryModelDescriptor model) =>
+            routerProviders.Any(row => row.ProviderId == model.ProviderId)
+                ? model.ProviderId == "openrouter" ? "OpenRouter" : "OpenRouter · " + CatalogDisplay(model.ProviderId, 80)
+                : CatalogDisplay(model.ProviderId, 80);
+        string ModelRow(ModelRegistryModelDescriptor model) => (_selectedModel == model.Id ? " ✓  " : "    ")
+            + CatalogDisplay(_policies.DisplayName(model.Id) ?? model.Id, 160) + "   ·   " + ProviderLabel(model);
         var models = available;
         var frame = OverlayFrame(_localization.Resolve("shell.select_model"), Math.Clamp(available.Length + 9, 12, 20));
         frame.Id = "omni-model-palette";
@@ -2046,16 +2070,16 @@ public sealed partial class TuiApp
         frame.ViewportSettings |= ViewportSettingsFlags.Transparent;
         frame.SubViews.Single(view => view.Id == "omni-menu-title").Width = Dim.Fill(10);
         var feedback = new Label { Id = "omni-palette-feedback", X = 2, Y = 1, Width = Dim.Fill(4),
-            Text = models.Length == 0 ? _localization.Resolve("shell.no_visible_models_check_f4_models")
-                : "" };
+            Text = routerError ?? (routerProviders.Length > 0 && routerModels.Count == 0
+                ? _localization.Resolve("openrouter.picker.notLoaded")
+                : models.Length == 0 ? _localization.Resolve("shell.no_visible_models_check_f4_models") : "") };
         frame.Add(feedback);
         var searchLabel = new Label { Id = "omni-heading", X = 2, Y = 2, Width = 8, Text = _localization.Resolve("shell.search") };
         var search = new TextField { Id = "omni-palette-search", X = 10, Y = 2, Width = Dim.Fill(15), Text = query };
         var searchHint = new Label { Id = "omni-help", X = Pos.AnchorEnd(12), Y = 2, Width = 10, Text = "Ctrl+F" };
         var list = new ListView { Id = "omni-model-list", X = 2, Y = 4, Width = Dim.Fill(4), Height = Dim.Fill(4),
             CanFocus = models.Length > 0, ShowMarks = false };
-        list.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(models.Select(model =>
-            (_selectedModel == model.Id ? " ✓  " : "    ") + (_policies.DisplayName(model.Id) ?? model.Id) + "   ·   " + model.ProviderId)));
+        list.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(models.Select(ModelRow)));
         var position = new Label { Id = "omni-heading", X = 2, Y = Pos.AnchorEnd(3), Width = Dim.Fill(4) };
         void UpdatePosition() => position.Text = models.Length == 0 ? _localization.Resolve("shell.no_matches_check_search_or_f4")
             : $"{(list.SelectedItem ?? 0) + 1} / {models.Length}  ·  " + _localization.Resolve("shell.navigate_enter_select");
@@ -2063,10 +2087,9 @@ public sealed partial class TuiApp
         void FilterModels()
         {
             var text = search.Text.ToString().Trim();
-            models = available.Where(model => (model.Id + " " + (_policies.DisplayName(model.Id) ?? "") + " " + model.ProviderId)
+            models = available.Where(model => (model.Id + " " + ModelName(model) + " " + ProviderLabel(model))
                 .Contains(text, StringComparison.OrdinalIgnoreCase)).ToArray();
-            list.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(models.Select(model =>
-                (_selectedModel == model.Id ? " ✓  " : "    ") + (_policies.DisplayName(model.Id) ?? model.Id) + "   ·   " + model.ProviderId)));
+            list.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(models.Select(ModelRow)));
             list.CanFocus = models.Length > 0;
             if (models.Length > 0) list.SelectedItem = 0;
             list.EnsureSelectedItemVisible();
@@ -2079,7 +2102,7 @@ public sealed partial class TuiApp
         void HandlePaletteShortcut(Key key)
         {
             if (key.KeyCode == (KeyCode.F | KeyCode.CtrlMask)) { search.SetFocus(); key.Handled = true; }
-            else if (key.KeyCode == (KeyCode.M | KeyCode.CtrlMask)) { CloseOverlay(); ShowModelPolicies(); key.Handled = true; }
+            else if (key.KeyCode == (KeyCode.M | KeyCode.CtrlMask)) { CloseOverlay(); ShowModelToggles(); key.Handled = true; }
         }
         void MoveSelection(int delta)
         {
@@ -2122,6 +2145,12 @@ public sealed partial class TuiApp
             var key = new ModelPolicyKeyDto(model.ProviderId, model.Id);
             try
             {
+                if (!configured.Any(existing => existing.Id == model.Id && existing.ProviderId == model.ProviderId)
+                    && _providerConnectionHost is ITuiOpenRouterCatalogHost selectedCatalog)
+                {
+                    selectedCatalog.RegisterOpenRouterModels(model.ProviderId, [model.Id], CancellationToken.None);
+                    _policies.ReloadModels();
+                }
                 var safe = _policies.Get(key, CancellationToken.None) is null;
                 _policies.Select(WorkspaceSelectionId, key, model.Id, safe, CancellationToken.None);
                 _turnStatus = safe ? _localization.Resolve("shell.safe_mode_observeonly") : null;
@@ -2140,15 +2169,33 @@ public sealed partial class TuiApp
         var close = new Button { Id = "omni-palette-action", X = Pos.AnchorEnd(8), Y = 0, Width = 6, Text = "Esc" };
         close.Accepted += (_, _) => CloseOverlay();
         var manage = new Button { Id = "omni-palette-action", X = 2, Y = Pos.AnchorEnd(1), Text = _localization.Resolve("shell.manage_models_ctrl_m") };
-        manage.Accepted += (_, _) => { CloseOverlay(); ShowModelPolicies(); };
+        manage.Accepted += (_, _) => { CloseOverlay(); ShowModelToggles(); };
         var refresh = new Button { Id = "omni-palette-refresh", X = 2, Y = Pos.AnchorEnd(2),
-            Text = _localization.Resolve("shell.refresh_models"), Enabled = _policies.SupportsDiscovery };
+            Text = _localization.Resolve(routerProviders.Length > 0 ? "openrouter.picker.refreshChatGpt" : "shell.refresh_models"),
+            Enabled = _policies.SupportsDiscovery };
         refresh.Accepted += (_, _) => RefreshAccountModels(frame, feedback, page, picker: true, highlighted: HighlightedModel);
+        if (routerProviders.Length > 0)
+        {
+            var routerRefresh = new Button { Id = "omni-palette-openrouter-refresh", X = Pos.Right(refresh) + 1,
+                Y = Pos.AnchorEnd(2), Text = _localization.Resolve("openrouter.picker.refresh") };
+            routerRefresh.Accepted += (_, args) =>
+            {
+                args.Handled = true;
+                RefreshOpenRouterPicker(frame, feedback, routerProviders, search, HighlightedModel);
+            };
+            frame.Add(routerRefresh);
+        }
         ApplyTheme(_window, dimmed: true);
         if (_conversation is not null) _conversation.Dimmed = true;
         frame.Add(searchLabel, search, searchHint, list, position, close, manage, refresh); ApplyTheme(frame); _overlay = frame; _window.Add(frame);
         if (models.Length > 0) list.SetFocus(); else search.SetFocus();
-        if (refreshCatalog && _policies.SupportsDiscovery) RefreshAccountModels(frame, feedback, page, picker: true, highlighted: HighlightedModel);
+        var refreshSubscription = refreshCatalog && _policies.SupportsDiscovery;
+        if (refreshSubscription && routerProviders.Length > 0)
+        {
+            try { refreshSubscription = (_account ??= _accountOverride ?? new TuiAccountHost()).Status().LoggedIn; }
+            catch (Exception) { refreshSubscription = false; }
+        }
+        if (refreshSubscription) RefreshAccountModels(frame, feedback, page, picker: true, highlighted: HighlightedModel);
     }
 
     private void ShowModelPolicies(int page = 0, bool refreshCatalog = true, int focusIndex = -1, int focusColumn = 0)
@@ -2847,8 +2894,8 @@ public sealed partial class TuiApp
             .Where(row => !TuiMenuCommands.IsMenuOwned(row.Name, aliases));
         var shown = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var row in rows)
-            if (shown.Add(row.Name)) lines.Add("  /" + row.DisplayName + " — " + row.Description);
-        foreach (var name in new[] { "new", "sessions", "resume-session", "rename-session", "clear", "compact", "act", "mode", "runmode", "ultracode", "reasoning", "agents", "delegate", "agent", "join", "fanout" })
+            if (shown.Add(row.Name)) lines.Add("  /" + row.DisplayName + " — " + (row.Name == "model" ? CommandDescription("/model") : row.Description));
+        foreach (var name in new[] { "new", "sessions", "resume-session", "rename-session", "clear", "compact", "model", "act", "mode", "runmode", "ultracode", "reasoning", "agents", "delegate", "agent", "join", "fanout" })
             if (shown.Add(name)) lines.Add("  /" + HumanCommandAliases.DisplayName(name, _locale) + " — " + CommandDescription("/" + name));
         lines.Add(_localization.Resolve("shell.help_keys"));
         lines.Add("F6 — " + _localization.Resolve("shell.conversation.title"));

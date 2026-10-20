@@ -62,6 +62,94 @@ public sealed class ModelPolicyProfileControlsTests
     }
 
     [Fact]
+    public void Explicit_full_access_exposes_the_entire_eligible_catalog_despite_unknown_traits()
+    {
+        var key = ModelPolicyKey.For("chatgpt", "gpt-6-luna");
+        var profile = new OmniCore.Host.ModelProfileResolver().Resolve(
+            new OmniCore.Models.ModelDefinition(key.ModelId, key.ProviderId, 8192, 8192, 2048), null);
+        var harness = new HarnessPolicyResolver().Resolve(profile);
+        Assert.Equal(6, harness.MaxVisibleTools); // Provisional metadata, not a qualification failure.
+        var stored = new StoredModelPolicy(key, 1, ModelPolicyPresets.FullAgent(),
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+        var effective = EffectiveModelPolicy.Resolve(key, stored, harness);
+        var boundary = new ModelCapabilityBoundary(effective);
+        var definitions = OmniHost.CreateActTools().Catalog().Definitions();
+        var eligible = definitions.Where(tool => boundary.IsToolVisible(tool.Name)).Select(tool => tool.Name).Order().ToArray();
+        Assert.True(eligible.Length > 6);
+        Assert.Equal(eligible, boundary.VisibleTools(definitions).Select(tool => tool.Name).Order().ToArray());
+        Assert.True(boundary.UsesFullToolCatalog());
+        Assert.Equal(0.5, profile.Trait("ToolCallReliability", 0)); // No fabricated empirical evidence.
+    }
+
+    [Fact]
+    public void Full_access_keeps_explicitly_narrowed_capabilities_and_tool_limit()
+    {
+        var preset = ModelPolicyPresets.FullAgent();
+        var policy = new UserModelPolicy(ModelPolicyCategory.FullAgent,
+            new ModelToolPolicy(ToolMode.Discovered, 2, true,
+                new HashSet<ModelToolCapability> { ModelToolCapability.WorkspaceRead }),
+            preset.MutationPolicy, "user", null);
+        var key = ModelPolicyKey.For("fixture", "frontier");
+        var effective = EffectiveModelPolicy.Resolve(key, new StoredModelPolicy(key, 1, policy,
+            DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch), new HarnessPolicy(
+                ToolCallFormat.Native, ToolMode.Direct, 6, GuidanceLevel.Full, 1, PlanControl.ModelDriven, 4));
+        var boundary = new ModelCapabilityBoundary(effective);
+        Assert.Equal(2, boundary.VisibleTools(OmniHost.CreateActTools().Catalog().Definitions()).Count);
+        Assert.False(boundary.IsToolVisible("shell.exec"));
+        Assert.False(boundary.IsToolVisible("filesystem.patch"));
+    }
+
+    [Fact]
+    public void Adding_a_policy_note_preserves_all_explicit_full_agent_controls()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "omni-full-note-" + Guid.NewGuid().ToString("N"));
+        using var host = ModelPolicyHost.Create(directory,
+            [new ModelRegistryModelDescriptor("luna", "fixture", 8192, 8192, 2048)]);
+        var saved = host.Set(new("fixture", "luna"), 0, "FullAgent", "User authorization", TestContext.Current.CancellationToken);
+        Assert.True(saved.AllowOrchestration);
+        Assert.Equal(600, saved.MaxGenerationSeconds);
+        Assert.Equal(int.MaxValue, saved.MaxVisibleTools);
+    }
+
+    [Theory]
+    [InlineData(ModelPolicyCategory.ScopedCoder, false)]
+    [InlineData(ModelPolicyCategory.ScopedCoder, true)]
+    [InlineData(ModelPolicyCategory.FullAgent, false)]
+    [InlineData(ModelPolicyCategory.FullAgent, true)]
+    public void Six_tool_direct_harness_keeps_authorized_file_creation_and_patch_visible(
+        ModelPolicyCategory category, bool includeMedia)
+    {
+        var preset = ModelPolicyPresets.For(category);
+        var key = ModelPolicyKey.For("fixture", "small-coder");
+        var stored = new StoredModelPolicy(key, 1, preset, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch);
+        var harness = new HarnessPolicy(ToolCallFormat.Native, ToolMode.Direct, 6,
+            GuidanceLevel.DomainOnly, 1, PlanControl.RuntimeDriven, 4);
+        var effective = EffectiveModelPolicy.Resolve(key, stored, harness);
+        var tools = OmniHost.CreateActTools(mediaReadTool: includeMedia
+            ? new MediaReadTool(_ => false, _ => null, new PathBoundaryValidator()) : null).Catalog();
+        // ExplorerTurn excludes tool.search in Direct mode: hidden tools cannot be discovered.
+        var visible = new ModelCapabilityBoundary(effective).VisibleTools(
+            tools.Definitions().Where(tool => tool.Name != "tool.search")).Select(tool => tool.Name).ToArray();
+        var basicTools = new[] { "user.ask", "filesystem.list", "filesystem.read", "search.text",
+            "filesystem.patch", "filesystem.write" };
+        if (category == ModelPolicyCategory.FullAgent)
+        {
+            Assert.All(basicTools, tool => Assert.Contains(tool, visible));
+            Assert.Contains("process.exec", visible);
+            Assert.Contains("shell.exec", visible);
+            Assert.Equal(int.MaxValue, effective.ToolPolicy.MaxVisibleTools);
+            Assert.True(effective.ToolPolicy.AllowToolDiscovery);
+        }
+        else
+        {
+            Assert.Equal(basicTools, visible);
+            Assert.Equal(6, effective.ToolPolicy.MaxVisibleTools);
+            Assert.False(effective.ToolPolicy.AllowToolDiscovery);
+        }
+        Assert.Equal(preset.MutationPolicy, effective.MutationPolicy);
+    }
+
+    [Fact]
     public void Preset_catalogs_keep_basic_read_search_and_user_ask_before_optional_tools()
     {
         var temp = Path.Combine(Path.GetTempPath(), "omnicore-profile-catalog-" + Guid.NewGuid().ToString("N"));

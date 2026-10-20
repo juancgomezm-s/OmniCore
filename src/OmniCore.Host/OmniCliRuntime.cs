@@ -329,6 +329,7 @@ public sealed class OmniCliRuntime : IDisposable
         + " Answer in the conversation. For examples, demonstrations, or rendering tests, include the requested code, Markdown tables, and explanation directly in your final response."
         + " For Markdown demonstrations, present the formatted examples directly rather than wrapping the whole example in a Markdown code fence. If the user asks for literal Markdown source, use a text code fence to keep its syntax literal."
         + " Do not create or modify workspace files unless the user explicitly requests file changes. Do not replace a requested inline answer with links to generated files."
+        + " Preserve existing file identity and unrelated content: read and prefer localized filesystem.patch edits. Existing-file writes require the effective policy, a prior read and the current version token. Delete, move and recreate operations retain their own permissions; never use another tool or process to bypass those permissions or mutation budgets."
         + " A conversational example does not require filesystem tools or a new plan. Preserve explicit user requests to edit files and all approval and completion requirements.";
 
     /// <summary>Ejecuta un turno Explorer real, componiendo provider, políticas y persistencia.</summary>
@@ -2647,11 +2648,15 @@ public sealed class OmniCliRuntime : IDisposable
                 overrides: null,
                 empiricalTraits: qualification?.Traits, route: route);
             var harness = new HarnessPolicyResolver().Resolve(effectiveProfile);
+            harness = new HarnessPolicy(harness.ToolCallFormat, harness.ToolMode, harness.MaxVisibleTools,
+                harness.GuidanceLevel, harness.RepairAttempts, harness.PlanControl, harness.StallThresholdTurns,
+                harness.ContextManagement with { AutomaticCompaction = loaded.Settings?.Conversation?.AutoCompact ?? true });
             var harnessValue = string.Join("|", harness.ToolCallFormat, harness.ToolMode,
                 harness.MaxVisibleTools, harness.GuidanceLevel, harness.RepairAttempts,
                 harness.PlanControl, harness.StallThresholdTurns, harness.ContextManagement.ExternalizeAboveCharacters,
                 harness.ContextManagement.CompressBodyCharacters, harness.ContextManagement.RecentTailItems,
-                harness.ContextManagement.CompactAfterItems, harness.ContextManagement.MaxCheckpointCharacters);
+                harness.ContextManagement.CompactAfterItems, harness.ContextManagement.MaxCheckpointCharacters,
+                harness.ContextManagement.AutomaticCompaction);
             var harnessHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
                 System.Text.Encoding.UTF8.GetBytes(harnessValue)));
             var contextPolicyHash = ComputeContextPolicyHash(harness.ContextManagement, usableContext);
@@ -5479,12 +5484,13 @@ public sealed class OmniCliRuntime : IDisposable
     private static string ComputeContextPolicyHash(ContextManagementPolicy policy, long usableContext)
     {
         var canonical = string.Join("|",
-            "ctx-policy-v2-auto95",
+            "ctx-policy-v3-verbatim",
             policy.ExternalizeAboveCharacters.ToString(CultureInfo.InvariantCulture),
             policy.CompressBodyCharacters.ToString(CultureInfo.InvariantCulture),
             policy.RecentTailItems.ToString(CultureInfo.InvariantCulture),
             policy.CompactAfterItems.ToString(CultureInfo.InvariantCulture),
             policy.MaxCheckpointCharacters.ToString(CultureInfo.InvariantCulture),
+            policy.AutomaticCompaction ? "auto" : "explicit",
             usableContext.ToString(CultureInfo.InvariantCulture));
         return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(canonical)));

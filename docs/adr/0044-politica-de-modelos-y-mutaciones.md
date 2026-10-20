@@ -390,6 +390,23 @@ no confía en el formulario.
 
 ## Clasificación
 
+### Actualización del 17 de octubre de 2026
+
+Por decisión explícita del usuario, FullAgent expone el catálogo elegible completo sin
+el recorte por heurísticas provisionales del harness. Las restricciones guardadas,
+Task, AgentProfile y permisos siguen aplicándose; no se inventan puntuaciones de
+cualificación. Los perfiles limitados conservan su comportamiento anterior.
+
+La restricción create-only de esta entrega queda sustituida al integrar el 2026-10-19
+por la decisión del usuario del 2026-10-18 (§5.1): se conserva el reemplazo autorizado
+vigente de §5 hasta construir la normalización de write a edición, sin prohibición global.
+La edición mediante patch usa parches localizados sobre el handle original, sin sustitución física.
+Se conserva la preimagen durable, se restaura ante fallo ordinario y un rollback fallido
+se registra como efecto desconocido. Una caída abrupta puede requerir reconciliar un
+conflicto; ya no se promete publicación atómica del parche. Los journals anteriores se
+siguen leyendo. Este apartado actualiza el recorte del catálogo FullAgent y la publicación
+de patch; §5/§5.1 gobiernan write. [Contrato y pruebas](../validation/frontier-file-identity-20261017.md).
+
 | Elemento | Categoría |
 |---|---|
 | `ModelPolicyKey`, presets, `FileMutationPolicy`, fallback `ObserveOnly`, `ModelCapabilityBoundary` y fingerprint | **Necesario en M3 antes de habilitar escritura** |

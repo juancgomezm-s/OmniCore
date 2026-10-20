@@ -269,14 +269,10 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
             return ToolResult.Error(refusal.Code, refusal.Message);
         }
 
-        // Escrito atómico (M3, bloqueante 1 de auditoría): se construyen los bytes actualizados,
-        // se escriben en un archivo temporal hermano creado con apertura EXCLUSIVA
-        // (FileMode.CreateNew + FileShare.None, FileOptions.WriteThrough) y recién entonces se
-        // publica sobre el original vía operación de reemplazo/rename atómica donde la plataforma
-        // lo permita. La apertura exclusiva evita el pre-creado de un symlink/junction por un
-        // actor local que reutilice el nombre, aunque esto NO elimina todas las carreras de
-        // symlinks (TOCTOU): se documenta como limitación conocida. Si el reemplazo falla, se
-        // limpia el temporal de esta operación (sin tocar el original).
+        // Preserve the existing file's identity (including hard links and editor watchers).
+        // A durable sibling pre-image and the journal's BeforeStateRef retain recovery evidence.
+        // Updating the existing handle is deliberately NOT an atomic rename: an abrupt process
+        // loss can leave a partial edit, which recovery must classify as Conflict, never Applied.
         var newBytes = FileVersion.Encode(updated, decoded.Encoding);
         var tempPath = Path.Combine(
             Path.GetDirectoryName(full)!,
@@ -290,6 +286,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
                 "Temporal fuera del workspace");
         }
         var createdTemp = false;
+        var effectMayRemain = false;
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -297,7 +294,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
                 4096, FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
                 createdTemp = true;
-                await stream.WriteAsync(newBytes, cancellationToken).ConfigureAwait(false);
+                await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
                 stream.Flush(flushToDisk: true);
             }
@@ -316,17 +313,23 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
             using (FilePublishLock.Acquire(full, cancellationToken))
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (!_boundary.IsWithin(full, context.WorkspaceRoot)
+                    || SecretPathGuard.IsSecretTarget(_boundary, full, context.WorkspaceRoot))
+                    return ToolResult.Error(ToolErrorCode.PermissionDenied,
+                        "El destino cambió fuera del ámbito autorizado antes de editar; no se aplicó el patch.");
                 if (!File.Exists(full))
                 {
                     return ToolResult.Error(ToolErrorCode.StaleWrite, FileVersion.StaleWriteMessage("absent"));
                 }
 
-                // Recomparar los bytes inmediatamente antes de publicar bajo el lock por ruta.
-                // Un writer no cooperante aún tiene una ventana entre esta lectura y el rename.
+                // Verify and update through the SAME existing handle. On Windows this sharing
+                // mode prevents another writer or a delete/rename while the handle is open.
                 byte[] currentBytes;
+                FileStream destination;
                 try
                 {
-                    currentBytes = File.ReadAllBytes(full);
+                    destination = new FileStream(full, FileMode.Open, FileAccess.ReadWrite, FileShare.Read,
+                        4096, FileOptions.WriteThrough);
                 }
                 catch (FileNotFoundException)
                 {
@@ -337,14 +340,52 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
                     return ToolResult.Error(ToolErrorCode.StaleWrite, FileVersion.StaleWriteMessage("absent"));
                 }
 
-                var currentVersion = FileVersion.VersionToken(currentBytes);
-                if (expectedVersion != currentVersion)
+                using (destination)
                 {
-                    return ToolResult.Error(ToolErrorCode.StaleWrite, FileVersion.StaleWriteMessage(currentVersion));
-                }
+                    if (!_boundary.IsWithin(full, context.WorkspaceRoot)
+                        || SecretPathGuard.IsSecretTarget(_boundary, full, context.WorkspaceRoot))
+                        return ToolResult.Error(ToolErrorCode.PermissionDenied,
+                            "El destino cambió fuera del ámbito autorizado al abrirlo; no se aplicó el patch.");
+                    using (var snapshot = new MemoryStream())
+                    {
+                        destination.CopyTo(snapshot);
+                        currentBytes = snapshot.ToArray();
+                    }
+                    var currentVersion = FileVersion.VersionToken(currentBytes);
+                    if (expectedVersion != currentVersion)
+                    {
+                        return ToolResult.Error(ToolErrorCode.StaleWrite, FileVersion.StaleWriteMessage(currentVersion));
+                    }
 
-                cancellationToken.ThrowIfCancellationRequested();
-                PublishAtomic(tempPath, full);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    try
+                    {
+                        WriteChangedBytes(destination, currentBytes, newBytes);
+                        destination.Flush(flushToDisk: true);
+                    }
+                    catch
+                    {
+                        // Cancellation is checked before the first byte, never halfway through a
+                        // commit. An ordinary I/O failure restores the pre-image on the same handle.
+                        try
+                        {
+                            TestBeforeRollbackHook?.Invoke();
+                            destination.Position = 0;
+                            destination.Write(currentBytes);
+                            destination.SetLength(currentBytes.Length);
+                            destination.Flush(flushToDisk: true);
+                        }
+                        catch
+                        {
+                            // Keep our durable pre-image if rollback itself fails. The journal
+                            // classifies partial content as Conflict; do not erase recovery evidence.
+                            createdTemp = false;
+                            effectMayRemain = true;
+                            throw new IOException("Patch and rollback failed; recovery pre-image retained at " + tempPath);
+                        }
+                        throw;
+                    }
+                }
                 TestAfterPublishHook?.Invoke(tempPath, full);
             }
         }
@@ -354,13 +395,13 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         }
         catch (System.IO.IOException ex)
         {
-            return 
-                ToolResult.Error(ToolErrorCode.ToolFailure, "Error de I/O al publicar el patch: " + ex.Message);
+            return new ToolResult("Error de I/O al publicar el patch: " + ex.Message, null, null, 0, false,
+                effectMayRemain ? EffectOutcome.Unknown : EffectOutcome.None, true, ToolErrorCode.ToolFailure);
         }
         catch (System.Exception ex)
         {
-            return 
-                ToolResult.Error(ToolErrorCode.ToolFailure, "Error al publicar el patch: " + ex.Message);
+            return new ToolResult("Error al publicar el patch: " + ex.Message, null, null, 0, false,
+                effectMayRemain ? EffectOutcome.Unknown : EffectOutcome.None, true, ToolErrorCode.ToolFailure);
         }
         finally
         {
@@ -374,7 +415,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
                 }
                 catch
                 {
-                    // El temporal ya debería estar reemplazado/renombrado en el caso de éxito.
+                    // El pre-image temporal ya no es necesario tras un commit o rollback completo.
                     // Un fallo de limpieza aquí no invalida el resultado del patch.
                 }
             }
@@ -501,22 +542,23 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         return root.TrimEnd('/') + "/" + norm;
     }
 
-    /// <summary>
-    /// Publica el temporal con reemplazo atómico cuando la plataforma lo ofrece. En Windows se
-    /// prefiere File.Replace; en otras plataformas se usa rename-overwrite. Ninguna API
-    /// disponible ofrece compare-and-swap condicionado por el hash, de modo que un writer
-    /// no cooperante aún puede cambiar el destino después de la última lectura/hash y antes del
-    /// rename. Writers OmniCore cooperantes se serializan mediante FilePublishLock.
-    /// </summary>
-    private static void PublishAtomic(string tempPath, string destPath)
+    /// <summary>Writes only differing bytes on the existing handle. With a length change the
+    /// suffix necessarily shifts; equal-length edits leave both unchanged ends untouched.</summary>
+    internal Action? TestDuringWriteHook;
+    internal Action? TestBeforeRollbackHook;
+
+    private void WriteChangedBytes(FileStream destination, byte[] original, byte[] updated)
     {
-        if (OperatingSystem.IsWindows())
+        var prefix = 0;
+        while (prefix < Math.Min(original.Length, updated.Length) && original[prefix] == updated[prefix]) prefix++;
+        var end = updated.Length;
+        if (original.Length == updated.Length)
         {
-            System.IO.File.Replace(tempPath, destPath, destinationBackupFileName: null);
+            while (end > prefix && original[end - 1] == updated[end - 1]) end--;
         }
-        else
-        {
-            System.IO.File.Move(tempPath, destPath, overwrite: true);
-        }
+        destination.Position = prefix;
+        destination.Write(updated.AsSpan(prefix, end - prefix));
+        TestDuringWriteHook?.Invoke();
+        if (destination.Length != updated.Length) destination.SetLength(updated.Length);
     }
 }

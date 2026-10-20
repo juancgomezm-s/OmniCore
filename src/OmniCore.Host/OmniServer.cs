@@ -4081,7 +4081,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             if (explicitOutcome)
             {
                 if (_artifacts is not null && outcomeSession is { } summarySession)
-                    new RunSummaryService(_store, _codecs, _artifacts, OmniCliRuntime.RedactSensitive).EnsureRecorded(summarySession);
+                    new RunSummaryService(_store, _codecs, _artifacts, static text => text).EnsureRecorded(summarySession);
                 return CommandOutcomeAck(command.MessageId, "ok", null,
                     RuntimeCommandOutcome.Accepted(), outcomeSession, outcomeSequenceBefore, commandId);
             }
@@ -4685,7 +4685,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 runExternalGates is null ? null : () => runExternalGates(stream), mutationLedger,
                 lifecycleDispatch);
             if (_artifacts is not null)
-                new RunSummaryService(_store, _codecs, _artifacts, OmniCliRuntime.RedactSensitive).EnsureRecorded(sessionId);
+                new RunSummaryService(_store, _codecs, _artifacts, static text => text).EnsureRecorded(sessionId);
             var ack = CommandOutcomeAck(commandMessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
                 sessionId, sequenceBefore.Value, commandId);
             return (completed, ack, null);
@@ -4919,12 +4919,13 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     private static string ComputeContextPolicyHash(ContextManagementPolicy policy, long usableContext)
     {
         var canonical = string.Join("|",
-            "ctx-policy-v2-auto95",
+            "ctx-policy-v3-verbatim",
             policy.ExternalizeAboveCharacters.ToString(CultureInfo.InvariantCulture),
             policy.CompressBodyCharacters.ToString(CultureInfo.InvariantCulture),
             policy.RecentTailItems.ToString(CultureInfo.InvariantCulture),
             policy.CompactAfterItems.ToString(CultureInfo.InvariantCulture),
             policy.MaxCheckpointCharacters.ToString(CultureInfo.InvariantCulture),
+            policy.AutomaticCompaction ? "auto" : "explicit",
             usableContext.ToString(CultureInfo.InvariantCulture));
         return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(canonical)));

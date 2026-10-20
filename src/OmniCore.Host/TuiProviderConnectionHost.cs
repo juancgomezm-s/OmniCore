@@ -45,6 +45,7 @@ public interface ITuiProviderConnectionHost
 /// <summary>Explicit OpenRouter catalog and credit actions consumed by the CLI/TUI client.</summary>
 public interface ITuiOpenRouterCatalogHost
 {
+    IReadOnlyList<OpenRouterPickerModel> CachedOpenRouterPickerModels(CancellationToken cancellationToken) => [];
     bool SupportsOpenRouter(string providerId, CancellationToken cancellationToken);
     OpenRouterCatalogPage BrowseOpenRouterCatalog(string providerId, string? search, int offset, int limit,
         CancellationToken cancellationToken);
@@ -54,6 +55,8 @@ public interface ITuiOpenRouterCatalogHost
         CancellationToken cancellationToken);
     Task<OpenRouterCreditSnapshot> ReadOpenRouterCreditsAsync(string providerId, CancellationToken cancellationToken);
 }
+
+public sealed record OpenRouterPickerModel(string Id, string ProviderId, string? Name);
 
 /// <summary>
 /// Fila del menú de conexiones: el estado del backend de conexiones más las marcas de tiempo
@@ -240,6 +243,26 @@ public sealed class TuiProviderConnectionHost : ITuiProviderConnectionHost, ITui
     public bool SupportsOpenRouter(string providerId, CancellationToken cancellationToken) =>
         _openRouter.Owns(providerId, cancellationToken)
         || _openRouter.List(cancellationToken).Any(row => row.ProviderId == providerId);
+
+    public IReadOnlyList<OpenRouterPickerModel> CachedOpenRouterPickerModels(CancellationToken cancellationToken)
+    {
+        var models = new List<OpenRouterPickerModel>();
+        foreach (var provider in _openRouter.List(cancellationToken).Where(row => row.CanDiscoverModels))
+        {
+            var offset = 0;
+            do
+            {
+                var page = _openRouter.BrowseCatalog(provider.ProviderId, null, offset, 100, cancellationToken);
+                models.AddRange(page.Models.Where(model => !string.IsNullOrWhiteSpace(model.Id)
+                    && !model.Id.Any(char.IsControl)
+                    && (model.OutputModalities.Count == 0 || model.OutputModalities.Contains("text")))
+                    .Select(model => new OpenRouterPickerModel(model.Id, provider.ProviderId, model.Name)));
+                if (page.NextOffset is not { } next || next <= offset) break;
+                offset = next;
+            } while (offset < 1000);
+        }
+        return models.DistinctBy(model => (model.ProviderId, model.Id)).ToArray();
+    }
 
     public OpenRouterCatalogPage BrowseOpenRouterCatalog(string providerId, string? search, int offset, int limit,
         CancellationToken cancellationToken) => _openRouter.BrowseCatalog(providerId, search, offset, limit, cancellationToken);

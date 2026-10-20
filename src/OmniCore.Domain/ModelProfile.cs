@@ -58,7 +58,7 @@ public sealed class EffectiveModelProfile
 /// Todo valor configurable se prueba con tests.
 /// </summary>
 public sealed record ContextManagementPolicy(int ExternalizeAboveCharacters, int CompressBodyCharacters,
-    int RecentTailItems, int CompactAfterItems, int MaxCheckpointCharacters)
+    int RecentTailItems, int CompactAfterItems, int MaxCheckpointCharacters, bool AutomaticCompaction = true)
 {
     public static ContextManagementPolicy Default { get; } = new(4096, 1200, 12, 24, 6000);
 }

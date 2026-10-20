@@ -77,7 +77,6 @@ public sealed partial class OmniServer
                 _ => "",
             };
             if (string.IsNullOrWhiteSpace(text)) continue;
-            text = OmniCliRuntime.RedactSensitive(text);
             lines.Add((payload is UserInputReceived ? "User: " : payload is AssistantMessageRecorded ? "Assistant: " : "") + text);
         }
         var limit = ContextManagementPolicy.Default.MaxCheckpointCharacters;

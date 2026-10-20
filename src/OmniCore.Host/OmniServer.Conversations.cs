@@ -38,7 +38,6 @@ public sealed partial class OmniServer
         var text = document.RootElement.ValueKind == JsonValueKind.String ? document.RootElement.GetString() ?? ""
             : string.Join(" ", document.RootElement.EnumerateArray().Select(part => part.ValueKind == JsonValueKind.String
             ? part.GetString() : part.ValueKind == JsonValueKind.Object && part.TryGetProperty("text", out var value) ? value.GetString() : ""));
-        text = new PiiRedactor().Redact(text);
         return text;
     }
 

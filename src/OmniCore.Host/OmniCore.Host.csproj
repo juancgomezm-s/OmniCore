@@ -22,7 +22,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Schemas/*.schema.json" />
-    <EmbeddedResource Include="..\docs\examples\providers.yaml" LogicalName="examples/providers.yaml" />
+    <EmbeddedResource Include="Defaults/providers.yaml" LogicalName="OmniCore.Host.examples.providers.yaml" />
     <InternalsVisibleTo Include="OmniCore.Tests" />
     <InternalsVisibleTo Include="omni" />
   </ItemGroup>

@@ -38,7 +38,7 @@ public sealed class ArtifactReadToolTests
     }
 
     [Fact]
-    public void Re_read_returns_the_redacted_artifact_content_not_the_original_secret()
+    public void Re_read_returns_the_original_private_tool_artifact_without_substitution()
     {
         var data = TempDir();
         try
@@ -47,13 +47,13 @@ public sealed class ArtifactReadToolTests
             const string secret = "VOtOkEnSecret123";
             var artifact = artifacts.PutText("Bearer " + secret, "text/plain", ArtifactKind.ToolOutput,
                 Sensitivity.Sensitive);
-            Assert.True(artifact.Redacted);
+            Assert.False(artifact.Redacted);
             var executor = Executor(artifacts, hash => hash == artifact.Hash.Value, data);
 
             var result = executor.ExecuteToolWithoutJournal(Call(artifact.Hash.Value), false, CancellationToken.None);
 
             Assert.True(result.Succeeded, result.Summary);
-            Assert.DoesNotContain(secret, result.Preview);
+            Assert.Equal("Bearer " + secret, result.Preview);
         }
         finally { Delete(data); }
     }

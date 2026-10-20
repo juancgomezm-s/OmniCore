@@ -190,7 +190,7 @@ public sealed class ModelPolicyTests
 
         Assert.Equal(ToolMode.Discovered, effective.ToolPolicy.Mode);
         Assert.True(effective.ToolPolicy.AllowToolDiscovery);
-        Assert.Equal(16, effective.ToolPolicy.MaxVisibleTools);
+        Assert.Equal(int.MaxValue, effective.ToolPolicy.MaxVisibleTools);
     }
 
     [Fact]

@@ -52,10 +52,8 @@ public sealed class FollowUpRegressionTests
             Assert.Equal(run.RunId, control.SendInput(session, "followup-B", RunMode.Plan, "Composer-B"));
             var queuedAB = store.ReadFrom(session, 1).Select(codecs.Decode).OfType<FollowUpQueued>().ToArray();
             Assert.Equal(new[] { "Composer-A", "Composer-B" }, queuedAB.Select(item => item.Origin));
-            Assert.DoesNotContain(secret, string.Join("\n", store.ReadFrom(session, 1).Select(evt => evt.PayloadJson)),
-                StringComparison.Ordinal);
-            Assert.Contains("[REDACTED]", string.Join("\n", store.ReadFrom(session, 1).Select(evt => evt.PayloadJson)),
-                StringComparison.Ordinal);
+            Assert.Contains(secret, queuedAB[0].InputPartsJson, StringComparison.Ordinal);
+            Assert.DoesNotContain("[REDACTED]", queuedAB[0].InputPartsJson, StringComparison.Ordinal);
             Assert.DoesNotContain(store.ReadFrom(session, 1).Select(codecs.Decode).OfType<UserInputReceived>(),
                 item => item.InputPartsJson.Contains("followup-", StringComparison.Ordinal));
             Assert.Equal(RunState.AwaitingInput, RunProjection.Replay(session, run.RunId, codecs,

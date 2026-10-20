@@ -140,6 +140,7 @@ public sealed class WorkspaceSettingsYaml
 /// <summary>User-scope settings from <c>&lt;config&gt;/settings.yaml</c> (ADR-0039).</summary>
 public sealed class UserSettingsYaml
 {
+    public ConversationSettingsYaml? Conversation { get; set; }
     public UiSettingsYaml? Ui { get; set; }
     public SidebarSettingsYaml? Sidebar { get; set; }
     public Dictionary<string, WidgetSettingsYaml>? Widgets { get; set; }
@@ -156,6 +157,11 @@ public sealed class UserSettingsYaml
 public sealed class UiSettingsYaml
 {
     public string? Locale { get; set; }
+}
+
+public sealed class ConversationSettingsYaml
+{
+    public bool? AutoCompact { get; set; }
 }
 
 public sealed class SidebarSettingsYaml
@@ -211,6 +217,7 @@ public sealed class TrustEntryYaml
 [YamlSerializable(typeof(EscalationYaml))]
 [YamlSerializable(typeof(WorkspaceSettingsYaml))]
 [YamlSerializable(typeof(UserSettingsYaml))]
+[YamlSerializable(typeof(ConversationSettingsYaml))]
 [YamlSerializable(typeof(UiSettingsYaml))]
 [YamlSerializable(typeof(SidebarSettingsYaml))]
 [YamlSerializable(typeof(WidgetSettingsYaml))]

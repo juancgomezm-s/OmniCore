@@ -8,7 +8,7 @@ using OmniCore.Protocol;
 /// Traduce los eventos de dominio del journal a eventos del protocolo (ADR-0013 §1): el cliente
 /// nunca ve los tipos del Engine. La tabla es explícita —qué eventos se exponen y con qué campos—
 /// para que un cambio interno del dominio no rompa el wire. Un evento sin entrada no se expone.
-/// Todos los campos son strings; los textos de usuario se redactan (ADR-0018).
+/// Todos los campos son strings; la conversación privada conserva sus textos originales.
 /// </summary>
 public sealed class ProtocolMapper
 {
@@ -216,9 +216,14 @@ public sealed class ProtocolMapper
             ["reasoningBudgetTokens"] = e.ReasoningBudgetTokens?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "",
         },
         UserInputReceived e => InputFields(e),
+        ContextCheckpointRecorded e => new()
+        {
+            ["checkpointId"] = e.CheckpointId,
+            ["automatic"] = e.MetaModelFingerprint == SessionConversationCheckpoint.Fingerprint ? "false" : "true",
+        },
         AssistantMessageRecorded e => new()
         {
-            ["text"] = _redaction.Redact(ArtifactText(e.ContentRef)),
+            ["text"] = ArtifactText(e.ContentRef),
             ["runId"] = e.RunId.ToString(), ["laneId"] = e.LaneId.ToString(), ["turnId"] = e.TurnId.ToString(),
         },
         AssistantImagesRecorded e => new()
@@ -336,7 +341,7 @@ public sealed class ProtocolMapper
             + JsonObj.Field("hash", part.Artifact.Hash.Value) + ","
             + JsonObj.Field("mediaType", part.Artifact.MediaType) + ","
             + (part.Kind == "text" && _artifacts?.GetText(part.Artifact.Hash) is { } text
-                ? JsonObj.Field("text", _redaction.Redact(text)) + "," : "")
+                ? JsonObj.Field("text", text) + "," : "")
             + "\"size\":" + part.Artifact.Size.ToString(System.Globalization.CultureInfo.InvariantCulture) + ","
             + "\"outputIndex\":" + part.OutputIndex.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}")) + "]";
 
@@ -393,7 +398,7 @@ public sealed class ProtocolMapper
     private Dictionary<string, string> InputFields(UserInputReceived input)
     {
         var fields = new Dictionary<string, string>(StringComparer.Ordinal)
-        { ["text"] = _redaction.Redact(InputText(input.InputPartsJson)) };
+        { ["text"] = InputText(input.InputPartsJson) };
         if (input.Attachments is { Count: > 0 } attachments)
             fields["attachments"] = System.Text.Json.JsonSerializer.Serialize(attachments.ToArray(),
                 AttachmentReferenceJsonContext.Default.ArtifactRefArray);

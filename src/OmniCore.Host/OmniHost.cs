@@ -549,10 +549,6 @@ public sealed class OmniHost
             File.Exists(settingsPath) ? File.ReadAllText(settingsPath) : null);
     }
 
-    /// <summary>
-    /// Asegura que exista un archivo <c>providers.yaml</c> en el directorio de configuración del usuario.
-    /// Si no existe, copia el archivo de ejemplo embebido como recurso en el ensamblado.
-    /// </summary>
     private static void EnsureDefaultProvidersFile(string configDirectory)
     {
         var providersPath = Path.Combine(configDirectory, "providers.yaml");
@@ -563,20 +559,23 @@ public sealed class OmniHost
 
         try
         {
-            var assembly = typeof(OmniHost).Assembly;
-            var resourceName = "examples.providers.yaml";
-            using var stream = assembly.GetManifestResourceStream(resourceName);
-            if (stream != null)
+            using var stream = typeof(OmniHost).Assembly.GetManifestResourceStream(
+                "OmniCore.Host.examples.providers.yaml");
+            if (stream is null)
             {
-                Directory.CreateDirectory(configDirectory);
-                using var reader = new StreamReader(stream);
-                var content = reader.ReadToEnd();
-                File.WriteAllText(providersPath, content);
+                return;
             }
+
+            Directory.CreateDirectory(configDirectory);
+            using var destination = new FileStream(providersPath, FileMode.CreateNew, FileAccess.Write,
+                FileShare.Read);
+            stream.CopyTo(destination);
         }
-        catch (Exception)
+        catch (IOException)
         {
-            // No fallar: el usuario puede crear el archivo manualmente
+        }
+        catch (UnauthorizedAccessException)
+        {
         }
     }
 

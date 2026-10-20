@@ -11,7 +11,7 @@ public static class SteeringQueue
         string InputPartsJson, string? Origin, EventId ReceivedEventId, long Sequence);
 
     /// <summary>
-    /// Persists a redacted steering input only for an explicitly identified, nonterminal Run and
+    /// Persists the original steering input only for an explicitly identified, nonterminal Run and
     /// its exact open Turn/Lane. Repeating an identical ID and request is idempotent.
     /// </summary>
     public static bool TryReceive(IEventStore store, IEventCodecRegistry codecs, SessionId session,
@@ -33,8 +33,7 @@ public static class SteeringQueue
         var task = TaskForLane(events, codecs, lane);
         if (task is null) return false;
 
-        var safeText = new RedactionPolicy().Redact(text);
-        var parts = "[\"" + JsonEncodedText.Encode(safeText) + "\"]";
+        var parts = "[\"" + JsonEncodedText.Encode(text) + "\"]";
         var projection = Project(events, codecs);
         if (projection.TryGetValue(id, out var existing))
         {

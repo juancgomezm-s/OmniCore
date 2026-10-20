@@ -604,7 +604,7 @@ public static class ModelPolicyPresets
     /// <summary>Techo explícito del usuario; intersecta con Task, AgentProfile y permisos (ADR-0044 §3).</summary>
     public static UserModelPolicy FullAgent() => new(
         ModelPolicyCategory.FullAgent,
-        new ModelToolPolicy(ToolMode.Discovered, 16, true, FullCaps),
+        new ModelToolPolicy(ToolMode.Discovered, int.MaxValue, true, FullCaps),
         new FileMutationPolicy(FileMutationMode.Full, DestructiveActionPolicy.Ask,
             DestructiveActionPolicy.Ask, 8, 2000, 1.0, requirePriorRead: true, requireExpectedVersionToken: true,
             requirePostEditValidation: true, allowParallelMutations: false),
@@ -689,11 +689,16 @@ public sealed class EffectiveModelPolicy
         }
 
         var user = stored!.Policy;
-        var mode = MinMode(user.ToolPolicy.Mode, harness.ToolMode);
-        var visible = Math.Min(user.ToolPolicy.MaxVisibleTools, harness.MaxVisibleTools);
+        // FullAgent is an explicit user authorization, not a measured qualification score.
+        // Unknown/provisional traits must not silently reduce that authorization to six tools.
+        // Narrower saved controls, AgentProfile and Security still apply independently.
+        var explicitFullAccess = user.Category == ModelPolicyCategory.FullAgent;
+        var mode = explicitFullAccess ? user.ToolPolicy.Mode : MinMode(user.ToolPolicy.Mode, harness.ToolMode);
+        var visible = explicitFullAccess ? user.ToolPolicy.MaxVisibleTools
+            : Math.Min(user.ToolPolicy.MaxVisibleTools, harness.MaxVisibleTools);
         // Direct = pocas tools explícitas y sin tool.search (ADR-0044 §4): el discovery solo
         // sobrevive si el harness confía en el modelo y el techo lo permite.
-        var discovery = user.ToolPolicy.AllowToolDiscovery && harness.ToolMode != ToolMode.Direct
+        var discovery = user.ToolPolicy.AllowToolDiscovery && (explicitFullAccess || harness.ToolMode != ToolMode.Direct)
             && mode != ToolMode.Direct;
         var toolPolicy = new ModelToolPolicy(mode, visible, discovery, user.ToolPolicy.CapabilityCeiling);
         return new EffectiveModelPolicy(key, stored!.Revision, user.Category, toolPolicy,

@@ -49,7 +49,7 @@ public sealed partial class TuiWiringTests
             ["accounts_connections"] = [("preferences-account-open", "account-browser-login"), ("preferences-claude-open", "claude-account-list"),
                 ("preferences-openrouter-open", "provider-api-key"), ("preferences-provider-open-anthropic", "provider-api-key")],
             ["local_engines"] = [("local-engine-add", "local-engine-id")],
-            ["models_execution"] = [("preferences-model-select", "omni-model-list"), ("preferences-models-open", "policy-default-model"), ("preferences-model-catalog-open", "model-catalog-back")],
+            ["models_execution"] = [("preferences-models-enabled", "model-toggle-search"), ("preferences-models-open", "policy-default-model"), ("preferences-model-catalog-open", "model-catalog-back")],
             ["tools_security"] = [("preferences-tools-open", "tools-list"), ("preferences-tool-mappings-open", "mapping-source"), ("preferences-permissions-open", "security-rules")],
             ["context_sessions"] = [("preferences-context-open", "session-preferences-list"), ("preferences-memory-open", "session-preferences-list")],
             ["extensions_skills"] = [("preferences-extensions-open", "session-preferences-list"), ("preferences-skills-open", "session-preferences-list"),

@@ -855,7 +855,8 @@ public sealed partial class TuiWiringTests
                 string.Concat(Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme))));
             // Input injection completing is not the same as its frame being drawn.
             // Wait for the normal loop's completed frame, retaining the timeout below.
-            var marker = scene switch { "animations" => "Pulso Omega", "animations-braille" => "Giro braille", "sidebar-settings" => "Panel lateral · ajustes", "table" => "Dependencias", "activity" => "Procesando", "commands" => "Tab completar", "notice" => "Aviso", "settings" => "Preferencias", "settings-fr" => "Préférences", "settings-it" => "Preferenze", "settings-override" => "Preferences", "settings-local" => "visual-local", "settings-local-editor" => "visual-local", "account" => "Cuenta ChatGPT", "login" => "TEST-CODE", "models" => "subscription-b", "picker" => "Subscription B", _ => "Escribe tu siguiente" };
+            var marker = scene switch { "animations" => new Localization("es").Resolve("animation.effect.omega-pulse"), "sidebar-settings" => "Panel lateral · ajustes", "table" => "Dependencias", "activity" => "Procesando", "commands" => "Tab completar", "notice" => "Aviso", "settings" => "Preferencias", "settings-fr" => "Préférences", "settings-it" => "Preferenze", "settings-override" => "Preferences", "settings-local" => "visual-local", "settings-local-editor" => "visual-local", "account" => "Cuenta ChatGPT", "login" => "TEST-CODE", "models" => "subscription-b", "picker" => "Subscription B", _ => "Escribe tu siguiente" };
+            if (scene == "animations-braille") marker = new Localization("es").Resolve("animation.effect.braille-spinner");
             if (scene == "tools") marker = "Herramientas";
             if (!text.Contains(marker, StringComparison.Ordinal)) return;
             if (scene == "sidebar" && !text.Contains("Espacio de trabajo", StringComparison.Ordinal)) return;
@@ -953,6 +954,7 @@ public sealed partial class TuiWiringTests
                     if (scene == "animations-braille")
                     {
                         Assert.Equal("braille-spinner", new AnimationSettingsStore(Path.Combine(fx.Root, "tui-animations.json")).Load().Waiting);
+                        Assert.Contains(new Localization("es").Resolve("animation.effect.braille-spinner"), text);
                         Assert.Contains(cells.Cast<Terminal.Gui.Drawing.Cell>(), cell =>
                             cell.Grapheme?.Any(ch => ch is >= '\u2800' and <= '\u28ff') == true
                             && cell.Attribute?.Foreground == new Terminal.Gui.Drawing.Color("#38BDF8"));
@@ -2842,7 +2844,7 @@ public sealed partial class TuiWiringTests
     }
 
     [Fact]
-    public void Model_palette_search_filters_safely_and_shortcuts_open_maintenance() => RunTuiTest(fx =>
+    public void Model_palette_search_filters_safely_and_shortcuts_open_toggles() => RunTuiTest(fx =>
     {
         var models = new[] { new ModelRegistryModelDescriptor("alpha", "local", 4096, 3072, 1024),
             new ModelRegistryModelDescriptor("beta", "local", 4096, 3072, 1024) };
@@ -2862,8 +2864,9 @@ public sealed partial class TuiWiringTests
         Assert.Null(policies.CurrentSelection(ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory), default));
         fx.Invoke(() => search.Text = "");
         fx.Wait(() => PickerItems(fx).Length == 2, "limpiar recupera lista completa");
-        KeyWithEffect(fx, KeyCode.M | KeyCode.CtrlMask, () => fx.App.Overlay?.Id == "omni-panel", "Ctrl+M abre mantenimiento");
-        Assert.Contains("Modelos", fx.App.Overlay!.Title);
+        KeyWithEffect(fx, KeyCode.M | KeyCode.CtrlMask, () => fx.App.Overlay?.Id == "model-toggles", "Ctrl+M abre interruptores");
+        Assert.Contains("Activar modelos", fx.App.Overlay!.Title);
+        Assert.Contains(Descendants(fx.App.Overlay).OfType<Button>(), button => button.Id == "model-toggle-local/alpha");
         Assert.False(fx.App.Conversation!.Dimmed);
     });
 

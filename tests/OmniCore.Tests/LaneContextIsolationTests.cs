@@ -225,12 +225,19 @@ public sealed class LaneContextIsolationTests
     {
         using var fx = new Fixture();
         var child = fx.Child();
-        fx.Record(child.Task, child.Lane, "child " + new string('x', 5000));
-        Assert.Equal(StopReason.EndTurn, fx.Explorer().Ask("continue", "system", fx.Session, fx.Run.RunId,
-            child.Lane, "fresh state", TestContext.Current.CancellationToken).StopReason);
+        var original = "child " + new string('x', 5000);
+        fx.Record(child.Task, child.Lane, original);
+        // Canonical conversation remains inline. Separately provided evidence can still
+        // externalize, and the generated artifact must retain its Lane read boundary.
+        Assert.Equal(StopReason.EndTurn, fx.Explorer(contributors: [new SupplementaryEvidence()])
+            .Ask("continue", "system", fx.Session, fx.Run.RunId, child.Lane, "fresh state",
+                TestContext.Current.CancellationToken).StopReason);
         var snapshot = fx.Store.ReadFrom(fx.Session, 1).Select(fx.Codecs.Decode).OfType<ModelStepStarted>().Last().ContextSnapshotRef!;
         using var json = JsonDocument.Parse(fx.Artifacts.GetText(snapshot.Hash)!);
-        var output = json.RootElement.GetProperty("items").EnumerateArray().Where(item => item.GetProperty("kind").GetString() == "ToolResult")
+        Assert.Contains(json.RootElement.GetProperty("items").EnumerateArray(), item =>
+            item.GetProperty("kind").GetString() == "ToolResult" && item.GetProperty("content").GetString()!.Contains(original, StringComparison.Ordinal));
+        var output = json.RootElement.GetProperty("items").EnumerateArray()
+            .Where(item => item.GetProperty("kind").GetString() == "ToolResult" && item.TryGetProperty("refs", out _))
             .SelectMany(item => item.GetProperty("refs").EnumerateArray()).Select(reference => reference.GetString()!)
             .Single(reference => reference.StartsWith("artifact=sha256:"))["artifact=sha256:".Length..];
         var auth = new SessionArtifactReadAuthorization(fx.Store, () => fx.Session, fx.Artifacts);
@@ -252,6 +259,19 @@ public sealed class LaneContextIsolationTests
             Assert.False(auth.IsReferenced(checkpoint.Hash.Value));
         using (ExecutionScope.Begin(new ExecutionScopeState(fx.Run.RunId)))
             Assert.False(auth.IsReferenced(checkpoint.Hash.Value));
+    }
+
+    private sealed class SupplementaryEvidence : IContextContributor
+    {
+        public System.Threading.Tasks.Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request,
+            CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            // Use the built-in core projection: arbitrary extension provenance cannot grant reads.
+            return new SessionConversationContributor([new ConversationContextEntry("supplementary-evidence",
+                ContextItemKind.ToolResult, "Additional evidence " + new string('s', 5000))])
+                .GetContextAsync(request, token);
+        }
     }
 
     internal sealed class Fixture : IDisposable

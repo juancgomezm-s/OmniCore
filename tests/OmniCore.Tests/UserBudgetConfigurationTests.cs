@@ -4,6 +4,15 @@ using OmniCore.Host;
 
 public sealed class UserBudgetConfigurationTests
 {
+    [Theory]
+    [InlineData("true", true)]
+    [InlineData("false", false)]
+    public void Conversation_compaction_setting_loads_typed_user_preference(string yaml, bool enabled)
+    {
+        var loaded = new ConfigLoader().Load(null, null, "conversation: {autoCompact: " + yaml + "}\n");
+        Assert.Equal(enabled, loaded.Settings!.Conversation!.AutoCompact);
+    }
+
     [Fact]
     public void Missing_settings_or_budget_children_use_legacy_defaults()
     {
@@ -34,6 +43,10 @@ public sealed class UserBudgetConfigurationTests
     [InlineData("budget:\n  session: [1]\n", "budget.session", "config.wrongType")]
     [InlineData("budget:\n  surprise: 1\n", "budget.surprise", "config.unknownKey")]
     [InlineData("budget: false\n", "budget", "config.wrongType")]
+    [InlineData("conversation: {autoCompact: 'true'}\n", "conversation.autoCompact", "config.wrongType")]
+    [InlineData("conversation: {autoCompact: maybe}\n", "conversation.autoCompact", "config.wrongType")]
+    [InlineData("conversation: false\n", "conversation", "config.wrongType")]
+    [InlineData("conversation: {unknown: true}\n", "conversation.unknown", "config.unknownKey")]
     [InlineData("mystery: true\n", "mystery", "config.unknownKey")]
     public void Invalid_settings_fail_with_path_and_source_location(string yaml, string path, string diagnosticKey)
     {
