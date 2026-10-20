@@ -209,7 +209,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         }
 
         // Legacy replacement-classified integrations retain their historical mode mapping.
-        // filesystem.write is independently classified CreateFile and cannot replace files.
+        // Core filesystem.write instead carries its runtime-classified effective operation.
         if (capability == ModelToolCapability.ReplaceFile
             && intent.EffectiveMutationOperation != ModelToolCapability.ReplaceFile)
         {

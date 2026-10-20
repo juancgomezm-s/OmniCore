@@ -19,6 +19,15 @@ public sealed partial class OmniServer
     private string PanelData => Path.Combine(OmniHost.WorkspaceDataDirectory(_platformPathsFactory(),
         _workspaceRoot ?? throw new IOException("workspace_not_bound")), "workspace-panel");
 
+    // IOmniClient has synchronous entry points, including calls made on the TUI thread.
+    // Start the async Git operation on the pool so none of its nested awaits can capture
+    // that blocked UI context. ExecutionContext (including causation) still flows normally.
+    private static T CompleteWorkspaceTask<T>(Func<System.Threading.Tasks.Task<T>> operation) =>
+        System.Threading.Tasks.Task.Run(operation).GetAwaiter().GetResult();
+
+    private static void CompleteWorkspaceTask(Func<System.Threading.Tasks.Task> operation) =>
+        System.Threading.Tasks.Task.Run(operation).GetAwaiter().GetResult();
+
     internal SessionQueryResult QueryWorkspacePanel(string name, CancellationToken token)
     {
         if (_workspaceRoot is not { } root) throw new IOException("workspace_not_bound");
@@ -36,9 +45,9 @@ public sealed partial class OmniServer
                 "directory" => new(1, session?.ToString(), journal.LastOrDefault()?.Sequence ?? 0, request.Kind,
                     Files: PanelDirectory(root, request.Path, token)),
                 "search" => new(1, session?.ToString(), journal.LastOrDefault()?.Sequence ?? 0, request.Kind,
-                    Matches: _workspaceGit.SearchWorkspaceAsync(root, request.Search, token).GetAwaiter().GetResult()),
+                    Matches: CompleteWorkspaceTask(() => _workspaceGit.SearchWorkspaceAsync(root, request.Search, token))),
                 "file" or "diff" => new(1, session?.ToString(), journal.LastOrDefault()?.Sequence ?? 0, request.Kind,
-                    File: _workspaceGit.ReadFileAsync(root, request.Path, request.Kind == "diff", token).GetAwaiter().GetResult()),
+                    File: CompleteWorkspaceTask(() => _workspaceGit.ReadFileAsync(root, request.Path, request.Kind == "diff", token))),
                 "checkpoint-diff" => new(1, session?.ToString(), journal.LastOrDefault()?.Sequence ?? 0, request.Kind,
                     File: PanelCheckpointDiff(request, token)),
                 "git" => new(1, session?.ToString(), journal.LastOrDefault()?.Sequence ?? 0, request.Kind, Git: PanelGit(root, token)),
@@ -57,7 +66,7 @@ public sealed partial class OmniServer
     {
         // Bounded polling clients share a cache; tool events invalidate it, never trigger a scan themselves.
         if (_workspaceGitCache is { } cached && DateTimeOffset.UtcNow - cached.At < TimeSpan.FromSeconds(2)) return cached.View;
-        var view = _workspaceGit.ReadWorkspaceAsync(root, token).GetAwaiter().GetResult();
+        var view = CompleteWorkspaceTask(() => _workspaceGit.ReadWorkspaceAsync(root, token));
         _workspaceGitCache = (DateTimeOffset.UtcNow, view); return view;
     }
 
@@ -72,13 +81,13 @@ public sealed partial class OmniServer
         var previous = Directory.EnumerateFiles(Path.GetDirectoryName(path)!, session + "-*.json")
             .Select(file => JsonSerializer.Deserialize(File.ReadAllText(file), WorkspacePanelJson.Default.WorkspaceCheckpoint)!)
             .Where(item => item.Sequence < point.Sequence && item.Snapshot is not null).MaxBy(item => item.Sequence);
-        return _workspaceGit.ReadCheckpointDiffAsync(_workspaceRoot!, request.Path, point.Snapshot, previous?.Snapshot, token).GetAwaiter().GetResult();
+        return CompleteWorkspaceTask(() => _workspaceGit.ReadCheckpointDiffAsync(_workspaceRoot!, request.Path, point.Snapshot, previous?.Snapshot, token));
     }
 
     private IReadOnlyList<WorkspaceFile> PanelDirectory(string root, string path, CancellationToken token)
     {
         var status = PanelGit(root, token);
-        return _workspaceGit.ReadDirectoryAsync(root, path, token).GetAwaiter().GetResult().Select(file =>
+        return CompleteWorkspaceTask(() => _workspaceGit.ReadDirectoryAsync(root, path, token)).Select(file =>
         {
             var changes = status.Files.Where(change => change.Path == file.Path || file.Directory
                 && change.Path.StartsWith(file.Path + "/", StringComparison.Ordinal)).ToArray();
@@ -97,7 +106,7 @@ public sealed partial class OmniServer
             var path = Path.Combine(dir, id + ".json");
             if (File.Exists(path)) return;
             WorkspaceSnapshot? snapshot = null; string? unavailable = null;
-            try { snapshot = _workspaceGit.CaptureWorkspaceAsync(root, PanelData, CancellationToken.None).GetAwaiter().GetResult(); }
+            try { snapshot = CompleteWorkspaceTask(() => _workspaceGit.CaptureWorkspaceAsync(root, PanelData, CancellationToken.None)); }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
             { unavailable = error is IOException ? error.Message : error.GetType().Name; }
             if (snapshot is not null && _store.ReadFrom(session, 1).Where(evt => evt.Sequence <= sequence).Select(_codecs.Decode)
@@ -241,7 +250,7 @@ public sealed partial class OmniServer
                 AtomicPanelWrite(pendingPath, JsonSerializer.Serialize(new WorkspaceAlternative(command.MessageId, destination, branch,
                     targetSession.ToString(), root, session.ToString(), point.Sequence, point.Id, "preparing"), WorkspacePanelJson.Default.WorkspaceAlternative));
                 Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-                _workspaceGit.CreateCheckpointWorktreeAsync(root, destination, branch, point.Snapshot, token).GetAwaiter().GetResult();
+                CompleteWorkspaceTask(() => _workspaceGit.CreateCheckpointWorktreeAsync(root, destination, branch, point.Snapshot, token));
                 created = true;
                 BeforeAlternativeSessionCommit?.Invoke();
                 Directory.CreateDirectory(targetData);
@@ -275,7 +284,7 @@ public sealed partial class OmniServer
             {
                 try
                 {
-                    if (created) _workspaceGit.RemoveCheckpointWorktreeAsync(root, destination, branch).GetAwaiter().GetResult();
+                    if (created) CompleteWorkspaceTask(() => _workspaceGit.RemoveCheckpointWorktreeAsync(root, destination, branch));
                     // This unique directory did not exist on admission and was created only by this transaction.
                     if (Directory.Exists(targetData)) Directory.Delete(targetData, true);
                     File.Delete(pendingPath);
@@ -312,7 +321,7 @@ public sealed partial class OmniServer
                 { File.Delete(file); continue; } // manifest publication is the commit point.
                 if (Directory.Exists(pending.Workspace))
                 {
-                    var inspected = _workspaceGit.InspectAsync(pending.Workspace, CancellationToken.None).GetAwaiter().GetResult();
+                    var inspected = CompleteWorkspaceTask(() => _workspaceGit.InspectAsync(pending.Workspace, CancellationToken.None));
                     var pointPath = Path.Combine(PanelData, "checkpoints", pending.CheckpointId + ".json");
                     if (pending.CheckpointId.Length > 160 || pending.CheckpointId.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-'))
                         throw new IOException("alternative_intent_invalid");
@@ -320,7 +329,7 @@ public sealed partial class OmniServer
                     if (!inspected.Succeeded || inspected.Identity!.Branch != pending.Branch || inspected.Identity.HeadCommit != point?.Snapshot?.Commit)
                         throw new IOException("alternative_orphan_changed");
                 }
-                _workspaceGit.RemoveCheckpointWorktreeAsync(root, pending.Workspace, pending.Branch).GetAwaiter().GetResult();
+                CompleteWorkspaceTask(() => _workspaceGit.RemoveCheckpointWorktreeAsync(root, pending.Workspace, pending.Branch));
                 var targetData = _platformPathsFactory().WorkspaceDirectory(WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(pending.Workspace)).ToString());
                 var physical = ProjectIdentity.ResolvePhysicalWorkspaceRoot(targetData);
                 if (!string.Equals(ProjectIdentity.CanonicalWorkspacePath(physical), ProjectIdentity.CanonicalWorkspacePath(targetData), StringComparison.Ordinal))

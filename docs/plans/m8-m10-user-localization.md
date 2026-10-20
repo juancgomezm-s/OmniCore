@@ -37,6 +37,17 @@ commit de OmniCoder `8948557`: los tres fallos previos de ambos sistemas pasan e
 pruebas dirigidas, y las 27 pruebas de consultas/checkpoints también pasan. La
 [CI de ese checkpoint](https://github.com/juancgomezm-s/OmniCore/actions/runs/39502557009)
 conserva su resultado independiente del bloque de normalización posterior.
+En esa ejecución npm Windows/Linux y el paquete Linux aprobaron; la suite Linux
+agotó su tiempo al bloquearse el envío de un mensaje TUI. El repro y stack local
+identificaron el puente síncrono del checkpoint Git capturando el contexto UI,
+introducido en `8948557`. La corrección separa esa ejecución asíncrona del hilo UI
+sin desactivar checkpoints, cambiar permisos ni ampliar el timeout. Su regresión
+ejercita entrada y consulta del panel con un contexto que no procesa callbacks y
+un límite propio de 15 segundos. Build final sin advertencias ni errores; pasan
+las 6 pruebas de `WorkspacePanelTests` (incluida esa regresión), el envío inicial
+del compositor y sus 2 variantes de proyección del Host. También pasan 70 pruebas
+de políticas/seguridad/presupuestos y 11 de evidencia de mutaciones, actualizadas
+para distinguir una edición normalizada de una creación o reemplazo amplio.
 
 **Integración y auditoría de herramientas (2026-10-19):** las ramas pendientes de
 OmniCore se consolidaron y publicaron en `main` con el merge `89ac853`, conservando

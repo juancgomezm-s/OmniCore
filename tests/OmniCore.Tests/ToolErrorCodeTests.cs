@@ -289,7 +289,7 @@ public sealed class ToolErrorCodeTests
         var ws = TempDir();
         try
         {
-            // PatchOnly no expone filesystem.write: rechazo de frontera (otro productor del código).
+            // PatchOnly expone write para ediciones; crear un archivo sigue fuera de su techo.
             var executor = Pipeline(ws, new ModelCapabilityBoundary(EffectiveFor(ModelPolicyCategory.PatchOnly)));
             var outcome = executor.ExecuteToolWithoutJournal(WriteCall("nuevo.txt", "contenido\n"),
                 true, CancellationToken.None);
@@ -545,15 +545,15 @@ public sealed class ToolErrorCodeTests
     }
 
     [Fact]
-    public void Scoped_coder_replace_of_existing_file_yields_failed_with_mutation_refused_code()
+    public void Scoped_coder_broad_write_edit_yields_failed_with_limit_exceeded_code()
     {
         var ws = TempDir();
         var original = EightLineFile();
         File.WriteAllText(Path.Combine(ws, "doc.txt"), original);
         try
         {
-            // ScopedCoder es create-only: pasa la frontera como CreateFile pero el archivo existe,
-            // así que el ledger de la tool rechaza el reemplazo con MUTATION_REFUSED.
+            // write se normaliza como edición. Cambiar todas las líneas supera el ratio
+            // de ScopedCoder y debe fallar por límite antes de modificar el archivo.
             var executor = Pipeline(ws, new ModelCapabilityBoundary(EffectiveFor(ModelPolicyCategory.ScopedCoder)));
             var read = executor.ExecuteToolWithoutJournal(ReadCall("doc.txt"), true, CancellationToken.None);
             Assert.True(read.Succeeded, read.Summary ?? "read falló");
@@ -564,8 +564,8 @@ public sealed class ToolErrorCodeTests
 
             Assert.False(outcome.Succeeded);
             var failed = FailedOf(outcome.Events);
-            Assert.Equal(ToolErrorCode.MutationRefused, failed.ErrorCode);
-            Assert.StartsWith("MUTATION_REFUSED:", failed.Cause);
+            Assert.Equal(ToolErrorCode.LimitExceeded, failed.ErrorCode);
+            Assert.StartsWith("LIMIT_EXCEEDED:", failed.Cause);
             Assert.Equal(original, File.ReadAllText(Path.Combine(ws, "doc.txt")));
         }
         finally

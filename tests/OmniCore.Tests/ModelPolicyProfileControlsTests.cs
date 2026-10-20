@@ -53,10 +53,10 @@ public sealed class ModelPolicyProfileControlsTests
             explicitPriority: new[] { "filesystem.read" }.Concat(implement.RequiredSuccessfulToolIds).ToArray())
             .Select(tool => tool.Name).ToArray();
 
-        Assert.Equal(new[] { "filesystem.patch" }, eligibleChoices);
+        Assert.Equal(new[] { "filesystem.write", "filesystem.patch" }, eligibleChoices);
         Assert.Contains("filesystem.read", patchVisible);
         Assert.Contains("filesystem.patch", patchVisible);
-        Assert.DoesNotContain("filesystem.write", patchVisible);
+        Assert.Contains("filesystem.write", patchVisible);
         Assert.True(patchVisible.Length <= patchBoundary.MaxVisibleTools());
         Assert.Equal(6, patchBoundary.MaxVisibleTools());
     }

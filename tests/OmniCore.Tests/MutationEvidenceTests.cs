@@ -138,7 +138,7 @@ public sealed class MutationEvidenceTests
     private static string Version(string content) => FilesystemPatchTool.VersionToken(Encoding.UTF8.GetBytes(content));
 
     [Fact]
-    public void Real_tools_report_patch_replace_and_stale_token_to_the_ledger()
+    public void Real_tools_report_patch_normalized_write_and_stale_token_to_the_ledger()
     {
         var workspace = TempDir();
         try
@@ -168,7 +168,7 @@ public sealed class MutationEvidenceTests
             Assert.False(stale.Succeeded);
             Assert.StartsWith("STALE_WRITE", stale.Summary);
 
-            // Un reemplazo completo con el token correcto, tras leer otra vez.
+            // El contenido completo deseado solo agrega una línea: write debe contar como parche.
             var current = File.ReadAllText(Path.Combine(workspace, "doc.txt"));
             executor.ExecuteToolWithoutJournal(Call("filesystem.read", new() { ["path"] = "doc.txt" }), true, ct);
             var replaced = executor.ExecuteToolWithoutJournal(Call("filesystem.write", new()
@@ -182,7 +182,8 @@ public sealed class MutationEvidenceTests
             Assert.True(samples[0].PatchPreferred);
             Assert.Equal((8, 2), (samples[0].OriginalLines, samples[0].ChangedLines));
             Assert.False(samples[1].VersionTokenRespected);
-            Assert.False(samples[2].PatchPreferred);
+            Assert.True(samples[2].PatchPreferred);
+            Assert.Equal((8, 1), (samples[2].OriginalLines, samples[2].ChangedLines));
         }
         finally
         {

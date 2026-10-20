@@ -13,6 +13,14 @@ namespace OmniCore.Tests;
 
 public sealed class WorkspacePanelTests
 {
+    private sealed class NonPumpingSynchronizationContext : SynchronizationContext
+    {
+        public override void Post(SendOrPostCallback callback, object? state)
+        {
+            // Intentionally queue nowhere: this models a synchronous UI thread blocked in a host call.
+        }
+    }
+
     private sealed class Paths(string root) : IPlatformPaths
     {
         public string DataDirectory => Path.Combine(root, "data");
@@ -53,6 +61,51 @@ public sealed class WorkspacePanelTests
     private static WorkspacePanelResult Query(OmniServer server, WorkspacePanelRequest request) =>
         JsonSerializer.Deserialize(server.Query("workspace.panel:" + Uri.EscapeDataString(JsonSerializer.Serialize(request,
             WorkspacePanelJson.Default.WorkspacePanelRequest)), CancellationToken.None)!.Json, WorkspacePanelJson.Default.WorkspacePanelResult)!;
+
+    [Fact]
+    public void Session_input_checkpoint_and_workspace_panel_query_complete_under_non_pumping_context()
+    {
+        using var repo = new Repo();
+        var paths = new Paths(repo.Temp);
+        Directory.CreateDirectory(paths.DataDirectory);
+        Directory.CreateDirectory(paths.ConfigDirectory);
+        var data = OmniHost.WorkspaceDataDirectory(paths, repo.Root);
+        Directory.CreateDirectory(data);
+        using var store = new SqliteEventStore(Path.Combine(data, "journal.db"));
+        var server = new OmniServer(store, EventCodecs.Create(), new InMemoryAuditSink(),
+            Path.Combine(data, "lastsession.txt"), new FileArtifactStore(data), platformPathsFactory: () => paths);
+        server.ConfigureWorkspaceRoot(repo.Root);
+
+        using var completed = new ManualResetEventSlim();
+        Exception? failure = null;
+        string? sendStatus = null;
+        string? panelJson = null;
+        var testToken = TestContext.Current.CancellationToken;
+        var worker = new Thread(() =>
+        {
+            SynchronizationContext.SetSynchronizationContext(new NonPumpingSynchronizationContext());
+            try
+            {
+                sendStatus = server.Send(WireEnvelope.Command(Ids.NewV7(),
+                    "{\"cmd\":\"session.input\",\"text\":\"checkpoint without a UI pump\"}"),
+                    testToken).Status;
+                panelJson = server.Query("workspace.panel", testToken)?.Json;
+            }
+            catch (Exception error) { failure = error; }
+            finally { completed.Set(); }
+        }) { IsBackground = true, Name = "workspace-panel-non-pumping-test" };
+        worker.Start();
+
+        Assert.True(completed.Wait(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken),
+            "Synchronous session input/checkpoint or workspace.panel query deadlocked on a non-pumping SynchronizationContext.");
+        Assert.Null(failure);
+        Assert.Equal("ok", sendStatus);
+        Assert.NotNull(panelJson);
+        var panel = JsonSerializer.Deserialize(panelJson!, WorkspacePanelJson.Default.WorkspacePanelResult)!;
+        Assert.Equal("git", panel.Kind);
+        Assert.NotNull(panel.Git);
+        Assert.Single(Directory.EnumerateFiles(Path.Combine(data, "workspace-panel", "checkpoints"), "*.json"));
+    }
 
     [Fact]
     public async Task Lazy_files_search_status_diff_and_external_changes_use_real_git()

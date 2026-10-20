@@ -194,7 +194,7 @@ public sealed class ModelPolicyTests
     }
 
     [Fact]
-    public void Mutation_mode_restriction_hides_destructive_tools_from_the_planner()
+    public void Patch_existing_mode_exposes_write_for_edits_but_hides_delete_and_move()
     {
         var preset = ModelPolicyPresets.FullAgent();
         var restricted = new UserModelPolicy(ModelPolicyCategory.FullAgent, preset.ToolPolicy,
@@ -208,7 +208,7 @@ public sealed class ModelPolicyTests
         var boundary = new ModelCapabilityBoundary(effective);
 
         Assert.True(boundary.IsToolVisible("filesystem.patch"));
-        Assert.False(boundary.IsToolVisible("filesystem.write"));
+        Assert.True(boundary.IsToolVisible("filesystem.write"));
         Assert.False(boundary.IsToolVisible("filesystem.delete"));
         Assert.False(boundary.IsToolVisible("filesystem.move"));
         Assert.False(boundary.Evaluate(BoundaryTests.Intent("filesystem.delete", writes: ["x"])).Allowed);

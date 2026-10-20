@@ -14,7 +14,7 @@ namespace OmniCore.Tests;
 /// <summary>
 /// Deterministas de filesystem.write y de la política de mutación por Turn (M3 EPIC-021,
 /// ADR-0044 §5): creación/reemplazo atómico con token de versión, STALE_WRITE idéntico al de
-/// filesystem.patch, exposición create-only según el modo (frontera + tool), límites
+/// filesystem.patch, exposición y operación efectiva según el modo (frontera + tool), límites
 /// MaxFilesPerTurn / MaxChangedLinesPerTurn / MaxRewriteRatio con rechazo tipado
 /// (LIMIT_EXCEEDED/MUTATION_REFUSED) ANTES de escribir, RequirePriorRead/RequirePostEditValidation,
 /// crash entre el Barrier (ToolCallStarted con metadatos canónicos, pre=absent para creaciones)
@@ -487,7 +487,7 @@ public sealed class FilesystemWriteToolTests
         Assert.True(new ModelCapabilityBoundary(EffectiveFor(ModelPolicyCategory.PatchOnly))
             .IsToolVisible("filesystem.write"), "PatchOnly expone filesystem.write como edición localizada");
         Assert.True(new ModelCapabilityBoundary(EffectiveFor(ModelPolicyCategory.ScopedCoder))
-            .IsToolVisible("filesystem.write"), "ScopedCoder expone filesystem.write create-only");
+            .IsToolVisible("filesystem.write"), "ScopedCoder expone filesystem.write para crear o editar");
         Assert.True(new ModelCapabilityBoundary(EffectiveFor(ModelPolicyCategory.FullAgent))
             .IsToolVisible("filesystem.write"));
     }
@@ -526,7 +526,7 @@ public sealed class FilesystemWriteToolTests
             var executor = Pipeline(ws, boundary);
 
             // Lectura previa (exigida por ScopedCoder): satisfecha para que el flujo llegue al
-            // rechazo de MODO, no al de lectura previa.
+            // rechazo de ratio, no al de lectura previa.
             var read = executor.ExecuteToolWithoutJournal(ReadCall("doc.txt"), true,
                 TestContext.Current.CancellationToken);
             Assert.True(read.Succeeded, "summary=" + read.Summary);
