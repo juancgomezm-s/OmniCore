@@ -12,6 +12,7 @@ reabren capacidades ya integradas ni sustituyen estas aceptaciones:
 | Explain nativo y recuperación previa a inicio | Integrado, con CI aprobada en el checkpoint publicado | Conservar recibos, scope y recuperación explícita al ampliar comandos. |
 | Workflow Explore/Implement/Verify desde OmniCoder | Publicado en Core `c56123e`, Coder `2c31071`; bundle `1fb3639`. Reapertura con deny PASS 47.404 s y consentimiento único PASS 84.825 s; misma Session/Run, consultas pasivas, cero inicio tras deny y un único verificador exitoso tras consentir. Build 0W/0E, preflight 7/7, sin huérfanos. CI completa aprobada en ambos: cinco jobs Core y tres Coder | Conservar aceptación al ampliar comandos. La fixture local acredita cableado; inferencia live y los otros bloques M9 conservan su aceptación independiente. |
 | Extensiones con procesos escritores | Sin aceptación; falta atribución de mutaciones | Aislamiento, diff acotado, ledger/CAS durable y pruebas allow/deny con efecto real. No lo cubre el permiso del verificador. |
+| M9-L-MUT-01: normalización segura de write y borrado/recreación | Acordada con el usuario; pendiente de construir y cablear | Write existente → edición por diff; recreación → reemplazo contra preimagen durable. Sin prohibición global de write/borrado. Lectura del modelo, permisos, presupuesto y publicación aislada comunes a todas las vías; criterios debajo. |
 | Controladores de plan/lanes/worktrees y procesos persistentes/ConPTY | Pendientes | Construir consumidores y operaciones efectivas, sin confundir DTOs/catálogos con acciones disponibles. |
 | Adjuntos TUI en ACT | Publicados en main Core `330c51b`: producción `f2318d9`, tests `c75e50f`; cuatro focos únicos y frontera binaria CLI aprobados, build 0W/0E, sin huérfanos. Conserva autoridad/gates ACT y entrada canónica con objetivo+refs | CI posterior pendiente de comprobar; no se extrapola la de `c56123e`. Clipboard físico, aceptación manual y comprensión visual live conservan su evidencia pendiente en el acta M9-F. |
 | Paridad restante TUI/medios e idiomas | Parcial | WebP completo, preferencia efectiva/cambio de idioma y recorridos de aceptación pendientes en sus actas. |
@@ -19,6 +20,54 @@ reabren capacidades ya integradas ni sustituyen estas aceptaciones:
 
 M8 permanece abierto hasta la aceptación manual pendiente del
 usuario; este avance de M9 no lo cierra.
+
+<a id="m9-l-mut-01"></a>
+
+### M9-L-MUT-01 — normalización segura de escrituras y recreaciones
+
+**Alta por petición del usuario (2026-10-18), estado: pendiente de construcción.**
+Se incorpora al workflow de seguridad de mutaciones de M9-L, antes de aceptar
+procesos escritores generales. También aplica al cierre de las tools nativas y
+de `worktree.integrate`; no queda resuelto por habilitar una extensión o pasar CI.
+La decisión detallada está en [ADR-0044 §5.1](../adr/0044-politica-de-modelos-y-mutaciones.md#write-edit-normalization)
+y se integra en el alcance de [ADR-0060](../adr/0060-native-orchestration-workflow-recovery.md).
+
+Flujo de construcción y cableado:
+
+1. Conservar identidad, versión y preimagen CAS por destino con historial durable
+   de borrado/movimiento, compartido entre Lanes y recuperable tras reinicio.
+2. Normalizar en Host cada solicitud: crear un destino realmente nuevo, convertir
+   write existente a edición o reconocer recreación como reemplazo del anterior.
+   Registrar solicitud original y operación efectiva con el mismo vínculo causal.
+3. Exigir lectura previa del modelo y token vigente para el contenido existente
+   que cambia. El I/O interno del arnés no acredita lectura del modelo. Validar
+   diff y lote completos contra permisos y MutationLedger antes de publicar.
+4. Preparar operaciones compuestas en aislamiento y publicar con imágenes
+   protegidas, barrera y reconciliación. Borrar y recrear permanecen disponibles
+   conforme a Deny/Ask/Allow efectivos; no se introduce una prohibición general.
+5. Cablear el mismo control en tools nativas, worktrees y procesos/delegados;
+   mantener recibos/deduplicación y mensajes ES/EN/FR/IT en CLI/TUI/OmniCoder.
+
+Criterios de aceptación pendientes; cada uno debe demostrar efecto o rechazo real:
+
+| Caso | Resultado exigido |
+|---|---|
+| Write con contenido completo y diff localizado sobre archivo leído | Edición normalizada permitida por el perfil, único efecto/cargo, contenido no relacionado preservado; sin exigir capacidad de reemplazo completo por la mera forma del payload |
+| Write existente sin lectura, con token inventado/obsoleto o lectura de otro contenido | Rechazo previo a publicación; archivo intacto. Leer internamente para calcular el diff no levanta la restricción |
+| Lectura parcial o vacía | No habilita cambios fuera del contenido que el modelo recibió; el registro debe acreditar cobertura y versión |
+| Write que supera líneas/ratio/presupuesto | Rechazo del cambio completo; no dividirlo en operaciones pequeñas para eludir límites |
+| Archivo nuevo | Creación autorizada normal; no exigir una lectura de un archivo inexistente |
+| Borrado legítimo, o borrado seguido de recreación autorizada | Operaciones disponibles con sus permisos; recreación evaluada contra la preimagen original como reemplazo, conservando cargos y lectura exigida |
+| Borrado/recreación o movimiento/recreación que evade categoría, Ask o presupuesto | Rechazo del lote antes de tocar el checkout; original preservado, sin grant automático |
+| Alias de ruta, cambio de Turn, dos Lanes o reinicio entre operaciones | Identidad/historial conservados; no obtener una creación nueva ni borrar cargos por cambiar la forma o el proceso |
+| Tools nativas, worktree y proceso/delegado escritor | Misma decisión efectiva y cargos verificables; no afirmar paridad con un canal aún sin conectar |
+| Fallo/conflicto/corte durante publicación | Preimages y recibos permiten reconciliar; no éxito simulado, reejecución automática de proceso incierto ni promesa de atomicidad global entre archivos |
+
+El acuerdo amplía una protección de identidad ya prevista en ADR-0044 que no
+tiene enforcement compuesto completo, y añade la normalización de write a edición
+solicitada ahora. No se marca construido por existir `DeleteAndCreateAttempt` en
+el contrato de cualificación: su producción actual sigue sin detectar la secuencia.
+M9 y la aceptación manual de M8 permanecen abiertos.
 
 **Seguimiento de cierre M9 (2026-10-17):** el lifecycle de conversaciones y la
 respuesta/reanudación de cuestionarios ya están cableados en Core y OmniCoder.

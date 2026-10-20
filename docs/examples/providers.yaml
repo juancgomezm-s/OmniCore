@@ -1,4 +1,5 @@
 providers:
+  # Ejemplo de proveedor local (llama.cpp, ik_llama, etc.)
   local-qwen:
     baseUrl: "https://192.168.1.104:8080/v1"
     authRef: "local-qwen-key"
@@ -6,3 +7,45 @@ providers:
     # Certificado raíz de confianza del servidor (PEM o DER). Con él se valida la cadena y el
     # nombre del host; sin él, un literal IP privado acepta cualquier certificado.
     caCertificate: "C:/temp/omnicoder-tls/server-cert.pem"
+
+  # Ejemplo de proveedor OpenAI (API key)
+  openai:
+    family: OpenAiChatCompatible
+    baseUrl: https://api.openai.com/v1
+    authRef: openai
+    billingMode: MeteredCurrency
+
+  # Ejemplo de proveedor OpenRouter (API key)
+  openrouter:
+    family: OpenAiChatCompatible
+    baseUrl: https://openrouter.ai/api/v1
+    authRef: openrouter
+    billingMode: MeteredCurrency
+
+  # Ejemplo de proveedor ChatGPT (OAuth con suscripción)
+  chatgpt:
+    family: OpenAIResponses
+    profile: codex
+    billingMode: IncludedQuota
+    baseUrl: https://chatgpt.com/backend-api
+    auth: none
+
+  # Ejemplo de proveedor Anthropic (OAuth con identidad de Claude Code)
+  # Usa los mismos valores que Pi para compatibilidad con el flujo OAuth de Claude Code.
+  # El usuario puede modificar estos valores si lo desea (ej: usar su propio client_id).
+  anthropic:
+    family: AnthropicMessages
+    auth:
+      kind: oauth
+      clientId: 9d1c250a-e61b-44d9-88ed-5944d1962f5e
+      userAgent: "claude-cli/{version} (external, cli)"
+      scopes:
+        - user:profile
+        - user:inference
+        - user:sessions:claude_code
+        - user:mcp_servers
+        - user:file_upload
+      authorizeUrl: https://claude.com/cai/oauth/authorize
+      tokenUrl: https://platform.claude.com/v1/oauth/token
+      profileUrl: https://api.anthropic.com/api/oauth/profile
+      rolesUrl: https://api/oauth/claude_cli/roles

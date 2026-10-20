@@ -104,12 +104,27 @@ incluyendo nuevos archivos ignorados: gitignore no exime la contabilidad.
 
 La publicación debe reutilizar las garantías de M7: imágenes protegidas, límites
 de tamaño y archivos, topología segura, preimages CAS y validación de todo el lote
-contra MutationLedger antes del primer cambio. Sólo se aceptan Create/Patch/Replace
-cuando los techos Session/modelo, lecturas previas y presupuestos lo permiten.
-Delete/Move que requieran Ask o estén denegados rechazan el lote completo; la
-autorización genérica del proceso no sustituye la aprobación específica. No hay
+contra MutationLedger antes del primer cambio. Cada Create/Patch/Replace/Delete/Move
+se acepta sólo cuando los techos Session/modelo, lecturas previas y presupuestos lo permiten.
+Delete/Move denegados o con Ask sin resolver rechazan/difieren el lote completo;
+una aprobación específica vigente permite evaluarlos bajo los mismos límites.
+La autorización genérica del proceso no sustituye esa aprobación. No hay
 fallback silencioso en workspaces no Git ni cuando Strong no esté disponible.
 Esta sección fija el alcance previsto; todavía no acredita su implementación.
+
+**Corrección acordada M9-L-MUT-01 (2026-10-18), pendiente de construir:** el
+workflow incorpora la normalización Host de write existente a edición por diff
+y de borrado/movimiento seguido de recreación a reemplazo contra preimagen CAS
+durable. No hay prohibición general de write ni de borrar/recrear. Se preservan
+lectura previa efectiva del modelo, identidad/historial entre Lanes y reinicios,
+permisos y presupuesto del cambio completo. La lectura del arnés no concede
+lectura al modelo ni se trocea el diff para evitar un límite. Las operaciones
+compuestas se preparan aisladas y se valida todo antes de publicar; una
+publicación parcial/incierta exige reconciliación con sus recibos y preimages.
+El contrato es [ADR-0044 §5.1](0044-politica-de-modelos-y-mutaciones.md#write-edit-normalization)
+y su [workflow/aceptación M9](../plans/m8-m10-user-localization.md#m9-l-mut-01).
+Es condición de aceptación de procesos escritores y del control compuesto de
+tools/worktrees; no reabre el consentimiento Verify ya aceptado ni amplía grants.
 
 La recuperación también debe cubrir admisiones de workflow anteriores a Started:
 la interfaz especializada conserva una acción humana `command.continue` para ese

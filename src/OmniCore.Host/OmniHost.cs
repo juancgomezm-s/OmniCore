@@ -539,12 +539,45 @@ public sealed class OmniHost
 
     public static LoadedUserConfiguration LoadUserConfiguration(string configDirectory)
     {
+        EnsureDefaultProvidersFile(configDirectory);
+
         var providersPath = Path.Combine(configDirectory, "providers.yaml");
         var modelsPath = Path.Combine(configDirectory, "models.yaml");
         var settingsPath = Path.Combine(configDirectory, "settings.yaml");
         return new ConfigLoader().Load(File.Exists(providersPath) ? File.ReadAllText(providersPath) : null,
             File.Exists(modelsPath) ? File.ReadAllText(modelsPath) : null,
             File.Exists(settingsPath) ? File.ReadAllText(settingsPath) : null);
+    }
+
+    /// <summary>
+    /// Asegura que exista un archivo <c>providers.yaml</c> en el directorio de configuración del usuario.
+    /// Si no existe, copia el archivo de ejemplo embebido como recurso en el ensamblado.
+    /// </summary>
+    private static void EnsureDefaultProvidersFile(string configDirectory)
+    {
+        var providersPath = Path.Combine(configDirectory, "providers.yaml");
+        if (File.Exists(providersPath))
+        {
+            return;
+        }
+
+        try
+        {
+            var assembly = typeof(OmniHost).Assembly;
+            var resourceName = "examples.providers.yaml";
+            using var stream = assembly.GetManifestResourceStream(resourceName);
+            if (stream != null)
+            {
+                Directory.CreateDirectory(configDirectory);
+                using var reader = new StreamReader(stream);
+                var content = reader.ReadToEnd();
+                File.WriteAllText(providersPath, content);
+            }
+        }
+        catch (Exception)
+        {
+            // No fallar: el usuario puede crear el archivo manualmente
+        }
     }
 
     /// <summary>

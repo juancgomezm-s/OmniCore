@@ -185,21 +185,67 @@ La restricción se aplica dos veces:
 
 Reglas obligatorias:
 
-- `filesystem.write` sobre un archivo existente cuenta como reemplazo completo; en `PatchOnly` y
+- Comportamiento vigente hasta aceptar §5.1: `filesystem.write` sobre un archivo existente cuenta como reemplazo completo; en `PatchOnly` y
   `ScopedCoder` se rechaza. En estos perfiles solo se expone `filesystem.patch`; `write` puede ser
   create-only cuando la categoría permite crear.
 - Todo patch a un archivo existente requiere una lectura previa de esa versión y
   `ExpectedVersionToken`; un token viejo produce `STALE_WRITE`.
 - El runtime calcula el diff resultante antes de aplicar y hace cumplir límites de archivos,
   líneas y `MaxRewriteRatio`.
-- Borrar y crear la misma ruta, o moverla y recrearla, se clasifica como reemplazo y no evade el
-  límite de categoría.
+- Requisito pendiente de enforcement durable (§5.1): borrar y crear la misma ruta, o moverla y
+  recrearla, debe clasificarse como reemplazo y no evadir el límite de categoría. La existencia
+  actual del archivo y la telemetría de cualificación no demuestran esa garantía.
 - En perfiles restringidos no hay mutaciones paralelas.
 - El resultado se somete a parser/build/test o al gate disponible que corresponda. Los fallos
   repetidos pueden restringir el resto del Run a `ObserveOnly` y sugerir escalación; nunca amplían
   permisos ni seleccionan por sí solos un modelo de pago.
 - Para `PatchOnly`, la forma preferida es un `PatchArtifact`: el modelo propone, el runtime valida
   scope, token y diff, y solo después lo aplica mediante el Effect Journal.
+
+<a id="write-edit-normalization"></a>
+
+### 5.1. Normalización de write y continuidad de identidad — acordada, pendiente de construcción M9
+
+**Decisión del usuario (2026-10-18):** simplificar el contrato permitiendo que el arnés convierta
+un `write` sobre un archivo existente en una edición controlada, sin introducir una prohibición
+general de write ni de borrar/recrear. El cambio está planificado como **M9-L-MUT-01**; todavía
+no está implementado ni aceptado. Sustituirá la clasificación fija de write existente de §5
+sólo cuando el recorrido completo tenga enforcement y evidencia.
+
+- El Host normaliza el cambio antes de autorizar su efecto: destino nuevo sin historia protegida
+  → creación; destino existente → diff de edición; destino borrado/movido y luego recreado →
+  reemplazo contra la preimagen protegida anterior. La solicitud original, su ToolCallId y la
+  operación efectiva conservan trazabilidad; el modelo no decide ni firma su clasificación.
+- La normalización no concede capacidades, lecturas ni permisos. Para un existente se exige la
+  lectura previa efectiva del modelo y el token correspondiente; la lectura interna del Host
+  para calcular el diff no satisface ese requisito. Debe comprobarse la cobertura de lectura
+  del contenido que cambia: una página vacía o ajena a la edición no constituye esa evidencia.
+- El diff completo se comprueba como un solo cambio contra los mismos límites de scope,
+  archivos, líneas y ratio de reescritura. No se fracciona automáticamente en parches que eludan
+  esos límites. Se revalida la versión física antes de publicar; un conflicto no se sobrescribe.
+- La identidad y preimagen CAS por ruta/workspace, incluidas marcas de borrado y movimientos,
+  sobreviven al reinicio y son comunes a las Lanes que actúan sobre el mismo destino. Cambiar
+  de Turn, alias de ruta o modalidad de tool no convierte un archivo protegido en uno nuevo
+  ni reinicia cargos confirmados. Los presupuestos conservan su alcance configurado por Turn/Run.
+- Borrar, mover y recrear siguen disponibles según los permisos efectivos: Deny permanece Deny
+  y Ask requiere la aprobación específica existente. Consentir un proceso o un borrado no
+  autoriza por sí mismo una recreación/reemplazo más amplio. No se añade una prohibición global.
+- Las mutaciones compuestas se preparan en un área aislada; se valida el lote completo antes de
+  tocar el checkout autorizado. El reemplazo del mismo destino se publica atómicamente cuando
+  la plataforma lo permite. Un rechazo previo a publicación conserva el original. Un fallo
+  durante publicación de varios archivos requiere journal/preimages y reconciliación; no se
+  promete atomicidad global del filesystem ni se relanza un proceso incierto.
+- Las tools nativas, la integración de worktrees y los procesos/delegados escritores deben
+  consumir la misma decisión y contabilidad. El área aislada no puede escribir al checkout ni
+  al common-dir Git original. `Prepare` y la frontera de capacidad permanecen puros: el I/O
+  pertenece a Host y a los componentes autorizados existentes.
+- El intento borrar/recrear se registra a partir de evidencia durable real. El campo de
+  cualificación `DeleteAndCreateAttempt`, hoy no alimentado, no sustituye el enforcement.
+
+La implementación se acepta con los casos reproducibles definidos en el
+[workflow M9](../plans/m8-m10-user-localization.md#m9-l-mut-01).
+La migración conserva la política actual hasta disponer de un adaptador Core/Host autorizado;
+no basta ocultar una tool, ajustar el prompt o reclasificar únicamente su DTO.
 
 ### 6. Onboarding al seleccionar un modelo nuevo
 

@@ -917,6 +917,15 @@ K sigue abierto por la aceptación completa SEC-CONV-01–13. Los demás mutador
 efectiva ni cambio de idioma en caliente.
 M8 conserva la aceptación manual del usuario.
 
+**Corrección de workflow M9-L acordada el 2026-10-18, pendiente de construir:**
+[M9-L-MUT-01](../plans/m8-m10-user-localization.md#m9-l-mut-01)
+normaliza write sobre existente a edición controlada y borrado/recreación a
+reemplazo contra preimagen durable, sin prohibir globalmente esas operaciones.
+Conserva lectura real del modelo, identidad entre Lanes/reinicios, permisos,
+presupuesto y publicación aislada/reconciliable. Es un criterio de aceptación
+del control de mutaciones y de los procesos escritores generales; no se declara
+implementado por esta actualización del roadmap. Contrato: ADR-0044 §5.1/ADR-0060.
+
 **Después de M10 — frame Git completo:** por decisión del usuario del 2026-10-13, el gestor de revisión con diff lado a lado/unificado, selección y descarte por archivo/bloque/línea, pull, merge y recuperación se asigna a [Post M10 Git Review](../plans/post-m10-tui-git-review.md). Reutiliza M7/M9/M10, pero no se incluye en sus gates de cierre. No aplaza la CLI v1, el bridge MCP de M8, el transporte propio CLI↔Host de M9 ni los recorridos funcionales y traducidos de la TUI ya asignados a M8–M10.
 
 **Checkpoint OpenRouter `3273026` (2026-10-13):** OR1–OR4 integrados con 21/21
