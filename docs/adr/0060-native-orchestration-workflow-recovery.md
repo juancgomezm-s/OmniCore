@@ -112,13 +112,31 @@ La autorización genérica del proceso no sustituye esa aprobación. No hay
 fallback silencioso en workspaces no Git ni cuando Strong no esté disponible.
 Esta sección fija el alcance previsto; todavía no acredita su implementación.
 
+### Vertical de extensión escritor: dos etapas explícitas
+
+Diseño de construcción del 2026-10-21; todavía sin aceptación de implementación.
+El proceso Strong se ejecuta sobre una copia privada y sólo produce una propuesta
+durable. No recibe escritura al checkout ni al common-dir originales. La respuesta
+distingue la propuesta del efecto sobre el proyecto; completar la RPC no publica
+los archivos. La copia excluye secretos e ignorados de entrada, mientras que la
+inspección de salida incluye archivos nuevos ignorados y valida topología y límites.
+
+Aplicar esa propuesta requiere una llamada nueva por el pipeline común. El Host
+resuelve su procedencia, contenido y operaciones exactas antes de autorizar la
+publicación; el permiso del proceso no sustituye Ask/Deny de archivos. Se conserva
+la lectura efectiva del modelo en el scope original y se revalidan versión,
+historia, techo y presupuesto bajo el fence. No se fabrica ownership de worktree
+ni se vuelve a ejecutar un proceso incierto. Este vertical no anuncia todavía
+paridad de process.exec/shell.exec, wrappers generales, procesos persistentes ni
+ConPTY.
+
 **Corrección acordada M9-L-MUT-01 (2026-10-18), implementación parcial:** la
 normalización Host de write existente a edición por diff está publicada y la
 [CI del checkpoint `e84949c`](https://github.com/juancgomezm-s/OmniCore/actions/runs/39517765699)
 está aprobada. La continuidad durable de borrado/movimiento seguido de recreación
-a reemplazo contra preimagen CAS está implementada y validada localmente en el
+a reemplazo contra preimagen CAS está publicada en main `b81b3c2` en el
 [bloque del 2026-10-20](../validation/m9-durable-file-history-20261020.md);
-su acta distingue validación local de la CI exigida antes de integrar. No hay prohibición general
+su acta registra validación local y CI aprobada antes y después del merge. No hay prohibición general
 de write ni de borrar/recrear. El contrato exige preservar
 lectura previa efectiva del modelo, identidad/historial entre Lanes y reinicios,
 permisos y presupuesto del cambio completo. La lectura del arnés no concede

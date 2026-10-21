@@ -93,7 +93,32 @@ public sealed class ExtensionTool : ITool
                 || !root.TryGetProperty("result", out var result))
                 throw new InvalidDataException("The extension returned an invalid JSON-RPC response.");
             var resultJson = result.GetRawText();
-            return new ToolResult("Extension tool completed.", resultJson, null, resultJson.Length, false,
+            ArtifactRef? proposal = null;
+            var summary = "Extension completed in a private copy; the workspace is unchanged.";
+            var preview = resultJson;
+            if (root.TryGetProperty("proposal", out var proposalNode))
+            {
+                if (proposalNode.ValueKind != JsonValueKind.Object
+                    || !proposalNode.TryGetProperty("reference", out var referenceNode))
+                    throw new InvalidDataException("The extension returned an invalid protected proposal reference.");
+                proposal = JsonSerializer.Deserialize<ArtifactRef>(referenceNode.GetRawText())
+                    ?? throw new InvalidDataException("The extension proposal reference is invalid.");
+                if (proposal.Kind != ArtifactKind.Patch || proposal.Sensitivity != Sensitivity.Sensitive
+                    || proposal.Size <= 0 || proposal.Hash.Algorithm != "sha256")
+                    throw new InvalidDataException("The extension proposal reference has an invalid classification.");
+                if (proposalNode.TryGetProperty("summary", out var summaryNode)
+                    && summaryNode.ValueKind == JsonValueKind.String)
+                    summary = summaryNode.GetString() ?? summary;
+                if (proposalNode.TryGetProperty("paths", out var pathsNode)
+                    && pathsNode.ValueKind == JsonValueKind.Array)
+                {
+                    var paths = pathsNode.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.String)
+                        .Select(value => value.GetString() ?? "").Where(value => value.Length > 0).ToArray();
+                    preview += "\nProposed paths: " + string.Join(", ", paths)
+                        + ". Read the attached proposal with artifact.read, then use filesystem.write for each accepted file; no workspace changes have been published yet.";
+                }
+            }
+            return new ToolResult(summary, preview, proposal, preview.Length, proposal is not null,
                 EffectOutcome.Applied);
         }
         catch (OperationCanceledException) { throw; }

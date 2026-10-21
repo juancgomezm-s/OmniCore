@@ -1,11 +1,13 @@
 # M9-L-MUT-01: historial de borrado y recreación entre procesos
 
-Fecha del corte: 2026-10-20. Estado: **implementación y validación local aprobadas**.
-Base publicada: `e84949c`, con [CI completa aprobada del checkpoint anterior](https://github.com/juancgomezm-s/OmniCore/actions/runs/39517765699).
-Construcción en `codex/m9-durable-file-history`; integración a main condicionada
-a CI completa. El estado remoto se consulta en el
-[workflow de CI](https://github.com/juancgomezm-s/OmniCore/actions/workflows/ci.yml);
-esta acta no sustituye sus resultados.
+Fecha del corte: 2026-10-20. Actualización de publicación: 2026-10-21.
+Estado: **implementado, validado e integrado en main `b81b3c2`**.
+La [CI de la revisión `3f5610b`](https://github.com/juancgomezm-s/OmniCore/actions/runs/39546445202)
+aprobó sus cinco trabajos antes del merge; la
+[CI posterior de main](https://github.com/juancgomezm-s/OmniCore/actions/runs/39550735753)
+también aprobó los cinco. El árbol integrado es el mismo que el de la revisión.
+Este resultado cierra la entrega nativa descrita aquí, sin acreditar los procesos
+escritores generales de M9-M ni cerrar M9 global o la aceptación manual de M8.
 
 ## Alcance construido y conectado
 

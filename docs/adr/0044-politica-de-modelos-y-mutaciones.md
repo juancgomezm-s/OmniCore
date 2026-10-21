@@ -214,7 +214,8 @@ Reglas obligatorias:
 un `write` sobre un archivo existente en una edición controlada, sin introducir una prohibición
 general de write ni de borrar/recrear. El bloque **M9-L-MUT-01** sigue abierto: su
 normalización nativa está publicada y validada offline el 2026-10-20. La
-continuidad durable de borrado/movimiento está implementada y validada localmente;
+continuidad durable de borrado/movimiento está publicada en main `b81b3c2`, con
+CI completa aprobada antes y después del merge;
 su [acta](../validation/m9-durable-file-history-20261020.md) registra resultados,
 límites y el requisito de CI antes de integrar. La paridad con escritores generales
 sigue pendiente.

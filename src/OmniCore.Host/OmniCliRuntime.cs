@@ -2738,7 +2738,7 @@ public sealed class OmniCliRuntime : IDisposable
             IReadOnlyList<LoadedSkill> loadedProjectSkills = [];
             IReadOnlyList<IHook> lifecycleHooks = Array.Empty<IHook>();
             IReadOnlyList<IContextContributor> extensionContributors = Array.Empty<IContextContributor>();
-            var extensionRpcInvoker = new ExtensionRpcProcessInvoker();
+            var extensionRpcInvoker = new ExtensionRpcProcessInvoker(artifacts: artifacts);
             extensionBoundaries.Add(new McpIntentBoundary());
             if (delegation is null)
             {

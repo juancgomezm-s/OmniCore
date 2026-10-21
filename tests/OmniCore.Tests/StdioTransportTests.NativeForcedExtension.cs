@@ -180,7 +180,7 @@ public sealed partial class StdioTransportTests
             && requested.ToolCallId == toolCall.ToolCallId && requested.InteractionId == interaction.InteractionId);
         if (shouldWriteMarker)
         {
-            Assert.Equal("extension-applied", await File.ReadAllTextAsync(fixture.ExtensionMarkerPath,
+            Assert.Equal("before", await File.ReadAllTextAsync(fixture.ExtensionMarkerPath,
                 TestContext.Current.CancellationToken));
             Assert.Single(events, item => item.Payload is PermissionGranted granted
                 && granted.ToolCallId == toolCall.ToolCallId);
@@ -188,8 +188,9 @@ public sealed partial class StdioTransportTests
                 && started.ToolCallId == toolCall.ToolCallId);
             Assert.Equal(runId, started.Envelope.RunId?.ToString());
             Assert.Equal(turnId, started.Envelope.TurnId);
-            Assert.Single(events, item => item.Payload is ToolCallSucceeded succeeded
+            var success = Assert.Single(events, item => item.Payload is ToolCallSucceeded succeeded
                 && succeeded.ToolCallId == toolCall.ToolCallId);
+            Assert.NotNull(Assert.IsType<ToolCallSucceeded>(success.Payload).ResultArtifact);
         }
         else
         {
@@ -223,7 +224,6 @@ public sealed partial class StdioTransportTests
             if (File.Exists(sandboxAssembly))
                 File.Copy(sandboxAssembly, Path.Combine(package, Path.GetFileName(sandboxAssembly)), overwrite: true);
             File.WriteAllText(Path.Combine(package, "schema.json"), "{\"type\":\"object\"}", new UTF8Encoding(false));
-            var workspaceArgument = Workspace.Replace('\\', '/');
             var manifest = $$"""
                 manifestVersion: 1
                 id: fixture.native
@@ -249,7 +249,7 @@ public sealed partial class StdioTransportTests
                 runtime:
                   kind: process
                   command: OmniCore.SandboxTestProcess.exe
-                  args: [extension-rpc-write-marker, {{JsonSerializer.Serialize(workspaceArgument)}}, m9-extension-marker.txt]
+                  args: [extension-rpc-write-marker, m9-extension-marker.txt]
                 """;
             File.WriteAllText(Path.Combine(package, ExtensionManifestLoader.ManifestFileName), manifest,
                 new UTF8Encoding(false));
