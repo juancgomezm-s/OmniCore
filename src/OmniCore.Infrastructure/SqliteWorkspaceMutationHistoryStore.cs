@@ -14,7 +14,10 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
     private static readonly StringComparer PathComparer = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
         ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
     private readonly string _dataDirectory;
-    private readonly Microsoft.Data.Sqlite.SqliteConnection _connection;
+    private readonly string _connectionString;
+    private Microsoft.Data.Sqlite.SqliteConnection? _connection;
+    private int _operationDepth;
+    private bool _disposed;
     private readonly FileArtifactStore _artifacts;
     private readonly object _sync = new();
 
@@ -29,18 +32,64 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
             Mode = Microsoft.Data.Sqlite.SqliteOpenMode.ReadWriteCreate,
             Pooling = false,
         };
-        _connection = new Microsoft.Data.Sqlite.SqliteConnection(builder.ToString());
-        _connection.Open();
-        using var busy = _connection.CreateCommand();
-        busy.CommandText = "PRAGMA busy_timeout=5000";
-        busy.ExecuteNonQuery();
+        _connectionString = builder.ToString();
         InitializeSchema();
+    }
+
+    private Microsoft.Data.Sqlite.SqliteConnection Connection => _connection
+        ?? throw new InvalidOperationException("Workspace mutation database operation is not active.");
+
+    private IDisposable BeginOperation()
+    {
+        System.Threading.Monitor.Enter(_sync);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_operationDepth++ == 0)
+            {
+                var connection = new Microsoft.Data.Sqlite.SqliteConnection(_connectionString);
+                try
+                {
+                    connection.Open();
+                    using var busy = connection.CreateCommand();
+                    busy.CommandText = "PRAGMA busy_timeout=5000";
+                    busy.ExecuteNonQuery();
+                    _connection = connection;
+                }
+                catch
+                {
+                    connection.Dispose();
+                    _operationDepth--;
+                    throw;
+                }
+            }
+            return new Operation(this);
+        }
+        catch
+        {
+            System.Threading.Monitor.Exit(_sync);
+            throw;
+        }
+    }
+
+    private void EndOperation()
+    {
+        try
+        {
+            if (--_operationDepth == 0)
+            {
+                _connection?.Dispose();
+                _connection = null;
+            }
+        }
+        finally { System.Threading.Monitor.Exit(_sync); }
     }
 
     private void InitializeSchema()
     {
-        using var transaction = _connection.BeginTransaction();
-        using var inspect = _connection.CreateCommand(); inspect.Transaction = transaction;
+        using var operation = BeginOperation();
+        using var transaction = Connection.BeginTransaction();
+        using var inspect = Connection.CreateCommand(); inspect.Transaction = transaction;
         inspect.CommandText = "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
             + "('workspace_mutation_schema','workspace_file_history','workspace_mutation_receipts')";
         var found = new HashSet<string>(StringComparer.Ordinal);
@@ -55,7 +104,7 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
         }
         if (found.Count != 0) throw new InvalidDataException("Workspace mutation history tables exist without a schema marker.");
 
-        using var schema = _connection.CreateCommand(); schema.Transaction = transaction;
+        using var schema = Connection.CreateCommand(); schema.Transaction = transaction;
         schema.CommandText = """
             CREATE TABLE workspace_file_history (
                 workspace_id TEXT NOT NULL,
@@ -117,9 +166,9 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
     {
         var workspaceId = WorkspaceId(workspaceRoot);
         var (key, relative) = PathIdentity(relativePath, workspaceRoot);
-        lock (_sync)
+        using (BeginOperation())
         {
-            using var command = _connection.CreateCommand();
+            using var command = Connection.CreateCommand();
             command.CommandText = "SELECT relative_path, state, expected_hash, image_ref, revision, last_receipt, observed_hash "
                 + "FROM workspace_file_history WHERE workspace_id=:workspace AND path_key=:key";
             command.Parameters.AddWithValue("workspace", workspaceId);
@@ -147,9 +196,9 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
     public WorkspaceMutationReceipt? ReadReceipt(string workspaceRoot, ToolCallId toolCallId, string relativePath)
     {
         var (key, relative) = PathIdentity(relativePath, workspaceRoot);
-        lock (_sync)
+        using (BeginOperation())
         {
-            using var command = _connection.CreateCommand();
+            using var command = Connection.CreateCommand();
             command.CommandText = "SELECT run_id, turn_id, operation, expected_pre_hash, expected_post_hash, "
                 + "preimage_ref, postimage_ref, deleted_lines, inserted_lines, state, relative_path "
                 + "FROM workspace_mutation_receipts WHERE workspace_id=:workspace AND tool_call_id=:call AND path_key=:key";
@@ -183,10 +232,10 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
         cancellationToken.ThrowIfCancellationRequested();
         var workspaceId = WorkspaceId(workspaceRoot);
         var (key, relative) = PathIdentity(relativePath, workspaceRoot);
-        lock (_sync)
+        using (BeginOperation())
         {
-            using var tx = _connection.BeginTransaction();
-            using var query = _connection.CreateCommand(); query.Transaction = tx;
+            using var tx = Connection.BeginTransaction();
+            using var query = Connection.CreateCommand(); query.Transaction = tx;
             query.CommandText = "SELECT state, expected_hash, revision, image_ref, last_receipt FROM workspace_file_history "
                 + "WHERE workspace_id=:workspace AND path_key=:key";
             query.Parameters.AddWithValue("workspace", workspaceId); query.Parameters.AddWithValue("key", key);
@@ -234,15 +283,15 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
         ArgumentNullException.ThrowIfNull(receipts);
         if (receipts.Count is < 1 or > 64) throw new ArgumentOutOfRangeException(nameof(receipts));
         cancellationToken.ThrowIfCancellationRequested();
-        lock (_sync)
+        using (BeginOperation())
         {
-            using var tx = _connection.BeginTransaction();
+            using var tx = Connection.BeginTransaction();
             foreach (var receipt in receipts)
             {
                 ValidateReceipt(receipt);
                 if (!TryVerifyReceiptPreimage(receipt))
                     throw new InvalidDataException("Workspace mutation preimage is missing or not faithful to its hash.");
-                using var insert = _connection.CreateCommand(); insert.Transaction = tx;
+                using var insert = Connection.CreateCommand(); insert.Transaction = tx;
                 insert.CommandText = "INSERT INTO workspace_mutation_receipts(workspace_id,tool_call_id,path_key,relative_path,"
                     + "run_id,turn_id,operation,expected_pre_hash,expected_post_hash,preimage_ref,postimage_ref,"
                     + "deleted_lines,inserted_lines,state) VALUES(:workspace,:call,:key,:path,:run,:turn,:operation,"
@@ -276,9 +325,9 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
         if (receipts.Count is < 1 or > 64 || receipts.Count != resultingStates.Count)
             throw new ArgumentException("Mutation receipt and state batches must be bounded and aligned.");
         cancellationToken.ThrowIfCancellationRequested();
-        lock (_sync)
+        using (BeginOperation())
         {
-            using var tx = _connection.BeginTransaction();
+            using var tx = Connection.BeginTransaction();
             for (var index = 0; index < receipts.Count; index++)
             {
                 var receipt = receipts[index]; var state = resultingStates[index];
@@ -304,7 +353,7 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
                         throw new InvalidDataException("Applied mutation state does not match its durable receipt.");
                 }
                 var key = PathIdentity(receipt.RelativePath).Key;
-                using var update = _connection.CreateCommand(); update.Transaction = tx;
+                using var update = Connection.CreateCommand(); update.Transaction = tx;
                 update.CommandText = "UPDATE workspace_mutation_receipts SET state=:state WHERE workspace_id=:workspace "
                     + "AND tool_call_id=:call AND path_key=:key AND state IN (:prepared,:same)";
                 update.Parameters.AddWithValue("state", (int)receipt.State);
@@ -338,10 +387,10 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
     {
         cancellationToken.ThrowIfCancellationRequested();
         var workspaceId = WorkspaceId(workspaceRoot); var (key, relative) = PathIdentity(relativePath, workspaceRoot);
-        lock (_sync)
+        using (BeginOperation())
         {
-            using var tx = _connection.BeginTransaction();
-            using var query = _connection.CreateCommand(); query.Transaction = tx;
+            using var tx = Connection.BeginTransaction();
+            using var query = Connection.CreateCommand(); query.Transaction = tx;
             query.CommandText = "SELECT expected_hash, image_ref, revision, last_receipt FROM workspace_file_history "
                 + "WHERE workspace_id=:workspace AND path_key=:key";
             query.Parameters.AddWithValue("workspace", workspaceId); query.Parameters.AddWithValue("key", key);
@@ -358,9 +407,9 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
     public IReadOnlyList<WorkspaceMutationReceipt> ReadPending(string workspaceRoot)
     {
         var workspace = WorkspaceId(workspaceRoot);
-        lock (_sync)
+        using (BeginOperation())
         {
-            using var command = _connection.CreateCommand();
+            using var command = Connection.CreateCommand();
             command.CommandText = "SELECT tool_call_id,relative_path,run_id,turn_id,operation,expected_pre_hash,expected_post_hash,"
                 + "preimage_ref,postimage_ref,deleted_lines,inserted_lines,state FROM workspace_mutation_receipts "
                 + "WHERE workspace_id=:workspace AND state=:prepared ORDER BY rowid";
@@ -507,9 +556,9 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
     public IReadOnlyList<WorkspaceMutationReceipt> ReadBudgetCharges(string workspaceRoot, string runId, string turnId)
     {
         var workspace = WorkspaceId(workspaceRoot);
-        lock (_sync)
+        using (BeginOperation())
         {
-            using var command = _connection.CreateCommand();
+            using var command = Connection.CreateCommand();
             command.CommandText = "SELECT tool_call_id,relative_path,operation,expected_pre_hash,expected_post_hash,preimage_ref,"
                 + "postimage_ref,deleted_lines,inserted_lines,state FROM workspace_mutation_receipts WHERE workspace_id=:workspace "
                 + "AND run_id=:run AND turn_id=:turn AND state=:applied AND operation <> 'workspace.undo' ORDER BY rowid";
@@ -530,9 +579,9 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
         var workspace = WorkspaceId(workspaceRoot);
-        lock (_sync)
+        using (BeginOperation())
         {
-            using var command = _connection.CreateCommand();
+            using var command = Connection.CreateCommand();
             command.CommandText = "SELECT tool_call_id,relative_path,turn_id,operation,expected_pre_hash,expected_post_hash,"
                 + "preimage_ref,postimage_ref,deleted_lines,inserted_lines,state FROM workspace_mutation_receipts "
                 + "WHERE workspace_id=:workspace AND run_id=:run "
@@ -556,7 +605,7 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
         WorkspaceFileHistoryState state, string? expectedHash, string? imageRef, long revision,
         string? lastReceipt, string? observedHash)
     {
-        using var command = _connection.CreateCommand(); command.Transaction = tx;
+        using var command = Connection.CreateCommand(); command.Transaction = tx;
         command.CommandText = "INSERT INTO workspace_file_history(workspace_id,path_key,relative_path,state,expected_hash,image_ref,revision,last_receipt,observed_hash) "
             + "VALUES(:workspace,:key,:path,:state,:hash,:image,:revision,:receipt,:observed) ON CONFLICT(workspace_id,path_key) DO UPDATE SET "
             + "relative_path=excluded.relative_path,state=excluded.state,expected_hash=excluded.expected_hash,image_ref=excluded.image_ref,"
@@ -570,7 +619,7 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
 
     private bool ReceiptMatches(WorkspaceMutationReceipt receipt, Microsoft.Data.Sqlite.SqliteTransaction tx)
     {
-        using var command = _connection.CreateCommand(); command.Transaction = tx;
+        using var command = Connection.CreateCommand(); command.Transaction = tx;
         command.CommandText = "SELECT run_id,turn_id,operation,expected_pre_hash,expected_post_hash,preimage_ref,postimage_ref,deleted_lines,inserted_lines,state "
             + "FROM workspace_mutation_receipts WHERE workspace_id=:workspace AND tool_call_id=:call AND path_key=:key";
         command.Parameters.AddWithValue("workspace", receipt.WorkspaceId);
@@ -589,7 +638,7 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
 
     private bool ReceiptMatchesFinal(WorkspaceMutationReceipt receipt, Microsoft.Data.Sqlite.SqliteTransaction tx)
     {
-        using var command = _connection.CreateCommand(); command.Transaction = tx;
+        using var command = Connection.CreateCommand(); command.Transaction = tx;
         command.CommandText = "SELECT state,run_id,turn_id,operation,expected_pre_hash,expected_post_hash,preimage_ref,postimage_ref,deleted_lines,inserted_lines "
             + "FROM workspace_mutation_receipts WHERE workspace_id=:workspace AND tool_call_id=:call AND path_key=:key";
         command.Parameters.AddWithValue("workspace", receipt.WorkspaceId);
@@ -609,7 +658,7 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
     {
         if (receipt.State is not (WorkspaceMutationReceiptState.Applied or WorkspaceMutationReceiptState.Conflict
             or WorkspaceMutationReceiptState.Unknown)) return false;
-        using var command = _connection.CreateCommand(); command.Transaction = tx;
+        using var command = Connection.CreateCommand(); command.Transaction = tx;
         command.CommandText = "SELECT state,expected_hash,image_ref,revision,last_receipt FROM workspace_file_history "
             + "WHERE workspace_id=:workspace AND path_key=:key";
         command.Parameters.AddWithValue("workspace", expected.WorkspaceId);
@@ -743,10 +792,10 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
 
     private void ValidateSchema()
     {
-        ValidateTableType(_connection, "workspace_mutation_schema");
-        ValidateTableType(_connection, "workspace_file_history");
-        ValidateTableType(_connection, "workspace_mutation_receipts");
-        using var command = _connection.CreateCommand();
+        ValidateTableType(Connection, "workspace_mutation_schema");
+        ValidateTableType(Connection, "workspace_file_history");
+        ValidateTableType(Connection, "workspace_mutation_receipts");
+        using var command = Connection.CreateCommand();
         command.CommandText = "SELECT version FROM workspace_mutation_schema";
         using var reader = command.ExecuteReader();
         if (!reader.Read() || reader.GetInt32(0) != 1 || reader.Read())
@@ -761,7 +810,7 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
 
     private void ValidateColumns(string table, string[] expected)
     {
-        using var command = _connection.CreateCommand();
+        using var command = Connection.CreateCommand();
         command.CommandText = "PRAGMA table_info(" + table + ")";
         using var reader = command.ExecuteReader();
         var actual = new HashSet<string>(StringComparer.Ordinal);
@@ -851,7 +900,25 @@ public sealed class SqliteWorkspaceMutationHistoryStore : IWorkspaceMutationHist
             throw new InvalidDataException("Workspace mutation history declaration is not a table: " + name + ".");
     }
 
-    public void Dispose() => _connection.Dispose();
+    public void Dispose()
+    {
+        lock (_sync)
+        {
+            if (_operationDepth != 0)
+                throw new InvalidOperationException("Cannot dispose workspace mutation history during an active operation.");
+            if (_disposed) return;
+            _disposed = true;
+            _connection?.Dispose();
+            _connection = null;
+        }
+        GC.SuppressFinalize(this);
+    }
+
+    private sealed class Operation(SqliteWorkspaceMutationHistoryStore owner) : IDisposable
+    {
+        private SqliteWorkspaceMutationHistoryStore? _owner = owner;
+        public void Dispose() => Interlocked.Exchange(ref _owner, null)?.EndOperation();
+    }
 
     private sealed class Fence(FileStream stream) : IDisposable { public void Dispose() => stream.Dispose(); }
 }

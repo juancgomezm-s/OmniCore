@@ -47,7 +47,9 @@ CAS puede omitirse conservando el hash del archivo presente. GC usa las referenc
 de historia como raíces aun tras purgar la Session y aborta el barrido ante raíces
 requeridas ausentes/corruptas o declaraciones de esquema inconsistentes. Deshacer
 participa del bloqueo, publicación CAS y recibos; los propietarios cierran las
-conexiones de historia al cerrar el Host.
+conexiones de historia al cerrar el Host. SQLite se abre y cierra por operación,
+también durante inicialización y ante excepciones; un objeto de historial inactivo
+no mantiene ocupado el archivo del journal.
 
 ## Evidencia y límites por recorrido
 
@@ -95,6 +97,25 @@ bloqueo indebido por mezclar Prepared con cargos antes de su recuperación.
 No se cuentan las repeticiones de pruebas como casos nuevos. La aprobación local
 no reemplaza la suite completa Windows/Linux, instalación npm y paquetes Linux
 que exige CI antes de integrar.
+
+### Corrección de ciclo de vida detectada por CI
+
+La [primera CI del corte `39c87a9`](https://github.com/juancgomezm-s/OmniCore/actions/runs/39541800966)
+aprobó la suite Linux, npm en ambos sistemas y el paquete Linux/AOT. Windows
+detectó 41 fallos, todos al liberar/eliminar `journal.db`: el nuevo almacén retenía
+una conexión que los cierres anteriores de clientes no conocían. La corrección
+abre/cierra SQLite por operación sin cambiar el bloqueo OS ni fragmentar
+transacciones; no se alteraron esas pruebas para ocultar la fuga.
+
+Un Host del usuario mantenía ocupadas dependencias en la carpeta habitual. Se
+conservó su proceso y se compiló la solución en una salida temporal aislada:
+cero advertencias/errores. El constructor comprobó los 44 casos de los grupos
+afectados y una nueva regresión de acceso exclusivo/eliminación del journal con
+el objeto de historia todavía vivo. También aprobó focos de recuperación, CAS
+corrupto y exclusión/E2E entre procesos con esa salida. Luna en bajo aprobó
+independientemente 18/18 casos seleccionados sobre la DLL aislada y revisó las
+rutas SQLite y el fence sin encontrar bloqueos pendientes. La nueva CI completa
+debe aprobar el corte corregido antes de integrar; el SHA rojo no habilita el merge.
 
 ## Límites conservados
 

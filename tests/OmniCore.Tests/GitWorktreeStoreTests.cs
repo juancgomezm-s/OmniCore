@@ -21,6 +21,34 @@ public sealed class GitWorktreeStoreTests
     private const string MutationFencePhaseVariable = "OMNICORE_M9_FENCE_PHASE";
 
     [Fact]
+    public void Closing_legacy_event_store_releases_database_while_history_object_remains_alive()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-history-lifetime-" + Guid.NewGuid().ToString("N"));
+        var data = Path.Combine(root, "data");
+        Directory.CreateDirectory(data);
+        var databasePath = Path.Combine(data, "journal.db");
+        SqliteWorkspaceMutationHistoryStore? history = null;
+        try
+        {
+            history = new SqliteWorkspaceMutationHistoryStore(data);
+            Assert.Empty(history.ReadPending(Path.Combine(root, "workspace")));
+
+            var legacyStore = SqliteEventStore.OpenUnpooled(databasePath);
+            legacyStore.Close();
+
+            using (var exclusive = new FileStream(databasePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                exclusive.Flush(flushToDisk: true);
+            File.Delete(databasePath);
+            Assert.False(File.Exists(databasePath));
+        }
+        finally
+        {
+            history?.Dispose();
+            M7FixtureCleanup.DeleteOwnedTempDirectory(root);
+        }
+    }
+
+    [Fact]
     public void Recovery_does_not_apply_a_delete_receipt_without_a_faithful_preimage()
     {
         var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-missing-preimage-" + Guid.NewGuid().ToString("N"));
