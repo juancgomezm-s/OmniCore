@@ -112,16 +112,19 @@ La autorización genérica del proceso no sustituye esa aprobación. No hay
 fallback silencioso en workspaces no Git ni cuando Strong no esté disponible.
 Esta sección fija el alcance previsto; todavía no acredita su implementación.
 
-### Vertical de extensión escritor: dos etapas explícitas
+### Vertical de extensión escritor: dos acciones con aplicación automática autorizada
 
-Diseño de construcción del 2026-10-21; todavía sin aceptación de implementación.
+Decisión del usuario del 2026-10-21; todavía sin aceptación de implementación.
 El proceso Strong se ejecuta sobre una copia privada y sólo produce una propuesta
 durable. No recibe escritura al checkout ni al common-dir originales. La respuesta
 distingue la propuesta del efecto sobre el proyecto; completar la RPC no publica
 los archivos. La copia excluye secretos e ignorados de entrada, mientras que la
 inspección de salida incluye archivos nuevos ignorados y valida topología y límites.
 
-Aplicar esa propuesta requiere una llamada nueva por el pipeline común. El Host
+Por defecto se exponen dos acciones: ejecutar para generar una propuesta y aplicar
+el lote completo. No se exige una aprobación por archivo: si el lote necesita Ask,
+la interacción presenta su alcance conjunto; si ya está permitido, no se inventa
+una nueva pregunta. Aplicar esa propuesta pasa por el pipeline común. El Host
 resuelve su procedencia, contenido y operaciones exactas antes de autorizar la
 publicación; el permiso del proceso no sustituye Ask/Deny de archivos. Se conserva
 la lectura efectiva del modelo en el scope original y se revalidan versión,
@@ -129,6 +132,28 @@ historia, techo y presupuesto bajo el fence. No se fabrica ownership de worktree
 ni se vuelve a ejecutar un proceso incierto. Este vertical no anuncia todavía
 paridad de process.exec/shell.exec, wrappers generales, procesos persistentes ni
 ConPTY.
+
+El usuario puede autorizar además la aplicación automática para un alcance
+explícito. Dentro de ese alcance, ejecutar encadena internamente la aplicación y
+presenta una sola operación visible; el modelo no necesita otra ronda de
+inferencia para coordinarla. Los recibos de proceso y publicación se conservan
+separados. Si el resultado queda fuera del alcance autorizado, permanece como
+propuesta; una ampliación válida se solicita para el lote, no archivo por archivo,
+y no vuelve a ejecutar el proceso que ya terminó.
+
+La autorización reutilizable identifica workspace físico, extensión/paquete,
+rutas o patrones normalizados, operaciones permitidas, límites y duración. La
+duración inicial propuesta es Run; Workspace requiere elección explícita y permite
+revocación. Se revalidan las políticas vigentes al consumirla; el usuario puede
+modificar sus políticas mediante sus controles, pero el permiso del proceso o un
+booleano enviado por el modelo no levanta un Deny ni eleva el techo del modelo.
+Lectura efectiva, token, presupuestos y conflictos se comprueban en cada lote.
+
+Existen grants Run/Workspace para claims exactos. No acreditan todavía esta
+autorización compuesta ni la cobertura de futuros lotes con rutas distintas: hace
+falta implementar su contrato explícito y matcher de alcance, auditado y ligado a
+identidad/revisión. Consultas y reconexiones permanecen pasivas. Este acuerdo
+sustituye la propuesta de exigir siempre dos acciones o siempre una sola.
 
 **Corrección acordada M9-L-MUT-01 (2026-10-18), implementación parcial:** la
 normalización Host de write existente a edición por diff está publicada y la

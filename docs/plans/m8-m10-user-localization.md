@@ -139,6 +139,18 @@ reabren capacidades ya integradas ni sustituyen estas aceptaciones:
 M8 permanece abierto hasta la aceptación manual pendiente del
 usuario; este avance de M9 no lo cierra.
 
+**Decisión de autorización de publicación (2026-10-21):** dos acciones por defecto,
+ejecutar para proponer y aplicar el lote completo. El usuario puede autorizar un
+alcance reutilizable de aplicación automática; dentro de él, OmniCore encadena
+ambas fases en una sola operación visible, sin otra inferencia ni pregunta por
+archivo. Fuera del alcance, conserva la propuesta y evalúa una aprobación o
+ampliación conjunta cuando proceda, sin relanzar el proceso. La autorización
+incluye identidad de workspace/extensión, rutas, operaciones, límites y duración;
+Run es el alcance inicial propuesto y Workspace exige elección explícita. Sigue
+pendiente construir el aplicador común y el contrato compuesto de autorización;
+los grants exactos existentes no demuestran ese soporte. Contrato en
+[ADR-0060](../adr/0060-native-orchestration-workflow-recovery.md#vertical-de-extensión-escritor-dos-acciones-con-aplicación-automática-autorizada).
+
 <a id="m9-l-mut-01"></a>
 
 ### M9-L-MUT-01 — normalización segura de escrituras y recreaciones

@@ -7,7 +7,11 @@ Base estable: main `b81b3c2`, con
 ## Hallazgo y alcance
 
 La ejecución de una extensión escritora necesita una copia privada Strong y una
-segunda intención explícita para publicar el lote completo. El permiso del
+intención de publicación del lote completo. Por decisión posterior del usuario,
+se ofrecen dos acciones por defecto y se permite encadenarlas en una sola
+operación visible con autorización humana reutilizable de alcance definido.
+No se pregunta por cada modificación: Ask se resuelve para el lote o su alcance.
+Este contrato compuesto aún no está implementado. El permiso del
 proceso no autoriza por sí mismo las mutaciones de archivos. Se comenzó un
 prototipo de staging y propuesta, pero todavía no tiene consumidor de aplicación
 con autorización y reconciliación conjuntas. No está construido ni validado el
@@ -31,6 +35,9 @@ rechazó y no es el diseño aceptado.
   reconciliación. Validar el conjunto antes del primer efecto sobre el checkout.
 - Conectar el aplicador explícito y probar allow/deny con proceso Strong real,
   más conflictos, límites y recuperación sin relanzar procesos inciertos.
+- Construir la autorización de aplicación automática por scope humano, con
+  revocación, caducidad y matcher para identidad/rutas/operaciones/límites;
+  probar aplicación dentro del alcance y propuesta pendiente fuera de él.
 
 La construcción se hizo con un único worker Luna alto. Se interrumpió al
 confirmar el bloqueo y la desviación del prototipo. No se declara build, prueba
