@@ -165,6 +165,16 @@ public record MutationBudgetCharged(ToolCallId ToolCallId, string TargetKeyHash,
     public int SchemaVersion() => 1;
 }
 
+/// <summary>Exact filesystem.read coverage made available to the model. The envelope scope
+/// (session/run/lane/turn) binds this proof; a restart may replay only successful calls in the
+/// same Lane and Run. The token identifies the whole file, while the range identifies visible text.</summary>
+public record WorkspaceFileReadCoverageRecorded(ToolCallId ToolCallId, string RelativePath,
+    string VersionToken, int Start, int Length, int TotalLength) : DomainEventPayload
+{
+    public EventType Type() => EventType.Of("workspace.file_read_coverage_recorded");
+    public int SchemaVersion() => 1;
+}
+
 /// <summary>ToolCallCancelled: antes de ejecutar (Requested/Prepared/AwaitingPermission/Authorized).</summary>
 public record ToolCallCancelled(ToolCallId ToolCallId, string Cause) : DomainEventPayload
 {

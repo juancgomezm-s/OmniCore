@@ -295,6 +295,13 @@ public sealed class ToolExecutionContext
 
     public IWorkspaceWriteLeaseProvider? WorkspaceWriteLeases { get; }
 
+    /// <summary>Host-owned workspace file identity/receipt store; null only in primitive test compositions.</summary>
+    public IWorkspaceMutationHistoryStore? MutationHistory { get; }
+
+    /// <summary>Durable mutation attribution. Empty only for primitive compositions without a Host run.</summary>
+    public string MutationRunId { get; }
+    public string MutationTurnId { get; }
+
     /// <summary>Model capability filter for catalog discovery; it discloses no grants.</summary>
     public Func<string, bool>? IsModelToolVisible { get; }
 
@@ -309,7 +316,12 @@ public sealed class ToolExecutionContext
     /// <summary>Identity-bound protected substitution shown in the explicit consent Ask.</summary>
     public ProtectedToolSubstitution? ProtectedSubstitution { get; }
 
-    public ToolExecutionContext(string workspaceRoot) => WorkspaceRoot = workspaceRoot;
+    public ToolExecutionContext(string workspaceRoot)
+    {
+        WorkspaceRoot = workspaceRoot;
+        MutationRunId = string.Empty;
+        MutationTurnId = string.Empty;
+    }
 
     public ToolExecutionContext(string workspaceRoot, FileReadRegistry? readRegistry,
         Action<DomainEventPayload>? emitEvent = null, Func<InteractionRequested, string?>? resolveInteraction = null,
@@ -324,7 +336,9 @@ public sealed class ToolExecutionContext
         Func<IDisposable>? acquireSessionSecurityAdmission = null,
         bool allowDeferredInteraction = false,
         bool allowDeferredWeakSandboxConsent = false,
-        bool weakSandboxConsentForThisCall = false)
+        bool weakSandboxConsentForThisCall = false,
+        IWorkspaceMutationHistoryStore? mutationHistory = null,
+        string? mutationRunId = null, string? mutationTurnId = null)
     {
         WorkspaceRoot = workspaceRoot;
         ReadRegistry = readRegistry;
@@ -337,6 +351,9 @@ public sealed class ToolExecutionContext
         Artifacts = artifacts;
         ReceiveMailbox = receiveMailbox;
         WorkspaceWriteLeases = workspaceWriteLeases;
+        MutationHistory = mutationHistory;
+        MutationRunId = mutationRunId ?? string.Empty;
+        MutationTurnId = mutationTurnId ?? string.Empty;
         IsModelToolVisible = isModelToolVisible;
         AcquireSessionSecurityAdmission = acquireSessionSecurityAdmission;
         AllowDeferredInteraction = allowDeferredInteraction;
@@ -373,9 +390,18 @@ public sealed class ToolIntent
     /// existing-file write. It is never accepted from model arguments.</summary>
     public ModelToolCapability? EffectiveMutationOperation { get; }
 
+    /// <summary>The logical target is a tombstone being recreated, so the physical create
+    /// capability is required in addition to its logical edit capability.</summary>
+    public bool RequiresPhysicalCreateCapability { get; }
+
+    /// <summary>Durable workspace-history revision bound to a mutation approval when one exists.</summary>
+    public long? EffectiveMutationHistoryRevision { get; }
+
     public ToolIntent(ToolCallId toolCallId, ToolId toolId, string normalizedArgumentsJson, EffectClass effect,
         ResourceClaims claims, ToolRisk risk, ReconciliationSpec? reconciliation,
-        ModelToolCapability? effectiveMutationOperation = null)
+        ModelToolCapability? effectiveMutationOperation = null,
+        bool requiresPhysicalCreateCapability = false,
+        long? effectiveMutationHistoryRevision = null)
     {
         ToolCallId = toolCallId;
         ToolId = toolId;
@@ -385,6 +411,8 @@ public sealed class ToolIntent
         Risk = risk;
         Reconciliation = reconciliation;
         EffectiveMutationOperation = effectiveMutationOperation;
+        RequiresPhysicalCreateCapability = requiresPhysicalCreateCapability;
+        EffectiveMutationHistoryRevision = effectiveMutationHistoryRevision;
     }
 }
 

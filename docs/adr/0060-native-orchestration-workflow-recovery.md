@@ -112,10 +112,14 @@ La autorización genérica del proceso no sustituye esa aprobación. No hay
 fallback silencioso en workspaces no Git ni cuando Strong no esté disponible.
 Esta sección fija el alcance previsto; todavía no acredita su implementación.
 
-**Corrección acordada M9-L-MUT-01 (2026-10-18), pendiente de construir:** el
-workflow incorpora la normalización Host de write existente a edición por diff
-y de borrado/movimiento seguido de recreación a reemplazo contra preimagen CAS
-durable. No hay prohibición general de write ni de borrar/recrear. Se preservan
+**Corrección acordada M9-L-MUT-01 (2026-10-18), implementación parcial:** la
+normalización Host de write existente a edición por diff está publicada y la
+[CI del checkpoint `e84949c`](https://github.com/juancgomezm-s/OmniCore/actions/runs/39517765699)
+está aprobada. La continuidad durable de borrado/movimiento seguido de recreación
+a reemplazo contra preimagen CAS está implementada y validada localmente en el
+[bloque del 2026-10-20](../validation/m9-durable-file-history-20261020.md);
+su acta distingue validación local de la CI exigida antes de integrar. No hay prohibición general
+de write ni de borrar/recrear. El contrato exige preservar
 lectura previa efectiva del modelo, identidad/historial entre Lanes y reinicios,
 permisos y presupuesto del cambio completo. La lectura del arnés no concede
 lectura al modelo ni se trocea el diff para evitar un límite. Las operaciones

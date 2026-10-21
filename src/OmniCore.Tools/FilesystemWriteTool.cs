@@ -64,23 +64,38 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
 
     /// <summary>Runtime-only metadata classification, called after pure Prepare and before any
     /// permission decision. This never reads file contents and never mutates the filesystem.</summary>
-    internal ToolIntent ClassifyTargetForAuthorization(ToolIntent intent, string workspaceRoot)
+    internal ToolIntent ClassifyTargetForAuthorization(ToolIntent intent, string workspaceRoot,
+        IWorkspaceMutationHistoryStore? historyStore = null)
     {
         var (path, _, _) = ParseArguments(intent.NormalizedArgumentsJson);
         if (string.IsNullOrWhiteSpace(path)) return intent;
         var full = JoinPath(workspaceRoot, path);
         if (!_boundary.IsWithin(full, workspaceRoot)) return intent;
-        var operation = File.Exists(full) ? ModelToolCapability.PatchExisting : ModelToolCapability.CreateFile;
+        var exists = File.Exists(full);
+        var history = historyStore?.ReadFile(workspaceRoot, path);
+        var tombstone = !exists && history?.State == WorkspaceFileHistoryState.Tombstone;
+        var operation = tombstone ? ModelToolCapability.ReplaceFile
+            : exists && history is { State: WorkspaceFileHistoryState.ExternalConflict or WorkspaceFileHistoryState.Unknown }
+                ? ModelToolCapability.ReplaceFile
+            : exists ? ModelToolCapability.PatchExisting
+            : history is { State: WorkspaceFileHistoryState.Present or WorkspaceFileHistoryState.ExternalConflict or WorkspaceFileHistoryState.Unknown }
+                ? ModelToolCapability.ReplaceFile : ModelToolCapability.CreateFile;
         return new ToolIntent(intent.ToolCallId, intent.ToolId, intent.NormalizedArgumentsJson,
-            intent.Effect, intent.Claims, intent.Risk, intent.Reconciliation, operation);
+            intent.Effect, intent.Claims, intent.Risk, intent.Reconciliation, operation,
+            requiresPhysicalCreateCapability: tombstone,
+            effectiveMutationHistoryRevision: history?.Revision);
     }
 
     /// <summary>Permission identity for the effective patch delegated by an existing-file write.</summary>
     internal static ToolIntent? EffectivePatchAuthorizationIntent(ToolIntent intent) =>
         intent.ToolId.ToString() == "filesystem.write"
-        && intent.EffectiveMutationOperation == ModelToolCapability.PatchExisting
+        && (intent.EffectiveMutationOperation == ModelToolCapability.PatchExisting
+            || intent.RequiresPhysicalCreateCapability)
             ? new ToolIntent(intent.ToolCallId, new ToolId("filesystem.patch"), intent.NormalizedArgumentsJson,
-                intent.Effect, intent.Claims, intent.Risk, null, ModelToolCapability.PatchExisting)
+                intent.Effect, intent.Claims, intent.Risk, null,
+                intent.RequiresPhysicalCreateCapability ? ModelToolCapability.ReplaceFile : ModelToolCapability.PatchExisting,
+                intent.RequiresPhysicalCreateCapability,
+                intent.EffectiveMutationHistoryRevision)
             : null;
 
     /// <summary>After the original permission has been resolved, inspect the existing file and
@@ -117,6 +132,35 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
                 return false;
             }
             return true;
+        }
+        if (!File.Exists(full) && intent.RequiresPhysicalCreateCapability)
+        {
+            if (!TryReadTombstone(path, context, out var tombstoneBytes, out var tombstoneEntry)
+                || expectedVersion is null || tombstoneEntry.ExpectedHash != expectedVersion)
+            {
+                error = ToolErrorCode.StaleWrite;
+                reason = "The deleted-file preimage is unavailable or its version changed.";
+                return false;
+            }
+            if (context.ReadRegistry is not null
+                && (context.ReadRegistry.Ledger.MutationPolicy?.RequirePriorRead ?? true)
+                && !context.ReadRegistry.HasCompleteVisibleRead(path, expectedVersion))
+            {
+                error = ToolErrorCode.PriorReadRequired;
+                reason = "PRIOR_READ_REQUIRED: read the complete protected preimage before recreating this file.";
+                return false;
+            }
+            try
+            {
+                var decodedTombstone = FileVersion.Decode(tombstoneBytes);
+                _ = FileVersion.CreateEditHunks(decodedTombstone.Text, desired);
+                operation = ModelToolCapability.ReplaceFile;
+                return true;
+            }
+            catch (UnsupportedEncodingException ex)
+            {
+                error = ToolErrorCode.ToolFailure; reason = ex.Message; return false;
+            }
         }
         if (!File.Exists(full))
         {
@@ -158,13 +202,25 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         }
 
         var hunks = FileVersion.CreateEditHunks(decoded.Text, desired);
-        operation = DetermineOperation(decoded.Text, hunks, context.ReadRegistry?.Ledger.MutationPolicy);
+        var durableState = context.MutationHistory?.ReadFile(context.WorkspaceRoot, path);
+        if (durableState is { State: WorkspaceFileHistoryState.ExternalConflict or WorkspaceFileHistoryState.Unknown })
+        {
+            if (!string.Equals(durableState.ObservedHash, expectedVersion, StringComparison.Ordinal))
+            {
+                error = ToolErrorCode.StaleWrite;
+                reason = "The externally changed target must be reread before ReplaceFile authorization.";
+                return false;
+            }
+            operation = ModelToolCapability.ReplaceFile;
+        }
+        else operation = DetermineOperation(decoded.Text, hunks, context.ReadRegistry?.Ledger.MutationPolicy);
         return true;
     }
 
     /// <summary>Recheck target identity before the durable start barrier. An appearance or
     /// disappearance since authorization must not switch create/edit capabilities.</summary>
-    internal bool TargetMatchesAuthorizedClassification(ToolIntent intent, string workspaceRoot)
+    internal bool TargetMatchesAuthorizedClassification(ToolIntent intent, string workspaceRoot,
+        IWorkspaceMutationHistoryStore? historyStore = null)
     {
         if (intent.EffectiveMutationOperation is not (ModelToolCapability.CreateFile
             or ModelToolCapability.PatchExisting or ModelToolCapability.ReplaceFile)) return false;
@@ -173,7 +229,25 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         var full = JoinPath(workspaceRoot, path);
         if (!_boundary.IsWithin(full, workspaceRoot)) return false;
         var exists = File.Exists(full);
-        return intent.EffectiveMutationOperation == ModelToolCapability.CreateFile ? !exists : exists;
+        if (intent.EffectiveMutationHistoryRevision is { } expectedRevision
+            && historyStore?.ReadFile(workspaceRoot, path)?.Revision != expectedRevision) return false;
+        if (intent.EffectiveMutationOperation == ModelToolCapability.CreateFile) return !exists;
+        if (intent.RequiresPhysicalCreateCapability)
+        {
+            var history = historyStore?.ReadFile(workspaceRoot, path);
+            var (_, expectedVersion, _) = ParseArguments(intent.NormalizedArgumentsJson);
+            return !exists && history is { State: WorkspaceFileHistoryState.Tombstone, ExpectedHash: { } hash }
+                && string.Equals(hash, expectedVersion, StringComparison.Ordinal);
+        }
+        if (intent.EffectiveMutationOperation == ModelToolCapability.ReplaceFile)
+        {
+            var history = historyStore?.ReadFile(workspaceRoot, path);
+            var (_, expectedVersion, _) = ParseArguments(intent.NormalizedArgumentsJson);
+            if (history is { State: WorkspaceFileHistoryState.ExternalConflict or WorkspaceFileHistoryState.Unknown })
+                return exists && history.ObservedHash is { } observed
+                    && string.Equals(observed, expectedVersion, StringComparison.Ordinal);
+        }
+        return exists;
     }
 
     public ToolPreparation Prepare(ValidatedToolCall call, ToolPreparationContext context)
@@ -263,9 +337,20 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
                 }
 
                 var postBytes = FileVersion.Encode(content, FileVersion.Decode(bytes).Encoding);
-                return FilesystemPreimage.Capture(new ReconciliationSpec(expectedVersion,
+                var decoded = FileVersion.Decode(bytes);
+                var hunks = FileVersion.CreateEditHunks(decoded.Text, content);
+                var reconciliation = FilesystemPreimage.Capture(new ReconciliationSpec(expectedVersion,
                     FilesystemPatchTool.VersionToken(postBytes), null),
                     FilesystemPreimage.IsLeafOnly(full, context.WorkspaceRoot) ? context.Artifacts : null, bytes);
+                var postImage = context.MutationHistory is null ? null
+                    : FilesystemPreimage.CaptureAfter(context.Artifacts, postBytes);
+                PrepareHistoryReceipt(intent, context, path, reconciliation,
+                    FileVersion.VersionToken(bytes), FilesystemPatchTool.VersionToken(postBytes),
+                    DetermineOperation(decoded.Text, hunks, context.ReadRegistry?.Ledger.MutationPolicy),
+                    hunks.Sum(hunk => hunk.DeletedLines), hunks.Sum(hunk => hunk.InsertedLines),
+                    FileVersion.CountLines(decoded.Text), priorImage: null, postImage: postImage,
+                    cancellationToken: cancellationToken);
+                return reconciliation;
             }
 
             if (Directory.Exists(full))
@@ -273,13 +358,39 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
                 return null;
             }
 
+            // A deleted path may only be recreated from its durable, explicitly read tombstone.
+            if (TryReadTombstone(path, context, out var tombstoneBytes, out var tombstone))
+            {
+                if (expectedVersion is null || expectedVersion != tombstone.ExpectedHash) return null;
+                var decoded = FileVersion.Decode(tombstoneBytes);
+                var hunks = FileVersion.CreateEditHunks(decoded.Text, content);
+                var postBytes = FileVersion.Encode(content, decoded.Encoding);
+                var rec = FilesystemPreimage.Capture(new ReconciliationSpec(
+                    FilesystemReconciliationMetadata.AbsentPreHash, FilesystemPatchTool.VersionToken(postBytes), null),
+                    FilesystemPreimage.IsLeafOnly(full, context.WorkspaceRoot) ? context.Artifacts : null, null);
+                var postImage = context.MutationHistory is null ? null
+                    : FilesystemPreimage.CaptureAfter(context.Artifacts, postBytes);
+                PrepareHistoryReceipt(intent, context, path, rec, null,
+                    FilesystemPatchTool.VersionToken(postBytes), ModelToolCapability.ReplaceFile,
+                    hunks.Sum(hunk => hunk.DeletedLines), hunks.Sum(hunk => hunk.InsertedLines),
+                    FileVersion.CountLines(decoded.Text), tombstone.ImageRef, postImage, cancellationToken);
+                return rec;
+            }
+
             // Creación: sin estado previo observable. El post-hash usa el encoding de creación
             // (UTF-8 sin BOM); el reconciliador ve el centinela y clasifica la ausencia del
             // archivo como NotApplied (reintentable sin duplicar).
             var createBytes = FileVersion.Encode(content, FileVersion.FileEncoding.Utf8NoBom);
-            return FilesystemPreimage.Capture(new ReconciliationSpec(FilesystemReconciliationMetadata.AbsentPreHash,
+            var createReconciliation = FilesystemPreimage.Capture(new ReconciliationSpec(FilesystemReconciliationMetadata.AbsentPreHash,
                 FilesystemPatchTool.VersionToken(createBytes), null),
                 FilesystemPreimage.IsLeafOnly(full, context.WorkspaceRoot) ? context.Artifacts : null, null);
+            var createPostImage = context.MutationHistory is null ? null
+                : FilesystemPreimage.CaptureAfter(context.Artifacts, createBytes);
+            PrepareHistoryReceipt(intent, context, path, createReconciliation, null,
+                FilesystemPatchTool.VersionToken(createBytes), ModelToolCapability.CreateFile,
+                0, FileVersion.CountLines(content), 0, priorImage: null, postImage: createPostImage,
+                cancellationToken: cancellationToken);
+            return createReconciliation;
         }
         catch (System.Exception ex) when (ex is not FilesystemPreimageException)
         {
@@ -335,6 +446,11 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
                 "Acceso denegado: la ruta apunta a un archivo de secretos y está protegida (ADR-0018)");
         }
 
+        if (context.MutationHistory is not null
+            && context.MutationHistory.ReadReceipt(context.WorkspaceRoot, intent.Intent.ToolCallId, path) is null)
+            return ToolResult.Error(ToolErrorCode.ToolFailure,
+                "Durable mutation preimage/receipt was not prepared; no file was changed.");
+
         // Un write opera sobre un ARCHIVO: una ruta que nombra un directorio (existente o con
         // grafía de directorio) nunca es un destino válido.
         if (Directory.Exists(full) || Path.GetFileName(full).Length == 0)
@@ -345,6 +461,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
 
         var ledger = context.ReadRegistry?.Ledger;
 
+        ToolResult result;
         if (File.Exists(full))
         {
             if (intent.Intent.EffectiveMutationOperation == ModelToolCapability.CreateFile)
@@ -354,16 +471,29 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
                 && !File.Exists(full))
                 return ToolResult.Error(ToolErrorCode.StaleWrite,
                     "El destino desapareció después de autorizar la edición; no se creó un archivo nuevo.");
-            return await ReplaceFile(path, full, expectedVersion, content!, ledger, intent, context,
+            result = await ReplaceFile(path, full, expectedVersion, content!, ledger, intent, context,
                 cancellationToken).ConfigureAwait(false);
         }
-
-        if (intent.Intent.EffectiveMutationOperation is ModelToolCapability.PatchExisting or ModelToolCapability.ReplaceFile)
+        else if (intent.Intent.RequiresPhysicalCreateCapability
+            && intent.Intent.EffectiveMutationOperation is ModelToolCapability.PatchExisting or ModelToolCapability.ReplaceFile)
+        {
+            result = await RecreateTombstone(path, full, expectedVersion, content!, ledger, intent, context,
+                cancellationToken).ConfigureAwait(false);
+        }
+        else if (intent.Intent.EffectiveMutationOperation is ModelToolCapability.PatchExisting or ModelToolCapability.ReplaceFile)
+        {
             return ToolResult.Error(ToolErrorCode.StaleWrite,
                 "El destino desapareció después de autorizar la edición; no se creó un archivo nuevo.");
+        }
+        else
+        {
+            result = await CreateFile(path, full, content!, ledger, intent, context, cancellationToken)
+                .ConfigureAwait(false);
+        }
 
-        return await CreateFile(path, full, content!, ledger, intent, context, cancellationToken)
-            .ConfigureAwait(false);
+        if (!result.IsError && context.MutationHistory is not null)
+            CompleteHistoryReceipt(intent, context, path, result.AfterStateBytes, cancellationToken);
+        return result;
     }
 
     /// <summary>REEMPLAZO de un archivo existente: token obligatorio + STALE_WRITE + política de mutación.</summary>
@@ -443,6 +573,38 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         { AfterStateBytes = afterState };
     }
 
+    private async Task<ToolResult> RecreateTombstone(string path, string full, string? expectedVersion, string content,
+        MutationLedger? ledger, AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken)
+    {
+        if (expectedVersion is null || !TryReadTombstone(path, context, out var bytes, out var tombstone)
+            || tombstone.ExpectedHash != expectedVersion)
+            return ToolResult.Error(ToolErrorCode.StaleWrite,
+                "The protected deleted-file preimage changed; no file was recreated.");
+        if (context.ReadRegistry is not null && (ledger?.MutationPolicy?.RequirePriorRead ?? true)
+            && !context.ReadRegistry.HasCompleteVisibleRead(path, expectedVersion))
+            return ToolResult.Error(ToolErrorCode.PriorReadRequired,
+                "PRIOR_READ_REQUIRED: read the complete protected preimage in this Run before recreating it.");
+        FileVersion.DecodedFile decoded;
+        try { decoded = FileVersion.Decode(bytes); }
+        catch (UnsupportedEncodingException ex) { return ToolResult.Error(ToolErrorCode.ToolFailure, ex.Message); }
+        if (content.Length == 0)
+            return ToolResult.Error(ToolErrorCode.InvalidArguments,
+                "No se permite vaciar un archivo existente con filesystem.write: conserva contenido o usa filesystem.patch");
+        var hunks = FileVersion.CreateEditHunks(decoded.Text, content);
+        var deleted = hunks.Sum(hunk => hunk.DeletedLines);
+        var inserted = hunks.Sum(hunk => hunk.InsertedLines);
+        var originalLines = FileVersion.CountLines(decoded.Text);
+        var operation = ModelToolCapability.ReplaceFile;
+        var refusal = ledger?.RefuseMutation(operation, path, targetExists: true, deleted, inserted, originalLines);
+        if (refusal is not null) return ToolResult.Error(refusal.Code, refusal.Message);
+        var newBytes = FileVersion.Encode(content, decoded.Encoding);
+        return await Publish(path, full, newBytes, ledger, intent, context, created: true,
+            expectedVersion: null, deletedLines: deleted, insertedLines: inserted,
+            summaryPrefix: "Archivo recreado desde su preimage: " + path, cancellationToken,
+            originalLines: originalLines, logicalExisting: true).ConfigureAwait(false);
+    }
+
     private static ModelToolCapability DetermineOperation(string original,
         IReadOnlyList<TextEditHunk> hunks, FileMutationPolicy? policy)
     {
@@ -459,6 +621,60 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         var fullReplacementAuthorized = fullSpan && (policy is null || policy.Mode == FileMutationMode.Full);
         return fullReplacementAuthorized || ratioRequiresReplace
             ? ModelToolCapability.ReplaceFile : ModelToolCapability.PatchExisting;
+    }
+
+    private static bool TryReadTombstone(string path, ToolExecutionContext context, out byte[] bytes,
+        out WorkspaceFileHistoryEntry entry)
+    {
+        bytes = [];
+        entry = null!;
+        var history = context.MutationHistory?.ReadFile(context.WorkspaceRoot, path);
+        if (history is not { State: WorkspaceFileHistoryState.Tombstone, ImageRef: { } image,
+                ExpectedHash: { } expected } || context.Artifacts is null) return false;
+        try
+        {
+            var restored = FilesystemPreimage.Read(context.Artifacts, image);
+            if (restored is null || FileVersion.VersionToken(restored) != expected) return false;
+            bytes = restored; entry = history; return true;
+        }
+        catch (FilesystemPreimageException) { return false; }
+    }
+
+    private static void PrepareHistoryReceipt(AuthorizedToolIntent intent, ToolExecutionContext context,
+        string path, ReconciliationSpec reconciliation, string? expectedPreHash, string expectedPostHash,
+        ModelToolCapability operation, int deletedLines, int insertedLines, int originalLines,
+        ArtifactRef? priorImage, ArtifactRef? postImage, CancellationToken cancellationToken)
+    {
+        if (context.MutationHistory is null) return;
+        if (string.IsNullOrWhiteSpace(context.MutationRunId) || string.IsNullOrWhiteSpace(context.MutationTurnId)
+            || operation != ModelToolCapability.CreateFile && priorImage is null && reconciliation.BeforeStateRef is null)
+            throw new ToolPreflightException(ToolErrorCode.ToolFailure,
+                "Durable mutation history could not be prepared for this execution scope.");
+        var image = priorImage ?? (operation == ModelToolCapability.CreateFile ? null : reconciliation.BeforeStateRef);
+        var receipt = new WorkspaceMutationReceipt(context.MutationHistory.GetWorkspaceId(context.WorkspaceRoot),
+            context.MutationHistory.NormalizeRelativePath(context.WorkspaceRoot, path), intent.Intent.ToolCallId,
+            context.MutationRunId, context.MutationTurnId,
+            operation.ToString(), expectedPreHash, expectedPostHash, image, postImage, deletedLines, insertedLines,
+            WorkspaceMutationReceiptState.Prepared);
+        context.MutationHistory.Prepare([receipt], cancellationToken);
+    }
+
+    private static void CompleteHistoryReceipt(AuthorizedToolIntent intent, ToolExecutionContext context,
+        string path, byte[]? afterBytes, CancellationToken cancellationToken)
+    {
+        var store = context.MutationHistory!;
+        if (afterBytes is null) throw new InvalidOperationException("A successful file mutation has no verified postimage bytes.");
+        var prepared = store.ReadReceipt(context.WorkspaceRoot, intent.Intent.ToolCallId, path)
+            ?? throw new InvalidDataException("Durable mutation receipt is missing after a successful filesystem effect.");
+        // Postimages are optional when the safe artifact store rejects/redacts their content;
+        // the committed hash and receipt remain sufficient for a present-file baseline.
+        // Deletion/recreation preimages, by contrast, must always have a faithful CAS image.
+        var postImage = prepared.PostimageRef;
+        var previous = store.ReadFile(context.WorkspaceRoot, path);
+        var state = new WorkspaceFileHistoryEntry(prepared.WorkspaceId, path.Replace('\\', '/'),
+            WorkspaceFileHistoryState.Present, FileVersion.VersionToken(afterBytes), postImage,
+            checked((previous?.Revision ?? 0) + 1), intent.Intent.ToolCallId);
+        store.Complete([prepared with { State = WorkspaceMutationReceiptState.Applied }], [state], cancellationToken);
     }
 
     /// <summary>CREACIÓN de un archivo nuevo (directorios padre incluidos), UTF-8 sin BOM.</summary>
@@ -494,7 +710,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
     private async Task<ToolResult> Publish(string path, string full, byte[] newBytes, MutationLedger? ledger,
         AuthorizedToolIntent intent, ToolExecutionContext context, bool created, string? expectedVersion,
         int deletedLines, int insertedLines, string summaryPrefix, CancellationToken cancellationToken,
-        int originalLines = 0)
+        int originalLines = 0, bool logicalExisting = false)
     {
         var tempPath = Path.Combine(
             Path.GetDirectoryName(full)!,
@@ -643,7 +859,7 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
         // Contabiliza SOLO tras el efecto durable (y registra la validación post-edición si la
         // política la exige, ADR-0044 §5).
         ledger?.RecordMutation(path, deletedLines, insertedLines, intent.Intent.ToolCallId,
-            created ? ModelToolCapability.CreateFile : ModelToolCapability.ReplaceFile, originalLines,
+            created && !logicalExisting ? ModelToolCapability.CreateFile : ModelToolCapability.ReplaceFile, originalLines,
             context.EmitEvent);
 
         var newVersion = FileVersion.VersionToken(newBytes);

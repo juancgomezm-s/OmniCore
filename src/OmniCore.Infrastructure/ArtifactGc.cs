@@ -135,6 +135,14 @@ public sealed class ArtifactGc
             }
         }
 
+        // Mutation receipts and tombstones outlive Session retention; their CAS references are
+        // rooted directly from the workspace tables, never from purgeable event rows.
+        foreach (var reference in SqliteWorkspaceMutationHistoryStore.ReadGarbageCollectionReferences(_dataDirectory))
+        {
+            live.Add(reference.Hash.Value);
+            referencedBlobs.Enqueue(reference.Hash.Value);
+        }
+
         // Some canonical references are nested inside referenced artifacts (notably an
         // externalized output hash inside TurnStarted.ContextSnapshotRef). Follow the CAS
         // reference graph recursively, starting only from typed journal references.

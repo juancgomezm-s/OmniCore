@@ -29,6 +29,65 @@ public interface IWorkspaceJournalReader
     IReadOnlyList<DomainEvent> ReadEvents(EventType type);
 }
 
+/// <summary>Workspace-scoped durable CAS history for model-visible file mutations. Implementations
+/// are stored independently of session event retention and provide an OS-backed writer fence.</summary>
+public interface IWorkspaceMutationHistoryStore
+{
+    string GetWorkspaceId(string workspaceRoot);
+    string NormalizeRelativePath(string workspaceRoot, string path);
+
+    IDisposable AcquireFence(string workspaceRoot, CancellationToken cancellationToken);
+
+    WorkspaceFileHistoryEntry? ReadFile(string workspaceRoot, string relativePath);
+
+    WorkspaceMutationReceipt? ReadReceipt(string workspaceRoot, ToolCallId toolCallId, string relativePath);
+
+    void RecordObservation(string workspaceRoot, string relativePath, string observedHash,
+        CancellationToken cancellationToken);
+
+    void Prepare(IReadOnlyList<WorkspaceMutationReceipt> receipts, CancellationToken cancellationToken);
+
+    void Complete(IReadOnlyList<WorkspaceMutationReceipt> receipts,
+        IReadOnlyList<WorkspaceFileHistoryEntry> resultingStates, CancellationToken cancellationToken);
+
+    void MarkConflict(string workspaceRoot, string relativePath, string? observedHash,
+        CancellationToken cancellationToken);
+
+    IReadOnlyList<WorkspaceMutationReceipt> ReadPending(string workspaceRoot);
+
+    void RecoverPending(string workspaceRoot, CancellationToken cancellationToken);
+
+    IReadOnlyList<WorkspaceMutationReceipt> ReadBudgetCharges(string workspaceRoot, string runId, string turnId);
+
+    IReadOnlyList<WorkspaceMutationReceipt> ReadBudgetChargesForRun(string workspaceRoot, string runId);
+}
+
+public enum WorkspaceFileHistoryState
+{
+    Present = 1,
+    Tombstone = 2,
+    ExternalConflict = 3,
+    Unknown = 4,
+}
+
+/// <summary>Workspace/path identity and protected image reference. The relative path is always
+/// canonicalized by the Host; the digest is not a filesystem authority.</summary>
+public sealed record WorkspaceFileHistoryEntry(string WorkspaceId, string RelativePath,
+    WorkspaceFileHistoryState State, string? ExpectedHash, ArtifactRef? ImageRef, long Revision,
+    ToolCallId? LastReceipt)
+{
+    public string? ObservedHash { get; init; }
+}
+
+/// <summary>Durable idempotency and recovery state for one receipt/path pair. Pre/post hashes are
+/// CAS evidence; image refs preserve safe text bytes across sessions and artifact collection.</summary>
+public enum WorkspaceMutationReceiptState { Prepared = 1, Applied = 2, NotApplied = 3, Conflict = 4, Unknown = 5 }
+
+public sealed record WorkspaceMutationReceipt(string WorkspaceId, string RelativePath, ToolCallId ToolCallId,
+    string RunId, string TurnId, string Operation, string? ExpectedPreHash, string? ExpectedPostHash,
+    ArtifactRef? PreimageRef, ArtifactRef? PostimageRef, int DeletedLines, int InsertedLines,
+    WorkspaceMutationReceiptState State);
+
 /// <summary>
 /// Artifact Store inmutable y content-addressed (ADR-0001 §4–§6). Blobs en disco; la metadata
 /// en el mismo SQLite. Orden obligatorio: primero el blob, después el evento que lo referencia.

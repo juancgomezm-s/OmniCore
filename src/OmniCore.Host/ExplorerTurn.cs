@@ -3334,7 +3334,8 @@ public sealed class ExplorerTurn
     /// is fail-closed; no journal path or version token is restored as filesystem authority.</summary>
     private void RestoreTurnMutationBudget(EventStream stream, RunId runId, TurnId turnId)
     {
-        var ledger = _boundary?.ReadRegistry().Ledger;
+        var registry = _boundary?.ReadRegistry();
+        var ledger = registry?.Ledger;
         if (ledger is null) return;
 
         ledger.ResetTurnBudgetForReplay();
@@ -3345,6 +3346,19 @@ public sealed class ExplorerTurn
         var charges = new Dictionary<ToolCallId, List<(DomainEvent Envelope, MutationBudgetCharged Charge)>>();
         var integrationCalls = new HashSet<ToolCallId>();
         var integrationStates = new Dictionary<ToolCallId, WorktreeIntegrationStateRecorded>();
+        var consumedValidationCalls = new HashSet<ToolCallId>();
+        IReadOnlyList<WorkspaceMutationReceipt> durableCharges = [];
+        try
+        {
+            if (_tools is ScriptedToolExecutor { MutationHistoryStore: { } history } executor)
+                durableCharges = history.ReadBudgetChargesForRun(executor.WorkspaceRoot, runId.ToString());
+        }
+        catch (Exception)
+        {
+            ledger.MarkRunBudgetUnknown();
+            ledger.MarkTurnBudgetUnknown();
+        }
+        var durableCalls = durableCharges.Select(charge => charge.ToolCallId).ToHashSet();
 
         foreach (var envelope in stream.EventsSince(1).Where(item => item.RunId == runId))
         {
@@ -3394,6 +3408,9 @@ public sealed class ExplorerTurn
                     integrationCalls.Add(integration.ToolCallId);
                     integrationStates[integration.ToolCallId] = integration;
                     break;
+                case PostEditValidationConsumed consumed when consumed.RunId == runId:
+                    foreach (var editId in consumed.EditIds) consumedValidationCalls.Add(editId);
+                    break;
             }
         }
 
@@ -3440,9 +3457,9 @@ public sealed class ExplorerTurn
                         if (isCurrentTurn) ledger.MarkTurnBudgetUnknown();
                         continue;
                     }
-                    ledger.RestoreRunBudgetCharge(charge.TargetKeyHash, charge.ChangedLines);
+                    ledger.RestoreRunBudgetCharge(charge.TargetKeyHash, charge.ChangedLines, charge.ToolCallId);
                     if (isCurrentTurn)
-                        ledger.RestoreTurnBudgetCharge(charge.TargetKeyHash, charge.ChangedLines);
+                        ledger.RestoreTurnBudgetCharge(charge.TargetKeyHash, charge.ChangedLines, charge.ToolCallId);
                 }
                 continue;
             }
@@ -3454,6 +3471,11 @@ public sealed class ExplorerTurn
                 || terminal is { Payload: ToolCallReconciled { Outcome: ReconciliationOutcome.NotApplied } } && !hasCharges)
                 continue;
 
+            // The workspace receipt is committed before the buffered terminal event. It is the
+            // recovery evidence for an effect whose Run crashed after publication but before the
+            // journal batch drained; it consumes budget once and avoids replaying the write.
+            if (durableCalls.Contains(toolCallId)) continue;
+
             ledger.MarkRunBudgetUnknown();
             if (isCurrentTurn) ledger.MarkTurnBudgetUnknown();
         }
@@ -3464,6 +3486,48 @@ public sealed class ExplorerTurn
         {
             ledger.MarkRunBudgetUnknown();
             if (callCharges.Any(item => item.Envelope.TurnId == turnId)) ledger.MarkTurnBudgetUnknown();
+        }
+
+        foreach (var receipt in durableCharges)
+        {
+            if (receipt.State != WorkspaceMutationReceiptState.Applied || receipt.DeletedLines < 0
+                || receipt.InsertedLines < 0 || !Enum.TryParse<ModelToolCapability>(receipt.Operation, out var operation))
+            {
+                ledger.MarkRunBudgetUnknown();
+                if (receipt.TurnId == turnId.ToString()) ledger.MarkTurnBudgetUnknown();
+                continue;
+            }
+            var expectedKey = registry!.MutationBudgetKey(receipt.RelativePath);
+            var eventCharges = charges.TryGetValue(receipt.ToolCallId, out var items)
+                ? items.Select(item => item.Charge).ToArray() : [];
+            var matching = eventCharges.Where(charge => charge.TargetKeyHash == expectedKey
+                && (long)charge.ChangedLines == (long)receipt.DeletedLines + receipt.InsertedLines).ToArray();
+            if (matching.Length == 1)
+            {
+                if (ledger.MutationPolicy?.RequirePostEditValidation == true
+                    && !consumedValidationCalls.Contains(receipt.ToolCallId))
+                    ledger.RestorePendingValidation(receipt.RelativePath, receipt.ToolCallId);
+                continue; // budget charge already restored from the event journal
+            }
+            if (eventCharges.Length != 0)
+            {
+                ledger.MarkRunBudgetUnknown();
+                if (receipt.TurnId == turnId.ToString()) ledger.MarkTurnBudgetUnknown();
+                continue;
+            }
+            var changedTotal = (long)receipt.DeletedLines + receipt.InsertedLines;
+            if (changedTotal > int.MaxValue)
+            {
+                ledger.MarkRunBudgetUnknown();
+                if (receipt.TurnId == turnId.ToString()) ledger.MarkTurnBudgetUnknown();
+                continue;
+            }
+            var changedLines = (int)changedTotal;
+            ledger.RestoreDurableBudgetCharge(receipt.ToolCallId, expectedKey, changedLines,
+                receipt.TurnId == turnId.ToString());
+            if (ledger.MutationPolicy?.RequirePostEditValidation == true
+                && !consumedValidationCalls.Contains(receipt.ToolCallId))
+                ledger.RestorePendingValidation(receipt.RelativePath, receipt.ToolCallId);
         }
     }
 

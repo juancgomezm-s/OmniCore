@@ -93,7 +93,9 @@ public static class WorktreeUndoHost
                     trusted ? project.Settings?.PermissionRestrictions : null, UserPermissionsLoader.Load(paths));
                 policy.WithGrantStore(OmniHost.CreatePermissionGrantStore(root), workspaceId, null);
                 var artifacts = OmniHost.CreateArtifactStore(workspaceData);
-                var service = new UndoService(root, established.DurableIdentity, store, codecs, artifacts, policy);
+                var history = new SqliteWorkspaceMutationHistoryStore(workspaceData);
+                var service = new UndoService(root, established.DurableIdentity, store, codecs, artifacts, policy,
+                    mutationHistory: history);
                 return new Composition(store, session, service);
             }
             store.Close();
@@ -109,11 +111,24 @@ public static class WorktreeUndoHost
     private static bool PathEquals(string left, string right) => string.Equals(Path.GetFullPath(left), Path.GetFullPath(right),
         OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
-    private sealed class Composition(SqliteEventStore store, SessionId session, UndoService service) : IDisposable
+    private sealed class Composition : IDisposable
     {
-        public SessionId Session { get; } = session;
-        public UndoService Service { get; } = service;
-        public void Dispose() => store.Close();
+        private readonly SqliteEventStore _store;
+        public SessionId Session { get; }
+        public UndoService Service { get; }
+
+        public Composition(SqliteEventStore store, SessionId session, UndoService service)
+        {
+            _store = store;
+            Session = session;
+            Service = service;
+        }
+
+        public void Dispose()
+        {
+            Service.Dispose();
+            _store.Close();
+        }
     }
 }
 

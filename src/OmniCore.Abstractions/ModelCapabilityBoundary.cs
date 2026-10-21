@@ -233,6 +233,11 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
                     + (intent.ToolId.ToString() == "filesystem.write" ? "; usa filesystem.patch para editar archivos existentes" : ""),
                 capability);
         }
+        if (intent.RequiresPhysicalCreateCapability
+            && (!_policy.ToolPolicy.Allows(ModelToolCapability.CreateFile)
+                || !MutationAllowed(ModelToolCapability.CreateFile)))
+            return ModelCapabilityDecision.Reject("recreating a tombstoned path also requires CreateFile capability",
+                ModelToolCapability.CreateFile);
 
         // 4. Secretos: los secretos van por ISecretProvider (ADR-0018), nunca por tools del modelo.
         if (intent.Claims.Secrets.Count > 0)
@@ -325,6 +330,11 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         if (!ceiling.CapabilityCeiling.Contains(capability))
             return ModelCapabilityDecision.Reject("capability is outside the current Session security ceiling: " + capability,
                 capability);
+        if (intent.RequiresPhysicalCreateCapability
+            && (!ceiling.CapabilityCeiling.Contains(ModelToolCapability.CreateFile)
+                || !MutationAllowed(ceiling.FileMutationMode, ModelToolCapability.CreateFile)))
+            return ModelCapabilityDecision.Reject("recreating a tombstoned path also requires CreateFile in the Session ceiling",
+                ModelToolCapability.CreateFile);
         if (intent.Claims.Network.Count > 0
             && !ceiling.CapabilityCeiling.Contains(ModelToolCapability.Network))
             return ModelCapabilityDecision.Reject("network claims are outside the current Session security ceiling",
