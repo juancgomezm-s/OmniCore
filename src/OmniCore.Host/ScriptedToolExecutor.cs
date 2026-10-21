@@ -45,6 +45,9 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     private readonly IArtifactStore? _artifacts;
     private readonly Func<ToolCallId, CancellationToken, Task<string?>>? _receiveMailbox;
     private readonly IWorkspaceWriteLeaseProvider? _workspaceWriteLeases;
+    private readonly IWorkspaceMutationHistoryStore? _mutationHistory;
+    internal IWorkspaceMutationHistoryStore? MutationHistoryStore => _mutationHistory;
+    internal string WorkspaceRoot => _workspaceRoot;
     private readonly Func<IDisposable>? _acquireSessionSecurityAdmission;
     private readonly bool _allowDeferredInteraction;
     private readonly bool _allowDeferredWeakSandboxConsent;
@@ -91,7 +94,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         IReadOnlyList<IToolIntentBoundary>? additionalBoundaries = null,
         Func<IDisposable>? acquireSessionSecurityAdmission = null,
         bool allowDeferredInteraction = false,
-        bool allowDeferredWeakSandboxConsent = false)
+        bool allowDeferredWeakSandboxConsent = false,
+        IWorkspaceMutationHistoryStore? mutationHistory = null)
     {
         _catalog = catalog;
         _policy = policy;
@@ -106,6 +110,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         _artifacts = artifacts;
         _receiveMailbox = receiveMailbox;
         _workspaceWriteLeases = workspaceWriteLeases;
+        _mutationHistory = mutationHistory;
         _acquireSessionSecurityAdmission = acquireSessionSecurityAdmission;
         _allowDeferredInteraction = allowDeferredInteraction;
         _allowDeferredWeakSandboxConsent = allowDeferredWeakSandboxConsent;
@@ -411,6 +416,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         // Buffer local a la llamada (evita estado compartido entre Runs). Sin flush, contiene
         // todos los eventos emitidos; tras un flush contiene solo los outcomes.
         var buffered = new List<DomainEventPayload>();
+        RestoreVisibleReadCoverage(stream, recordReadRegistry);
 
         Func<DomainEventPayload, VoidBox> emit = payload =>
         {
@@ -439,6 +445,23 @@ public sealed class ScriptedToolExecutor : IToolExecutor
                 var integrationState = buffered.OfType<WorktreeIntegrationStateRecorded>()
                     .LastOrDefault(value => value.ToolCallId == callId
                         && value.State != WorktreeIntegrationState.Started);
+                if (payload is ToolCallSucceeded succeeded)
+                {
+                    foreach (var read in _boundary?.ReadRegistry().TakeVisibleReads() ?? [])
+                    {
+                        try
+                        {
+                            var root = Path.GetFullPath(_workspaceRoot);
+                            var full = Path.GetFullPath(read.Path, root);
+                            var relative = Path.GetRelativePath(root, full).Replace(Path.DirectorySeparatorChar, '/');
+                            if (Path.IsPathRooted(relative) || relative == ".."
+                                || relative.StartsWith("../", StringComparison.Ordinal)) continue;
+                            buffered.Add(new WorkspaceFileReadCoverageRecorded(succeeded.ToolCallId, relative,
+                                read.VersionToken, read.Start, read.Length, read.TotalLength));
+                        }
+                        catch (Exception failure) when (failure is ArgumentException or IOException or NotSupportedException) { }
+                    }
+                }
                 if (integrationState is not null)
                 {
                     foreach (var evt in buffered.Where(evt => !ReferenceEquals(evt, integrationState)))
@@ -514,7 +537,10 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             allowDeferredInteraction: _allowDeferredInteraction,
             allowDeferredWeakSandboxConsent: _allowDeferredWeakSandboxConsent,
             weakSandboxConsentForThisCall: approvedWeakSandboxInteraction is not null
-                && approvedWeakSandboxOption == "consent_once");
+                && approvedWeakSandboxOption == "consent_once",
+            mutationHistory: _mutationHistory,
+            mutationRunId: ExecutionScope.Current?.RunId?.ToString(),
+            mutationTurnId: ExecutionScope.Current?.TurnId?.ToString());
         var outcome = approvedWeakSandboxInteraction is { } weakInteraction
             ? runtime.ResumeWeakSandboxConsent(validated, prepContext, execContext, cancellationToken,
                 weakInteraction, approvedWeakSandboxOption!, expectedPreparedArguments!, expectedIntentFingerprint!)
@@ -532,5 +558,47 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             : new ToolOutcome(false, outcome.Summary ?? "fallo", outcome.Preview,
                 outcome.Effect == EffectOutcome.None ? null : outcome.Effect, outcome.FinalState,
                 events, outcome.PendingInteractionId);
+    }
+
+    private void RestoreVisibleReadCoverage(EventStream? stream, bool enabled)
+    {
+        if (!enabled || stream is null || _boundary?.ReadRegistry() is not { } registry
+            || ExecutionScope.Current is not { RunId: { } runId, LaneId: { } laneId }) return;
+        var events = stream.EventsSince(1).Where(item => item.RunId == runId && item.LaneId == laneId).ToArray();
+        var requestedReads = new HashSet<ToolCallId>();
+        var succeeded = new HashSet<ToolCallId>();
+        foreach (var envelope in events)
+        {
+            if (envelope.ToolCallId is not { } callId) continue;
+            if (envelope.Type == EventType.Of("toolcall.succeeded")) succeeded.Add(callId);
+            else if (envelope.Type == EventType.Of("toolcall.requested"))
+            {
+                try
+                {
+                    using var payload = System.Text.Json.JsonDocument.Parse(envelope.PayloadJson);
+                    if (payload.RootElement.TryGetProperty("toolName", out var name)
+                        && name.ValueKind == System.Text.Json.JsonValueKind.String
+                        && name.GetString() == "filesystem.read") requestedReads.Add(callId);
+                }
+                catch (System.Text.Json.JsonException) { }
+            }
+        }
+
+        foreach (var envelope in events.Where(item => item.Type == EventType.Of("workspace.file_read_coverage_recorded")
+            && item.ToolCallId is { } id && requestedReads.Contains(id) && succeeded.Contains(id)))
+        {
+            try
+            {
+                using var payload = System.Text.Json.JsonDocument.Parse(envelope.PayloadJson);
+                var root = payload.RootElement;
+                if (!root.TryGetProperty("relativePath", out var path) || path.ValueKind != System.Text.Json.JsonValueKind.String
+                    || !root.TryGetProperty("versionToken", out var version) || version.ValueKind != System.Text.Json.JsonValueKind.String
+                    || !root.TryGetProperty("start", out var start) || !start.TryGetInt32(out var startValue)
+                    || !root.TryGetProperty("length", out var length) || !length.TryGetInt32(out var lengthValue)
+                    || !root.TryGetProperty("totalLength", out var total) || !total.TryGetInt32(out var totalValue)) continue;
+                registry.RestoreVisibleRead(path.GetString()!, version.GetString()!, startValue, lengthValue, totalValue);
+            }
+            catch (Exception failure) when (failure is System.Text.Json.JsonException or ArgumentException or ArgumentOutOfRangeException) { }
+        }
     }
 }

@@ -241,7 +241,8 @@ public sealed class ToolRuntime
         ToolIntent? effectiveIntent = null;
         if (tool is FilesystemWriteTool writeTool)
         {
-            intent = writeTool.ClassifyTargetForAuthorization(intent, prepContext.WorkspaceRoot);
+            intent = writeTool.ClassifyTargetForAuthorization(intent, prepContext.WorkspaceRoot,
+                execContext.MutationHistory);
             effectiveIntent = FilesystemWriteTool.EffectivePatchAuthorizationIntent(intent);
         }
 
@@ -277,7 +278,9 @@ public sealed class ToolRuntime
                     new ProcessClaim(resolved.ResolvedPath, processClaim.Args, processClaim.EffectClass,
                         processClaim.NetworkRequired, processClaim.WorkingDirectory), intent.Claims.Secrets);
                 intent = new ToolIntent(intent.ToolCallId, intent.ToolId, intent.NormalizedArgumentsJson,
-                    intent.Effect, claims, intent.Risk, intent.Reconciliation);
+                    intent.Effect, claims, intent.Risk, intent.Reconciliation,
+                    intent.EffectiveMutationOperation, intent.RequiresPhysicalCreateCapability,
+                    intent.EffectiveMutationHistoryRevision);
             }
             catch (ExecutableNotFoundException ex)
             {
@@ -560,7 +563,8 @@ public sealed class ToolRuntime
     {
         if (tool is FilesystemWriteTool writeTool)
         {
-            if (!writeTool.TargetMatchesAuthorizedClassification(intent, execContext.WorkspaceRoot))
+            if (!writeTool.TargetMatchesAuthorizedClassification(intent, execContext.WorkspaceRoot,
+                    execContext.MutationHistory))
             {
                 const string cause = "filesystem.write target changed after its effective operation was authorized.";
                 _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.StaleWrite));
@@ -575,7 +579,8 @@ public sealed class ToolRuntime
                 return new Outcome(false, cause, null, ToolCallState.Failed, EffectOutcome.None);
             }
             intent = new ToolIntent(intent.ToolCallId, intent.ToolId, intent.NormalizedArgumentsJson,
-                intent.Effect, intent.Claims, intent.Risk, intent.Reconciliation, actualOperation);
+                intent.Effect, intent.Claims, intent.Risk, intent.Reconciliation, actualOperation,
+                intent.RequiresPhysicalCreateCapability, intent.EffectiveMutationHistoryRevision);
         }
 
         IReadOnlyList<ToolIntent> effectiveIntents = effectiveIntent is null
@@ -683,6 +688,46 @@ public sealed class ToolRuntime
             return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
         }
         using var heldWorkspaceWrite = workspaceWriteLease;
+
+        IDisposable? durableWorkspaceFence = null;
+        try
+        {
+            var toolName = tool.Descriptor.Id.ToString();
+            if (execContext.MutationHistory is not null && intent.Effect != EffectClass.None
+                && intent.Claims.Writes.Count > 0
+                && toolName is ("filesystem.write" or "filesystem.patch" or "worktree.integrate"))
+            {
+                durableWorkspaceFence = execContext.MutationHistory.AcquireFence(execContext.WorkspaceRoot,
+                    cancellationToken);
+                execContext.MutationHistory.RecoverPending(execContext.WorkspaceRoot, cancellationToken);
+                RefreshMutationBudgetUnderFence(execContext);
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception)
+        {
+            const string cause = "Durable workspace mutation exclusion could not be acquired.";
+            _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.ToolFailure));
+            return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
+        }
+        using var heldDurableWorkspaceFence = durableWorkspaceFence;
+
+        // Authorization may have paused for a human Ask before this OS fence was acquired.
+        // Rebind the write's physical/logical target and diff-derived operation under the fence
+        // so a tombstone cannot become a free create (or vice versa) while consent is pending.
+        if (tool is FilesystemWriteTool fencedWrite)
+        {
+            if (!fencedWrite.TargetMatchesAuthorizedClassification(intent, execContext.WorkspaceRoot,
+                    execContext.MutationHistory)
+                || !fencedWrite.TryDetermineAuthorizedOperation(intent, execContext, cancellationToken,
+                    out var fencedOperation, out _, out _)
+                || fencedOperation != intent.EffectiveMutationOperation)
+            {
+                const string cause = "filesystem.write target changed while waiting for its durable mutation fence.";
+                _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.StaleWrite));
+                return new Outcome(false, cause, null, ToolCallState.Failed, EffectOutcome.None);
+            }
+        }
 
         IDisposable? publication;
         try
@@ -864,6 +909,44 @@ public sealed class ToolRuntime
         // Preview: contenido real de la herramienta (p. ej. el archivo leído) → vuelve al modelo.
         return new Outcome(true, result.Summary, result.Preview, ToolCallState.Succeeded, effect,
             artifact: result.Artifact);
+    }
+
+    /// <summary>Rebuilds the model's Run/Turn mutation counters from durable receipts while
+    /// holding the cross-process workspace fence. A second Host/Lane can therefore not spend a
+    /// stale in-memory budget snapshot after waiting for this same fence.</summary>
+    private static void RefreshMutationBudgetUnderFence(ToolExecutionContext context)
+    {
+        var ledger = context.ReadRegistry?.Ledger;
+        var history = context.MutationHistory;
+        if (ledger is null || history is null || string.IsNullOrWhiteSpace(context.MutationRunId)
+            || string.IsNullOrWhiteSpace(context.MutationTurnId)) return;
+
+        var receipts = history.ReadBudgetChargesForRun(context.WorkspaceRoot, context.MutationRunId);
+        foreach (var receipt in receipts)
+        {
+            if (receipt.State != WorkspaceMutationReceiptState.Applied || receipt.DeletedLines < 0
+                || receipt.InsertedLines < 0 || string.IsNullOrWhiteSpace(receipt.RelativePath))
+            {
+                ledger.MarkRunBudgetUnknown();
+                if (string.Equals(receipt.TurnId, context.MutationTurnId, StringComparison.Ordinal))
+                    ledger.MarkTurnBudgetUnknown();
+                continue;
+            }
+
+            int changedLines;
+            try { changedLines = checked(receipt.DeletedLines + receipt.InsertedLines); }
+            catch (OverflowException)
+            {
+                ledger.MarkRunBudgetUnknown();
+                if (string.Equals(receipt.TurnId, context.MutationTurnId, StringComparison.Ordinal))
+                    ledger.MarkTurnBudgetUnknown();
+                continue;
+            }
+
+            var targetKey = context.ReadRegistry!.MutationBudgetKey(receipt.RelativePath);
+            ledger.RestoreDurableBudgetCharge(receipt.ToolCallId, targetKey, changedLines,
+                string.Equals(receipt.TurnId, context.MutationTurnId, StringComparison.Ordinal));
+        }
     }
 
     private IEnumerable<IToolIntentBoundary> ActiveBoundaries()
@@ -1078,6 +1161,10 @@ public sealed class ToolRuntime
             writer.WriteString("risk", intent.Risk.ToString());
             if (intent.EffectiveMutationOperation is { } operation)
                 writer.WriteString("effectiveMutationOperation", operation.ToString());
+            if (intent.RequiresPhysicalCreateCapability)
+                writer.WriteBoolean("requiresPhysicalCreateCapability", true);
+            if (intent.EffectiveMutationHistoryRevision is { } historyRevision)
+                writer.WriteNumber("effectiveMutationHistoryRevision", historyRevision);
             WriteStrings(writer, "reads", intent.Claims.Reads);
             WriteStrings(writer, "writes", intent.Claims.Writes);
             writer.WriteStartArray("network");

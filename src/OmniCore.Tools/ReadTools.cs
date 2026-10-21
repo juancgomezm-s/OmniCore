@@ -84,8 +84,36 @@ public sealed class ReadFileTool : ITool
                 "Acceso denegado: la ruta apunta a un archivo de secretos y está protegida (ADR-0018)"));
         }
 
-        if (!File.Exists(full))
+        using var historyFence = context.MutationHistory?.AcquireFence(context.WorkspaceRoot,
+            cancellationToken);
+        context.MutationHistory?.RecoverPending(context.WorkspaceRoot, cancellationToken);
+        var history = context.MutationHistory?.ReadFile(context.WorkspaceRoot, path);
+        var restoredTombstone = false;
+        byte[] bytes = [];
+        if (!File.Exists(full) && history?.State == WorkspaceFileHistoryState.Tombstone
+            && history.ImageRef is { } tombstoneImage && context.Artifacts is not null)
         {
+            try { bytes = FilesystemPreimage.Read(context.Artifacts, tombstoneImage)
+                ?? throw new FilesystemPreimageException(); }
+            catch (FilesystemPreimageException)
+            {
+                return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.ToolFailure,
+                    "The protected deleted-file image is unavailable; no read proof was recorded."));
+            }
+            if (history.ExpectedHash is null || FileVersion.VersionToken(bytes) != history.ExpectedHash)
+                return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.ToolFailure,
+                    "The protected deleted-file image does not match its recorded version."));
+            restoredTombstone = true;
+        }
+        else if (!File.Exists(full))
+        {
+            if (history?.State is WorkspaceFileHistoryState.Present or WorkspaceFileHistoryState.ExternalConflict
+                or WorkspaceFileHistoryState.Unknown)
+            {
+                context.MutationHistory?.MarkConflict(context.WorkspaceRoot, path, null, cancellationToken);
+                return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.StaleWrite,
+                    "The previously observed file is missing outside a recorded OmniCore mutation; reconcile it before recreating it."));
+            }
             return System.Threading.Tasks.Task.FromResult(ToolResult.Error(ToolErrorCode.InvalidArguments,
                 "Archivo no encontrado: " + path));
         }
@@ -93,7 +121,16 @@ public sealed class ReadFileTool : ITool
         // Token de versión: SHA-256 de los BYTES REALES (no del string decodificado), calculado
         // ANTES de paginar/truncar, para que coincida con la verificación de filesystem.patch
         // (ADR-0044 §5) aunque el contenido expuesto al modelo se recorte.
-        var bytes = File.ReadAllBytes(full);
+        if (!restoredTombstone)
+        {
+            bytes = File.ReadAllBytes(full);
+            var actualHash = FileVersion.VersionToken(bytes);
+            if (context.MutationHistory is not null)
+            {
+                context.MutationHistory.RecordObservation(context.WorkspaceRoot, path, actualHash,
+                    cancellationToken);
+            }
+        }
         var version = FileVersion.VersionToken(bytes);
 
         FileVersion.DecodedFile decoded;
@@ -130,7 +167,8 @@ public sealed class ReadFileTool : ITool
         var pageMarker = "[lines:" + (pageCount == 0 ? "none" : (start + 1) + "-" + endLine)
             + "/" + lineRanges.Count + ";hasMore:" + (hasMore ? "true" : "false")
             + ";contentTruncated:" + (contentTruncated ? "true" : "false") + "]";
-        var preview = pageMarker + "\n" + content + "\n\n" + VersionTokenMarker(version);
+        var provenance = restoredTombstone ? "[source:protected tombstone history]\n" : "";
+        var preview = provenance + pageMarker + "\n" + content + "\n\n" + VersionTokenMarker(version);
         var externalized = hasMore;
 
         // ADR-0044 §5: registrar únicamente después de que la lectura tuvo éxito y expuso el token
@@ -150,7 +188,8 @@ public sealed class ReadFileTool : ITool
         }
 
         return System.Threading.Tasks.Task.FromResult(new ToolResult(
-            externalized ? "Contenido parcial (externalizado)" : "ok (" + path + ")", preview, null,
+            externalized ? "Contenido parcial (externalizado)" : restoredTombstone
+                ? "ok (restored from protected history: " + path + ")" : "ok (" + path + ")", preview, null,
             content.Length, externalized, EffectOutcome.None));
     }
 

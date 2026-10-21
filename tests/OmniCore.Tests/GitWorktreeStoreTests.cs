@@ -16,6 +16,621 @@ namespace OmniCore.Tests;
 
 public sealed class GitWorktreeStoreTests
 {
+    private const string MutationHistoryPhaseVariable = "OMNICORE_M9_HISTORY_PHASE";
+    private const string MutationHistoryRootVariable = "OMNICORE_M9_HISTORY_ROOT";
+    private const string MutationFencePhaseVariable = "OMNICORE_M9_FENCE_PHASE";
+
+    [Fact]
+    public void Closing_legacy_event_store_releases_database_while_history_object_remains_alive()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-history-lifetime-" + Guid.NewGuid().ToString("N"));
+        var data = Path.Combine(root, "data");
+        Directory.CreateDirectory(data);
+        var databasePath = Path.Combine(data, "journal.db");
+        SqliteWorkspaceMutationHistoryStore? history = null;
+        try
+        {
+            history = new SqliteWorkspaceMutationHistoryStore(data);
+            Assert.Empty(history.ReadPending(Path.Combine(root, "workspace")));
+
+            var legacyStore = SqliteEventStore.OpenUnpooled(databasePath);
+            legacyStore.Close();
+
+            using (var exclusive = new FileStream(databasePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                exclusive.Flush(flushToDisk: true);
+            File.Delete(databasePath);
+            Assert.False(File.Exists(databasePath));
+        }
+        finally
+        {
+            history?.Dispose();
+            M7FixtureCleanup.DeleteOwnedTempDirectory(root);
+        }
+    }
+
+    [Fact]
+    public void Recovery_does_not_apply_a_delete_receipt_without_a_faithful_preimage()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-missing-preimage-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var data = Path.Combine(root, "data");
+        Directory.CreateDirectory(workspace);
+        var toolCallId = ToolCallId.New();
+        var preHash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes("before\n")));
+        try
+        {
+            var artifacts = new FileArtifactStore(data);
+            var preimage = FilesystemPreimage.CaptureHistoryImage(artifacts, Encoding.UTF8.GetBytes("before\n"));
+            using (var firstHost = new SqliteWorkspaceMutationHistoryStore(data))
+            {
+                var receipt = new WorkspaceMutationReceipt(firstHost.GetWorkspaceId(workspace),
+                    "deleted.txt", toolCallId, "run-1", "turn-1", "DeleteFile", preHash, null,
+                    preimage, null, 1, 0, WorkspaceMutationReceiptState.Prepared);
+                firstHost.Prepare([receipt], CancellationToken.None);
+            }
+
+            var connectionString = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+            { DataSource = Path.Combine(data, "journal.db"), Pooling = false }.ToString();
+            using (var corrupt = new Microsoft.Data.Sqlite.SqliteConnection(connectionString))
+            {
+                corrupt.Open();
+                using var command = corrupt.CreateCommand();
+                command.CommandText = "UPDATE workspace_mutation_receipts SET preimage_ref=NULL WHERE tool_call_id=:call";
+                command.Parameters.AddWithValue("call", toolCallId.ToString());
+                Assert.Equal(1, command.ExecuteNonQuery());
+            }
+
+            using var reopenedHost = new SqliteWorkspaceMutationHistoryStore(data);
+            reopenedHost.RecoverPending(workspace, CancellationToken.None);
+
+            Assert.NotEqual(WorkspaceMutationReceiptState.Applied,
+                reopenedHost.ReadReceipt(workspace, toolCallId, "deleted.txt")?.State);
+            Assert.NotEqual(WorkspaceFileHistoryState.Tombstone,
+                reopenedHost.ReadFile(workspace, "deleted.txt")?.State);
+
+            var orphan = artifacts.PutText("old orphan", "text/plain", ArtifactKind.Other, Sensitivity.Sensitive);
+            var orphanPath = Path.Combine(data, "blobs", "sha256", orphan.Hash.Value[..2], orphan.Hash.Value.Substring(2, 2), orphan.Hash.Value);
+            File.SetLastWriteTimeUtc(orphanPath, DateTime.UtcNow.AddDays(-2));
+            Assert.Throws<InvalidDataException>(() => new ArtifactGc(data).Sweep(null, TimeSpan.Zero, false,
+                DateTimeOffset.UtcNow, CancellationToken.None));
+            Assert.True(File.Exists(orphanPath), "GC swept an orphan even though the durable history root was corrupt.");
+        }
+        finally { M7FixtureCleanup.DeleteOwnedTempDirectory(root); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Reopened_recovery_resolves_prepared_delete_on_either_side_of_the_effect(bool deleteBeforeRestart)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-recovery-cut-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var data = Path.Combine(root, "data");
+        Directory.CreateDirectory(workspace);
+        var target = Path.Combine(workspace, "cut.txt");
+        var content = Encoding.UTF8.GetBytes("before\n");
+        File.WriteAllBytes(target, content);
+        var preHash = Convert.ToHexStringLower(SHA256.HashData(content));
+        try
+        {
+            var artifacts = new FileArtifactStore(data);
+            var callId = ToolCallId.New();
+            using (var firstHost = new SqliteWorkspaceMutationHistoryStore(data))
+            {
+                firstHost.RecordObservation(workspace, "cut.txt", preHash, CancellationToken.None);
+                var receipt = new WorkspaceMutationReceipt(firstHost.GetWorkspaceId(workspace), "cut.txt", callId,
+                    "run-cut", "turn-cut", "DeleteFile", preHash, null,
+                    FilesystemPreimage.CaptureHistoryImage(artifacts, content), null, 1, 0,
+                    WorkspaceMutationReceiptState.Prepared);
+                firstHost.Prepare([receipt], CancellationToken.None);
+                if (deleteBeforeRestart) File.Delete(target);
+            }
+
+            using var reopenedHost = new SqliteWorkspaceMutationHistoryStore(data);
+            reopenedHost.RecoverPending(workspace, CancellationToken.None);
+
+            var resolved = reopenedHost.ReadReceipt(workspace, callId, "cut.txt");
+            Assert.Equal(deleteBeforeRestart ? WorkspaceMutationReceiptState.Applied : WorkspaceMutationReceiptState.NotApplied,
+                resolved?.State);
+            Assert.Equal(!deleteBeforeRestart, File.Exists(target));
+            var budget = reopenedHost.ReadBudgetChargesForRun(workspace, "run-cut");
+            if (deleteBeforeRestart)
+                Assert.Contains(budget, receipt => receipt.ToolCallId == callId
+                    && receipt.State == WorkspaceMutationReceiptState.Applied);
+            else
+                Assert.DoesNotContain(budget, receipt => receipt.ToolCallId == callId);
+            if (deleteBeforeRestart)
+            {
+                var tombstone = reopenedHost.ReadFile(workspace, "cut.txt");
+                Assert.Equal(WorkspaceFileHistoryState.Tombstone, tombstone?.State);
+                Assert.NotNull(FilesystemPreimage.Read(artifacts, tombstone!.ImageRef!));
+            }
+            else
+            {
+                Assert.Equal("before\n", File.ReadAllText(target));
+                Assert.Equal(WorkspaceFileHistoryState.Present, reopenedHost.ReadFile(workspace, "cut.txt")?.State);
+            }
+        }
+        finally { M7FixtureCleanup.DeleteOwnedTempDirectory(root); }
+    }
+
+    [Fact]
+    public void Run_budget_replay_includes_durable_unknown_receipts_from_other_turns()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-unknown-budget-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var data = Path.Combine(root, "data");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            using var history = new SqliteWorkspaceMutationHistoryStore(data);
+            var callId = ToolCallId.New();
+            var uncertainBytes = Encoding.UTF8.GetBytes("uncertain");
+            var hash = Convert.ToHexStringLower(SHA256.HashData(uncertainBytes));
+            var preimage = FilesystemPreimage.CaptureHistoryImage(new FileArtifactStore(data), uncertainBytes);
+            var prepared = new WorkspaceMutationReceipt(history.GetWorkspaceId(workspace), "changed.txt", callId,
+                "run-shared", "turn-other-lane", "ReplaceFile", hash, null, preimage, null, 2, 1,
+                WorkspaceMutationReceiptState.Prepared);
+            history.Prepare([prepared], CancellationToken.None);
+            Assert.DoesNotContain(history.ReadBudgetChargesForRun(workspace, "run-shared"),
+                receipt => receipt.ToolCallId == callId);
+            history.Complete([prepared with { State = WorkspaceMutationReceiptState.Unknown }],
+                [new WorkspaceFileHistoryEntry(prepared.WorkspaceId, prepared.RelativePath,
+                    WorkspaceFileHistoryState.Unknown, hash, null, 1, callId)], CancellationToken.None);
+
+            var durable = history.ReadBudgetChargesForRun(workspace, "run-shared");
+
+            Assert.Contains(durable, receipt => receipt.ToolCallId == callId
+                && receipt.State == WorkspaceMutationReceiptState.Unknown
+                && receipt.TurnId == "turn-other-lane");
+        }
+        finally { M7FixtureCleanup.DeleteOwnedTempDirectory(root); }
+    }
+
+    [Fact]
+    public void Unknown_receipt_from_another_turn_blocks_a_fresh_tool_runtime_before_create()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-runtime-unknown-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var data = Path.Combine(root, "data");
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            using var history = new SqliteWorkspaceMutationHistoryStore(data);
+            var journal = new RecordingEventStore(new InMemoryEventStore());
+            var session = SessionId.New();
+            var run = TestRun.Open(journal, session);
+            var oldCall = ToolCallId.New();
+            var uncertainBytes = Encoding.UTF8.GetBytes("uncertain");
+            var unknownHash = Convert.ToHexStringLower(SHA256.HashData(uncertainBytes));
+            var artifacts = new FileArtifactStore(data);
+            var preimage = FilesystemPreimage.CaptureHistoryImage(artifacts, uncertainBytes);
+            var prepared = new WorkspaceMutationReceipt(history.GetWorkspaceId(workspace), "old.txt", oldCall,
+                run.RunId.ToString(), TurnId.New().ToString(), "PatchExisting", unknownHash, null, preimage, null,
+                2, 1, WorkspaceMutationReceiptState.Prepared);
+            history.Prepare([prepared], CancellationToken.None);
+            history.Complete([prepared with { State = WorkspaceMutationReceiptState.Unknown }],
+                [new WorkspaceFileHistoryEntry(prepared.WorkspaceId, prepared.RelativePath,
+                    WorkspaceFileHistoryState.Unknown, unknownHash, null, 1, oldCall)], CancellationToken.None);
+
+            var tool = new FilesystemWriteTool(new PathBoundaryValidator());
+            var catalog = new FakeCatalog().Add(tool);
+            var permissions = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>
+                { ["filesystem.write"] = PermissionDecision.Allow });
+            var boundary = CreateIntegrationBoundary(requirePriorRead: false);
+            var executor = new ScriptedToolExecutor(catalog, permissions, workspace, boundary, null, null, false,
+                artifacts: artifacts, workspaceWriteLeases: HostWorkspaceWriteLeases.Shared,
+                mutationHistory: history);
+            Assert.NotNull(boundary.ReadRegistry().Ledger.MutationPolicy);
+            Assert.Contains(history.ReadBudgetChargesForRun(workspace, run.RunId.ToString()),
+                receipt => receipt.ToolCallId == oldCall && receipt.State == WorkspaceMutationReceiptState.Unknown);
+            var currentTurn = TurnId.New();
+            using var scope = ExecutionScope.Begin(new ExecutionScopeState(run.RunId, run.RootTask, run.RootLane, currentTurn));
+            var stream = new EventStream(journal, EventCodecs.Create(), session);
+            var call = new ValidatedToolCall(ToolCallId.New(), tool.Descriptor.Id, "create",
+                "{\"path\":\"new.txt\",\"content\":\"new content\\n\"}");
+
+            var outcome = executor.ExecuteTool(call, false, CancellationToken.None, stream);
+
+            Assert.True(boundary.ReadRegistry().Ledger.RunBudgetIsUnknown, outcome.Summary);
+            Assert.False(outcome.Succeeded);
+            Assert.Null(outcome.Effect);
+            Assert.False(File.Exists(Path.Combine(workspace, "new.txt")));
+        }
+        finally { M7FixtureCleanup.DeleteOwnedTempDirectory(root); }
+    }
+
+    [Fact]
+    public void Workspace_history_normalizes_root_aliases_but_isolates_physical_child_worktree()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-root-identity-" + Guid.NewGuid().ToString("N"));
+        var child = Path.Combine(root, "child-worktree");
+        var data = Path.Combine(root, "data");
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(child);
+        var bytes = Encoding.UTF8.GetBytes("root content\n");
+        var hash = Convert.ToHexStringLower(SHA256.HashData(bytes));
+        var file = Path.Combine(root, "same.txt");
+        File.WriteAllBytes(file, bytes);
+        try
+        {
+            var artifacts = new FileArtifactStore(data);
+            using var history = new SqliteWorkspaceMutationHistoryStore(data);
+            var alias = Path.Combine(root, ".", "sub", "..", "");
+            Assert.Equal(history.GetWorkspaceId(root), history.GetWorkspaceId(alias));
+            Assert.NotEqual(history.GetWorkspaceId(root), history.GetWorkspaceId(child));
+            history.RecordObservation(root, "same.txt", hash, CancellationToken.None);
+            var callId = ToolCallId.New();
+            var receipt = new WorkspaceMutationReceipt(history.GetWorkspaceId(root), "same.txt", callId,
+                "run", "turn", "DeleteFile", hash, null, FilesystemPreimage.CaptureHistoryImage(artifacts, bytes), null,
+                1, 0, WorkspaceMutationReceiptState.Prepared);
+            history.Prepare([receipt], CancellationToken.None);
+            File.Delete(file);
+            history.Complete([receipt with { State = WorkspaceMutationReceiptState.Applied }],
+                [new WorkspaceFileHistoryEntry(receipt.WorkspaceId, receipt.RelativePath,
+                    WorkspaceFileHistoryState.Tombstone, hash, receipt.PreimageRef, 2, callId)], CancellationToken.None);
+
+            Assert.Equal(WorkspaceFileHistoryState.Tombstone, history.ReadFile(alias, "same.txt")?.State);
+            Assert.Null(history.ReadFile(child, "same.txt"));
+        }
+        finally { M7FixtureCleanup.DeleteOwnedTempDirectory(root); }
+    }
+
+    [Theory]
+    [InlineData("no-read")]
+    [InlineData("stale-token")]
+    [InlineData("partial-read")]
+    [InlineData("replace-cap-denied")]
+    [InlineData("create-cap-denied")]
+    [InlineData("deny-patch")]
+    [InlineData("ask-patch")]
+    public void Tombstone_recreation_rejects_missing_proof_stale_versions_and_authorization_denials(string scenario)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omnicore-m9-tombstone-negative-" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var data = Path.Combine(root, "data");
+        Directory.CreateDirectory(workspace);
+        var bytes = Encoding.UTF8.GetBytes("before\nsecond\n");
+        var preHash = Convert.ToHexStringLower(SHA256.HashData(bytes));
+        var target = Path.Combine(workspace, "target.txt");
+        File.WriteAllBytes(target, bytes);
+        try
+        {
+            var artifacts = new FileArtifactStore(data);
+            using var history = new SqliteWorkspaceMutationHistoryStore(data);
+            history.RecordObservation(workspace, "target.txt", preHash, CancellationToken.None);
+            var deleteCall = ToolCallId.New();
+            var deleteReceipt = new WorkspaceMutationReceipt(history.GetWorkspaceId(workspace), "target.txt", deleteCall,
+                "seed-run", "seed-turn", "DeleteFile", preHash, null,
+                FilesystemPreimage.CaptureHistoryImage(artifacts, bytes), null, 1, 0,
+                WorkspaceMutationReceiptState.Prepared);
+            history.Prepare([deleteReceipt], CancellationToken.None);
+            File.Delete(target);
+            history.Complete([deleteReceipt with { State = WorkspaceMutationReceiptState.Applied }],
+                [new WorkspaceFileHistoryEntry(deleteReceipt.WorkspaceId, deleteReceipt.RelativePath,
+                    WorkspaceFileHistoryState.Tombstone, preHash, deleteReceipt.PreimageRef, 2, deleteCall)],
+                CancellationToken.None);
+
+            var mode = scenario == "replace-cap-denied" ? FileMutationMode.PatchAndCreate : FileMutationMode.Full;
+            Func<SessionSecurityPolicySet?>? sessionPolicy = null;
+            if (scenario == "create-cap-denied")
+            {
+                var full = SessionSecurityPolicySet.FromPreset(SessionId.New(), 1, ModelPolicyCategory.FullAgent,
+                    SessionSecurityProvenance.Native, SessionSecurityPolicySource.UserSelection, DateTimeOffset.UtcNow);
+                var deniedCreate = full with
+                { CapabilityCeiling = full.CapabilityCeiling.Where(item => item != ModelToolCapability.CreateFile).ToArray() };
+                deniedCreate.Validate();
+                sessionPolicy = () => deniedCreate;
+            }
+            var boundary = CreateIntegrationBoundary(requirePriorRead: true, mutationMode: mode,
+                sessionSecurityPolicy: sessionPolicy);
+            var read = new ReadFileTool(new PathBoundaryValidator());
+            var write = new FilesystemWriteTool(new PathBoundaryValidator());
+            var catalog = new FakeCatalog().Add(read).Add(write);
+            var patchDecision = scenario == "deny-patch" ? PermissionDecision.Deny
+                : scenario == "ask-patch" ? PermissionDecision.Ask : PermissionDecision.Allow;
+            var permissions = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>
+            {
+                ["filesystem.read"] = PermissionDecision.Allow,
+                ["filesystem.write"] = PermissionDecision.Allow,
+                ["filesystem.patch"] = patchDecision,
+            });
+            var executor = new ScriptedToolExecutor(catalog, permissions, workspace, boundary, null, null, false,
+                artifacts: artifacts, workspaceWriteLeases: HostWorkspaceWriteLeases.Shared, mutationHistory: history);
+            var journal = new RecordingEventStore(new InMemoryEventStore());
+            var session = SessionId.New();
+            var run = TestRun.Open(journal, session);
+            var turn = TurnId.New();
+            using var scope = ExecutionScope.Begin(new ExecutionScopeState(run.RunId, run.RootTask, run.RootLane, turn));
+            var stream = new EventStream(journal, EventCodecs.Create(), session);
+            if (scenario != "no-read")
+            {
+                var limit = scenario == "partial-read" ? 1 : 500;
+                var readCall = new ValidatedToolCall(ToolCallId.New(), read.Descriptor.Id, "read",
+                    "{\"path\":\"target.txt\",\"offset\":1,\"limit\":" + limit + "}");
+                Assert.True(executor.ExecuteTool(readCall, false, CancellationToken.None, stream).Succeeded);
+            }
+            var version = scenario == "stale-token" ? new string('0', 64) : preHash;
+            var call = new ValidatedToolCall(ToolCallId.New(), write.Descriptor.Id, "recreate",
+                System.Text.Json.JsonSerializer.Serialize(new
+                    { path = "target.txt", content = "after\nsecond\n", expectedVersion = version }));
+
+            var outcome = executor.ExecuteTool(call, false, CancellationToken.None, stream);
+
+            Assert.False(outcome.Succeeded, scenario + " unexpectedly recreated the deleted file.");
+            Assert.False(File.Exists(target));
+            Assert.DoesNotContain(journal.ReadFrom(session, 1).Select(EventCodecs.Create().Decode),
+                item => item is ToolCallStarted started && started.ToolCallId == call.ToolCallId);
+            Assert.DoesNotContain(journal.ReadFrom(session, 1).Select(EventCodecs.Create().Decode),
+                item => item is ToolCallStarted started && started.ToolCallId == call.ToolCallId);
+        }
+        finally { M7FixtureCleanup.DeleteOwnedTempDirectory(root); }
+    }
+
+    [Fact]
+    public async Task Native_worktree_move_then_delete_survives_process_exit_and_source_can_be_recreated()
+    {
+        var phase = Environment.GetEnvironmentVariable(MutationHistoryPhaseVariable);
+        if (phase is not null)
+        {
+            var root = Environment.GetEnvironmentVariable(MutationHistoryRootVariable)!;
+            if (phase == "delete") await DeleteInChildProcess(root);
+            else if (phase == "recreate") RecreateInChildProcess(root);
+            else Assert.Fail("Unknown durable mutation history phase.");
+            return;
+        }
+
+        var rootPath = Path.Combine(Path.GetTempPath(), "omnicore-m9-history-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(rootPath);
+        try
+        {
+            await RunHistoryProcess("delete", rootPath);
+            var data = Path.Combine(rootPath, "user data");
+            var artifactStore = new FileArtifactStore(data);
+            var orphan = artifactStore.PutText("unreferenced aged blob", "text/plain", ArtifactKind.Other, Sensitivity.Sensitive);
+            var orphanPath = Path.Combine(data, "blobs", "sha256", orphan.Hash.Value[..2], orphan.Hash.Value.Substring(2, 2), orphan.Hash.Value);
+            File.SetLastWriteTimeUtc(orphanPath, DateTime.UtcNow.AddDays(-2));
+            var gc = new ArtifactGc(data);
+            var retained = gc.Sweep(null, TimeSpan.Zero, false, DateTimeOffset.UtcNow,
+                TestContext.Current.CancellationToken);
+            Assert.True(retained.LiveReferenced > 0, "The durable tombstone CAS image was not marked live by GC.");
+            Assert.True(retained.Deleted > 0, "GC did not remove an aged orphan alongside retained history roots.");
+            Assert.False(File.Exists(orphanPath));
+            await RunHistoryProcess("recreate", rootPath);
+            var fixture = new GitFixture(rootPath);
+            var source = Path.Combine(fixture.Repository, "source.txt");
+            Assert.Equal("restored from protected history\n", File.ReadAllText(source));
+            Assert.Equal("restored from protected history\n", File.ReadAllText(Path.Combine(fixture.Repository, "moved.txt")));
+            using var history = new SqliteWorkspaceMutationHistoryStore(fixture.Data);
+            Assert.Equal(WorkspaceFileHistoryState.Present, history.ReadFile(fixture.Repository, "source.txt")?.State);
+        }
+        finally { M7FixtureCleanup.DeleteOwnedTempDirectory(rootPath); }
+    }
+
+    [Fact]
+    public async Task Workspace_mutation_fence_excludes_a_second_process_until_the_first_releases_it()
+    {
+        var phase = Environment.GetEnvironmentVariable(MutationFencePhaseVariable);
+        if (phase is not null)
+        {
+            var root = Environment.GetEnvironmentVariable(MutationHistoryRootVariable)!;
+            Assert.Equal("hold", phase);
+            using var history = new SqliteWorkspaceMutationHistoryStore(Path.Combine(root, "data"));
+            using var held = history.AcquireFence(Path.Combine(root, "workspace"), TestContext.Current.CancellationToken);
+            File.WriteAllText(Path.Combine(root, "ready"), "held");
+            var release = Path.Combine(root, "release");
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+            while (!File.Exists(release) && DateTime.UtcNow < deadline) await Task.Delay(10, TestContext.Current.CancellationToken);
+            Assert.True(File.Exists(release), "Parent did not release the cross-process fence probe.");
+            return;
+        }
+
+        var rootPath = Path.Combine(Path.GetTempPath(), "omnicore-m9-fence-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(rootPath);
+        Directory.CreateDirectory(Path.Combine(rootPath, "workspace"));
+        Process? holder = null;
+        try
+        {
+            holder = StartFenceProcess(rootPath);
+            await WaitUntil(() => File.Exists(Path.Combine(rootPath, "ready")), TimeSpan.FromSeconds(15),
+                TestContext.Current.CancellationToken);
+            using var contender = new SqliteWorkspaceMutationHistoryStore(Path.Combine(rootPath, "data"));
+            var acquired = Task.Run(() =>
+            {
+                using var fence = contender.AcquireFence(Path.Combine(rootPath, "workspace"), TestContext.Current.CancellationToken);
+                return true;
+            });
+            await Task.Delay(250, TestContext.Current.CancellationToken);
+            Assert.False(acquired.IsCompleted, "A second process entered while the first still held the OS fence.");
+            File.WriteAllText(Path.Combine(rootPath, "release"), "release");
+            Assert.True(await acquired.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+            await holder.WaitForExitAsync(TestContext.Current.CancellationToken).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            Assert.Equal(0, holder.ExitCode);
+        }
+        finally
+        {
+            if (holder is { HasExited: false }) holder.Kill(entireProcessTree: true);
+            holder?.Dispose();
+            M7FixtureCleanup.DeleteOwnedTempDirectory(rootPath);
+        }
+    }
+
+    private static Process StartFenceProcess(string root)
+    {
+        var start = new ProcessStartInfo(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet")
+        { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        start.ArgumentList.Add(typeof(GitWorktreeStoreTests).Assembly.Location);
+        start.ArgumentList.Add("-method");
+        start.ArgumentList.Add("*Workspace_mutation_fence_excludes_a_second_process_until_the_first_releases_it");
+        start.ArgumentList.Add("-noColor");
+        start.Environment[MutationFencePhaseVariable] = "hold";
+        start.Environment[MutationHistoryRootVariable] = root;
+        var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start fence probe.");
+        _ = process.StandardOutput.ReadToEndAsync();
+        _ = process.StandardError.ReadToEndAsync();
+        return process;
+    }
+
+    private static async Task WaitUntil(Func<bool> predicate, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (!predicate() && DateTime.UtcNow < deadline) await Task.Delay(10, cancellationToken);
+        Assert.True(predicate(), "Timed out waiting for the child process fence marker.");
+    }
+
+    [Fact]
+    public async Task Integration_batch_over_limit_is_rejected_before_any_delete_or_create_effect()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("source.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var worktree = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(fixture.Request(),
+            CancellationToken.None)).Worktree);
+        File.Delete(Path.Combine(worktree.WorktreePath, "source.txt"));
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "moved.txt"), "base\n");
+        var preview = await store.PreviewIntegrationAsync(new(worktree), CancellationToken.None);
+        Assert.True(preview.Succeeded, preview.Error?.ToString());
+        var artifacts = new FileArtifactStore(fixture.Data);
+        using var history = new SqliteWorkspaceMutationHistoryStore(fixture.Data);
+        var coordinator = new WorktreeIntegrationHostCoordinator(fixture.Repository, fixture.Data, artifacts, store);
+        var executor = CreateExecutor(fixture.Repository, artifacts, coordinator,
+            CreateIntegrationBoundary(maxFiles: 1), PermissionDecision.Allow, includeLease: true,
+            mutationHistory: history);
+        var journal = new RecordingEventStore(new InMemoryEventStore());
+        var session = SessionId.New();
+        var run = TestRun.Open(journal, session);
+        var turn = TurnId.New();
+        var args = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            ownershipId = worktree.OwnershipId,
+            proposalId = preview.Preview!.ProposalId,
+            paths = preview.Preview.Changes.Select(change => change.RelativePath).ToArray(),
+        });
+        var call = new ValidatedToolCall(ToolCallId.New(), new ToolId("worktree.integrate"), "pipeline", args);
+        var stream = new EventStream(journal, EventCodecs.Create(), session);
+        using var scope = ExecutionScope.Begin(new ExecutionScopeState(run.RunId, run.RootTask, run.RootLane, turn));
+
+        var outcome = executor.ExecuteTool(call, userApprovesAsk: false, CancellationToken.None, stream);
+
+        Assert.False(outcome.Succeeded);
+        Assert.Equal("base\n", File.ReadAllText(Path.Combine(fixture.Repository, "source.txt")));
+        Assert.False(File.Exists(Path.Combine(fixture.Repository, "moved.txt")));
+        Assert.Empty(history.ReadBudgetCharges(fixture.Repository, run.RunId.ToString(), turn.ToString()));
+        Assert.DoesNotContain(journal.ReadFrom(session, 1).Select(EventCodecs.Create().Decode),
+            item => item is ToolCallStarted);
+    }
+
+    private static async Task RunHistoryProcess(string phase, string root)
+    {
+        var start = new ProcessStartInfo(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet")
+        { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        start.ArgumentList.Add(typeof(GitWorktreeStoreTests).Assembly.Location);
+        start.ArgumentList.Add("-method");
+        start.ArgumentList.Add("*Native_worktree_move_then_delete_survives_process_exit_and_source_can_be_recreated");
+        start.ArgumentList.Add("-noColor");
+        start.Environment[MutationHistoryPhaseVariable] = phase;
+        start.Environment[MutationHistoryRootVariable] = root;
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start history probe.");
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        try { await process.WaitForExitAsync(deadline.Token); }
+        catch
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync();
+            throw;
+        }
+        var output = await stdout + await stderr;
+        Assert.True(process.ExitCode == 0, phase + " process failed: " + output);
+    }
+
+    private static async Task DeleteInChildProcess(string root)
+    {
+        var fixture = new GitFixture(root);
+        fixture.Init();
+        fixture.Write("source.txt", "restored from protected history\n");
+        fixture.CommitAll("base");
+        var git = new GitWorktreeStore(new SystemProcessRuntime());
+        var worktree = Assert.IsType<WorktreeIdentity>((await git.CreateAsync(fixture.Request(),
+            CancellationToken.None)).Worktree);
+        File.Delete(Path.Combine(worktree.WorktreePath, "source.txt"));
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "moved.txt"), "restored from protected history\n");
+        var preview = await git.PreviewIntegrationAsync(new(worktree), CancellationToken.None);
+        Assert.True(preview.Succeeded, preview.Error?.ToString());
+        var artifacts = new FileArtifactStore(fixture.Data);
+        using var history = new SqliteWorkspaceMutationHistoryStore(fixture.Data);
+        var coordinator = new WorktreeIntegrationHostCoordinator(fixture.Repository, fixture.Data, artifacts, git);
+        var executor = CreateExecutor(fixture.Repository, artifacts, coordinator, CreateIntegrationBoundary(),
+            PermissionDecision.Allow, includeLease: true, mutationHistory: history);
+        using var journal = new SqliteEventStore(Path.Combine(fixture.Data, "journal.db"));
+        var session = SessionId.New();
+        var run = TestRun.Open(journal, session);
+        var turn = TurnId.New();
+        var args = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            ownershipId = worktree.OwnershipId,
+            proposalId = preview.Preview!.ProposalId,
+            paths = preview.Preview.Changes.Select(change => change.RelativePath).ToArray(),
+        });
+        var call = new ValidatedToolCall(ToolCallId.New(), new ToolId("worktree.integrate"), "pipeline", args);
+        var stream = new EventStream(journal, EventCodecs.Create(), session);
+        using var scope = ExecutionScope.Begin(new ExecutionScopeState(run.RunId, run.RootTask, run.RootLane, turn));
+        var outcome = executor.ExecuteTool(call, userApprovesAsk: false, CancellationToken.None, stream);
+        Assert.True(outcome.Succeeded, outcome.Summary);
+        Assert.True(journal.PurgeSession(session, CancellationToken.None) > 0);
+        Assert.False(File.Exists(Path.Combine(fixture.Repository, "source.txt")));
+        Assert.Equal("restored from protected history\n", File.ReadAllText(Path.Combine(fixture.Repository, "moved.txt")));
+        var tombstone = history.ReadFile(fixture.Repository, "source.txt");
+        Assert.Equal(WorkspaceFileHistoryState.Tombstone, tombstone?.State);
+        Assert.NotNull(tombstone?.ImageRef);
+        Assert.False(File.Exists(Path.Combine(worktree.WorktreePath, "source.txt")));
+        Assert.True(File.Exists(Path.Combine(worktree.WorktreePath, "moved.txt")));
+    }
+
+    private static void RecreateInChildProcess(string root)
+    {
+        var fixture = new GitFixture(root);
+        var artifacts = new FileArtifactStore(fixture.Data);
+        using var history = new SqliteWorkspaceMutationHistoryStore(fixture.Data);
+        var boundary = CreateIntegrationBoundary(requirePriorRead: true);
+        var tools = OmniHost.CreateActTools();
+        var policy = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>
+        {
+            ["filesystem.read"] = PermissionDecision.Allow,
+            ["filesystem.write"] = PermissionDecision.Allow,
+            ["filesystem.patch"] = PermissionDecision.Allow,
+        });
+        var executor = new ScriptedToolExecutor(tools.Catalog(), policy, fixture.Repository, boundary,
+            audit: null, interactionResponder: null, isInteractive: false, artifacts: artifacts,
+            workspaceWriteLeases: HostWorkspaceWriteLeases.Shared, mutationHistory: history);
+        var journal = new RecordingEventStore(new InMemoryEventStore());
+        var session = SessionId.New();
+        var run = TestRun.Open(journal, session);
+        var turn = TurnId.New();
+        var stream = new EventStream(journal, EventCodecs.Create(), session);
+        using var scope = ExecutionScope.Begin(new ExecutionScopeState(run.RunId, run.RootTask, run.RootLane, turn));
+        var read = executor.ExecuteTool(new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.read"),
+            "read", "{\"path\":\"source.txt\"}"), false, CancellationToken.None, stream);
+        Assert.True(read.Succeeded, read.Summary);
+        Assert.Contains("restored from protected history", read.Preview);
+        Assert.Contains("[source:protected tombstone history]", read.Preview);
+        var token = FileVersion.VersionToken(FileVersion.Encode("restored from protected history\n", FileVersion.FileEncoding.Utf8NoBom));
+        var writeArgs = System.Text.Json.JsonSerializer.Serialize(new
+        { path = "source.txt", content = "restored from protected history\n", expectedVersion = token });
+        var write = executor.ExecuteTool(new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.write"),
+            "write", writeArgs), false, CancellationToken.None, stream);
+        Assert.True(write.Succeeded, write.Summary);
+        Assert.Equal("restored from protected history\n", File.ReadAllText(Path.Combine(fixture.Repository, "source.txt")));
+        Assert.Equal(WorkspaceFileHistoryState.Present, history.ReadFile(fixture.Repository, "source.txt")?.State);
+        var reread = executor.ExecuteTool(new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.read"),
+            "read-current", "{\"path\":\"source.txt\"}"), false, CancellationToken.None, stream);
+        Assert.True(reread.Succeeded, reread.Summary);
+        Assert.DoesNotContain("[source:protected tombstone history]", reread.Preview);
+    }
+
     [Fact]
     public async Task Snapshot_captures_working_tree_without_changing_real_index_or_copying_ignored_secret()
     {
@@ -1766,24 +2381,26 @@ public sealed class GitWorktreeStoreTests
 
     private static ModelCapabilityBoundary CreateIntegrationBoundary(
         bool requirePostEditValidation = false, DestructiveActionPolicy delete = DestructiveActionPolicy.Allow,
-        int maxFiles = 8)
+        int maxFiles = 8, bool requirePriorRead = false, FileMutationMode mutationMode = FileMutationMode.Full,
+        Func<SessionSecurityPolicySet?>? sessionSecurityPolicy = null)
     {
         var key = ModelPolicyKey.For("m7-test", "fixture-model");
         var full = ModelPolicyPresets.FullAgent();
-        var mutation = new FileMutationPolicy(FileMutationMode.Full, delete, DestructiveActionPolicy.Allow,
-            maxFiles, 2000, 1.0, requirePriorRead: false, requireExpectedVersionToken: false,
+        var mutation = new FileMutationPolicy(mutationMode, delete, DestructiveActionPolicy.Allow,
+            maxFiles, 2000, 1.0, requirePriorRead, requireExpectedVersionToken: false,
             requirePostEditValidation, allowParallelMutations: false);
         var user = new UserModelPolicy(full.Category, full.ToolPolicy, mutation, full.Source, full.Note);
         var harness = new HarnessPolicy(ToolCallFormat.Native, ToolMode.Discovered, 16,
             GuidanceLevel.Full, 3, PlanControl.ModelDriven, 8);
         var effective = EffectiveModelPolicy.Resolve(key,
             new StoredModelPolicy(key, 1, user, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch), harness);
-        return new ModelCapabilityBoundary(effective);
+        return new ModelCapabilityBoundary(effective, ModelCapabilityBoundary.CoreTools, new FileReadRegistry(),
+            sessionSecurityPolicy);
     }
 
     private static ScriptedToolExecutor CreateExecutor(string workspace, IArtifactStore artifacts,
         WorktreeIntegrationHostCoordinator coordinator, ModelCapabilityBoundary boundary,
-        PermissionDecision permission, bool includeLease)
+        PermissionDecision permission, bool includeLease, IWorkspaceMutationHistoryStore? mutationHistory = null)
     {
         var tool = new WorktreeIntegrationApplyTool(new PathBoundaryValidator(), coordinator);
         var catalog = new FakeCatalog().Add(tool);
@@ -1793,17 +2410,19 @@ public sealed class GitWorktreeStoreTests
         });
         return new ScriptedToolExecutor(catalog, policy, workspace, boundary, null, null, false,
             artifacts: artifacts,
-            workspaceWriteLeases: includeLease ? HostWorkspaceWriteLeases.Shared : null);
+            workspaceWriteLeases: includeLease ? HostWorkspaceWriteLeases.Shared : null,
+            mutationHistory: mutationHistory);
     }
 
     private sealed class GitFixture : IDisposable
     {
-        public string Root { get; } = Path.Combine(Path.GetTempPath(), "omnicore-m7-git", Guid.NewGuid().ToString("N"));
+        public string Root { get; }
         public string Repository => Path.Combine(Root, "repo with spaces");
         public string Data => Path.Combine(Root, "user data");
 
-        public GitFixture()
+        public GitFixture(string? root = null)
         {
+            Root = root ?? Path.Combine(Path.GetTempPath(), "omnicore-m7-git", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(Repository);
             Directory.CreateDirectory(Data);
         }

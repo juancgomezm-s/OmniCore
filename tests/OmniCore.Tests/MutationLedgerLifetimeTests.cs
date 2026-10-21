@@ -102,4 +102,29 @@ public sealed class MutationLedgerLifetimeTests
         sameDigest.RestoreRunBudgetCharge(charges[0].TargetKeyHash.ToLowerInvariant(), changedLines: 1);
         Assert.Equal(1, sameDigest.FilesTouchedThisRun);
     }
+
+    [Fact]
+    public void Durable_receipt_union_preserves_legacy_charges_and_prior_unknown_state()
+    {
+        var registry = new FileReadRegistry();
+        var ledger = registry.Ledger;
+        ledger.Bind(BuildPolicy());
+        ledger.BeginTurn();
+        var callId = ToolCallId.New();
+        var target = registry.MutationBudgetKey("legacy.cs");
+        ledger.RecordMutation("legacy.cs", 2, 1, callId);
+
+        ledger.RestoreDurableBudgetCharge(callId, target, 3, currentTurn: true);
+        Assert.Equal(1, ledger.FilesTouchedThisRun);
+        Assert.Equal(3, ledger.ChangedLinesThisRun);
+        Assert.Equal(1, ledger.MutationsThisRun);
+        Assert.Equal(3, ledger.ChangedLinesThisTurn);
+
+        ledger.MarkRunBudgetUnknown();
+        ledger.MarkTurnBudgetUnknown();
+        ledger.RestoreDurableBudgetCharge(ToolCallId.New(), registry.MutationBudgetKey("durable.cs"),
+            1, currentTurn: true);
+        Assert.True(ledger.RunBudgetIsUnknown);
+        Assert.NotNull(ledger.RefuseMutation(ModelToolCapability.PatchExisting, "next.cs", true, 0, 1, 1));
+    }
 }

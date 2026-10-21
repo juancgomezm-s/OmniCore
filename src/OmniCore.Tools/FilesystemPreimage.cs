@@ -23,6 +23,17 @@ public static class FilesystemPreimage
         catch (FilesystemPreimageException) { return null; }
     }
 
+    /// <summary>Retains one already-authorized, faithful text image for the independent workspace
+    /// mutation history. The caller must hold the workspace mutation fence.</summary>
+    public static ArtifactRef CaptureHistoryImage(IArtifactStore artifacts, byte[] bytes, bool postimage = false)
+    {
+        ArgumentNullException.ThrowIfNull(artifacts);
+        ArgumentNullException.ThrowIfNull(bytes);
+        return CaptureCore(new ReconciliationSpec(null, null, null), artifacts, bytes,
+            postimage ? PostMediaType : MediaType).BeforeStateRef
+            ?? throw Invalid();
+    }
+
     internal static ReconciliationSpec Capture(ReconciliationSpec reconciliation, IArtifactStore? artifacts,
         byte[]? original)
         => CaptureCore(reconciliation, artifacts, original, MediaType);

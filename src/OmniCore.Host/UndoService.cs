@@ -10,7 +10,7 @@ using OmniCore.Tools;
 
 /// <summary>Restores only journal-attributed, hash-verified filesystem preimages. Every attempt
 /// appends its own barriered lifecycle; a partial or interrupted attempt is reconciled as Unknown.</summary>
-public sealed class UndoService
+public sealed class UndoService : IDisposable
 {
     private const long MaxImageBytes = 2L * 1024 * 1024;
     private const long MaxBatchBytes = 8L * 1024 * 1024;
@@ -23,10 +23,11 @@ public sealed class UndoService
     private readonly ScriptedPermissionPolicy _permissions;
     private readonly WorkspaceSnapshotStore _snapshots;
     private readonly IWorkspaceWriteLeaseProvider _leases;
+    private readonly IWorkspaceMutationHistoryStore? _mutationHistory;
 
     public UndoService(string workspaceRoot, string durableRootIdentity, IEventStore events,
         IEventCodecRegistry codecs, IArtifactStore artifacts, ScriptedPermissionPolicy permissions,
-        IWorkspaceWriteLeaseProvider? leases = null)
+        IWorkspaceWriteLeaseProvider? leases = null, IWorkspaceMutationHistoryStore? mutationHistory = null)
     {
         _root = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspaceRoot);
         if (!WorkspaceRootIdentity.Verify(_root, durableRootIdentity)) throw new InvalidOperationException("Workspace root identity is not verified.");
@@ -36,6 +37,7 @@ public sealed class UndoService
         _artifacts = artifacts;
         _permissions = permissions;
         _leases = leases ?? HostWorkspaceWriteLeases.Shared;
+        _mutationHistory = mutationHistory;
         _snapshots = new WorkspaceSnapshotStore(_root, events, codecs, artifacts, _rootIdentity);
     }
 
@@ -45,6 +47,8 @@ public sealed class UndoService
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var lease = _leases.Acquire(_root, cancellationToken);
+        using var historyFence = _mutationHistory?.AcquireFence(_root, cancellationToken);
+        _mutationHistory?.RecoverPending(_root, cancellationToken);
         if (!_snapshots.VerifySession(sessionId))
             return new(UndoOutcome.Unsupported, effectId, [], "The source session belongs to another or unverifiable workspace.");
         var events = _events.ReadFrom(sessionId, 1);
@@ -116,6 +120,11 @@ public sealed class UndoService
                 "A target differs from both recorded images; no files were changed.");
 
         var pendingEntries = entries.Where((_, index) => outcomes[index].Outcome == ReconciliationOutcome.Applied).ToArray();
+        using var historyPublication = _mutationHistory is null ? null
+            : (_artifacts as IArtifactPublicationLease
+                ?? throw new InvalidOperationException("Artifact publication exclusion is required for durable undo history."))
+                .AcquirePublicationLease(cancellationToken);
+        var undoReceipts = PrepareUndoReceipts(entries, pendingEntries, cancellationToken);
 
         var undoId = Guid.NewGuid().ToString("N");
         var commandId = CommandId.New();
@@ -156,6 +165,7 @@ public sealed class UndoService
             var completed = entries.Select(entry => new UndoFileState(entry.RelativePath, ReconciliationOutcome.Applied)).ToArray();
             foreach (var entry in entries)
                 if (Hash(ReadCurrent(entry.RelativePath)) != entry.ResultingHash) throw new IOException("Undo postimage verification failed.");
+            CompleteUndoReceipts(undoReceipts, entries, cancellationToken);
             if (!AppendTerminal(sessionId, commandId, undoAttribution, undoId, entries[0].OriginalEffect, UndoOutcome.Applied, completed))
                 return new(UndoOutcome.Unknown, entries[0].OriginalEffect, completed,
                     "Files match their restored images, but the terminal journal barrier was not confirmed.");
@@ -185,6 +195,63 @@ public sealed class UndoService
             return new(UndoOutcome.Conflict, entries[0].OriginalEffect, classified,
                 "Undo could not safely begin; no file was written.");
         }
+    }
+
+    private IReadOnlyList<WorkspaceMutationReceipt> PrepareUndoReceipts(UndoPlanEntry[] entries,
+        UndoPlanEntry[] pendingEntries, CancellationToken cancellationToken)
+    {
+        if (_mutationHistory is null) return [];
+        var pendingPaths = pendingEntries.Select(entry => entry.RelativePath).ToHashSet(StringComparer.Ordinal);
+        var receipts = new List<WorkspaceMutationReceipt>(pendingEntries.Length);
+        var toolCall = ToolCallId.New();
+        var scope = ExecutionScope.Current;
+        var run = scope?.RunId?.ToString() ?? "workspace-undo";
+        var turn = scope?.TurnId?.ToString() ?? "workspace-undo";
+        foreach (var entry in entries.Where(entry => pendingPaths.Contains(entry.RelativePath)))
+        {
+            var current = ReadCurrent(entry.RelativePath);
+            var before = entry.RestoreBytes;
+            var currentRef = current is null ? null : FilesystemPreimage.CaptureHistoryImage(_artifacts, current);
+            var restoredRef = before is null ? null : FilesystemPreimage.CaptureHistoryImage(_artifacts, before, postimage: true);
+            var oldText = current is null ? string.Empty : FileVersion.Decode(current).Text;
+            var newText = before is null ? string.Empty : FileVersion.Decode(before).Text;
+            FileVersion.ChangedLines(oldText, newText, out var deleted, out var inserted);
+            receipts.Add(new WorkspaceMutationReceipt(_mutationHistory.GetWorkspaceId(_root),
+                _mutationHistory.NormalizeRelativePath(_root, entry.RelativePath), toolCall, run, turn, "workspace.undo",
+                Hash(current) == FilesystemReconciliationMetadata.AbsentPreHash ? null : Hash(current),
+                Hash(before) == FilesystemReconciliationMetadata.AbsentPreHash ? null : Hash(before),
+                currentRef, restoredRef, deleted, inserted, WorkspaceMutationReceiptState.Prepared));
+        }
+        _mutationHistory.Prepare(receipts, cancellationToken);
+        return receipts;
+    }
+
+    private void CompleteUndoReceipts(IReadOnlyList<WorkspaceMutationReceipt> receipts,
+        UndoPlanEntry[] entries, CancellationToken cancellationToken)
+    {
+        if (_mutationHistory is null || receipts.Count == 0) return;
+        var states = new List<WorkspaceFileHistoryEntry>(receipts.Count);
+        var finalized = new List<WorkspaceMutationReceipt>(receipts.Count);
+        foreach (var receipt in receipts)
+        {
+            var entry = entries.Single(item => string.Equals(item.RelativePath, receipt.RelativePath, StringComparison.Ordinal));
+            var previous = _mutationHistory.ReadFile(_root, entry.RelativePath);
+            var restored = entry.RestoreBytes;
+            states.Add(restored is null
+                ? new WorkspaceFileHistoryEntry(receipt.WorkspaceId, receipt.RelativePath,
+                    WorkspaceFileHistoryState.Tombstone, receipt.ExpectedPreHash,
+                    receipt.PreimageRef ?? previous?.ImageRef, checked((previous?.Revision ?? 0) + 1), receipt.ToolCallId)
+                : new WorkspaceFileHistoryEntry(receipt.WorkspaceId, receipt.RelativePath,
+                    WorkspaceFileHistoryState.Present, receipt.ExpectedPostHash, receipt.PostimageRef,
+                    checked((previous?.Revision ?? 0) + 1), receipt.ToolCallId));
+            finalized.Add(receipt with { State = WorkspaceMutationReceiptState.Applied });
+        }
+        _mutationHistory.Complete(finalized, states, cancellationToken);
+    }
+
+    public void Dispose()
+    {
+        if (_mutationHistory is IDisposable disposable) disposable.Dispose();
     }
 
     private byte[]? ReadCurrent(string relative)

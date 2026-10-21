@@ -118,8 +118,35 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
             return null;
         }
 
-        return DryRunReconciliation(context.WorkspaceRoot, intent.Intent.Claims, path, expectedVersion,
+        var reconciliation = DryRunReconciliation(context.WorkspaceRoot, intent.Intent.Claims, path, expectedVersion,
             oldText, newText, context.Artifacts);
+        if (reconciliation is not null && context.MutationHistory is not null)
+        {
+            if (reconciliation.BeforeStateRef is null || string.IsNullOrWhiteSpace(context.MutationRunId)
+                || string.IsNullOrWhiteSpace(context.MutationTurnId))
+                throw new ToolPreflightException(ToolErrorCode.ToolFailure,
+                    "Durable mutation evidence is unavailable for this patch.");
+            var bytes = File.ReadAllBytes(full);
+            var decoded = FileVersion.Decode(bytes);
+            var first = decoded.Text.IndexOf(oldText, StringComparison.Ordinal);
+            if (first < 0) return null;
+            var updated = decoded.Text.Substring(0, first) + newText
+                + decoded.Text.Substring(first + oldText.Length);
+            var hunks = FileVersion.CreateEditHunks(decoded.Text, updated);
+            // Capture the postimage while ToolRuntime still owns the synchronous artifact
+            // publication lease. ExecuteAsync resumes after an await and must never try to
+            // reacquire this thread-affine lease from a worker thread.
+            var postBytes = FileVersion.Encode(updated, decoded.Encoding);
+            var postImage = FilesystemPreimage.CaptureAfter(context.Artifacts, postBytes);
+            var store = context.MutationHistory;
+            store.Prepare([new WorkspaceMutationReceipt(store.GetWorkspaceId(context.WorkspaceRoot),
+                store.NormalizeRelativePath(context.WorkspaceRoot, path), intent.Intent.ToolCallId,
+                context.MutationRunId, context.MutationTurnId,
+                ModelToolCapability.PatchExisting.ToString(), expectedVersion, reconciliation.ExpectedPostHash,
+                reconciliation.BeforeStateRef, postImage, hunks.Sum(hunk => hunk.DeletedLines),
+                hunks.Sum(hunk => hunk.InsertedLines), WorkspaceMutationReceiptState.Prepared)], cancellationToken);
+        }
+        return reconciliation;
     }
 
     /// <summary>
@@ -138,8 +165,26 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
     {
         cancellationToken.ThrowIfCancellationRequested();
         var (path, expectedVersion, oldText, newText) = ParseArguments(intent.Intent.NormalizedArgumentsJson);
-        return await ExecutePatchAsync(intent, context, path, expectedVersion, oldText, newText,
+        if (context.MutationHistory is not null && (path is null
+            || context.MutationHistory.ReadReceipt(context.WorkspaceRoot, intent.Intent.ToolCallId, path) is null))
+            return ToolResult.Error(ToolErrorCode.ToolFailure,
+                "Durable mutation receipt was not prepared; no file was changed.");
+        var result = await ExecutePatchAsync(intent, context, path, expectedVersion, oldText, newText,
             cancellationToken).ConfigureAwait(false);
+        if (!result.IsError && context.MutationHistory is not null)
+        {
+            var store = context.MutationHistory;
+            var prepared = store.ReadReceipt(context.WorkspaceRoot, intent.Intent.ToolCallId, path!)
+                ?? throw new InvalidDataException("Prepared patch receipt is missing.");
+            if (result.AfterStateBytes is null) throw new InvalidDataException("Applied patch has no postimage bytes.");
+            var post = prepared.PostimageRef;
+            var previous = store.ReadFile(context.WorkspaceRoot, path!);
+            var state = new WorkspaceFileHistoryEntry(prepared.WorkspaceId, path!.Replace('\\', '/'),
+                WorkspaceFileHistoryState.Present, FileVersion.VersionToken(result.AfterStateBytes), post,
+                checked((previous?.Revision ?? 0) + 1), intent.Intent.ToolCallId);
+            store.Complete([prepared with { State = WorkspaceMutationReceiptState.Applied }], [state], cancellationToken);
+        }
+        return result;
     }
 
     /// <summary>Runs the exact same guarded patch path for a filesystem.write request normalized

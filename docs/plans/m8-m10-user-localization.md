@@ -19,10 +19,19 @@ mayores conservan las líneas iniciales/finales sin cambios y usan un span
 conservador entre ellas; pueden exigir lectura o presupuesto más amplios para
 cambios separados. No se promete diff mínimo universal. El consentimiento de una escritura
 normalizada con Ask es de una llamada; no crea automáticamente grants durables
-para dos identidades de herramienta. El historial durable de borrado/movimiento,
-recreación y la paridad con escritores de worktree/procesos o futuros wrappers
-dinámicos siguen pendientes en M9-L-MUT-01. No se introducen herramientas nuevas
-de borrado/movimiento ni una prohibición general de write.
+para dos identidades de herramienta.
+
+La continuación M9-L-MUT-01 incorpora historial SQLite por raíz física,
+recibos y bloqueo OS entre procesos, normalización de recreación contra tombstone,
+lectura de preimagen histórica y cargos idempotentes. Conecta write, patch,
+aplicación autorizada de borrados/movimientos mediante `worktree.integrate` y
+Deshacer. El historial y sus raíces CAS sobreviven a la purga de Session.
+La [auditoría de este bloque](../validation/m9-durable-file-history-20261020.md)
+distingue validación local aprobada, correcciones y alcance de CI. La integración
+a main exige CI completa aprobada del corte entregado. No se añaden herramientas
+independientes de borrado/movimiento ni una prohibición general de write.
+La paridad con procesos escritores generales y futuros wrappers dinámicos sigue
+pendiente de su propio control de publicación en M9-M.
 
 Evidencia: build de solución y build final de pruebas con cero advertencias/errores;
 103 casos dirigidos del constructor, 30 regresiones independientes de permisos,

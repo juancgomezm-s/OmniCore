@@ -74,7 +74,7 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
                 file.ExpectedPreMode, file.ExpectedPostMode, pre, post));
         }
 
-        var policyRefusal = ValidatePolicy(images, context.ReadRegistry);
+            var policyRefusal = ValidatePolicy(images, context);
         if (policyRefusal is not null)
             throw new ToolPreflightException(policyRefusal.Code, policyRefusal.Message);
 
@@ -105,6 +105,7 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
                 image.ExpectedPostSha256, image.ExpectedPreMode, image.ExpectedPostMode)).ToArray(),
             capture.Preview.TheirsTree, completeLaneResult);
         var durableMetadata = JsonSerializer.Serialize(metadata, ManifestJson.Default.BatchMetadata);
+        PrepareDurableHistory(context, authorized.Intent, capture.Files, images, cancellationToken);
         _prepared[authorized.Intent.ToolCallId.ToString()] = new(metadata, reference);
         return new ReconciliationSpec(null, null, null)
         {
@@ -307,7 +308,7 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
         }
 
         var ledger = context.ReadRegistry?.Ledger;
-        var refusal = ValidatePolicy(payload.Files, context.ReadRegistry);
+        var refusal = ValidatePolicy(payload.Files, context);
         if (refusal is not null)
         {
             context.EmitEvent?.Invoke(StateEvent(authorized.Intent.ToolCallId, metadata,
@@ -374,6 +375,8 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
 
         var applied = targets.Select(target => new WorktreeIntegrationFileStatus(target.Image.RelativePath,
             ReconciliationOutcome.Applied)).ToArray();
+        CompleteDurableHistory(context, authorized.Intent, targets.Select(target => target.Image.RelativePath).ToArray(),
+            cancellationToken);
         context.EmitEvent?.Invoke(StateEvent(authorized.Intent.ToolCallId, metadata,
             WorktreeIntegrationState.Completed, applied));
         return new ToolResult("Integration proposal applied to the workspace.", null, null, 0, false,
@@ -386,6 +389,86 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
         context.EmitEvent?.Invoke(StateEvent(intent.Intent.ToolCallId, metadata, state,
             metadata.Files.Select(file => new WorktreeIntegrationFileStatus(file.RelativePath, outcome)).ToArray()));
         return ToolResult.Error(ToolErrorCode.StaleWrite, summary);
+    }
+
+    private void PrepareDurableHistory(ToolExecutionContext context, ToolIntent intent,
+        IReadOnlyList<WorktreeIntegrationFileImage> changes, IReadOnlyList<DurableFileImage> images,
+        CancellationToken cancellationToken)
+    {
+        var store = context.MutationHistory;
+        if (store is null) return;
+        if (string.IsNullOrWhiteSpace(context.MutationRunId) || string.IsNullOrWhiteSpace(context.MutationTurnId)
+            || context.Artifacts is null)
+            throw new ToolPreflightException(ToolErrorCode.ToolFailure,
+                "Durable workspace mutation attribution is unavailable.");
+        var changeByPath = changes.ToDictionary(file => file.RelativePath, PathComparer);
+        var receipts = new List<WorkspaceMutationReceipt>(images.Count);
+        foreach (var image in images)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var change = changeByPath[image.RelativePath];
+            var previous = store.ReadFile(context.WorkspaceRoot, image.RelativePath);
+            if (previous is { State: WorkspaceFileHistoryState.Present, ExpectedHash: { } priorHash }
+                && priorHash != image.ExpectedPreSha256)
+            {
+                store.MarkConflict(context.WorkspaceRoot, image.RelativePath, image.ExpectedPreSha256, cancellationToken);
+                throw new ToolPreflightException(ToolErrorCode.StaleWrite,
+                    "An integration target differs from its durable workspace version; reread/reconcile it first.");
+            }
+            var logicalPreimage = change.Preimage;
+            if (logicalPreimage is null && previous is { State: WorkspaceFileHistoryState.Tombstone,
+                    ExpectedHash: { } tombstoneHash, ImageRef: { } tombstoneRef })
+            {
+                logicalPreimage = ReadHistoryImage(context.Artifacts, tombstoneRef, tombstoneHash);
+            }
+            ArtifactRef? preimage = change.Preimage is null ? previous?.ImageRef
+                : FilesystemPreimage.CaptureHistoryImage(context.Artifacts, change.Preimage);
+            ArtifactRef? postimage = null;
+            if (change.Postimage is not null)
+            {
+                try { postimage = FilesystemPreimage.CaptureHistoryImage(context.Artifacts, change.Postimage, postimage: true); }
+                catch (InvalidOperationException) { /* Hash-only Present state remains recoverable. */ }
+            }
+            var beforeText = logicalPreimage is null ? string.Empty : FileVersion.Decode(logicalPreimage).Text;
+            var afterText = change.Postimage is null ? string.Empty : FileVersion.Decode(change.Postimage).Text;
+            FileVersion.ChangedLines(beforeText, afterText, out var deleted, out var inserted);
+            receipts.Add(new WorkspaceMutationReceipt(store.GetWorkspaceId(context.WorkspaceRoot),
+                image.RelativePath.Replace('\\', '/'), intent.ToolCallId, context.MutationRunId,
+                context.MutationTurnId, (previous?.State == WorkspaceFileHistoryState.Tombstone
+                    ? ModelToolCapability.ReplaceFile : OperationFor(image)).ToString(),
+                NormalizeHash(image.ExpectedPreSha256), NormalizeHash(image.ExpectedPostSha256),
+                preimage, postimage, deleted, inserted,
+                WorkspaceMutationReceiptState.Prepared));
+        }
+        store.Prepare(receipts, cancellationToken);
+    }
+
+    private void CompleteDurableHistory(ToolExecutionContext context, ToolIntent intent,
+        IReadOnlyList<string> paths, CancellationToken cancellationToken)
+    {
+        var store = context.MutationHistory;
+        if (store is null) return;
+        var receipts = new List<WorkspaceMutationReceipt>(paths.Count);
+        var states = new List<WorkspaceFileHistoryEntry>(paths.Count);
+        foreach (var path in paths)
+        {
+            var prepared = store.ReadReceipt(context.WorkspaceRoot, intent.ToolCallId, path)
+                ?? throw new InvalidDataException("Prepared workspace mutation receipt is missing.");
+            var full = Path.GetFullPath(path, context.WorkspaceRoot);
+            var previous = store.ReadFile(context.WorkspaceRoot, path);
+            var appliedHash = File.Exists(full) ? FileVersion.VersionToken(File.ReadAllBytes(full)) : null;
+            var isDelete = appliedHash is null;
+            var state = isDelete
+                ? new WorkspaceFileHistoryEntry(prepared.WorkspaceId, path.Replace('\\', '/'),
+                    WorkspaceFileHistoryState.Tombstone, prepared.ExpectedPreHash,
+                    prepared.PreimageRef ?? previous?.ImageRef, checked((previous?.Revision ?? 0) + 1), intent.ToolCallId)
+                : new WorkspaceFileHistoryEntry(prepared.WorkspaceId, path.Replace('\\', '/'),
+                    WorkspaceFileHistoryState.Present, appliedHash, prepared.PostimageRef,
+                    checked((previous?.Revision ?? 0) + 1), intent.ToolCallId);
+            receipts.Add(prepared with { State = WorkspaceMutationReceiptState.Applied });
+            states.Add(state);
+        }
+        store.Complete(receipts, states, cancellationToken);
     }
 
     private static WorktreeIntegrationStateRecorded StateEvent(ToolCallId toolCallId, BatchMetadata metadata,
@@ -478,8 +561,9 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
     }
 
     private static MutationRefusal? ValidatePolicy(IReadOnlyList<DurableFileImage> files,
-        FileReadRegistry? registry)
+        ToolExecutionContext context)
     {
+        var registry = context.ReadRegistry;
         if (registry is null) return null;
         var ledger = registry.Ledger;
         var policy = ledger.MutationPolicy;
@@ -492,8 +576,32 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
             var after = post is null ? string.Empty : FileVersion.Decode(post).Text;
             var exists = pre is not null;
             var operation = OperationFor(image);
+            if (pre is null && post is not null && context.MutationHistory is { } history
+                && history.ReadFile(context.WorkspaceRoot, image.RelativePath) is
+                    { State: WorkspaceFileHistoryState.Tombstone, ExpectedHash: { } tombstoneHash,
+                        ImageRef: { } tombstoneRef })
+            {
+                try
+                {
+                    pre = ReadHistoryImage(context.Artifacts, tombstoneRef, tombstoneHash);
+                    before = FileVersion.Decode(pre).Text;
+                }
+                catch (Exception)
+                {
+                    return new MutationRefusal(ToolErrorCode.StaleWrite,
+                        "The deleted target's protected version is unavailable; reread or reconcile it before integration.");
+                }
+                exists = true;
+                operation = ModelToolCapability.ReplaceFile;
+            }
             if (exists && (policy?.RequirePriorRead ?? true)
-                && !registry.Matches(image.RelativePath, image.ExpectedPreSha256!))
+                && (operation == ModelToolCapability.ReplaceFile && pre is not null
+                    && context.MutationHistory?.ReadFile(context.WorkspaceRoot, image.RelativePath) is
+                        { State: WorkspaceFileHistoryState.Tombstone, ExpectedHash: { } visibleTombstoneHash }
+                    ? !registry.Matches(image.RelativePath, visibleTombstoneHash)
+                        || !registry.HasCompleteVisibleRead(image.RelativePath, visibleTombstoneHash)
+                    : !registry.Matches(image.RelativePath, image.ExpectedPreSha256!)
+                        || !registry.HasCompleteVisibleRead(image.RelativePath, image.ExpectedPreSha256!)))
             {
                 ledger.RecordTokenViolation(image.RelativePath, operation);
                 return new MutationRefusal(ToolErrorCode.PriorReadRequired,
@@ -509,6 +617,20 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
     private static ModelToolCapability OperationFor(DurableFileImage image) => image.Postimage is null
         ? ModelToolCapability.DeleteFile
         : image.Preimage is null ? ModelToolCapability.CreateFile : ModelToolCapability.ReplaceFile;
+
+    private static string? NormalizeHash(string? value) => string.Equals(value, "absent",
+        StringComparison.OrdinalIgnoreCase) ? null : value;
+
+    private static byte[] ReadHistoryImage(IArtifactStore? artifacts, ArtifactRef reference, string expectedHash)
+    {
+        if (artifacts is null)
+            throw new InvalidDataException("Protected workspace history image is invalid.");
+        var bytes = FilesystemPreimage.Read(artifacts, reference)
+            ?? throw new InvalidDataException("Protected workspace history image is absent.");
+        if (FileVersion.VersionToken(bytes) != expectedHash)
+            throw new InvalidDataException("Protected workspace history image does not match its recorded version.");
+        return bytes;
+    }
 
     private static DurableImage? EncodeImage(byte[]? bytes, string? expectedHash)
     {

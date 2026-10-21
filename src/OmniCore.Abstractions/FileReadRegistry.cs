@@ -41,6 +41,7 @@ using OmniCore.Domain;
 public sealed class FileReadRegistry
 {
     private readonly Dictionary<string, ReadCoverage> _readByPath;
+    private readonly List<VisibleReadEvidence> _visibleReadsSinceDrain = [];
     private readonly object _readLock = new();
     private readonly string? _workspaceRoot;
 
@@ -130,7 +131,27 @@ public sealed class FileReadRegistry
             if (length > 0) AddMergedRange(existing.Ranges, start, checked(start + length));
             if (complete) existing.Full = true;
             _readByPath[key] = existing;
+            _visibleReadsSinceDrain.Add(new VisibleReadEvidence(path, versionToken, start, length, totalLength));
         }
+    }
+
+    /// <summary>Returns exact read slices recorded since the prior drain for the Host journal.</summary>
+    public IReadOnlyList<VisibleReadEvidence> TakeVisibleReads()
+    {
+        lock (_readLock)
+        {
+            var reads = _visibleReadsSinceDrain.ToArray();
+            _visibleReadsSinceDrain.Clear();
+            return reads;
+        }
+    }
+
+    /// <summary>Restores a proof from a successful read event in the same Run/Lane.</summary>
+    public void RestoreVisibleRead(string path, string versionToken, int start, int length, int totalLength)
+    {
+        RecordRead(path, versionToken, start, length, totalLength,
+            start == 0 && length == totalLength);
+        lock (_readLock) _visibleReadsSinceDrain.Clear();
     }
 
     /// <summary>True only when every character in the proposed mutation span was shown to the
@@ -234,13 +255,16 @@ public sealed class FileReadRegistry
 
     /// <summary>Stable opaque identity for mutation-budget accounting. This value cannot be
     /// resolved back to a path and is never used as filesystem authority.</summary>
-    internal string MutationBudgetKey(string path)
+    public string MutationBudgetKey(string path)
     {
         // Preserve the MutationLedger's former ordinal identity. The digest changes storage
         // representation only; it must not collapse Foo.cs and foo.cs on case-sensitive volumes.
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(Canonical(path))));
     }
 }
+
+/// <summary>Exact character interval emitted from a successful filesystem.read.</summary>
+public sealed record VisibleReadEvidence(string Path, string VersionToken, int Start, int Length, int TotalLength);
 
 /// <summary>Validación post-edición exigida por la política y aún no verificada (ADR-0044 §5).</summary>
 public sealed record PendingEditValidation(string Path, int Turn, ToolCallId? ToolCallId);
@@ -283,6 +307,8 @@ public sealed class MutationLedger
     private readonly FileReadRegistry _registry;
     private readonly HashSet<string> _turnFiles = new(StringComparer.Ordinal);
     private readonly HashSet<string> _runFiles = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _turnChargeKeys = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _runChargeKeys = new(StringComparer.Ordinal);
     private readonly List<PendingEditValidation> _pendingValidations = new();
     private readonly List<ObservedMutation> _observed = new();
     private FileMutationPolicy? _policy;
@@ -343,6 +369,7 @@ public sealed class MutationLedger
     {
         _turn++;
         _turnFiles.Clear();
+        _turnChargeKeys.Clear();
         _turnChangedLines = 0;
         _turnBudgetUnknown = false;
     }
@@ -352,6 +379,7 @@ public sealed class MutationLedger
     public void ResetTurnBudgetForReplay()
     {
         _turnFiles.Clear();
+        _turnChargeKeys.Clear();
         _turnChangedLines = 0;
         _turnBudgetUnknown = false;
     }
@@ -360,6 +388,7 @@ public sealed class MutationLedger
     public void ResetRunBudgetForReplay()
     {
         _runFiles.Clear();
+        _runChargeKeys.Clear();
         _runChangedLines = 0;
         _runMutations = 0;
         _runBudgetUnknown = false;
@@ -367,13 +396,33 @@ public sealed class MutationLedger
 
     public void MarkRunBudgetUnknown() => _runBudgetUnknown = true;
 
+    /// <summary>Restores a pending validation debt from durable mutation receipts and the
+    /// corresponding journal's consumed-edit markers.</summary>
+    public void RestorePendingValidation(string path, ToolCallId? toolCallId)
+    {
+        if (_pendingValidations.Any(item => item.ToolCallId == toolCallId
+            && string.Equals(item.Path, path, StringComparison.Ordinal))) return;
+        _pendingValidations.Add(new PendingEditValidation(path, _turn, toolCallId));
+    }
+
     /// <summary>Restores Run-level accounting for one confirmed published target.</summary>
-    public void RestoreRunBudgetCharge(string targetKeyHash, int changedLines)
+    public void RestoreRunBudgetCharge(string targetKeyHash, int changedLines, ToolCallId? toolCallId = null)
     {
         if (!IsValidBudgetCharge(targetKeyHash, changedLines))
         {
             _runBudgetUnknown = true;
             return;
+        }
+
+        if (toolCallId is { } call)
+        {
+            var chargeKey = ChargeKey(call, targetKeyHash);
+            if (_runChargeKeys.TryGetValue(chargeKey, out var previous))
+            {
+                if (previous != changedLines) _runBudgetUnknown = true;
+                return;
+            }
+            _runChargeKeys.Add(chargeKey, changedLines);
         }
 
         _runFiles.Add(targetKeyHash.ToLowerInvariant());
@@ -387,12 +436,23 @@ public sealed class MutationLedger
 
     /// <summary>Restores a confirmed durable mutation charge. The digest is accounting identity
     /// only; it is never resolved to a path or used as file authority.</summary>
-    public void RestoreTurnBudgetCharge(string targetKeyHash, int changedLines)
+    public void RestoreTurnBudgetCharge(string targetKeyHash, int changedLines, ToolCallId? toolCallId = null)
     {
         if (!IsValidBudgetCharge(targetKeyHash, changedLines))
         {
             _turnBudgetUnknown = true;
             return;
+        }
+
+        if (toolCallId is { } call)
+        {
+            var chargeKey = ChargeKey(call, targetKeyHash);
+            if (_turnChargeKeys.TryGetValue(chargeKey, out var previous))
+            {
+                if (previous != changedLines) _turnBudgetUnknown = true;
+                return;
+            }
+            _turnChargeKeys.Add(chargeKey, changedLines);
         }
 
         _turnFiles.Add(targetKeyHash.ToLowerInvariant());
@@ -404,6 +464,16 @@ public sealed class MutationLedger
         targetKeyHash is { Length: 64 }
         && targetKeyHash.All(Uri.IsHexDigit)
         && changedLines >= 0;
+
+    /// <summary>Unions a committed workspace receipt into this in-memory snapshot without
+    /// erasing journal-only charges or fail-closed unknown state. Idempotency is per call and
+    /// target because one worktree integration call may publish several files.</summary>
+    public void RestoreDurableBudgetCharge(ToolCallId toolCallId, string targetKeyHash, int changedLines,
+        bool currentTurn)
+    {
+        RestoreRunBudgetCharge(targetKeyHash, changedLines, toolCallId);
+        if (currentTurn) RestoreTurnBudgetCharge(targetKeyHash, changedLines, toolCallId);
+    }
 
     /// <summary>Fail-closed state for a prior mutation whose durable outcome or charge cannot be
     /// verified. Further file mutations are denied for this Turn; the next Turn starts clean.</summary>
@@ -433,6 +503,10 @@ public sealed class MutationLedger
             // Sin política activa (frontera sin fijar) esta capa no restringe: manda el techo.
             return null;
         }
+
+        if (_runBudgetUnknown)
+            return new MutationRefusal(ToolErrorCode.LimitExceeded,
+                LimitExceededCode + ": no se puede verificar el presupuesto de mutación previo de este Run; la ejecución debe reanudarse o reconciliarse antes de escribir.");
 
         if (_turnBudgetUnknown)
             return new MutationRefusal(ToolErrorCode.LimitExceeded,
@@ -521,6 +595,9 @@ public sealed class MutationLedger
         ArgumentNullException.ThrowIfNull(proposals);
         var policy = MutationPolicy;
         if (policy is null) return null;
+        if (_runBudgetUnknown)
+            return new MutationRefusal(ToolErrorCode.LimitExceeded,
+                LimitExceededCode + ": no se puede verificar el presupuesto de mutación previo de este Run; la ejecución debe reanudarse o reconciliarse antes de escribir.");
         if (_turnBudgetUnknown)
             return new MutationRefusal(ToolErrorCode.LimitExceeded,
                 LimitExceededCode + ": no se puede verificar el presupuesto de mutación previo de este Turn; continúa en un Turn nuevo.");
@@ -581,6 +658,16 @@ public sealed class MutationLedger
         Observe(toolCallId, Sample(path, operation, originalLines, changedLines), published: true);
         _turnFiles.Add(key);
         _runFiles.Add(key);
+        if (toolCallId is { } call)
+        {
+            var chargeKey = ChargeKey(call, key);
+            if (_turnChargeKeys.TryGetValue(chargeKey, out var priorTurnCharge) && priorTurnCharge != changedLines)
+                _turnBudgetUnknown = true;
+            else _turnChargeKeys[chargeKey] = changedLines;
+            if (_runChargeKeys.TryGetValue(chargeKey, out var priorRunCharge) && priorRunCharge != changedLines)
+                _runBudgetUnknown = true;
+            else _runChargeKeys[chargeKey] = changedLines;
+        }
         var delta = changedLines;
         _turnChangedLines = checked(_turnChangedLines + delta);
         _runChangedLines = checked(_runChangedLines + delta);
@@ -647,6 +734,9 @@ public sealed class MutationLedger
 
     private void Observe(ToolCallId? toolCallId, FileMutationSample sample, bool published = false) =>
         _observed.Add(new ObservedMutation(toolCallId, sample, published));
+
+    private static string ChargeKey(ToolCallId toolCallId, string targetKeyHash) =>
+        toolCallId + ":" + targetKeyHash.ToLowerInvariant();
 
     /// <summary>
     /// Muestra de FileMutationReliability (ADR-0044 §4) con lo que el ledger puede afirmar: parche

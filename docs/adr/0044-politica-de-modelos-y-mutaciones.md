@@ -195,9 +195,10 @@ Reglas obligatorias:
   relajar la comprobación de versión, permisos o presupuesto.
 - El runtime calcula el diff resultante antes de aplicar y hace cumplir límites de archivos,
   líneas y `MaxRewriteRatio`.
-- Requisito pendiente de enforcement durable (§5.1): borrar y crear la misma ruta, o moverla y
-  recrearla, debe clasificarse como reemplazo y no evadir el límite de categoría. La existencia
-  actual del archivo y la telemetría de cualificación no demuestran esa garantía.
+- Continuidad durable nativa (§5.1): borrar y crear la misma ruta, o moverla y
+  recrearla, se evalúa como reemplazo contra su historia en los canales nativos conectados.
+  La paridad con escritores generales sigue pendiente; la existencia actual del archivo y la
+  telemetría de cualificación no demuestran por sí solas esa garantía.
 - En perfiles restringidos no hay mutaciones paralelas.
 - El resultado se somete a parser/build/test o al gate disponible que corresponda. Los fallos
   repetidos pueden restringir el resto del Run a `ObserveOnly` y sugerir escalación; nunca amplían
@@ -212,8 +213,11 @@ Reglas obligatorias:
 **Decisión del usuario (2026-10-18):** simplificar el contrato permitiendo que el arnés convierta
 un `write` sobre un archivo existente en una edición controlada, sin introducir una prohibición
 general de write ni de borrar/recrear. El bloque **M9-L-MUT-01** sigue abierto: su
-normalización nativa está implementada y validada offline el 2026-10-20; la
-continuidad durable de borrado/movimiento y la paridad entre canales siguen pendientes.
+normalización nativa está publicada y validada offline el 2026-10-20. La
+continuidad durable de borrado/movimiento está implementada y validada localmente;
+su [acta](../validation/m9-durable-file-history-20261020.md) registra resultados,
+límites y el requisito de CI antes de integrar. La paridad con escritores generales
+sigue pendiente.
 
 La ruta nativa conserva la solicitud original y evalúa también filesystem.patch
 antes de autorizar un write existente. Un Deny de cualquiera impide el efecto;
@@ -234,8 +238,17 @@ iniciales/finales sin cambios y usa un span conservador entre ellas. No garantiz
 el diff mínimo universal. Las aprobaciones de otras tools
 conservan su fingerprint anterior.
 
-El alcance objetivo restante y sus garantías, que no se consideran aceptadas por
-esta implementación parcial, son:
+La continuación usa tablas del journal del workspace independientes de la
+retención de Session, recibos por llamada/destino, raíces CAS de GC y un bloqueo
+OS que cerca recuperación, revalidación, efecto y resultado durable. Write/patch,
+`worktree.integrate` y Deshacer consumen la misma historia de su raíz física.
+La lectura normal observa hash/cobertura sin exigir archivar el archivo; la de un
+tombstone muestra explícitamente su imagen histórica autorizada. Recrear requiere
+ReplaceFile y la capacidad de creación física, además de lectura/token, permisos
+y límites; el permiso del borrado no autoriza la recreación.
+
+Los contratos del bloque completo son los siguientes. La evidencia de cada canal
+figura en el acta; los procesos escritores generales todavía no están aceptados:
 
 - El Host normaliza el cambio antes de autorizar su efecto: destino nuevo sin historia protegida
   → creación; destino existente → diff de edición; destino borrado/movido y luego recreado →
@@ -424,7 +437,8 @@ cualificación. Los perfiles limitados conservan su comportamiento anterior.
 
 La restricción create-only de esta entrega queda sustituida al integrar el 2026-10-19
 por la decisión del usuario del 2026-10-18 (§5.1): se conserva el reemplazo autorizado
-vigente de §5 hasta construir la normalización de write a edición, sin prohibición global.
+vigente de §5 durante la transición. La normalización nativa de write a edición ya
+está publicada en el checkpoint `e84949c` del 2026-10-20, sin prohibición global.
 La edición mediante patch usa parches localizados sobre el handle original, sin sustitución física.
 Se conserva la preimagen durable, se restaura ante fallo ordinario y un rollback fallido
 se registra como efecto desconocido. Una caída abrupta puede requerir reconciliar un

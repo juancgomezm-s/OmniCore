@@ -2840,10 +2840,11 @@ public sealed class OmniCliRuntime : IDisposable
                 ? OmniHost.CreateActExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
                     audit, interactionResponder, interactive, artifacts, agentProfile, receiveMailbox,
                     extensionBoundaries, server.AcquireSessionSecurityAdmission,
+                    mutationHistory: server.MutationHistoryStore,
                     allowDeferredInteraction: delegation is null && allowDeferredNativePermission)
                 : OmniHost.CreateExplorerExecutor(hostTools.Catalog(), workspaceRoot, boundary, restrictions, runId,
                     agentProfile, receiveMailbox, extensionBoundaries, artifacts,
-                    server.AcquireSessionSecurityAdmission,
+                    server.AcquireSessionSecurityAdmission, mutationHistory: server.MutationHistoryStore,
                     allowDeferredInteraction: delegation is null && allowDeferredNativePermission);
             var skillLimits = SkillSelectionLimits.FromHarness(harness,
                 (int)Math.Clamp(usableContext / 8, 1, 16_384));
@@ -3223,11 +3224,13 @@ public sealed class OmniCliRuntime : IDisposable
                             restrictions, work.Run, audit, interactionResponder, interactive, artifacts,
                             work.Profile, receiveMailbox,
                             acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission,
+                            mutationHistory: server.MutationHistoryStore,
                             allowDeferredWeakSandboxConsent: allowNativeWeakSandboxConsent
                                 && workflowStage?.Definition.Stage == WorkflowStage.Verify)
                         : OmniHost.CreateExplorerExecutor(childTools.Catalog(), laneRoot, childBoundary,
                             restrictions, work.Run, work.Profile, receiveMailbox, artifacts: artifacts,
                             acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission,
+                            mutationHistory: server.MutationHistoryStore,
                             allowDeferredWeakSandboxConsent: allowNativeWeakSandboxConsent
                                 && workflowStage?.Definition.Stage == WorkflowStage.Verify);
                     var childResumePreflightPassed = resumePreflightPassed;
@@ -3453,7 +3456,8 @@ public sealed class OmniCliRuntime : IDisposable
                                 var rootExecutor = OmniHost.CreateActExecutor(rootTools.Catalog(), workspaceRoot,
                                     rootBoundary, restrictions, runId, audit, interactionResponder, interactive,
                                     artifacts, rootProfile, additionalBoundaries: extensionBoundaries,
-                                    acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission);
+                                    acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission,
+                                    mutationHistory: server.MutationHistoryStore);
                                 var rootTurn = BuildTurn(productReasoning, reasoningResolution, rootExecutor,
                                     rootTools.Catalog(), rootBoundary, materializer);
                                 var rootInstruction = TurnInstruction(effectiveMode, conversationOnly);
@@ -3637,7 +3641,8 @@ public sealed class OmniCliRuntime : IDisposable
                         boundary, restrictions, runId, audit, interactionResponder, interactive, artifacts,
                         server.ResolveLaneAgentProfile(sessionId, runId, laneId),
                         additionalBoundaries: extensionBoundaries,
-                        acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission);
+                        acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission,
+                        mutationHistory: server.MutationHistoryStore);
                     var approvedResolution = ResolveReasoningResolution(server.CurrentRunReasoningSelection(),
                         server.CurrentModeAuthority(), route.ReasoningCapability, null, null, selectedMaxOutputTokens,
                         route.Protocol);

@@ -80,6 +80,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     private readonly string? _stateFile;
 
     private readonly IArtifactStore? _artifacts;
+    private readonly IWorkspaceMutationHistoryStore? _mutationHistory;
 
     internal ArtifactRef ImportUserAttachment(byte[] bytes, string fileName)
     {
@@ -223,7 +224,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit,
         IArtifactStore? artifacts = null, UserWorkspaceSpendReader? userSpendReader = null,
         Func<IPlatformPaths>? platformPathsFactory = null,
-        Func<IPlatformPaths, OpenRouterConnectionService>? openRouterServiceFactory = null)
+        Func<IPlatformPaths, OpenRouterConnectionService>? openRouterServiceFactory = null,
+        IWorkspaceMutationHistoryStore? mutationHistory = null)
     {
         _ = SecretRedactor.Shared;
         _store = store;
@@ -231,6 +233,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         _codecs = codecs;
         _audit = audit;
         _artifacts = artifacts;
+        _mutationHistory = mutationHistory;
         _platformPathsFactory = platformPathsFactory ?? (() => OmniHost.CreatePlatformPaths());
         _openRouterServiceFactory = openRouterServiceFactory;
         _userSpendReader = userSpendReader;
@@ -252,7 +255,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     public OmniServer(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit, string stateFile,
         IArtifactStore? artifacts = null, UserWorkspaceSpendReader? userSpendReader = null,
         Func<IPlatformPaths>? platformPathsFactory = null,
-        Func<IPlatformPaths, OpenRouterConnectionService>? openRouterServiceFactory = null)
+        Func<IPlatformPaths, OpenRouterConnectionService>? openRouterServiceFactory = null,
+        IWorkspaceMutationHistoryStore? mutationHistory = null)
     {
         _ = SecretRedactor.Shared;
         _store = store;
@@ -260,6 +264,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         _codecs = codecs;
         _audit = audit;
         _artifacts = artifacts;
+        _mutationHistory = mutationHistory;
         _platformPathsFactory = platformPathsFactory ?? (() => OmniHost.CreatePlatformPaths());
         _openRouterServiceFactory = openRouterServiceFactory;
         _userSpendReader = userSpendReader;
@@ -277,6 +282,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             RecoverExpiredWorktreesAtStartup();
         }
     }
+
+    internal IWorkspaceMutationHistoryStore? MutationHistoryStore => _mutationHistory;
 
     /// <summary>Composición común: tools Core + defaults por modo (modo Act del sim).</summary>
     internal static SimulationEngine BuildEngine(IEventStore store, IEventCodecRegistry codecs, IAuditSink audit) =>
@@ -338,7 +345,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         }
     }
 
-    internal void ClosePersistentStore() => (_store as SqliteEventStore)?.Close();
+    internal void ClosePersistentStore()
+    {
+        (_store as SqliteEventStore)?.Close();
+        if (_mutationHistory is IDisposable disposable) disposable.Dispose();
+    }
 
     internal bool EnsureWriterOwnershipForCommand()
     {

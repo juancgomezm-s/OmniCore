@@ -37,7 +37,9 @@ public sealed class OmniHost
         var codecs = EventCodecs.Create();
         var store = new SqliteEventStore(Path.Combine(dataDirectory, "journal.db"));
         var audit = new FileAuditSink(dataDirectory);
-        return new OmniServer(store, codecs, audit);
+        return new OmniServer(store, codecs, audit,
+            artifacts: CreateArtifactStore(dataDirectory),
+            mutationHistory: new SqliteWorkspaceMutationHistoryStore(dataDirectory));
     }
 
     /// <summary>Crea un servidor in-process con un store en memoria (tests deterministas).</summary>
@@ -64,7 +66,8 @@ public sealed class OmniHost
         var audit = new FileAuditSink(auditDataDirectory ?? workspaceData);
         return new OmniServer(store, codecs, audit, Path.Combine(workspaceData, "lastsession.txt"),
             CreateArtifactStore(workspaceData), auditDataDirectory is null ? null
-                : new UserWorkspaceSpendReader(auditDataDirectory, workspaceData));
+                : new UserWorkspaceSpendReader(auditDataDirectory, workspaceData),
+            mutationHistory: new SqliteWorkspaceMutationHistoryStore(workspaceData));
     }
 
     /// <summary>
@@ -385,7 +388,8 @@ public sealed class OmniHost
         Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null,
         IReadOnlyList<IToolIntentBoundary>? additionalBoundaries = null, IArtifactStore? artifacts = null,
         Func<IDisposable>? acquireSessionSecurityAdmission = null,
-        bool allowDeferredInteraction = false, bool allowDeferredWeakSandboxConsent = false)
+        bool allowDeferredInteraction = false, bool allowDeferredWeakSandboxConsent = false,
+        IWorkspaceMutationHistoryStore? mutationHistory = null)
     {
         var policy = CreateGrantAwarePolicy(OmniCore.Domain.RunMode.Plan, projectRestrictions, workspaceRoot, runId);
         IPermissionPolicy effectivePolicy = agentProfile is null ? policy
@@ -394,7 +398,8 @@ public sealed class OmniHost
             artifacts: artifacts, receiveMailbox: receiveMailbox, additionalBoundaries: additionalBoundaries,
             acquireSessionSecurityAdmission: acquireSessionSecurityAdmission,
             allowDeferredInteraction: allowDeferredInteraction,
-            allowDeferredWeakSandboxConsent: allowDeferredWeakSandboxConsent);
+            allowDeferredWeakSandboxConsent: allowDeferredWeakSandboxConsent,
+            mutationHistory: mutationHistory);
     }
 
     public static ScriptedPermissionPolicy CreateProjectRestrictionPolicy(OmniCore.Domain.RunMode mode,
@@ -457,7 +462,8 @@ public sealed class OmniHost
         Func<ToolCallId, CancellationToken, Task<string?>>? receiveMailbox = null,
         IReadOnlyList<IToolIntentBoundary>? additionalBoundaries = null,
         Func<IDisposable>? acquireSessionSecurityAdmission = null,
-        bool allowDeferredInteraction = false, bool allowDeferredWeakSandboxConsent = false)
+        bool allowDeferredInteraction = false, bool allowDeferredWeakSandboxConsent = false,
+        IWorkspaceMutationHistoryStore? mutationHistory = null)
     {
         ArgumentNullException.ThrowIfNull(boundary);
         var policy = CreateGrantAwarePolicy(OmniCore.Domain.RunMode.Act, projectRestrictions, workspaceRoot, runId, audit);
@@ -470,7 +476,8 @@ public sealed class OmniHost
             additionalBoundaries: additionalBoundaries,
             acquireSessionSecurityAdmission: acquireSessionSecurityAdmission,
             allowDeferredInteraction: allowDeferredInteraction,
-            allowDeferredWeakSandboxConsent: allowDeferredWeakSandboxConsent);
+            allowDeferredWeakSandboxConsent: allowDeferredWeakSandboxConsent,
+            mutationHistory: mutationHistory);
     }
 
     /// <summary>Política de permisos con grants aislados por WorkspaceId y auditados en user data.</summary>
