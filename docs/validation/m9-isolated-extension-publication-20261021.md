@@ -38,6 +38,10 @@ rechazó y no es el diseño aceptado.
 - Construir la autorización de aplicación automática por scope humano, con
   revocación, caducidad y matcher para identidad/rutas/operaciones/límites;
   probar aplicación dentro del alcance y propuesta pendiente fuera de él.
+- Construir selector Revisar propuesta / Aplicar automáticamente en los clientes,
+  con estado y autoridad del Host. En automático, cero preguntas tanto al aplicar
+  dentro del alcance como al detenerse por falta de permiso, conflicto o límites;
+  cambio de selector pasivo y recuperación sin segunda llamada del modelo.
 
 La construcción se hizo con un único worker Luna alto. Se interrumpió al
 confirmar el bloqueo y la desviación del prototipo. No se declara build, prueba

@@ -138,8 +138,9 @@ explícito. Dentro de ese alcance, ejecutar encadena internamente la aplicación
 presenta una sola operación visible; el modelo no necesita otra ronda de
 inferencia para coordinarla. Los recibos de proceso y publicación se conservan
 separados. Si el resultado queda fuera del alcance autorizado, permanece como
-propuesta; una ampliación válida se solicita para el lote, no archivo por archivo,
-y no vuelve a ejecutar el proceso que ya terminó.
+propuesta. En modo de revisión, una ampliación válida se solicita para el lote,
+no archivo por archivo, y no vuelve a ejecutar el proceso que ya terminó. En
+automático se aplica el comportamiento sin preguntas definido debajo.
 
 La autorización reutilizable identifica workspace físico, extensión/paquete,
 rutas o patrones normalizados, operaciones permitidas, límites y duración. La
@@ -154,6 +155,38 @@ autorización compuesta ni la cobertura de futuros lotes con rutas distintas: ha
 falta implementar su contrato explícito y matcher de alcance, auditado y ligado a
 identidad/revisión. Consultas y reconexiones permanecen pasivas. Este acuerdo
 sustituye la propuesta de exigir siempre dos acciones o siempre una sola.
+
+#### Selector de aplicación y confirmaciones
+
+La UI debe ofrecer un selector explícito **Aplicación de cambios**, disponible
+en CLI/TUI y OmniCoder mediante el mismo estado canónico del Host:
+
+- **Revisar propuesta:** ejecutar produce propuesta; aplicar es una segunda
+  acción. Las aprobaciones necesarias se agrupan por lote.
+- **Aplicar automáticamente:** la elección humana autoriza el encadenamiento
+  dentro del alcance configurado. Ejecutar devuelve el resultado de ambas fases
+  y no abre preguntas de permisos por llamada, lote o archivo. El Host consume
+  la autorización de ejecución/publicación correspondiente; no deja que el modelo
+  decida la aprobación ni le exige una segunda invocación para aplicar.
+
+El alcance y su duración se muestran al configurar el selector, con Run inicial
+y opción explícita de recordar para Workspace. Cambiar el selector no inicia
+trabajo ni publica propuestas anteriores. La configuración tiene revisión y
+revocación, se sincroniza entre clientes y sus etiquetas se traducen usando los
+recursos existentes; el idioma no modifica la autorización.
+
+En modo automático, si falta autoridad de proceso/publicación, hay un Deny, el
+lote excede el alcance o aparece un conflicto/límite, el Host se detiene y reporta
+la causa **sin abrir un diálogo de aprobación**. Conserva una propuesta válida
+cuando exista; el usuario puede revisar o cambiar el alcance desde los controles
+por iniciativa propia. No se relanza el proceso ni se pasa silenciosamente al
+modo interactivo. Así, automático significa una sola acción sin preguntas, no
+una autorización ilimitada.
+
+La aceptación requiere probar cero interacciones Permission tanto en el recorrido
+automático autorizado como en sus rechazos fuera de alcance, además de autoridad
+humana del selector, revocación/revisión, recuperación y ausencia de ejecución
+por cambiar el modo. El selector y su comportamiento todavía deben construirse.
 
 **Corrección acordada M9-L-MUT-01 (2026-10-18), implementación parcial:** la
 normalización Host de write existente a edición por diff está publicada y la

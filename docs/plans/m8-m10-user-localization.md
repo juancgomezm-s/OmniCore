@@ -143,13 +143,22 @@ usuario; este avance de M9 no lo cierra.
 ejecutar para proponer y aplicar el lote completo. El usuario puede autorizar un
 alcance reutilizable de aplicación automática; dentro de él, OmniCore encadena
 ambas fases en una sola operación visible, sin otra inferencia ni pregunta por
-archivo. Fuera del alcance, conserva la propuesta y evalúa una aprobación o
-ampliación conjunta cuando proceda, sin relanzar el proceso. La autorización
+archivo. Fuera del alcance, conserva la propuesta; en modo de revisión evalúa una
+aprobación o ampliación conjunta cuando proceda, sin relanzar el proceso. La autorización
 incluye identidad de workspace/extensión, rutas, operaciones, límites y duración;
 Run es el alcance inicial propuesto y Workspace exige elección explícita. Sigue
 pendiente construir el aplicador común y el contrato compuesto de autorización;
 los grants exactos existentes no demuestran ese soporte. Contrato en
 [ADR-0060](../adr/0060-native-orchestration-workflow-recovery.md#vertical-de-extensión-escritor-dos-acciones-con-aplicación-automática-autorizada).
+
+Debe existir un selector **Aplicación de cambios: Revisar propuesta / Aplicar
+automáticamente**, cableado al Host común desde CLI/TUI y OmniCoder. Automático
+encadena ejecución y publicación sin diálogos de permisos ni segunda llamada del
+modelo dentro del alcance configurado. Un rechazo, conflicto o falta de alcance
+detiene e informa sin preguntar; no se cambia a modo interactivo automáticamente.
+El usuario modifica el alcance desde sus controles. Cambiar el selector no ejecuta
+trabajo. Construcción pendiente: modo/revisión/autoridad, persistencia, UI traducida
+y pruebas de cero interacciones en el recorrido autorizado y en los rechazos.
 
 <a id="m9-l-mut-01"></a>
 
