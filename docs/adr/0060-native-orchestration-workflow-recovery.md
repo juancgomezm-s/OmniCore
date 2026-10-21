@@ -188,6 +188,36 @@ automático autorizado como en sus rechazos fuera de alcance, además de autorid
 humana del selector, revocación/revisión, recuperación y ausencia de ejecución
 por cambiar el modo. El selector y su comportamiento todavía deben construirse.
 
+#### Permisos elevados implican continuidad automática
+
+Ampliación explícita del usuario del 2026-10-21: seleccionar el perfil humano de
+permisos elevados activa también la aplicación automática y la política efectiva
+de no preguntar. No requiere que el usuario active después otro selector ni
+apruebe una nueva modalidad por cada llamada. Ejecutar, generar propuesta,
+validar y publicar forman una sola operación visible continua dentro del alcance
+del perfil. El selector independiente queda disponible para permisos normales y
+para una preferencia explícita de revisión elegida por el usuario.
+
+El perfil de permisos User existente incluye `Autonomous`; la implementación debe
+ligar la automaticidad a esa elección humana y a su revisión/alcance efectivo en
+Host, compartido por CLI/TUI/OmniCoder. La procedencia de la preferencia distingue
+derivación del perfil y override explícito: al retirar elevación se recalcula la
+opción heredada; un override automático conserva cero preguntas pero sólo puede
+ejecutar dentro de los permisos restantes. Cambiar de perfil no despacha trabajo.
+
+El contrato diferencia amplitud de permisos de fuerza de aislamiento. Strong/Weak
+describen aislamiento; un probe, un proceso con privilegios OS, una categoría del
+modelo o un booleano de la herramienta no acreditan una elección humana de
+permisos elevados. Esta decisión no elimina el aislamiento Strong requerido por
+el vertical escritor ni introduce un fallback Weak silencioso.
+
+La política de no preguntar se respeta también cuando el trabajo no se puede
+completar: un permiso ausente, rechazo, conflicto o límite produce estado y causa
+sin diálogo. La reanudación consume evidencia durable y no relanza el proceso.
+La aceptación incluye perfil elevado → automático sin selección adicional,
+cero interacciones de aprobación por ambas fases, reapertura/reconexión,
+revocación/cambio de revisión y conservación de overrides humanos explícitos.
+
 **Corrección acordada M9-L-MUT-01 (2026-10-18), implementación parcial:** la
 normalización Host de write existente a edición por diff está publicada y la
 [CI del checkpoint `e84949c`](https://github.com/juancgomezm-s/OmniCore/actions/runs/39517765699)

@@ -160,6 +160,15 @@ El usuario modifica el alcance desde sus controles. Cambiar el selector no ejecu
 trabajo. Construcción pendiente: modo/revisión/autoridad, persistencia, UI traducida
 y pruebas de cero interacciones en el recorrido autorizado y en los rechazos.
 
+**Ampliación del usuario:** activar permisos elevados debe activar automáticamente
+la ejecución/publicación continua y sin preguntas; no exige otro selector ni
+aprobaciones por llamada. Derivar del perfil User humano (`Autonomous`) y su
+alcance/revisión, diferenciándolo de Strong/Weak y de la categoría del modelo.
+Permisos normales conservan el selector; una preferencia explícita de revisión
+se respeta. La UI y el Host comparten modo y procedencia. Al faltar autoridad o
+aparecer un conflicto/límite se informa sin preguntar. Construcción y aceptación
+de esta asociación permanecen pendientes junto con el aplicador común.
+
 <a id="m9-l-mut-01"></a>
 
 ### M9-L-MUT-01 — normalización segura de escrituras y recreaciones

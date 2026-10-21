@@ -42,6 +42,9 @@ rechazó y no es el diseño aceptado.
   con estado y autoridad del Host. En automático, cero preguntas tanto al aplicar
   dentro del alcance como al detenerse por falta de permiso, conflicto o límites;
   cambio de selector pasivo y recuperación sin segunda llamada del modelo.
+- Ligar la elección humana de permisos elevados a automático/sin preguntas sin
+  exigir otra selección. Distinguir perfil de permisos e aislamiento Strong/Weak,
+  persistir procedencia/revisión y probar retirada de elevación y overrides.
 
 La construcción se hizo con un único worker Luna alto. Se interrumpió al
 confirmar el bloqueo y la desviación del prototipo. No se declara build, prueba
