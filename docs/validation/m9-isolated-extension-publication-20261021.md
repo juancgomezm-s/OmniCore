@@ -8,9 +8,10 @@ Base estable: main `b81b3c2`, con
 
 La ejecución de una extensión escritora necesita una copia privada Strong y una
 intención de publicación del lote completo. Por decisión posterior del usuario,
-se ofrecen dos acciones por defecto y se permite encadenarlas en una sola
-operación visible con autorización humana reutilizable de alcance definido.
-No se pregunta por cada modificación: Ask se resuelve para el lote o su alcance.
+se ofrecen dos acciones con permisos normales y una operación continua sin
+preguntas con permisos elevados/autónomos. Se reutiliza el control de permisos
+existente; no se añade selector de aplicación ni formularios de alcance.
+Con permisos normales, Ask se resuelve por lote, no por modificación.
 Este contrato compuesto aún no está implementado. El permiso del
 proceso no autoriza por sí mismo las mutaciones de archivos. Se comenzó un
 prototipo de staging y propuesta, pero todavía no tiene consumidor de aplicación
@@ -35,16 +36,12 @@ rechazó y no es el diseño aceptado.
   reconciliación. Validar el conjunto antes del primer efecto sobre el checkout.
 - Conectar el aplicador explícito y probar allow/deny con proceso Strong real,
   más conflictos, límites y recuperación sin relanzar procesos inciertos.
-- Construir la autorización de aplicación automática por scope humano, con
-  revocación, caducidad y matcher para identidad/rutas/operaciones/límites;
-  probar aplicación dentro del alcance y propuesta pendiente fuera de él.
-- Construir selector Revisar propuesta / Aplicar automáticamente en los clientes,
-  con estado y autoridad del Host. En automático, cero preguntas tanto al aplicar
-  dentro del alcance como al detenerse por falta de permiso, conflicto o límites;
-  cambio de selector pasivo y recuperación sin segunda llamada del modelo.
-- Ligar la elección humana de permisos elevados a automático/sin preguntas sin
-  exigir otra selección. Distinguir perfil de permisos e aislamiento Strong/Weak,
-  persistir procedencia/revisión y probar retirada de elevación y overrides.
+- Ligar los permisos elevados/autónomos a automático/sin preguntas mediante el
+  perfil existente, sin selector extra ni nuevos formularios. El Host deriva
+  alcance de workspace/reglas/límites, revalida revisión y retirada de permisos.
+  Probar cero preguntas al aplicar o rechazar, cambio de perfil pasivo y
+  recuperación sin segunda llamada al modelo. Distinguir perfil humano e
+  aislamiento Strong/Weak; no elevar autoridad desde una llamada de herramienta.
 
 La construcción se hizo con un único worker Luna alto. Se interrumpió al
 confirmar el bloqueo y la desviación del prototipo. No se declara build, prueba

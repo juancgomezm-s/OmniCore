@@ -140,34 +140,20 @@ M8 permanece abierto hasta la aceptación manual pendiente del
 usuario; este avance de M9 no lo cierra.
 
 **Decisión de autorización de publicación (2026-10-21):** dos acciones por defecto,
-ejecutar para proponer y aplicar el lote completo. El usuario puede autorizar un
-alcance reutilizable de aplicación automática; dentro de él, OmniCore encadena
-ambas fases en una sola operación visible, sin otra inferencia ni pregunta por
-archivo. Fuera del alcance, conserva la propuesta; en modo de revisión evalúa una
-aprobación o ampliación conjunta cuando proceda, sin relanzar el proceso. La autorización
-incluye identidad de workspace/extensión, rutas, operaciones, límites y duración;
-Run es el alcance inicial propuesto y Workspace exige elección explícita. Sigue
-pendiente construir el aplicador común y el contrato compuesto de autorización;
-los grants exactos existentes no demuestran ese soporte. Contrato en
+ejecutar para proponer y aplicar el lote completo. Los permisos elevados/autónomos
+activan una sola operación continua: ejecutar, validar y aplicar sin preguntas ni
+otra inferencia. **Reutilizar únicamente el control de permisos existente**; se
+eliminan el selector adicional y los formularios nuevos de rutas/operaciones/duración.
+El Host deriva el alcance del workspace, perfil User, reglas y límites vigentes,
+compartidos por CLI/TUI y OmniCoder. Las excepciones se gestionan en los controles
+actuales. Ask se agrupa por lote en el recorrido normal; en automático, falta de
+permiso, conflicto o límite se informa sin diálogo y sin relanzar el proceso.
+Cambiar permisos no ejecuta ni aplica trabajo. Aislamiento Strong/Weak y categoría
+del modelo no acreditan elección humana de permisos elevados. Construcción
+pendiente: aplicador común, autorización compuesta/revisión y recuperación,
+allow/deny real y cero preguntas en automático. Los grants exactos existentes
+no demuestran todavía ese soporte. Contrato consolidado en
 [ADR-0060](../adr/0060-native-orchestration-workflow-recovery.md#vertical-de-extensión-escritor-dos-acciones-con-aplicación-automática-autorizada).
-
-Debe existir un selector **Aplicación de cambios: Revisar propuesta / Aplicar
-automáticamente**, cableado al Host común desde CLI/TUI y OmniCoder. Automático
-encadena ejecución y publicación sin diálogos de permisos ni segunda llamada del
-modelo dentro del alcance configurado. Un rechazo, conflicto o falta de alcance
-detiene e informa sin preguntar; no se cambia a modo interactivo automáticamente.
-El usuario modifica el alcance desde sus controles. Cambiar el selector no ejecuta
-trabajo. Construcción pendiente: modo/revisión/autoridad, persistencia, UI traducida
-y pruebas de cero interacciones en el recorrido autorizado y en los rechazos.
-
-**Ampliación del usuario:** activar permisos elevados debe activar automáticamente
-la ejecución/publicación continua y sin preguntas; no exige otro selector ni
-aprobaciones por llamada. Derivar del perfil User humano (`Autonomous`) y su
-alcance/revisión, diferenciándolo de Strong/Weak y de la categoría del modelo.
-Permisos normales conservan el selector; una preferencia explícita de revisión
-se respeta. La UI y el Host comparten modo y procedencia. Al faltar autoridad o
-aparecer un conflicto/límite se informa sin preguntar. Construcción y aceptación
-de esta asociación permanecen pendientes junto con el aplicador común.
 
 <a id="m9-l-mut-01"></a>
 

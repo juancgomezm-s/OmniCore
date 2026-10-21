@@ -114,109 +114,56 @@ Esta sección fija el alcance previsto; todavía no acredita su implementación.
 
 ### Vertical de extensión escritor: dos acciones con aplicación automática autorizada
 
-Decisión del usuario del 2026-10-21; todavía sin aceptación de implementación.
-El proceso Strong se ejecuta sobre una copia privada y sólo produce una propuesta
-durable. No recibe escritura al checkout ni al common-dir originales. La respuesta
-distingue la propuesta del efecto sobre el proyecto; completar la RPC no publica
-los archivos. La copia excluye secretos e ignorados de entrada, mientras que la
-inspección de salida incluye archivos nuevos ignorados y valida topología y límites.
+Decisión consolidada del usuario del 2026-10-21. Implementación y aceptación
+pendientes. Reutilizar el control de autonomía/permisos que ya existe, sin añadir
+un selector de publicación, perfiles paralelos ni formularios nuevos de alcance.
 
-Por defecto se exponen dos acciones: ejecutar para generar una propuesta y aplicar
-el lote completo. No se exige una aprobación por archivo: si el lote necesita Ask,
-la interacción presenta su alcance conjunto; si ya está permitido, no se inventa
-una nueva pregunta. Aplicar esa propuesta pasa por el pipeline común. El Host
-resuelve su procedencia, contenido y operaciones exactas antes de autorizar la
-publicación; el permiso del proceso no sustituye Ask/Deny de archivos. Se conserva
-la lectura efectiva del modelo en el scope original y se revalidan versión,
-historia, techo y presupuesto bajo el fence. No se fabrica ownership de worktree
-ni se vuelve a ejecutar un proceso incierto. Este vertical no anuncia todavía
-paridad de process.exec/shell.exec, wrappers generales, procesos persistentes ni
-ConPTY.
+| Permisos elegidos por el usuario | Comportamiento |
+|---|---|
+| Normales | Ejecutar genera una propuesta; aplicar el lote completo es la segunda acción. Las aprobaciones necesarias se agrupan por lote. |
+| Elevados/autónomos | Ejecutar genera, valida y publica la propuesta como una sola operación continua, sin preguntas ni otra llamada al modelo. |
 
-El usuario puede autorizar además la aplicación automática para un alcance
-explícito. Dentro de ese alcance, ejecutar encadena internamente la aplicación y
-presenta una sola operación visible; el modelo no necesita otra ronda de
-inferencia para coordinarla. Los recibos de proceso y publicación se conservan
-separados. Si el resultado queda fuera del alcance autorizado, permanece como
-propuesta. En modo de revisión, una ampliación válida se solicita para el lote,
-no archivo por archivo, y no vuelve a ejecutar el proceso que ya terminó. En
-automático se aplica el comportamiento sin preguntas definido debajo.
+El Host deriva el comportamiento del perfil User humano existente
+(`Autonomous` para el recorrido automático), el workspace, las reglas y los
+límites vigentes. El usuario no configura rutas, operaciones ni duración de
+nuevo por cada extensión o modificación. Las excepciones se gestionan desde los
+controles de permisos existentes. CLI/TUI y OmniCoder comparten la decisión
+canónica del Host y su revisión. Cambiar permisos no inicia trabajo ni aplica
+propuestas anteriores. Al retirarlos, la próxima autorización usa el perfil
+actual; una aprobación antigua no conserva autoridad retirada.
 
-La autorización reutilizable identifica workspace físico, extensión/paquete,
-rutas o patrones normalizados, operaciones permitidas, límites y duración. La
-duración inicial propuesta es Run; Workspace requiere elección explícita y permite
-revocación. Se revalidan las políticas vigentes al consumirla; el usuario puede
-modificar sus políticas mediante sus controles, pero el permiso del proceso o un
-booleano enviado por el modelo no levanta un Deny ni eleva el techo del modelo.
-Lectura efectiva, token, presupuestos y conflictos se comprueban en cada lote.
+El proceso se ejecuta Strong sobre una copia privada, sin escritura al checkout
+ni al common-dir originales. La copia excluye secretos e ignorados de entrada;
+la inspección de salida incluye archivos nuevos ignorados y valida topología,
+alcance y límites. El Host conserva una propuesta protegida con procedencia
+Extension propia, sin fabricar ownership Git.
 
-Existen grants Run/Workspace para claims exactos. No acreditan todavía esta
-autorización compuesta ni la cobertura de futuros lotes con rutas distintas: hace
-falta implementar su contrato explícito y matcher de alcance, auditado y ligado a
-identidad/revisión. Consultas y reconexiones permanecen pasivas. Este acuerdo
-sustituye la propuesta de exigir siempre dos acciones o siempre una sola.
+La aplicación consume el lote inmutable mediante el aplicador común. Resuelve
+las operaciones exactas antes del permiso y valida el conjunto completo antes
+del primer cambio. Conserva lectura efectiva del modelo, tokens/versiones,
+historia durable, presupuestos, fence, pre/postimágenes y recibos. La lectura
+interna del arnés no concede lectura al modelo. Ejecutar un proceso no basta
+para autorizar la publicación.
 
-#### Selector de aplicación y confirmaciones
+En automático no se abren diálogos ante falta de permiso, Deny, conflicto o
+límite: la operación informa su estado y conserva la propuesta válida si existe.
+El usuario puede intervenir por iniciativa propia desde sus controles habituales.
+La fuerza de aislamiento Strong/Weak, la categoría del modelo, un probe o los
+privilegios OS del proceso no sustituyen la elección humana de permisos.
+Este vertical conserva Strong; no añade fallback Weak silencioso.
 
-La UI debe ofrecer un selector explícito **Aplicación de cambios**, disponible
-en CLI/TUI y OmniCoder mediante el mismo estado canónico del Host:
+Los recibos de proceso y publicación son separados. Consultar o reconectar no
+inicia trabajo; una continuación usa la fase durable comprobada y no relanza un
+proceso incierto. Una publicación interrumpida exige reconciliación y no promete
+atomicidad global del filesystem. Los grants exactos existentes no acreditan
+todavía esta autorización compuesta: falta construir su enlace con el aplicador,
+la revisión del perfil y la evidencia de operaciones.
 
-- **Revisar propuesta:** ejecutar produce propuesta; aplicar es una segunda
-  acción. Las aprobaciones necesarias se agrupan por lote.
-- **Aplicar automáticamente:** la elección humana autoriza el encadenamiento
-  dentro del alcance configurado. Ejecutar devuelve el resultado de ambas fases
-  y no abre preguntas de permisos por llamada, lote o archivo. El Host consume
-  la autorización de ejecución/publicación correspondiente; no deja que el modelo
-  decida la aprobación ni le exige una segunda invocación para aplicar.
-
-El alcance y su duración se muestran al configurar el selector, con Run inicial
-y opción explícita de recordar para Workspace. Cambiar el selector no inicia
-trabajo ni publica propuestas anteriores. La configuración tiene revisión y
-revocación, se sincroniza entre clientes y sus etiquetas se traducen usando los
-recursos existentes; el idioma no modifica la autorización.
-
-En modo automático, si falta autoridad de proceso/publicación, hay un Deny, el
-lote excede el alcance o aparece un conflicto/límite, el Host se detiene y reporta
-la causa **sin abrir un diálogo de aprobación**. Conserva una propuesta válida
-cuando exista; el usuario puede revisar o cambiar el alcance desde los controles
-por iniciativa propia. No se relanza el proceso ni se pasa silenciosamente al
-modo interactivo. Así, automático significa una sola acción sin preguntas, no
-una autorización ilimitada.
-
-La aceptación requiere probar cero interacciones Permission tanto en el recorrido
-automático autorizado como en sus rechazos fuera de alcance, además de autoridad
-humana del selector, revocación/revisión, recuperación y ausencia de ejecución
-por cambiar el modo. El selector y su comportamiento todavía deben construirse.
-
-#### Permisos elevados implican continuidad automática
-
-Ampliación explícita del usuario del 2026-10-21: seleccionar el perfil humano de
-permisos elevados activa también la aplicación automática y la política efectiva
-de no preguntar. No requiere que el usuario active después otro selector ni
-apruebe una nueva modalidad por cada llamada. Ejecutar, generar propuesta,
-validar y publicar forman una sola operación visible continua dentro del alcance
-del perfil. El selector independiente queda disponible para permisos normales y
-para una preferencia explícita de revisión elegida por el usuario.
-
-El perfil de permisos User existente incluye `Autonomous`; la implementación debe
-ligar la automaticidad a esa elección humana y a su revisión/alcance efectivo en
-Host, compartido por CLI/TUI/OmniCoder. La procedencia de la preferencia distingue
-derivación del perfil y override explícito: al retirar elevación se recalcula la
-opción heredada; un override automático conserva cero preguntas pero sólo puede
-ejecutar dentro de los permisos restantes. Cambiar de perfil no despacha trabajo.
-
-El contrato diferencia amplitud de permisos de fuerza de aislamiento. Strong/Weak
-describen aislamiento; un probe, un proceso con privilegios OS, una categoría del
-modelo o un booleano de la herramienta no acreditan una elección humana de
-permisos elevados. Esta decisión no elimina el aislamiento Strong requerido por
-el vertical escritor ni introduce un fallback Weak silencioso.
-
-La política de no preguntar se respeta también cuando el trabajo no se puede
-completar: un permiso ausente, rechazo, conflicto o límite produce estado y causa
-sin diálogo. La reanudación consume evidencia durable y no relanza el proceso.
-La aceptación incluye perfil elevado → automático sin selección adicional,
-cero interacciones de aprobación por ambas fases, reapertura/reconexión,
-revocación/cambio de revisión y conservación de overrides humanos explícitos.
+La aceptación exige proceso Strong real, allow/deny, validación conjunta,
+conflictos/límites y recuperación; además, cero preguntas en automático,
+perfil elevado que lo activa sin otra selección, retirada de permisos y cambio
+de perfil pasivo. No se anuncia todavía paridad de process.exec/shell.exec,
+wrappers generales, procesos persistentes ni ConPTY.
 
 **Corrección acordada M9-L-MUT-01 (2026-10-18), implementación parcial:** la
 normalización Host de write existente a edición por diff está publicada y la
