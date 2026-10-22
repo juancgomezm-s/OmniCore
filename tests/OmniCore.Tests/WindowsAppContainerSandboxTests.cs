@@ -19,16 +19,17 @@ using Task = System.Threading.Tasks.Task;
 public sealed class WindowsAppContainerSandboxTests
 {
     [Theory]
-    [InlineData(PermissionProfile.Balanced, false, PermissionDecision.Ask, false, false, false, false)]
-    [InlineData(PermissionProfile.Autonomous, true, PermissionDecision.Allow, false, false, false, false)]
-    [InlineData(PermissionProfile.Balanced, false, PermissionDecision.Ask, true, false, false, false)]
-    [InlineData(PermissionProfile.Balanced, false, PermissionDecision.Deny, true, false, false, false)]
-    [InlineData(PermissionProfile.Balanced, false, PermissionDecision.Allow, false, true, false, false)]
-    [InlineData(PermissionProfile.Balanced, false, PermissionDecision.Allow, false, false, true, false)]
-    [InlineData(PermissionProfile.Autonomous, true, PermissionDecision.Allow, false, false, false, true)]
+    [InlineData(PermissionProfile.Balanced, false, PermissionDecision.Ask, false, false, false, false, false)]
+    [InlineData(PermissionProfile.Autonomous, true, PermissionDecision.Allow, false, false, false, false, false)]
+    [InlineData(PermissionProfile.Balanced, false, PermissionDecision.Ask, true, false, false, false, false)]
+    [InlineData(PermissionProfile.Balanced, false, PermissionDecision.Deny, true, false, false, false, false)]
+    [InlineData(PermissionProfile.Balanced, false, PermissionDecision.Allow, false, true, false, false, false)]
+    [InlineData(PermissionProfile.Balanced, false, PermissionDecision.Allow, false, false, true, false, false)]
+    [InlineData(PermissionProfile.Autonomous, true, PermissionDecision.Allow, false, false, false, true, false)]
+    [InlineData(PermissionProfile.Autonomous, true, PermissionDecision.Allow, false, false, false, true, true)]
     public async Task Strong_extension_batch_is_published_as_one_protected_host_action(
         PermissionProfile profile, bool automatic, PermissionDecision applyDecision, bool blockApplySilently,
-        bool staleBeforeApply, bool rejectByBudget, bool seedTombstone)
+        bool staleBeforeApply, bool rejectByBudget, bool seedTombstone, bool retryBlockedProposal)
     {
         if (!OperatingSystem.IsWindows()) { Assert.Skip("AppContainer integration tests run only on Windows."); return; }
         var capabilities = new WindowsAppContainerCapabilitiesProbe().Probe();
@@ -129,6 +130,8 @@ public sealed class WindowsAppContainerSandboxTests
             if (!automatic)
                 permissions.WithUserPolicyTool("extension.batch.apply", PermissionDecision.Ask)
                     .WithUserPolicyTool("filesystem.write", PermissionDecision.Ask);
+            if (automatic && retryBlockedProposal)
+                permissions.WithUserPolicyTool("filesystem.write", PermissionDecision.Deny);
             var runtime = new ToolRuntime(catalog, permissions, payload => { events.Add(payload); return VoidBox.Instance; },
                 boundary, executableResolver: null, additionalBoundaries: [extensionTool.Boundary]);
             var runId = RunId.New().ToString();
@@ -152,14 +155,62 @@ public sealed class WindowsAppContainerSandboxTests
                 expectedRunId = run.RunId.ToString();
                 var requests = new List<ModelRequest>();
                 var providerCalls = 0;
+                ToolCallId? explicitApplyCallId = null;
+                string? retainedProposalId = null;
+                string? retainedArtifactHash = null;
+                long? retainedArtifactSize = null;
                 var providerCallId = originalCall.ToolCallId;
                 var turn = new ExplorerTurn((request, _) =>
                 {
                     requests.Add(request);
-                    if (providerCalls++ == 0)
+                    var providerCall = providerCalls++;
+                    if (providerCall == 0)
                         return new ModelResponse([new ToolCallBlock(providerCallId, originalCall.ProviderCallId,
                             originalCall.ToolId.ToString(), originalCall.NormalizedArgumentsJson)], StopReason.ToolUse,
                             new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null));
+                    if (retryBlockedProposal && providerCall == 1)
+                    {
+                        var retainedResult = Assert.Single(request.Messages.SelectMany(message => message.Content)
+                            .OfType<ToolResultBlock>(), result => result.Id == originalCall.ToolCallId);
+                        var retainedJson = Assert.Single(retainedResult.Content.OfType<TextBlock>()).Text;
+                        using var retained = System.Text.Json.JsonDocument.Parse(retainedJson);
+                        var retainedRoot = retained.RootElement;
+                        Assert.Equal("blocked", retainedRoot.GetProperty("publication").GetString());
+                        retainedProposalId = retainedRoot.GetProperty("proposalId").GetString();
+                        retainedArtifactHash = retainedRoot.GetProperty("artifactHash").GetString();
+                        retainedArtifactSize = retainedRoot.GetProperty("artifactSize").GetInt64();
+                        var protectedArtifact = Assert.Single(store.ReadFrom(session, 1).Select(codecs.Decode)
+                            .OfType<ToolCallSucceeded>(), succeeded => succeeded.ToolCallId == originalCall.ToolCallId)
+                            .ResultArtifact;
+                        Assert.NotNull(protectedArtifact);
+                        Assert.Equal(retainedArtifactHash, protectedArtifact.Hash.Value);
+                        Assert.Equal(retainedArtifactSize, protectedArtifact.Size);
+                        Assert.True(artifacts.Verify(protectedArtifact.Hash, protectedArtifact.Size));
+                        Assert.Equal(new[] { "publication", "proposalId", "artifactHash", "artifactSize", "files" },
+                            retainedRoot.EnumerateObject().Select(property => property.Name));
+
+                        // Resolve only the user permission that blocked publication. The read
+                        // registry already contains the tombstone preimage, so the same CAS proposal
+                        // can now be applied without invoking the extension again.
+                        permissions.WithUserPolicyTool("filesystem.write", PermissionDecision.Allow);
+                        explicitApplyCallId = ToolCallId.New();
+                        var applyArgs = System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            proposalId = retainedProposalId,
+                            artifactHash = retainedArtifactHash,
+                            artifactSize = retainedArtifactSize,
+                        });
+                        return new ModelResponse([new ToolCallBlock(explicitApplyCallId!,
+                            "fixture-explicit-batch-apply", "extension.batch.apply", applyArgs)], StopReason.ToolUse,
+                            new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null));
+                    }
+                    if (retryBlockedProposal && providerCall == 2)
+                    {
+                        var appliedResult = Assert.Single(request.Messages.SelectMany(message => message.Content)
+                            .OfType<ToolResultBlock>(), result => result.Id == explicitApplyCallId);
+                        Assert.Contains("Extension batch applied.",
+                            Assert.Single(appliedResult.Content.OfType<TextBlock>()).Text, StringComparison.Ordinal);
+                    }
                     return new ModelResponse([new TextBlock("published")], StopReason.EndTurn,
                         new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null));
                 }, new ScriptedToolExecutor(catalog, permissions, workspace, boundary, null, null, false,
@@ -169,8 +220,10 @@ public sealed class WindowsAppContainerSandboxTests
                     new ExecutionFingerprint("fixture", "h", "t", "c", "o", "fixture-build"),
                     new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null),
                     store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(), boundary: boundary);
-                Assert.Equal(StopReason.EndTurn, turn.Ask("run extension", "system", session, run.RunId,
-                    run.RootLane, "", TestContext.Current.CancellationToken).StopReason);
+                var turnResult = turn.Ask("run extension", "system", session, run.RunId,
+                    run.RootLane, "", TestContext.Current.CancellationToken);
+                Assert.True(turnResult.StopReason == StopReason.EndTurn,
+                    "turn=" + turnResult.StopReason + " failure=" + turnResult.FailureDiagnostic);
                 var allEvents = store.ReadFrom(session, 1).Select(codecs.Decode).ToArray();
                 Assert.Empty(allEvents.OfType<PermissionRequested>());
                 var child = Assert.Single(allEvents.OfType<ToolCallRequested>(), request => request.ParentToolCallId == originalCall.ToolCallId);
@@ -180,7 +233,7 @@ public sealed class WindowsAppContainerSandboxTests
                     .OfType<ToolResultBlock>(), result => result.Id == originalCall.ToolCallId);
                 var resultJson = Assert.Single(visibleResult.Content.OfType<TextBlock>()).Text;
                 using var status = System.Text.Json.JsonDocument.Parse(resultJson);
-                Assert.True(status.RootElement.GetProperty("publication").GetString() == "applied",
+                Assert.True(status.RootElement.GetProperty("publication").GetString() == (retryBlockedProposal ? "blocked" : "applied"),
                     "result=" + resultJson + " permissions=" + string.Join(",", allEvents.OfType<PermissionEvaluated>().Select(evt => evt.Decision))
                     + " rejected=" + string.Join("|", allEvents.OfType<ToolCallRejected>().Select(evt => evt.Reason))
                     + " denied=" + string.Join("|", allEvents.OfType<PermissionDenied>().Select(evt => evt.Cause))
@@ -188,6 +241,8 @@ public sealed class WindowsAppContainerSandboxTests
                 Assert.Equal("m9-extension-marker.txt", status.RootElement.GetProperty("files")[0].GetString());
                 Assert.Equal("extension-applied", File.ReadAllText(Path.Combine(workspace, "m9-extension-marker.txt")));
                 Assert.Equal(2, allEvents.OfType<ToolCallStarted>().Count());
+                Assert.Single(allEvents.OfType<ToolCallStarted>(), started =>
+                    started.Attribution?.ToolId == extensionTool.Descriptor.Id.ToString());
                 Assert.DoesNotContain(nextRequest.Messages.SelectMany(message => message.Content)
                     .OfType<ToolCallBlock>(), call => call.Id == child.ToolCallId);
                 Assert.DoesNotContain(nextRequest.Messages.SelectMany(message => message.Content)

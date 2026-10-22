@@ -1151,18 +1151,37 @@ public sealed class ToolRuntime
         {
             using var source = System.Text.Json.JsonDocument.Parse(proposalPreview ?? "{}");
             var root = source.RootElement;
+            var proposalId = default(System.Text.Json.JsonElement);
+            var artifactHash = default(System.Text.Json.JsonElement);
+            var artifactSize = default(System.Text.Json.JsonElement);
+            var hasProtectedReference = root.ValueKind == System.Text.Json.JsonValueKind.Object
+                && root.TryGetProperty("proposalId", out proposalId)
+                && proposalId.ValueKind == System.Text.Json.JsonValueKind.String
+                && Guid.TryParseExact(proposalId.GetString(), "N", out _)
+                && root.TryGetProperty("artifactHash", out artifactHash)
+                && artifactHash.ValueKind == System.Text.Json.JsonValueKind.String
+                && IsSha256Hex(artifactHash.GetString())
+                && root.TryGetProperty("artifactSize", out artifactSize)
+                && artifactSize.ValueKind == System.Text.Json.JsonValueKind.Number
+                && artifactSize.TryGetInt64(out var artifactSizeValue)
+                && artifactSizeValue is > 0 and <= 16 * 1024 * 1024;
             using var buffer = new System.IO.MemoryStream();
             using (var writer = new System.Text.Json.Utf8JsonWriter(buffer))
             {
                 writer.WriteStartObject();
                 writer.WriteString("publication", status);
-                if (root.ValueKind == System.Text.Json.JsonValueKind.Object
-                    && root.TryGetProperty("proposalId", out var proposalId)
-                    && proposalId.ValueKind == System.Text.Json.JsonValueKind.String)
+                if (hasProtectedReference)
+                {
                     writer.WriteString("proposalId", proposalId.GetString());
+                    writer.WriteString("artifactHash", artifactHash.GetString());
+                    writer.WriteNumber("artifactSize", artifactSize.GetInt64());
+                }
                 if (root.ValueKind == System.Text.Json.JsonValueKind.Object
                     && root.TryGetProperty("files", out var files)
-                    && files.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    && files.ValueKind == System.Text.Json.JsonValueKind.Array
+                    && files.GetArrayLength() is > 0 and <= 64
+                    && files.EnumerateArray().All(file => file.ValueKind == System.Text.Json.JsonValueKind.String
+                        && IsSafeExtensionBatchPreviewPath(file.GetString())))
                 {
                     writer.WritePropertyName("files");
                     files.WriteTo(writer);
@@ -1175,6 +1194,20 @@ public sealed class ToolRuntime
         {
             return "{\"publication\":\"" + status + "\"}";
         }
+    }
+
+    private static bool IsSha256Hex(string? value) => value is { Length: 64 }
+        && value.All(Uri.IsHexDigit);
+
+    private static bool IsSafeExtensionBatchPreviewPath(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Any(char.IsControl)) return false;
+        var normalized = value.Replace('\\', '/');
+        var parts = normalized.Split('/');
+        return !Path.IsPathRooted(normalized) && !normalized.Contains(':')
+            && parts.All(part => part is not ("" or "." or ".."))
+            && !parts[0].Equals(".git", StringComparison.OrdinalIgnoreCase)
+            && !new RedactionPolicy().IsSecretPath(normalized);
     }
 
     /// <summary>Rebuilds the model's Run/Turn mutation counters from durable receipts while

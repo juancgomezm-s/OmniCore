@@ -226,6 +226,34 @@ SHA-256 de la DLL tras corregir las expectativas de contrato:
 Los cambios no alteran producción ni eliminan pruebas. La publicación sigue
 condicionada a una nueva matriz íntegra sobre el commit corregido.
 
+## Continuidad de una propuesta bloqueada
+
+La revisión final encontró un hueco funcional: la publicación automática
+bloqueada conservaba el Artifact, pero su Preview eliminaba hash y tamaño. Como
+ExplorerTurn envía ese Preview al modelo, éste no recibía todos los argumentos
+necesarios para aplicar la propuesta después de resolver el bloqueo.
+
+Luna alto conservó la referencia completa validada: UUID de propuesta, SHA-256
+y tamaño positivo hasta 16 MiB. La lista de hasta 64 rutas permanece relativa y
+sin segmentos inseguros, controles ni secretos. No se exponen bytes del CAS.
+Se conservan los siete escenarios previos y se añade un octavo: Deny bloquea
+la publicación, el proveedor fixture recibe la referencia que coincide con el
+Artifact protegido del journal y, tras un Allow explícito del fixture, devuelve
+un apply sobre ese mismo Artifact. La extensión arranca una sola vez y la
+subacción interna permanece fuera de la conversación del proveedor. El caso
+feliz autónomo conserva su recorrido sin inferencia adicional para aplicar.
+
+Build incremental limpio. Luna alto aprobó **8/8** y, una vez finalizado, Luna
+bajo revisó el diff y confirmó **8/8, sin omisiones**:
+
+~~~powershell
+dotnet C:/Users/juanc/AppData/Local/Temp/omnicore-m9-extension-batch-build/bin/OmniCore.Tests/debug/OmniCore.Tests.dll -method '*WindowsAppContainerSandboxTests.Strong_extension_batch_is_published_as_one_protected_host_action' -parallelMode none
+~~~
+
+SHA-256 de esa DLL:
+`466C61746746BBEF9D63DFB2BBD29A906506848F4CC2419EE9281F80AEBBBA35`.
+Estos focos no sustituyen la CI completa del commit que incorpora la corrección.
+
 ## Publicación y límites
 
 La integración en main exige la CI del PR asociado para su revisión exacta:
