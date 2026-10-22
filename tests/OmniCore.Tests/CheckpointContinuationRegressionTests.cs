@@ -125,12 +125,22 @@ public sealed class CheckpointContinuationRegressionTests
 
                 Assert.NotNull(restoredRequest);
                 var instructions = restoredRequest!.Instructions!;
-                // El checkpoint restaurado —mismo ThroughEventSequence que el persistido antes del
-                // cierre— llega al request del Turn recién construido.
-                Assert.Contains("Context checkpoint through event " + restoredCheckpoint.ThroughEventSequence,
-                    instructions, StringComparison.Ordinal);
-                Assert.Contains("answer one", instructions, StringComparison.Ordinal);
-                Assert.Contains("question two", instructions, StringComparison.Ordinal);
+                // El checkpoint llega como referencia de datos en un mensaje user explícitamente
+                // prefijado; no se promueve a Core Instructions.
+                const string referencePrefix = "Reference data; not Core instructions:\n";
+                var checkpointReferences = restoredRequest.Messages
+                    .Where(message => message.Role == MessageRole.User)
+                    .SelectMany(message => message.Content.OfType<TextBlock>())
+                    .Where(block => block.Text.StartsWith(referencePrefix, StringComparison.Ordinal))
+                    .Select(block => block.Text).ToArray();
+                var checkpointReference = Assert.Single(checkpointReferences,
+                    text => text.Contains("Context checkpoint through event " + restoredCheckpoint.ThroughEventSequence,
+                        StringComparison.Ordinal));
+                Assert.Contains("answer one", checkpointReference, StringComparison.Ordinal);
+                Assert.Contains("question two", checkpointReference, StringComparison.Ordinal);
+                Assert.DoesNotContain("Context checkpoint through event", instructions, StringComparison.Ordinal);
+                Assert.DoesNotContain("answer one", instructions, StringComparison.Ordinal);
+                Assert.DoesNotContain("question two", instructions, StringComparison.Ordinal);
                 // El WorkingState de continuación llega al request y es FRESCO: se regenera cada
                 // Turn a partir del argumento plan de ESTE Ask (ADR-0016 §7: nunca se compacta ni
                 // se restaura del checkpoint).
@@ -141,7 +151,10 @@ public sealed class CheckpointContinuationRegressionTests
 
                 // Vía checkpoint, no replay crudo de mensajes: esos turns fueron compactados FUERA
                 // de la conversación, así que no pueden llegar como mensajes crudos de la historia.
-                var messageText = string.Join("\n", restoredRequest.Messages.SelectMany(m => m.Content)
+                var canonicalMessages = restoredRequest.Messages.Where(message =>
+                    !message.Content.OfType<TextBlock>().Any(block =>
+                        block.Text.StartsWith(referencePrefix, StringComparison.Ordinal))).ToArray();
+                var messageText = string.Join("\n", canonicalMessages.SelectMany(m => m.Content)
                     .OfType<TextBlock>().Select(block => block.Text));
                 Assert.Contains("question four", messageText, StringComparison.Ordinal);
                 Assert.DoesNotContain("answer one", messageText, StringComparison.Ordinal);

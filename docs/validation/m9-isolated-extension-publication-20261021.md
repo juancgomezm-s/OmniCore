@@ -196,12 +196,35 @@ los tres pilotos, la alternativa reabierta, contexto autorizado y original intac
 dotnet exec C:/Users/juanc/AppData/Local/Temp/omnicore-m9-extension-batch-build/bin/OmniCore.Tests/debug/OmniCore.Tests.dll -method '*StdioTransportTests.Independent_Node_headless_client_accepts_all_three_pilots_and_reopens_the_alternative' -parallelMode none -reporter verbose
 ~~~
 
-Hash final de la DLL de pruebas:
+Hash de la DLL tras el cierre headless:
 `6A24F4269EE3BDA92915BE5BB4A4FD4D1603BF3565B5AAF2EECE28903178F157`.
 Hash del CLI del mismo output:
 `DE63903963A0A760EFE872952869B698EDB26A439C7EE317908531810EFCCDA0`.
 No se repitieron los 17 focos por cambios exclusivos de fixture; la CI final
 verifica la suite completa sobre el árbol que se publica.
+
+La [CI del árbol combinado `5a872d0`](https://github.com/juancgomezm-s/OmniCore/actions/runs/39782689962)
+detectó cuatro expectativas antiguas en Linux: checkpoint aún esperado en
+Instructions, dos variantes de chat que no separaban las nuevas referencias
+de la conversación canónica y schema de escritura esperado en v3. Registró
+5075 correctas, 35 omitidas y cuatro fallidas de 5114. No se contó como aceptación.
+
+Luna alto corrigió únicamente tres pruebas y aprobó 11/11 focos, sin omisiones;
+el build incremental terminó sin errores ni advertencias. Finalizado alto, Luna
+bajo auditó las nuevas aserciones y aprobó los cuatro casos originales, 4/4 sin
+omisiones. Exigen el checkpoint íntegro como referencia de usuario, fuera de Core
+Instructions y replay crudo, WorkingState fresco, journal append-only y mensajes
+canónicos exactos sin duplicación. La prueba de escritura reabre SQLite y exige
+atribución BuiltIn, schema v4, metadatos pre/post y replay limpio.
+
+~~~powershell
+dotnet C:/Users/juanc/AppData/Local/Temp/omnicore-m9-extension-batch-build/bin/OmniCore.Tests/debug/OmniCore.Tests.dll -method '*CheckpointContinuationRegressionTests.Checkpoint_restored_after_store_reopen_reaches_new_turn_request_with_fresh_working_state' -method '*CliEndToEndTests.Normal_chat_followup_preserves_ordered_messages_once_after_runtime_reopen' -method '*FilesystemWriteToolTests.Write_pipeline_persists_canonical_reconciliation_metadata_and_replays_clean' -parallelMode none
+~~~
+
+SHA-256 de la DLL tras corregir las expectativas de contrato:
+`6EAD450B1A2FC13DCBAF5EE79E1CA2AD178B0FFF4C0C66C93514E36F0F8574E7`.
+Los cambios no alteran producción ni eliminan pruebas. La publicación sigue
+condicionada a una nueva matriz íntegra sobre el commit corregido.
 
 ## Publicación y límites
 

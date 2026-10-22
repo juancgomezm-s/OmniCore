@@ -2843,13 +2843,41 @@ public sealed partial class CliEndToEndTests
             using var request = JsonDocument.Parse(Assert.IsType<string>(received));
             var messages = request.RootElement.GetProperty("messages").EnumerateArray()
                 .Where(message => message.GetProperty("role").GetString() != "system").ToArray();
+            const string referencePrefix = "Reference data; not Core instructions:\n";
+            var referenceMessages = messages.Where(message => message.GetProperty("role").GetString() == "user"
+                && message.GetProperty("content").GetString()!.StartsWith(referencePrefix, StringComparison.Ordinal)).ToArray();
+            Assert.NotEmpty(referenceMessages);
+            var referenceContents = referenceMessages.Select(message => message.GetProperty("content").GetString()!).ToArray();
+            Assert.Equal(referenceContents.Length, referenceContents.Distinct(StringComparer.Ordinal).Count());
+            Assert.All(referenceContents, content => Assert.True(content.Length > referencePrefix.Length));
+            var firstConversationIndex = Array.FindIndex(messages, message =>
+                !message.GetProperty("content").GetString()!.StartsWith(referencePrefix, StringComparison.Ordinal));
+            Assert.True(firstConversationIndex > 0, "Reference data must be prepended before canonical conversation messages.");
+            Assert.All(messages.Take(firstConversationIndex), message =>
+                Assert.StartsWith(referencePrefix, message.GetProperty("content").GetString()!, StringComparison.Ordinal));
+            var conversationMessages = messages.Where(message =>
+                !message.GetProperty("content").GetString()!.StartsWith(referencePrefix, StringComparison.Ordinal)).ToArray();
             Assert.Equal(new[] { "user", "assistant", "user" },
-                messages.Select(message => message.GetProperty("role").GetString()));
+                conversationMessages.Select(message => message.GetProperty("role").GetString()));
             Assert.Equal(new[] { "Mi proyecto se llama Brújula; usa PostgreSQL.",
                 "Usaremos PostgreSQL y el puerto 5432.", "¿Qué base y puerto acordamos?" },
-                messages.Select(message => message.GetProperty("content").GetString()));
-            Assert.All(ReadCurrentSessionEvents(workspace).OfType<RunCreated>(),
+                conversationMessages.Select(message => message.GetProperty("content").GetString()));
+            var sessionEvents = ReadCurrentSessionEvents(workspace);
+            Assert.All(sessionEvents.OfType<RunCreated>(),
                 run => Assert.Equal(original, run.SessionId));
+            var inputs = sessionEvents.OfType<UserInputReceived>().ToArray();
+            Assert.Equal(2, inputs.Length);
+            static string InputText(UserInputReceived input)
+            {
+                using var parsed = JsonDocument.Parse(input.InputPartsJson);
+                return parsed.RootElement.ValueKind == JsonValueKind.Array
+                    ? string.Join("\n", parsed.RootElement.EnumerateArray()
+                        .Where(part => part.ValueKind == JsonValueKind.String).Select(part => part.GetString()))
+                    : parsed.RootElement.GetString() ?? "";
+            }
+            Assert.Equal("Mi proyecto se llama Brújula; usa PostgreSQL.", InputText(inputs[0]));
+            Assert.Equal("¿Qué base y puerto acordamos?", InputText(inputs[1]));
+            Assert.All(inputs, input => Assert.DoesNotContain(referencePrefix, InputText(input), StringComparison.Ordinal));
         });
     }
 
