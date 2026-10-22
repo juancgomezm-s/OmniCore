@@ -12,6 +12,33 @@ OmniCore porta a C# lógica de los siguientes proyectos, todos bajo licencia MIT
 | Pi (`@earendil-works/pi-ai`, `pi-coding-agent`) | MIT | Mario Zechner | https://github.com/earendil-works/pi |
 | OpenCode | MIT | Copyright (c) 2025 opencode | https://github.com/sst/opencode |
 | models.dev (catálogo de modelos) | MIT (código; confirmar que cubre los datos) | por confirmar | https://github.com/sst/models.dev |
+| cc-arcade (referencia de diseño; se adaptaron fórmulas de XP/ánimo/inactividad/nivel) | MIT | Copyright (c) 2026 Seza Akgün | https://github.com/sezaakgun/cc-arcade |
+
+La adaptación de OmniCore es nueva y no incluye el código ni el arte ASCII de cc-arcade. El aviso de origen y el texto completo de su licencia MIT se incluyen aquí para las distribuciones npm:
+
+```text
+MIT License
+
+Copyright (c) 2026 Seza Akgün
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 > Pendiente: copiar aquí el texto completo de cada LICENSE upstream al portar el primer archivo de cada proyecto. Los paquetes npm de Pi no incluyen el archivo LICENSE; hay que tomarlo del repositorio.
 
