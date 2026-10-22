@@ -2,6 +2,8 @@ using OmniCore.Client;
 using Terminal.Gui.Drawing;
 using Terminal.Gui.Drivers;
 using Terminal.Gui.Input;
+using Terminal.Gui.Text;
+using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 
 namespace OmniCore.Cli;
@@ -18,6 +20,9 @@ internal sealed class SidebarView : TextView
     internal TuiTheme Theme { get; set; } = TuiTheme.All[0];
     private readonly Dictionary<int, WidgetRowModel> _actions = new();
     private readonly Dictionary<string, int> _headings = new();
+    private List<(string Text, Terminal.Gui.Drawing.Attribute Attribute)> _styledRows = [];
+    private List<Terminal.Gui.Drawing.Attribute> _wrappedAttributes = [];
+    private int _wrappedAttributesWidth = -1;
     internal event Action<WidgetRowModel>? RowActivated;
     internal WidgetRowModel? FocusedAction => _actions.GetValueOrDefault(WordWrap ? _sourcePoint.Y : InsertionPoint.Y);
     internal void SelectWidget(string? id)
@@ -47,6 +52,7 @@ internal sealed class SidebarView : TextView
     {
         ReadOnly = true; WordWrap = true; ScrollBars = true;
         ConversationScrollBarStyle.Attach(VerticalScrollBar, () => false, "#202C3B", () => Theme);
+        ViewportChanged += (_, _) => RebuildWrappedAttributes();
         UnwrappedCursorPositionChanged += (_, point) => _sourcePoint = point;
         KeyDown += (_, key) =>
         {
@@ -89,7 +95,7 @@ internal sealed class SidebarView : TextView
         var oldViewport = Viewport;
         var oldPoint = InsertionPoint;
         var oldScroll = VerticalScrollBar.Value;
-        var cells = rows.Select(row =>
+        Terminal.Gui.Drawing.Attribute RowAttribute((string Text, ThemeRole Role, bool Heading, bool Link) row)
         {
             var color = row.Role switch
             {
@@ -97,11 +103,19 @@ internal sealed class SidebarView : TextView
                 ThemeRole.Error => "#FF9D9D", ThemeRole.Agent => "#D6B5FA", ThemeRole.Info => "#85D6F5",
                 ThemeRole.Muted => "#B1C2D1", _ => "#F4F7FB",
             };
-            var attribute = new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : new Color(color),
+            return new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : new Color(color),
                 noColor ? Color.None : new Color("#202C3B"), row.Heading ? TextStyle.Bold : row.Link ? TextStyle.Underline : TextStyle.None);
+        }
+        // TextView's native wrapper can leave the leading cells of a continuation row without
+        // attributes. Keep the role for each visual row so those cells do not fall back to the
+        // generic ReadOnly scheme. Use the same formatter options/width as TextView.WrapModel.
+        _styledRows = rows.Select(row => (row.Text, RowAttribute(row))).ToList();
+        RebuildWrappedAttributes(force: true);
+        var cells = _styledRows.Select(row =>
+        {
             var line = new List<Cell>();
             var elements = System.Globalization.StringInfo.GetTextElementEnumerator(row.Text);
-            while (elements.MoveNext()) line.Add(new Cell(attribute, false, elements.GetTextElement()));
+            while (elements.MoveNext()) line.Add(new Cell(row.Attribute, false, elements.GetTextElement()));
             return line;
         }).ToList();
         InsertionPoint = System.Drawing.Point.Empty;
@@ -117,6 +131,20 @@ internal sealed class SidebarView : TextView
         InsertionPoint = new System.Drawing.Point(oldPoint.X, Math.Min(oldPoint.Y, GetAllLines().Count - 1));
         Viewport = new System.Drawing.Rectangle(oldViewport.Location, Viewport.Size);
         VerticalScrollBar.Value = oldScroll;
+    }
+    private void RebuildWrappedAttributes(bool force = false)
+    {
+        var width = Math.Max(Viewport.Width - (ReadOnly ? 0 : 1), 0);
+        if (!force && _wrappedAttributesWidth == width) return;
+        _wrappedAttributesWidth = width;
+        _wrappedAttributes = _styledRows.SelectMany(row =>
+        {
+            var wrappedRows = WordWrap
+                ? TextFormatter.Format(row.Text, width, Alignment.Start, true,
+                    preserveTrailingSpaces: true, tabWidth: TabWidth, preserveTabs: true).Count
+                : 1;
+            return Enumerable.Repeat(row.Attribute, Math.Max(wrappedRows, 1));
+        }).ToList();
     }
     protected override bool OnMouseEvent(Mouse mouse)
     {
@@ -137,7 +165,10 @@ internal sealed class SidebarView : TextView
     }
     protected override void OnDrawReadOnlyColor(List<Cell> line, int idxCol, int idxRow)
     {
-        if (idxCol >= 0 && idxCol < line.Count && line[idxCol].Attribute is { } attribute) SetAttribute(Theme.Map(attribute));
+        var attribute = idxCol >= 0 && idxCol < line.Count ? line[idxCol].Attribute : null;
+        if (attribute is null && idxRow >= 0 && idxRow < _wrappedAttributes.Count)
+            attribute = _wrappedAttributes[idxRow];
+        if (attribute is { } cellAttribute) SetAttribute(Theme.Map(cellAttribute));
         else base.OnDrawReadOnlyColor(line, idxCol, idxRow);
     }
 }
