@@ -131,6 +131,26 @@ SHA-256 de la DLL con la corrección:
 `A1D5713D2B23018511D41F726514986AB9357A3CB8EEE0FEC9B7EA004980B1A3`.
 La aceptación remota exige una nueva matriz completa sobre la revisión corregida.
 
+Windows completó la misma matriz con 5076 aprobadas, 12 omitidas y dos fallidas
+de 5090. Una era la fuga anterior; la otra era una carrera en la fixture del
+comando de extensión: el contador HTTP notificaba la segunda solicitud antes
+de que su callback encolara el cuerpo, y la prueba accedía al índice 1.
+
+Luna alto añadió una espera de cuerpos capturados, señalada después de encolar,
+sin cambiar las aserciones de selección exacta de herramienta, estado terminal
+o ausencia del efecto requerido. El build incremental pasó sin advertencias
+ni errores y el foco afectado aprobó 1/1. Después, Luna bajo revisó la carrera,
+el cierre y la espera acotada, y aprobó **2/2, sin omisiones ni hallazgos**:
+
+~~~powershell
+dotnet C:/Users/juanc/AppData/Local/Temp/omnicore-m9-extension-batch-build/bin/OmniCore.Tests/debug/OmniCore.Tests.dll -method '*StdioTransportTests.Native_forced_extension_without_required_tool_effect_is_terminal_failed' -method '*StdioTransportTests.Native_command_ack_cut_recovers_ready_invocation_only_after_explicit_continue' -parallelMode none
+~~~
+
+SHA-256 de la DLL final con ambas correcciones:
+`C706B47E9AD691A43C74F7192A44CDFA92DE8870268A73F330033136EE2CF017`.
+Los workers trabajaron de forma secuencial. No se amplió el timeout de CI ni se
+suprimió ninguna de las pruebas fallidas; la nueva matriz vuelve a ejecutarlas.
+
 ## Publicación y límites
 
 La integración en main exige la CI del PR asociado para su revisión exacta:

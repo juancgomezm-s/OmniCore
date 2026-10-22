@@ -86,7 +86,11 @@ public sealed partial class StdioTransportTests
 
         await fixture.Provider.WaitForRequestAsync(2, TestContext.Current.CancellationToken)
             .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
-        var forcedRequest = JsonDocument.Parse(fixture.ProviderBodies.ToArray()[1]);
+        await fixture.WaitForProviderBodiesAsync(2, TestContext.Current.CancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+        var providerBodies = fixture.ProviderBodies.ToArray();
+        Assert.True(providerBodies.Length >= 2, "The provider accepted two requests but did not capture both bodies.");
+        var forcedRequest = JsonDocument.Parse(providerBodies[1]);
         var wireToolName = "omni_" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
             Encoding.UTF8.GetBytes("ext.fixture.native.mutate"))).ToLowerInvariant()[..48];
         var providerToolNames = forcedRequest.RootElement.GetProperty("tools").EnumerateArray()
