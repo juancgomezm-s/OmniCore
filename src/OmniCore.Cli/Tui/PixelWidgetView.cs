@@ -16,9 +16,17 @@ internal sealed class PixelWidgetView : View
     private readonly Button _dismiss = new() { Id = "pixel-widget-hide", Height = 2, Width = Dim.Fill(),
         TextAlignment = Alignment.Start, NoDecorations = true, ShadowStyle = ShadowStyles.None, Visible = false };
     private readonly List<Label> _pixels = [];
+    private IReadOnlyList<IReadOnlyList<PixelCell>>? _lastPixels;
+    private string? _lastTitle;
+    private string? _lastSummary;
+    private string? _lastAction;
+    private string? _lastDismissText;
+    private bool _lastNoColor;
+    private bool _hasRendered;
     internal event Action? ActionInvoked;
     internal event Action? DismissInvoked;
     internal string? DismissText { get; set; }
+    internal void InvalidateVisualCache() => _hasRendered = false;
     internal PixelWidgetView()
     {
         CanFocus = true; Add(_heading, _summary, _action, _dismiss);
@@ -29,12 +37,23 @@ internal sealed class PixelWidgetView : View
     {
         var pixels = model is PixelWidgetModel pixel ? pixel.Pixels : [];
         var rows = model is PixelWidgetModel picture ? picture.Rows : ((ListWidgetModel)model).Rows;
-        _heading.Text = model is PixelWidgetModel p ? p.Title : ((ListWidgetModel)model).Title;
-        _summary.Text = rows.FirstOrDefault()?.Text ?? ""; _summary.Y = pixels.Count + 1;
-        _action.Y = pixels.Count + 2; _action.Text = rows.LastOrDefault()?.Text ?? "/pet";
-        _dismiss.Visible = !string.IsNullOrEmpty(DismissText);
+        var title = model is PixelWidgetModel p ? p.Title : ((ListWidgetModel)model).Title;
+        var summary = rows.FirstOrDefault()?.Text ?? "";
+        var action = rows.LastOrDefault()?.Text ?? "/pet";
+        var dismissText = DismissText ?? "";
+        if (_hasRendered && _lastNoColor == noColor
+            && string.Equals(_lastTitle, title, StringComparison.Ordinal)
+            && string.Equals(_lastSummary, summary, StringComparison.Ordinal)
+            && string.Equals(_lastAction, action, StringComparison.Ordinal)
+            && string.Equals(_lastDismissText, dismissText, StringComparison.Ordinal)
+            && SamePixels(_lastPixels!, pixels)) return;
+
+        _heading.Text = title;
+        _summary.Text = summary; _summary.Y = pixels.Count + 1;
+        _action.Y = pixels.Count + 2; _action.Text = action;
+        _dismiss.Visible = dismissText.Length != 0;
         _action.Width = _dismiss.Visible ? Dim.Percent(55) : Dim.Fill();
-        _dismiss.X = Pos.Percent(55); _dismiss.Y = pixels.Count + 2; _dismiss.Text = DismissText ?? "";
+        _dismiss.X = Pos.Percent(55); _dismiss.Y = pixels.Count + 2; _dismiss.Text = dismissText;
         var wanted = pixels.Sum(row => row.Count);
         while (_pixels.Count < wanted)
         {
@@ -57,5 +76,25 @@ internal sealed class PixelWidgetView : View
             view.Text = cell.Glyph; view.SetScheme(new Scheme { Normal = attr, Focus = attr }); view.SetNeedsDraw();
         }
         foreach (var unused in _pixels.Skip(index)) unused.Visible = false;
+        _lastPixels = pixels;
+        _lastTitle = title;
+        _lastSummary = summary;
+        _lastAction = action;
+        _lastDismissText = dismissText;
+        _lastNoColor = noColor;
+        _hasRendered = true;
+    }
+
+    private static bool SamePixels(IReadOnlyList<IReadOnlyList<PixelCell>> left,
+        IReadOnlyList<IReadOnlyList<PixelCell>> right)
+    {
+        if (left.Count != right.Count) return false;
+        for (var y = 0; y < left.Count; y++)
+        {
+            if (left[y].Count != right[y].Count) return false;
+            for (var x = 0; x < left[y].Count; x++)
+                if (left[y][x] != right[y][x]) return false;
+        }
+        return true;
     }
 }

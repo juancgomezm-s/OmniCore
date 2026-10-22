@@ -57,6 +57,8 @@ public sealed partial class TuiApp
     private FrameView? _commandHelper;
     private ListView? _commandList;
     private string[] _commandSuggestions = Array.Empty<string>();
+    private string? _lastAutocompleteDraft;
+    private string[]? _slashAutocompleteNames;
     private IReadOnlyDictionary<string, string> _disabledCommandReasons =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     private View? _overlay;
@@ -541,20 +543,48 @@ public sealed partial class TuiApp
     {
         if (_composer is null || _completion is null) return;
         var draft = _composer.Text?.ToString() ?? "";
-        if (draft.Length == 0 || draft[0] is not ('/' or '@')) { _completion.Text = ""; HideCommandHelper(); return; }
-        var commandCatalogJson = _client.Query("commands", CancellationToken.None)?.Json;
-        _disabledCommandReasons = ReadDisabledCommandReasons(commandCatalogJson);
-        var aliases = new UserCommandAliases((_policyPreferencesOverride ?? PolicyPreferencesHost.Create(Environment.CurrentDirectory))
-            .Read().CommandAliases);
-        var names = ReadStringArray(commandCatalogJson, "commands")
-            .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode", "reasoning",
-                "cancel", "interrupt", "preferences", "model", "models", "sidebar", "agents", "delegate", "agent", "join", "fanout", "animation", "images",
-                "new", "sessions", "resume-session", "rename-session", "clear", "compact" })
-            .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name))
-            .Where(name => !TuiMenuCommands.IsMenuOwned(name, aliases));
-        var suggestions = ComposerAutocomplete.Complete(draft,
-        aliases.CompletionNames(names).Where(name => !TuiMenuCommands.IsMenuOwned(name, aliases)),
-            ReadStringArray(_client.Query("complete:" + draft[1..], CancellationToken.None)?.Json, "paths"),
+        if (string.Equals(draft, _lastAutocompleteDraft, StringComparison.Ordinal)) return;
+        _lastAutocompleteDraft = draft;
+        if (draft.Length == 0 || draft[0] is not ('/' or '@'))
+        {
+            _slashAutocompleteNames = null;
+            _disabledCommandReasons = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            _completion.Text = "";
+            HideCommandHelper();
+            return;
+        }
+
+        IReadOnlyList<string> commandNames;
+        IReadOnlyList<string> workspacePaths;
+        if (draft[0] == '/')
+        {
+            if (_slashAutocompleteNames is null)
+            {
+                var commandCatalogJson = _client.Query("commands", CancellationToken.None)?.Json;
+                _disabledCommandReasons = ReadDisabledCommandReasons(commandCatalogJson);
+                var aliases = new UserCommandAliases((_policyPreferencesOverride ?? PolicyPreferencesHost.Create(Environment.CurrentDirectory))
+                    .Read().CommandAliases);
+                var names = ReadStringArray(commandCatalogJson, "commands")
+                    .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode", "reasoning",
+                        "cancel", "interrupt", "preferences", "model", "models", "sidebar", "agents", "delegate", "agent", "join", "fanout", "animation", "images",
+                        "new", "sessions", "resume-session", "rename-session", "clear", "compact" })
+                    .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name))
+                    .Where(name => !TuiMenuCommands.IsMenuOwned(name, aliases));
+                _slashAutocompleteNames = aliases.CompletionNames(names)
+                    .Where(name => !TuiMenuCommands.IsMenuOwned(name, aliases)).ToArray();
+            }
+            commandNames = _slashAutocompleteNames;
+            workspacePaths = Array.Empty<string>();
+        }
+        else
+        {
+            _slashAutocompleteNames = null;
+            _disabledCommandReasons = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            commandNames = Array.Empty<string>();
+            workspacePaths = ReadStringArray(_client.Query("complete:" + draft[1..], CancellationToken.None)?.Json, "paths");
+        }
+
+        var suggestions = ComposerAutocomplete.Complete(draft, commandNames, workspacePaths,
             name => HumanCommandAliases.DisplayName(name, _locale));
         // Show one spelling in the effective UI language. Canonical commands remain accepted
         // when typed explicitly, without duplicating the localized browsing surface.
@@ -588,6 +618,13 @@ public sealed partial class TuiApp
         ApplyTheme(_commandHelper, "#142636");
         _window.Add(_commandHelper);
         _completion.Visible = false;
+    }
+
+    private void InvalidateAutocompleteCache()
+    {
+        _lastAutocompleteDraft = null;
+        _slashAutocompleteNames = null;
+        _disabledCommandReasons = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     }
 
     private string CommandDescription(string command) => HumanCommandAliases.NormalizeSlashHead(command) switch
@@ -1359,6 +1396,7 @@ public sealed partial class TuiApp
         if (identity is not null && JsonObj.Parse(identity.Json).TryGetValue("sessionId", out var session)
             && session != _cursorSession)
         {
+            InvalidateAutocompleteCache();
             _cursorSession = session; _lastSequence = 0; _observedModel = null; _turnUsage = null;
             var empty = ClientState.Empty();
             _state = new ClientState(_state.Header, empty.Conversation, empty.Sidebar,
@@ -1874,6 +1912,7 @@ public sealed partial class TuiApp
 
     private void ApplyTheme(View view, string surface = "#061822", bool dimmed = false, bool preferences = false)
     {
+        if (view is PixelWidgetView pixelWidget) pixelWidget.InvalidateVisualCache();
         ConfigureEditorContextMenu(view);
         preferences |= view is FrameView && view.Id is { } preferenceId
             && (preferenceId.Contains("preferences", StringComparison.Ordinal) || preferenceId == "model-toggles" || preferenceId.StartsWith("model-catalog-", StringComparison.Ordinal)
@@ -2731,6 +2770,7 @@ public sealed partial class TuiApp
     {
         _petDetail = null;
         if (_overlay is null || _window is null) return;
+        InvalidateAutocompleteCache();
         CancelExtensionViewRefresh();
         if (_themeBeforePreview is { } originalTheme) { _theme = originalTheme; _themeBeforePreview = null; }
         if (_suspendedSecurityForm is { } securityDraft)

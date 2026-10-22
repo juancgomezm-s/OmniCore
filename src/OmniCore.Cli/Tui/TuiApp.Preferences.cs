@@ -73,6 +73,7 @@ public sealed partial class TuiApp
                 if (_locale != _localeSelection.Locale)
                 {
                     _locale = _localeSelection.Locale;
+                    InvalidateAutocompleteCache();
                     _localization = new Localization(_locale);
                     _projection = new ClientProjection(_localization);
                     _localeChanged?.Invoke(_locale);
@@ -1048,6 +1049,7 @@ public sealed partial class TuiApp
             return;
         }
         _locale = locale;
+        InvalidateAutocompleteCache();
         _localization = new Localization(locale);
         _projection = new ClientProjection(_localization);
         _localeChanged?.Invoke(locale);
@@ -1116,6 +1118,7 @@ public sealed partial class TuiApp
     {
         if (_localeSelection?.HasProcessOverride == true || _locale == _preferencesOriginalLocale) return;
         _locale = _preferencesOriginalLocale;
+        InvalidateAutocompleteCache();
         _localization = new Localization(_locale);
         _projection = new ClientProjection(_localization);
         _localeChanged?.Invoke(_locale);
