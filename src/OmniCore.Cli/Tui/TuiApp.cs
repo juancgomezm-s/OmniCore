@@ -1833,6 +1833,7 @@ public sealed partial class TuiApp
 
     private void ApplyTheme(View view, string surface = "#061822", bool dimmed = false, bool preferences = false)
     {
+        ConfigureEditorContextMenu(view);
         preferences |= view is FrameView && view.Id is { } preferenceId
             && (preferenceId.Contains("preferences", StringComparison.Ordinal) || preferenceId == "model-toggles" || preferenceId.StartsWith("model-catalog-", StringComparison.Ordinal)
                 || preferenceId.StartsWith("claude-account", StringComparison.Ordinal));

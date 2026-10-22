@@ -5,6 +5,13 @@ public static class ShellUiResources
 {
     private static readonly Dictionary<string, string[]> Values = new(StringComparer.Ordinal)
     {
+        ["shell.editor.select_all"] = ["Seleccionar todo", "Select all", "Tout sélectionner", "Seleziona tutto"],
+        ["shell.editor.delete_all"] = ["Borrar todo", "Delete all", "Tout effacer", "Cancella tutto"],
+        ["shell.editor.copy"] = ["Copiar", "Copy", "Copier", "Copia"],
+        ["shell.editor.cut"] = ["Cortar", "Cut", "Couper", "Taglia"],
+        ["shell.editor.paste"] = ["Pegar", "Paste", "Coller", "Incolla"],
+        ["shell.editor.undo"] = ["Deshacer", "Undo", "Annuler", "Annulla"],
+        ["shell.editor.redo"] = ["Rehacer", "Redo", "Rétablir", "Ripristina"],
         ["animation.choose"] = ["Elegir animación", "Choose animation", "Choisir une animation", "Scegli animazione"],
         ["animation.apply"] = ["Elegir", "Select", "Choisir", "Scegli"],
         ["animation.sample"] = ["Pensando...", "Thinking...", "Réflexion...", "Pensando..."],
