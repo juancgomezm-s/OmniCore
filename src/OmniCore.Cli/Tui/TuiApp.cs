@@ -41,6 +41,7 @@ public sealed partial class TuiApp
     private ComposerView? _composer;
     private int _composerRows = 1;
     private bool _followConversationEnd = true;
+    private System.Drawing.Size? _lastConversationViewportSize;
     private bool _renderingConversation;
     private FrameView? _composerFrame;
     private Label? _attachmentChips;
@@ -1472,9 +1473,13 @@ public sealed partial class TuiApp
         var signature = codeWidth + "\u001d" + string.Join("\u001f", _state.Conversation.Blocks.Select(b => b.Role + "\u001e" + b.ToolName + "\u001e" + b.Text));
         if (_renderedConversation == signature)
         {
-            // Growing the composer changes height without changing content or wrap width.
-            // Keep the tail visible without reloading text or resetting a reader's selection.
-            if (_followConversationEnd && _conversation.Viewport.Height > 0
+            // A height change (for example, a growing composer) is layout intent and should
+            // preserve follow-tail. A location-only change is the native reader scrolling;
+            // snapping it back here would make Home/scrollbar navigation impossible.
+            var viewportSize = _conversation.Viewport.Size;
+            var heightChanged = _lastConversationViewportSize is { } previous && previous.Height != viewportSize.Height;
+            _lastConversationViewportSize = viewportSize;
+            if (heightChanged && _followConversationEnd && _conversation.Viewport.Height > 0
                 && _conversation.Viewport.Bottom < _conversation.Lines) _conversation.MoveEnd();
             return;
         }
@@ -1492,6 +1497,7 @@ public sealed partial class TuiApp
         _conversation.InsertionPoint = System.Drawing.Point.Empty;
         _conversation.LoadStyled(ConversationPresentation.RenderCards(_state.Conversation.Blocks, _locale, codeWidth,
             compactExamples: !_showMarkdownExamples), codeWidth, noColor);
+        _lastConversationViewportSize = _conversation.Viewport.Size;
         if (follow) _conversation.MoveEnd();
         else
         {

@@ -726,6 +726,8 @@ public sealed partial class TuiWiringTests
         fx.Wait(() => fx.App.MainWindow!.Frame.Width == columns && fx.App.MainWindow.Frame.Height == rows,
             "el renderer debe completar el resize");
         Type(fx, "Escribe tu siguiente instrucción…");
+        if (scene is "conversation" or "scrollbar" or "table")
+            fx.Invoke(() => { fx.App.Conversation!.MoveHome(); fx.App.Composer!.SetFocus(); });
         if (scene == "activity")
         {
             KeyWithEffect(fx, KeyCode.Enter, () => visualTurn!.Started.IsSet, "turno activo para fotograma");
@@ -994,8 +996,16 @@ public sealed partial class TuiWiringTests
                 }
                 else
                 {
-                    Assert.Contains("Conversación", text);
-                    Assert.Contains("AskAsync(ct)", text);
+                    if (scene == "table")
+                    {
+                        Assert.Contains("Dependencias", text);
+                        Assert.Contains("Paquete", text);
+                    }
+                    else
+                    {
+                        Assert.Contains("Conversación", text);
+                        Assert.Contains("AskAsync(ct)", text);
+                    }
                     Assert.DoesNotContain("Mensaje", text);
                     var inputRow = Enumerable.Range(0, rows).Single(y =>
                         string.Concat(Enumerable.Range(0, columns).Select(x => cells[y, x].Grapheme)).Contains("Escribe tu siguiente", StringComparison.Ordinal));
@@ -1812,9 +1822,17 @@ public sealed partial class TuiWiringTests
         fx.Wait(() => Label().Contains("Herramientas"), "herramientas visibles");
         client.Phase = ChatActivityPhase.WaitingForApproval;
         fx.Wait(() => Label().Contains("Requiere tu respuesta"), "espera sin animación");
-        var frozen = fx.App.Activity!.SubViews.Select(v => (v.Text, v.GetScheme().Normal)).ToArray();
-        fx.Invoke(() => { for (var i = 0; i < 5; i++) fx.App.AnimateActivity(); });
-        Assert.Equal(frozen, fx.App.Activity!.SubViews.Select(v => (v.Text, v.GetScheme().Normal)).ToArray());
+        fx.Wait(() => fx.App.Activity!.SubViews.First().Text == "✦"
+            && fx.App.Activity.SubViews.Skip(1).All(view => view.Text == " "), "fotograma de espera estabilizado");
+        (string Text, Terminal.Gui.Drawing.Attribute Normal)[] frozen = [];
+        fx.Invoke(() =>
+        {
+            // Capture and advance on the UI thread so the periodic timer cannot expose
+            // a half-rendered frame between the cells of the static approval indicator.
+            frozen = fx.App.Activity!.SubViews.Select(v => (v.Text.ToString(), v.GetScheme().Normal)).ToArray();
+            for (var i = 0; i < 5; i++) fx.App.AnimateActivity();
+            Assert.Equal(frozen, fx.App.Activity!.SubViews.Select(v => (v.Text.ToString(), v.GetScheme().Normal)).ToArray());
+        });
         client.Phase = ChatActivityPhase.Completed;
         fx.Wait(() => !fx.App.Activity!.Visible, "terminal retira indicador");
         Assert.DoesNotContain("Razonando", fx.App.Conversation!.Text);
@@ -1913,7 +1931,7 @@ public sealed partial class TuiWiringTests
         Assert.Equal(25, fx.App.Sidebar.Frame.Height);
 
         // Terminal ancha (120): el resize real del driver reencuadra la ventana; sidebar apilado a la derecha.
-        fx.Invoke(() => fx.Application.Screen = new Rectangle(0, 0, 120, 40));
+        fx.Invoke(() => fx.Application.Driver!.SetScreenSize(120, 40));
         fx.Wait(() => fx.App.MainWindow!.Frame.Width == 120, "la ventana debe ocupar la pantalla tras el resize del driver");
         fx.Wait(() => fx.App.Sidebar!.Frame.Width == 40, "a 120 cols el sidebar apilado mide 40");
         Assert.Equal(80, fx.App.Sidebar!.Frame.X);
@@ -1927,17 +1945,18 @@ public sealed partial class TuiWiringTests
         Assert.Equal(80, fx.App.Status!.Frame.Width);
 
         // Maximizing grows the conversation, not the sidebar beyond its 40-column cap.
-        fx.Invoke(() => fx.Application.Screen = new Rectangle(0, 0, 240, 40));
+        fx.Invoke(() => fx.Application.Driver!.SetScreenSize(240, 40));
         fx.Wait(() => fx.App.MainWindow!.Frame.Width == 240 && fx.App.Sidebar!.Frame.Width == 40
-            && conversation.Frame.Width == 200, "al maximizar, el panel conserva 40 columnas");
+            && conversation.Frame.Width == 200 && fx.App.Sidebar.Frame.X == 200,
+            "al maximizar, el panel conserva 40 columnas en el borde derecho");
         Assert.Equal(200, fx.App.Sidebar.Frame.X);
         fx.Wait(() => fx.App.Composer!.SuperView!.Frame.Width == 198, "el espacio extra queda para el mensaje");
-        fx.Invoke(() => fx.Application.Screen = new Rectangle(0, 0, 80, 25));
+        fx.Invoke(() => fx.Application.Driver!.SetScreenSize(80, 25));
         fx.Wait(() => fx.App.MainWindow!.Frame.Width == 80 && conversation.Frame.Width == 54
             && fx.App.Sidebar.Frame.X == 54, "reducir la ventana conserva el panel a la derecha");
         Assert.True(conversation.Frame.Right <= fx.App.Sidebar.Frame.X);
         Assert.True(fx.App.Composer!.SuperView!.Frame.Right < fx.App.Sidebar.Frame.X);
-        fx.Invoke(() => fx.Application.Screen = new Rectangle(0, 0, 120, 40));
+        fx.Invoke(() => fx.Application.Driver!.SetScreenSize(120, 40));
         fx.Wait(() => fx.App.MainWindow!.Frame.Width == 120 && conversation.Frame.Width == 80,
             "restaurar la ventana conserva los límites");
 

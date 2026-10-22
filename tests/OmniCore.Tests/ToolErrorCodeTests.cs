@@ -700,7 +700,7 @@ public sealed class ToolErrorCodeTests
             {
                 var envelopes = reopened.ReadFrom(sessionId, 1).ToList();
                 var failedEnvelope = Assert.Single(envelopes, e => e.Type.ToString() == "toolcall.failed");
-                Assert.Equal(2, failedEnvelope.SchemaVersion);
+                Assert.Equal(3, failedEnvelope.SchemaVersion);
                 Assert.Contains("\"ErrorCode\":{\"Value\":\"STALE_WRITE\"}", failedEnvelope.PayloadJson);
                 Assert.Contains("STALE_WRITE:", failedEnvelope.PayloadJson); // el texto viaja aparte
 
@@ -999,6 +999,22 @@ public sealed class ToolErrorCodeTests
         Assert.Equal(call, decoded.ToolCallId);
         Assert.Equal("tool failed", decoded.Cause);
         Assert.Null(decoded.ErrorCode);
+    }
+
+    [Fact]
+    public void A_v2_toolcall_failed_keeps_its_typed_code_when_decoded_by_v3()
+    {
+        var call = ToolCallId.New();
+        var v2 = DomainEvent.Stored(EventId.New(), SessionId.New(), 1, EventType.Of("toolcall.failed"), 2,
+            DateTimeOffset.UtcNow, null, null, null, null, null, null, null, call, Array.Empty<ArtifactRef>(),
+            "{\"ToolCallId\":{\"Value\":\"" + call.Value + "\"},\"Cause\":\"stale write\","
+            + "\"EffectOutcome\":0,\"ErrorCode\":{\"Value\":\"STALE_WRITE\"}}");
+
+        var decoded = Assert.IsType<ToolCallFailed>(EventCodecs.Create().Decode(v2));
+        Assert.Equal(call, decoded.ToolCallId);
+        Assert.Equal("stale write", decoded.Cause);
+        Assert.Equal(ToolErrorCode.StaleWrite, decoded.ErrorCode);
+        Assert.Null(decoded.ActivityEvidence);
     }
 
     [Fact]
