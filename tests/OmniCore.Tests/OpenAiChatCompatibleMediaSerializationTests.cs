@@ -9,6 +9,36 @@ using OmniCore.Models;
 
 public sealed class OpenAiChatCompatibleMediaSerializationTests
 {
+    [Theory]
+    [InlineData("llamaCpp", true)]
+    [InlineData(null, false)]
+    [InlineData("other", false)]
+    public async System.Threading.Tasks.Task Reasoning_off_uses_only_the_explicit_llama_cpp_dialect(string? profile, bool supported)
+    {
+        var handler = new CaptureHandler();
+        var descriptor = new ProviderDescriptor("fixture", ProviderFamily.OpenAiChatCompatible,
+            "https://fixture.invalid/v1", AuthConfig.None(), false, false, true) { Profile = profile };
+        var provider = new OpenAiChatCompatibleProvider(descriptor, new NoSecrets(),
+            () => new HttpClient(handler, disposeHandler: false));
+        const string literal = "Prueba literal: café  ";
+        var request = new ModelRequest(new ModelSelection(new ModelIdValue("fixture-model"), 4096,
+            ToolMode.Direct, new ReasoningRequest("off", null)),
+            [new ModelMessage(MessageRole.User, [new TextBlock(literal)])], null, [], ToolChoice.Auto(), null, null, null, null);
+        if (!supported)
+        {
+            await Assert.ThrowsAsync<NotSupportedException>(async () =>
+            {
+                await foreach (var _ in provider.StreamAsync(request, TestContext.Current.CancellationToken)) { }
+            });
+            Assert.Null(handler.Body);
+            return;
+        }
+        await foreach (var _ in provider.StreamAsync(request, TestContext.Current.CancellationToken)) { }
+        using var body = JsonDocument.Parse(handler.Body!);
+        Assert.Equal("none", body.RootElement.GetProperty("reasoning_effort").GetString());
+        Assert.Equal(literal, body.RootElement.GetProperty("messages")[0].GetProperty("content").GetString());
+    }
+
     [Fact]
     public async System.Threading.Tasks.Task Multiple_tool_results_are_serialized_before_one_native_image_message()
     {
