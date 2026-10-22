@@ -1,4 +1,4 @@
-"""Start the published TUI in a real Linux PTY, then exit by explicit keyboard input."""
+"""Smoke-test Escape staying in the published TUI, then exit via /exit in a real Linux PTY."""
 import fcntl
 import os
 from pathlib import Path
@@ -59,15 +59,17 @@ for columns, rows in ((120, 35), (80, 25)):
             os.write(fd, b"\x1b")
             read_until(time.monotonic() + 1.5)
             if exited:
-                break
+                raise RuntimeError("Published TUI exited after Escape; only explicit /exit should quit")
+        os.write(fd, b"/exit\r")
+        read_until(time.monotonic() + 8)
         if not exited:
-            raise RuntimeError("Published TUI did not exit after explicit Escape input")
+            raise RuntimeError("Published TUI did not exit after explicit /exit command")
         _, status = os.waitpid(pid, 0)
         reaped = True
         code = os.waitstatus_to_exitcode(status)
         if code != 0:
             raise RuntimeError(f"Published TUI exited with {code}")
-        print(f"PTY {columns}x{rows}: real first screen, explicit Escape, exit 0")
+        print(f"PTY {columns}x{rows}: first screen, Escape kept TUI alive, /exit returned 0")
     finally:
         if not reaped:
             os.killpg(pid, signal.SIGKILL)

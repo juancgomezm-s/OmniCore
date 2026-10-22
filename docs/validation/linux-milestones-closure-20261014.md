@@ -372,6 +372,11 @@ Escape/exit 0, evidencia `strict-sdk-path-b673/`. También se comprobó el aisla
 con los binarios previos 0789, sin atribuirlos al código final. La fuente C# no
 cambia en este último ajuste de scripts/evidencia.
 
+Actualización del 2026-10-22: la TUI conserva la sesión al pulsar Escape; el smoke
+actual comprueba ese comportamiento y cierra únicamente con el comando explícito
+`/exit`. Las capturas y resultados de PTY anteriores corresponden a la versión
+histórica validada en esa fecha.
+
 La pasada remota 3d0aa8b aprobó los tres jobs en
 [38680635315](https://github.com/juancgomezm-s/OmniCore/actions/runs/38680635315),
 pero el guard de integración detectó main avanzado y detuvo el merge. Se combina
