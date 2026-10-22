@@ -248,7 +248,6 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         // Recuperación del Run real (ADR-0004 §5): idempotente, no-op sin run persistido.
         if (!_writerOwnershipUnavailable)
         {
-            ReconcileObsoleteMonetaryBudget();
             RecoverPendingEffects();
             RecoverPendingAgentOrchestration();
             RecoverExpiredWorktreesAtStartup();
@@ -281,7 +280,6 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         // Recuperación del Run real (ADR-0004 §5): idempotente, no-op sin run persistido.
         if (!_writerOwnershipUnavailable)
         {
-            ReconcileObsoleteMonetaryBudget();
             RecoverPendingEffects();
             RecoverPendingAgentOrchestration();
             RecoverExpiredWorktreesAtStartup();
@@ -549,6 +547,17 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     /// </summary>
     private HostRecoveryResult RecoverPendingEffects()
     {
+        try
+        {
+            // Budget migration is recovery too: a read/decode/Barrier failure must remain
+            // visible and block continuation, not escape construction or be cleared below.
+            ReconcileObsoleteMonetaryBudget();
+        }
+        catch (Exception failure)
+        {
+            return BlockWith("no se pudo recuperar el presupuesto de la sesión (" + failure.Message
+                + "): recuperación bloqueada, sin continuar automáticamente");
+        }
         if (_lastSessionId is null || _lastRunId is null)
         {
             // Sin run persistido no hay nada que recuperar; estado limpio.

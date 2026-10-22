@@ -2,11 +2,59 @@ using OmniCore.Domain;
 using OmniCore.Engine;
 using OmniCore.Host;
 using OmniCore.Infrastructure;
+using OmniCore.Abstractions;
 
 namespace OmniCore.Tests;
 
 public sealed class ObsoleteMonetaryBudgetRecoveryTests
 {
+    [Fact]
+    public void Startup_exposes_failed_budget_expiration_without_mutating_the_journal()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-budget-failed-recovery-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var codecs = EventCodecs.Create(); var inner = new InMemoryEventStore();
+            var session = SessionId.New(); var run = RunId.New();
+            var stream = new EventStream(inner, codecs, session);
+            stream.Append(new SessionCreated(session, WorkspaceId.Of(root).ToString(), root, ProfileId.New(), DateTimeOffset.UtcNow));
+            var route = ModelRoute.DefaultForModel("probe", "provider", "https://provider.example/v1", ProviderFamily.OpenAiChatCompatible);
+            stream.Append(new SessionRoutingPolicySet(session, new SessionRoutingPolicy(1,
+                [AuthorizedModelRoute.From(route, BillingMode.Local)], [BillingMode.Local], false, 5m, "provider")));
+            stream.Append(new RunCreated(run, session, "keep original input", RunMode.Act, ExecutionStrategy.Direct,
+                FailurePolicy.BlockDependents, new TaskBudget(null, null, null, null), TaskId.New(), DateTimeOffset.UtcNow));
+            stream.Append(new RunStarted(run));
+            stream.Append(new InteractionRequested(InteractionId.New(), InteractionKind.BudgetExceeded,
+                BudgetContinuation.Context("uso histórico incompleto: no se puede hacer cumplir el tope", null),
+                "[{\"id\":\"deny\",\"intent\":\"deny\"}]", "deny", null, null, null, null, 0, 1));
+            var original = inner.ReadFrom(session, 1).ToArray();
+            var state = Path.Combine(root, "state.txt"); File.WriteAllText(state, session + "\n" + run);
+            var server = new OmniServer(new FailedBudgetExpirationStore(inner), codecs, new InMemoryAuditSink(), state);
+            Assert.Contains("fixture_expiration_write_failed", server.LastRecoveryProblem());
+            Assert.Contains("blocked", server.Query("state", CancellationToken.None)!.Json);
+            Assert.Equal(original.Select(evt => (evt.EventId, evt.Sequence, evt.PayloadJson)),
+                inner.ReadFrom(session, 1).Select(evt => (evt.EventId, evt.Sequence, evt.PayloadJson)));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    private sealed class FailedBudgetExpirationStore(IEventStore inner) : IEventStore
+    {
+        public void Append(SessionId sessionId, DomainEvent evt, DurabilityClass durability, CancellationToken token)
+        {
+            if (evt.Type.ToString() == "interaction.expired") throw new IOException("fixture_expiration_write_failed");
+            inner.Append(sessionId, evt, durability, token);
+        }
+        public void AppendBatch(SessionId sessionId, IReadOnlyList<DomainEvent> events, DurabilityClass durability, CancellationToken token)
+        {
+            if (events.Any(evt => evt.Type.ToString() == "interaction.expired")) throw new IOException("fixture_expiration_write_failed");
+            inner.AppendBatch(sessionId, events, durability, token);
+        }
+        public long CurrentSequence(SessionId sessionId) => inner.CurrentSequence(sessionId);
+        public IReadOnlyList<DomainEvent> ReadFrom(SessionId sessionId, long fromSequenceInclusive) => inner.ReadFrom(sessionId, fromSequenceInclusive);
+    }
+
     [Theory]
     [InlineData(BillingMode.Local, true)]
     [InlineData(BillingMode.IncludedQuota, true)]

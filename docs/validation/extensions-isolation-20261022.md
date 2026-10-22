@@ -9,6 +9,21 @@ worktrees estaban limpios y sus commits ya estaban contenidos en main; no se
 eliminaron ramas ni worktrees. Las cifras siguientes son locales, no resultados
 de CI remoto. La verificación del run del SHA publicado se entrega por separado.
 
+### Regresión encontrada al integrar otra rama
+
+El primer CI sobre `1290869` ([run 39800905762](https://github.com/juancgomezm-s/OmniCore/actions/runs/39800905762))
+aprobó ambos instaladores y Linux/AOT. Ubuntu ejecutó 5.129 casos: 5.092 pasaron,
+36 se omitieron y falló únicamente
+`M3HostRecoveryTests.Server_startup_surfaces_journal_or_reconciler_error`.
+La migración de avisos monetarios obsoletos importada desde la rama de preferencias
+leía el journal antes de la guarda de recuperación, dejando escapar una excepción
+en el constructor del Host. Se mueve dentro de la recuperación con fallo cerrado:
+el diagnóstico queda visible y no se continúa automáticamente. No se elimina el
+test ni se oculta el error. Una nueva prueba inyecta fallo al persistir
+`InteractionExpired` y comprueba que se conserva íntegro el journal y el aviso.
+Las dos clases focales pasan 17/17 en Windows y Debian; el CI del nuevo commit se
+verifica por separado y no se confunde con aquel run fallido.
+
 ## Resultado
 
 Todo ejecutable v2 pasa del supervisor Host al adapter `IsolatedExtensionProcess`

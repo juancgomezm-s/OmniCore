@@ -127,7 +127,6 @@ public sealed partial class OmniServer
                 _recoveryProblem = null;
                 if (run is not null)
                 {
-                    ReconcileObsoleteMonetaryBudget();
                     RecoverPendingEffects();
                     RecoverPendingAgentOrchestration();
                 }
