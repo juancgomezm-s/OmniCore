@@ -441,6 +441,7 @@ public sealed partial class TuiApp
                 Section("section_extensions", y++);
                 y++; Add(MenuIndent.Help(Pref("extensions_hint"), y, 2, "preferences-extensions-hint")); y += 3;
                 AddAction("preferences-extensions-open", "extensions_open", y, () => RunPreferenceAction(ClientActionIds.ExtensionsInspect)); y += 2;
+                AddNamedAction("preferences-extension-packages", ExtensionText("platform.title"), y, ShowExtensionPackages); y += 2;
                 AddAction("preferences-skills-open", "skills_open", y, () => RunPreferenceAction(ClientActionIds.SkillsInspect)); y += 2;
                 AddNamedAction("preferences-hooks-open", PolicyPref("service.hooks"), y, () => ShowServiceInspection("hooks")); y += 2;
                 AddNamedAction("preferences-mcp-open", Pref("mcp_open"), y, () => ShowServiceInspection("mcp")); y += 2;

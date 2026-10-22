@@ -218,7 +218,7 @@ public static class StdioProtocolHost
                     or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
                     or "external.memory.consent" or "interaction.respond" or "interaction.continue"
                     or "command.invoke.user" or "command.continue" or "workflow.continue"
-                    or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish";
+                    or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish" or "extensions.package";
                 TrustedActionScope? trustedScope = null;
                 if (root.TryGetProperty("actionProof", out var proofElement))
                 {
@@ -294,7 +294,7 @@ public static class StdioProtocolHost
                     or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
                     or "run.interrupt" or "run.cancel" or "run.mode.select" or "external.memory.consent" or "interaction.respond" or "interaction.continue"
                     or "command.invoke.user" or "command.continue" or "workflow.continue" or "attachment.upload.begin"
-                    or "attachment.upload.chunk" or "attachment.upload.finish"))
+                    or "attachment.upload.chunk" or "attachment.upload.finish" or "extensions.package"))
                     return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_action_not_supported",
                         RuntimeCommandOutcome.Rejected()));
                 if (commandName.StartsWith("attachment.upload.", StringComparison.Ordinal))
@@ -582,7 +582,7 @@ public static class StdioProtocolHost
             or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
             or "external.memory.consent" or "interaction.respond" or "interaction.continue"
             or "command.invoke.user" or "command.continue" or "workflow.continue"
-            or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish")) return false;
+            or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish" or "extensions.package")) return false;
         if (commandName.StartsWith("attachment.upload.", StringComparison.Ordinal))
         {
             // Upload proofs pin the currently active Session/Run too: attachments after the
@@ -593,6 +593,27 @@ public static class StdioProtocolHost
         }
         if ((commandName is "run.interrupt" or "run.cancel" or "run.mode.select") && expectedRun.Value is null) return false;
         var properties = payload.RootElement.EnumerateObject().Select(property => property.Name).ToArray();
+        if (commandName == "extensions.package")
+        {
+            if (properties.Distinct(StringComparer.Ordinal).Count() != properties.Length
+                || properties.Except(["cmd", "action", "extensionId", "source", "trustProcess", "expectedManifestSha256", "expectedPackageSha256", "key", "value", "submission"], StringComparer.Ordinal).Any()
+                || !payload.RootElement.TryGetProperty("action", out var action) || action.ValueKind != JsonValueKind.String
+                || action.GetString() is not ("install" or "enable" or "disable" or "uninstall" or "configure" or "update" or "rollback" or "submit-view")
+                || !payload.RootElement.TryGetProperty(action.GetString() == "install" ? "source" : "extensionId", out var target)
+                || target.ValueKind != JsonValueKind.String || target.GetString() is not { Length: > 0 and <= 1024 }) return false;
+            if (action.GetString() == "update"
+                && (!payload.RootElement.TryGetProperty("source", out var source) || source.ValueKind != JsonValueKind.String
+                    || source.GetString() is not { Length: > 0 and <= 1024 })) return false;
+            if (action.GetString() == "submit-view")
+            {
+                if (!payload.RootElement.TryGetProperty("submission", out var submission) || submission.ValueKind != JsonValueKind.String
+                    || submission.GetString() is not { } formJson || Encoding.UTF8.GetByteCount(formJson) > 65536) return false;
+                var form = JsonSerializer.Deserialize(formJson, ExtensionJson.Default.ExtensionFormSubmission);
+                if (form?.Scope is null || form.ExtensionId != target.GetString() || form.Scope.SessionId != expectedSession.Value) return false;
+            }
+            scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null, false, false, null);
+            return true;
+        }
         if (commandName is "command.invoke.user" or "command.continue" or "workflow.continue")
         {
             bool ExactCommandProperties(params string[] expected) => properties.Length == expected.Length

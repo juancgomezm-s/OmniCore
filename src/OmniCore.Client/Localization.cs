@@ -89,6 +89,8 @@ public sealed class Localization
     /// <summary>Resolves a key and reports whether a legacy key used a fallback resource.</summary>
     public LocalizationResolution ResolveDetailed(string key)
     {
+        if (ExtensionResources.TryTranslate(Locale, key, out var extensionText))
+            return new(extensionText, Locale, Locale, false);
         if (LinkResources.TryTranslate(Locale, key, out var linkText))
             return new(linkText, Locale, Locale, false);
         if (OpenRouterResources.TryTranslate(Locale, key, out var openRouterText))

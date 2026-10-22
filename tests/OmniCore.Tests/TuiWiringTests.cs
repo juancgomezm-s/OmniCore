@@ -3295,6 +3295,7 @@ public sealed partial class TuiWiringTests
             try { Application?.RequestStop(); } catch (Exception) { }
             try { Loop?.Join(5000); } catch (Exception) { }
             try { Application?.Dispose(); } catch (Exception) { }
+            Server?.ClosePersistentStore();
         }
 
         /// <summary>Publica una interacción de elección pendiente en el journal, como haría el Engine.</summary>

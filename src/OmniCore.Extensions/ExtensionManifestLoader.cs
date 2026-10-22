@@ -23,7 +23,8 @@ public sealed class ExtensionManifestLoader
     private static ExtensionManifest Map(YamlMappingNode root)
     {
         ManifestYamlAst.CheckKeys(root, "extension manifest", "manifestVersion", "id", "version", "displayName",
-            "publisher", "omnicoreApi", "provides", "requests", "runtime", "source", "uiResources");
+            "publisher", "omnicoreApi", "provides", "requests", "runtime", "source", "uiResources",
+            "activationEvents", "platforms", "dependencies", "configuration", "executionMode");
         var manifest = new ExtensionManifest
         {
             ManifestVersion = ManifestYamlAst.Optional(root, "manifestVersion") is { } manifestVersion
@@ -35,7 +36,7 @@ public sealed class ExtensionManifestLoader
             OmnicoreApi = ManifestYamlAst.OptionalString(root, "omnicoreApi", "omnicoreApi"),
         };
         if (ManifestYamlAst.OptionalMap(root, "provides", "provides", "tools", "commands", "skills", "hooks",
-            "contextContributors", "validators", "completionGates") is { } provides)
+            "contextContributors", "validators", "completionGates", "views") is { } provides)
         {
             manifest.Provides = new ExtensionProvidesManifest
             {
@@ -93,6 +94,26 @@ public sealed class ExtensionManifestLoader
                 Location = ManifestYamlAst.OptionalString(source, "location", "source.location"),
                 Sha256 = ManifestYamlAst.OptionalString(source, "sha256", "source.sha256"),
             };
+        manifest.ActivationEvents = ManifestYamlAst.OptionalStringList(root, "activationEvents", "activationEvents");
+        manifest.Platforms = ManifestYamlAst.OptionalStringList(root, "platforms", "platforms");
+        manifest.Dependencies = ManifestYamlAst.OptionalStringList(root, "dependencies", "dependencies");
+        manifest.Configuration = ManifestYamlAst.OptionalStringList(root, "configuration", "configuration");
+        manifest.ExecutionMode = ManifestYamlAst.OptionalString(root, "executionMode", "executionMode");
+        if (manifest.ManifestVersion == 2 && ManifestYamlAst.OptionalMap(root, "provides", "provides",
+            "tools", "commands", "skills", "hooks", "contextContributors", "validators", "completionGates", "views") is { } viewProvides
+            && ManifestYamlAst.Optional(viewProvides, "views") is { } viewNode)
+        {
+            if (viewNode is not YamlSequenceNode views) throw ManifestYamlAst.WrongType("provides.views");
+            manifest.Provides ??= new();
+            manifest.Provides.Views = views.Select(item =>
+            {
+                var map = item as YamlMappingNode ?? throw ManifestYamlAst.WrongType("view");
+                ManifestYamlAst.CheckKeys(map, "view", "id", "kind", "source");
+                return new ExtensionViewManifest { Id = ManifestYamlAst.OptionalString(map, "id", "view.id"),
+                    Kind = ManifestYamlAst.OptionalString(map, "kind", "view.kind"),
+                    Source = ManifestYamlAst.OptionalString(map, "source", "view.source") };
+            }).ToList();
+        }
         manifest.UiResources = MapUiResources(root, manifest);
         return manifest;
     }
@@ -281,7 +302,8 @@ public sealed class ExtensionManifestLoader
     private static ExtensionDiscoveryStatus Status(ExtensionManifest manifest, TrustLevel trust, bool workspaceTrusted,
         IReadOnlySet<string>? consentedCapabilities)
     {
-        if (!SupportsHostApi(manifest.OmnicoreApi!)) return ExtensionDiscoveryStatus.IncompatibleApi;
+        if (!(manifest.ManifestVersion == 2 ? SupportsVersionTwoApi(manifest.OmnicoreApi!) : SupportsHostApi(manifest.OmnicoreApi!)))
+            return ExtensionDiscoveryStatus.IncompatibleApi;
         if (trust == TrustLevel.Project && !workspaceTrusted) return ExtensionDiscoveryStatus.WorkspaceTrustRequired;
         if (trust == TrustLevel.Untrusted) return ExtensionDiscoveryStatus.Untrusted;
         var requested = manifest.Requests?.Capabilities ?? [];
@@ -298,15 +320,21 @@ public sealed class ExtensionManifestLoader
         return string.Equals(range, HostApiVersion, StringComparison.Ordinal);
     }
 
+    private static bool SupportsVersionTwoApi(string range) => range.Trim() is "1.0" or "1.0.0" or "1.x"
+        or "^1.0" or "^1.0.0" or "~1.0" or "~1.0.0" or ">=1.0 <2.0" or ">=1.0.0 <2.0.0";
+
     private static void Validate(ExtensionManifest manifest)
     {
-        if (manifest.ManifestVersion != 1 || string.IsNullOrWhiteSpace(manifest.Id)
+        if (manifest.ManifestVersion is not (1 or 2) || string.IsNullOrWhiteSpace(manifest.Id)
             || !System.Text.RegularExpressions.Regex.IsMatch(manifest.Id, "^[a-z0-9]+(?:[.-][a-z0-9]+)+$",
                 System.Text.RegularExpressions.RegexOptions.CultureInvariant)
             || string.IsNullOrWhiteSpace(manifest.Version) || string.IsNullOrWhiteSpace(manifest.DisplayName)
             || string.IsNullOrWhiteSpace(manifest.Publisher) || string.IsNullOrWhiteSpace(manifest.OmnicoreApi)
-            || manifest.Runtime is not { Kind: "process", Command.Length: > 0 })
+            || manifest.ManifestVersion == 1 && manifest.Runtime is not { Kind: "process", Command.Length: > 0 }
+            || manifest.ManifestVersion == 2 && manifest.Runtime is not null
+                && manifest.Runtime is not { Kind: "process" or "node", Command.Length: > 0 })
             throw new InvalidDataException("The extension manifest is missing a required field or has an unsupported version.");
+        if (manifest.ManifestVersion == 2) ValidateVersionTwo(manifest);
         if (manifest.Requests?.Permissions is { } permissions
             && (permissions.Process?.Any(process => string.IsNullOrWhiteSpace(process.Executable)) == true
                 || permissions.Network?.Any(string.IsNullOrWhiteSpace) == true
@@ -363,6 +391,47 @@ public sealed class ExtensionManifestLoader
             throw new InvalidDataException("The manifest does not request a capability required by its declared components.");
         if (manifest.Provides?.Tools?.Count > 0 && manifest.Requests?.Permissions?.Process?.Count is not > 0)
             throw new InvalidDataException("A process-backed extension tool must declare its runtime executable in requests.permissions.process.");
+    }
+
+    private static void ValidateVersionTwo(ExtensionManifest manifest)
+    {
+        foreach (var names in new[] { manifest.Provides?.Tools?.Select(tool => tool.Name).ToArray(),
+                     manifest.Provides?.Commands?.Select(command => command.Name).ToArray() })
+            if (names is not null && (names.Length > 64 || names.Distinct(StringComparer.Ordinal).Count() != names.Length
+                || names.Any(name => string.IsNullOrWhiteSpace(name) || name.Length > 80
+                    || name.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not ('.' or '-' or '_')))))
+                throw new InvalidDataException("extension_contribution_id_invalid");
+        if (manifest.Requests?.Capabilities is { } capabilities && (capabilities.Count > 64
+            || capabilities.Distinct(StringComparer.Ordinal).Count() != capabilities.Count
+            || capabilities.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > 128 || value.Any(char.IsControl))))
+            throw new InvalidDataException("extension_capabilities_invalid");
+        if (!manifest.Id!.StartsWith(manifest.Publisher + ".", StringComparison.Ordinal)
+            || !System.Version.TryParse(manifest.Version!.Split('-')[0], out _)
+            || manifest.ExecutionMode is not (null or "trusted" or "restricted")
+            || manifest.Runtime is not null && manifest.ExecutionMode is null
+            || manifest.Runtime is { } runtime && (UnsafeRelativePattern(runtime.Command!)
+                || runtime.Command!.Length > 240 || runtime.Args?.Count > 32)
+            || manifest.Platforms?.Any(value => value is not ("windows" or "linux" or "osx")) == true)
+            throw new InvalidDataException("extension_manifest_v2_invalid");
+        foreach (var list in new[] { manifest.ActivationEvents, manifest.Dependencies, manifest.Configuration })
+            if (list is not null && (list.Count > 64 || list.Distinct(StringComparer.Ordinal).Count() != list.Count
+                || list.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > 160 || value.Any(char.IsControl))))
+                throw new InvalidDataException("extension_declarations_invalid");
+        var views = manifest.Provides?.Views ?? [];
+        if (views.Count > 16 || views.Select(view => view.Id).Distinct(StringComparer.Ordinal).Count() != views.Count
+            || views.Any(view => string.IsNullOrWhiteSpace(view.Id) || view.Id.Length > 80
+                || !view.Id.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-')
+                || view.Kind is not ("tree" or "list" or "table" or "form" or "indicator" or "details")
+                || view.Source is not ("workspace" or "agents" or "history" or "extension")))
+            throw new InvalidDataException("extension_views_invalid");
+        if (views.Count > 0 && manifest.Requests?.Capabilities?.Contains("presentation.read", StringComparer.Ordinal) != true)
+            throw new InvalidDataException("extension_view_capability_required");
+        if (manifest.Runtime is null && (manifest.Provides?.Tools?.Count > 0 || manifest.Provides?.Hooks?.Count > 0
+            || manifest.Provides?.ContextContributors?.Count > 0 || manifest.Provides?.Validators?.Count > 0
+            || manifest.Provides?.CompletionGates?.Count > 0 || views.Any(view => view.Source == "extension")))
+            throw new InvalidDataException("extension_executable_required");
+        if (manifest.ActivationEvents?.Any(value => value != "onCommand" && value != "onView"
+            && value != "onSession") == true) throw new InvalidDataException("extension_activation_event_invalid");
     }
 
     private static bool UnsafeRelativePattern(string path)

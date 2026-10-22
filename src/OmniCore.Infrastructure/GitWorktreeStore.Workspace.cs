@@ -68,7 +68,9 @@ public sealed partial class GitWorktreeStore
         var paths = entries.Select(path => Path.GetRelativePath(root, path).Replace('\\', '/')).Where(path => path != ".git"
             && !path.StartsWith(".git/", StringComparison.Ordinal) && !_redaction.IsSecretPath(path)).ToArray();
         var ignored = paths.Length == 0 ? null : await Git(root, ["check-ignore", "-z", "--stdin"], null, token,
-            allowConflictExit: true, standardInput: string.Join('\0', paths.Select(path => Directory.Exists(Path.Combine(root, path)) ? path + "/" : path)) + "\0");
+            // Let Git inspect the real directory entry. A synthetic trailing slash can match
+            // an empty ignore rule on Git for Windows and hide non-ignored, untracked folders.
+            allowConflictExit: true, standardInput: string.Join('\0', paths) + "\0");
         var excluded = ignored?.Output.Split('\0', StringSplitOptions.RemoveEmptyEntries).ToHashSet(StringComparer.Ordinal) ?? [];
         return paths.Where(path => !excluded.Contains(path) && !excluded.Contains(path + "/") && !HasReparseComponent(root, path)).Select(path =>
             new WorkspaceFile(path, Directory.Exists(Path.Combine(root, path)), "", 0, 0)).ToArray();

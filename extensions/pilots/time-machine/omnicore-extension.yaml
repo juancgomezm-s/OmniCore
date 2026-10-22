@@ -1,0 +1,23 @@
+manifestVersion: 2
+id: omnicore.time-machine
+publisher: omnicore
+version: 1.0.0
+displayName: Time Machine
+omnicoreApi: '1.x'
+activationEvents: [onView]
+provides:
+  views:
+    - id: history
+      kind: list
+      source: history
+requests:
+  capabilities: [presentation.read, history.read]
+uiResources:
+  es:
+    extension.displayName: Historial
+  en:
+    extension.displayName: History
+  fr:
+    extension.displayName: Historique
+  it:
+    extension.displayName: Cronologia

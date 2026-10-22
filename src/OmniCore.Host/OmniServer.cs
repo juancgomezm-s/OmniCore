@@ -235,6 +235,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         _artifacts = artifacts;
         _mutationHistory = mutationHistory;
         _platformPathsFactory = platformPathsFactory ?? (() => OmniHost.CreatePlatformPaths());
+        _lifecycleRpcInvokerFactory = CreateExtensionInvoker;
         _openRouterServiceFactory = openRouterServiceFactory;
         _userSpendReader = userSpendReader;
         _userDatabasePath = userSpendReader is null ? null : Path.Combine(userSpendReader.UserDataDirectory, "user.db");
@@ -266,6 +267,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         _artifacts = artifacts;
         _mutationHistory = mutationHistory;
         _platformPathsFactory = platformPathsFactory ?? (() => OmniHost.CreatePlatformPaths());
+        _lifecycleRpcInvokerFactory = CreateExtensionInvoker;
         _openRouterServiceFactory = openRouterServiceFactory;
         _userSpendReader = userSpendReader;
         _userDatabasePath = userSpendReader is null ? null : Path.Combine(userSpendReader.UserDataDirectory, "user.db");
@@ -347,6 +349,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     internal void ClosePersistentStore()
     {
+        foreach (var process in _extensionProcesses.Values)
+            CompleteWorkspaceTask(async () => await process.DisposeAsync().ConfigureAwait(false));
+        _extensionProcesses.Clear();
         (_store as SqliteEventStore)?.Close();
         if (_mutationHistory is IDisposable disposable) disposable.Dispose();
     }
@@ -812,6 +817,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
         using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
         var commandName = fields.TryGetValue("cmd", out var c) ? c : null;
+        if (commandName == "extensions.package")
+            return ChangeExtensionPackage(command, fields, trustedUserAction, cancellationToken);
         if (commandName == "conversation.alternative")
             return CreateWorkspaceAlternative(command, fields, trustedUserAction, cancellationToken);
         if (commandName is "command.invoke.user" or "command.continue" or "workflow.continue")
@@ -2938,6 +2945,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (name is "extensions.packages" or "extensions.views" || name.StartsWith("extensions.view:", StringComparison.Ordinal)
+            || name.StartsWith("extensions.configuration:", StringComparison.Ordinal))
+            return QueryExtensionPlatform(name, cancellationToken);
         if (name == "workspace.panel" || name.StartsWith("workspace.panel:", StringComparison.Ordinal))
             return QueryWorkspacePanel(name, cancellationToken);
         if (name == "models.catalog")

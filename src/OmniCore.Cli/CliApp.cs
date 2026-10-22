@@ -6,7 +6,7 @@ using OmniCore.Protocol;
 namespace OmniCore.Cli;
 
 /// <summary>Despacha argumentos, procesa el protocolo y delega la composición al Host.</summary>
-public sealed class CliApp
+public sealed partial class CliApp
 {
     private static OmniCliRuntime Runtime = CreateRuntime();
     private static LocaleSelection _localeSelection = new("es", LocaleSelectionSource.Default);
@@ -426,6 +426,10 @@ public sealed class CliApp
 
     private static Task<int> RunExtensions(string[] args)
     {
+        if (args is ["extensions", "--help"])
+        { Console.WriteLine(Loc().Resolve("extension.platform.usage")); Console.WriteLine(Loc().Resolve("extension.platform.update_usage")); return Task.FromResult(0); }
+        if (args.Length >= 2 && args[1] is "install" or "enable" or "disable" or "uninstall" or "update" or "rollback" or "inspect" or "list" or "views" or "view" or "config")
+            return RunExtensionPlatform(args);
         if (args.Length == 1)
         {
             var query = Runtime.Connect(CancellationToken.None).Query("extensions", CancellationToken.None);
@@ -1032,9 +1036,34 @@ public sealed class CliApp
             return Task.FromResult(0);
         }
 
-        return Task.FromResult(TuiApp.Run(client, Loc().Locale, new TuiTurnHost(Runtime),
-            localeSelection: _localeSelection, localeChanged: UpdateLocaleFromPreferences,
-            localEngineSupervisor: Runtime.CreateTuiLocalEngineSupervisor()));
+        var originalDirectory = Environment.CurrentDirectory;
+        try
+        {
+            while (true)
+            {
+                WorkspaceAlternative? requested = null;
+                var result = TuiApp.Run(client, Loc().Locale, new TuiTurnHost(Runtime),
+                    localeSelection: _localeSelection, localeChanged: UpdateLocaleFromPreferences,
+                    localEngineSupervisor: Runtime.CreateTuiLocalEngineSupervisor(), alternativeRequested: target => requested = target);
+                if (requested is null) return Task.FromResult(result);
+                try
+                {
+                    var next = Runtime.OpenAlternative(requested, CancellationToken.None);
+                    var previous = Runtime;
+                    try
+                    {
+                        var nextClient = next.Connect(CancellationToken.None);
+                        Environment.CurrentDirectory = requested.Workspace;
+                        Runtime = next; client = nextClient; UpdateLocaleConsumers();
+                    }
+                    catch { next.Dispose(); throw; }
+                    previous.Dispose();
+                }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException or System.Text.Json.JsonException)
+                { Console.Error.WriteLine(Loc().Resolve("extension.alternative.open_failed")); }
+            }
+        }
+        finally { Environment.CurrentDirectory = originalDirectory; }
     }
 
     internal static Task<int> RunDefaultInvocationAsync(bool isInteractiveTerminal, Func<Task<int>> launchTui)
@@ -1297,6 +1326,7 @@ public sealed class CliApp
         Console.WriteLine(Loc().Resolve("commands.tools.help"));
         Console.WriteLine(Loc().Resolve("commands.extensions.help"));
         Console.WriteLine(Loc().Resolve("extensions.usage"));
+        Console.WriteLine(Loc().Resolve("extension.platform.usage"));
         Console.WriteLine(Loc().Resolve("commands.hooks.help"));
         Console.WriteLine(Loc().Resolve("hooks.usage"));
         Console.WriteLine(Loc().Resolve("commands.mcp.help"));

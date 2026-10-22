@@ -144,7 +144,7 @@ public static class HumanCommandAliases
             "skills" => new[] { "load", "release" },
             "memory" => new[] { "session" },
             "permissions" => new[] { "list", "revoke" },
-            "extensions" => new[] { "trust", "revoke" },
+            "extensions" => new[] { "trust", "revoke", "install", "enable", "disable", "uninstall", "update", "rollback", "inspect", "list", "views", "view", "config" },
             "mcp" => new[] { "list", "trust", "revoke" },
             "model" => new[] { "list", "select", "policy", "qualify", "refresh" },
             "worktree" => new[] { "inspect", "preview", "retention", "cleanup", "discard", "undo" },
@@ -180,6 +180,12 @@ public static class HumanCommandAliases
 
     private static readonly Dictionary<string, string[]> Subcommands = new()
     {
+        ["install"] = ["instalar", "installer", "installa"], ["enable"] = ["habilitar", "activer", "abilita"],
+        ["rollback"] = ["revertir", "retablir", "ripristina"],
+        ["update"] = ["actualizar", "actualiser", "aggiorna"],
+        ["disable"] = ["deshabilitar", "desactiver", "disabilita"], ["uninstall"] = ["desinstalar", "desinstaller", "disinstalla"],
+        ["views"] = ["vistas", "vues", "viste"],
+        ["view"] = ["vista", "vue", "vista"], ["config"] = ["configurar", "configurer", "configura"],
         ["load"] = ["cargar", "charger", "carica"], ["release"] = ["liberar", "liberer", "rilascia"],
         ["session"] = ["sesion", "sessione"], ["add"] = ["agregar", "ajouter", "aggiungi"],
         ["forget"] = ["olvidar", "oublier", "dimentica"], ["list"] = ["listar", "lister", "elenca"],
