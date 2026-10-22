@@ -44,6 +44,10 @@ public sealed class ExplorerTurnGenerationDeadlineTests
             Assert.Equal(StopReason.Cancelled, result.StopReason);
             Assert.Contains("cancelled generation after 1 seconds", result.FailureDiagnostic, StringComparison.Ordinal);
             Assert.Contains("provider may continue", result.FailureDiagnostic, StringComparison.OrdinalIgnoreCase);
+            using var runtime = OmniCliRuntime.Create(root);
+            var diagnostics = new List<string>();
+            runtime.ReportTurnFailureDiagnostic(result, diagnostics.Add);
+            Assert.Contains("1 seconds", Assert.Single(diagnostics), StringComparison.Ordinal);
             Assert.Single(store.ReadFrom(session, 1).Select(evt => codecs.Decode(evt)).OfType<TurnInterrupted>());
             Assert.Empty(store.ReadFrom(session, 1).Select(evt => codecs.Decode(evt)).OfType<ModelStepCompleted>());
         }

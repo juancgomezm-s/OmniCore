@@ -280,6 +280,18 @@ public sealed class OmniCliRuntime : IDisposable
     private string ExternalDiagnostic(string? value) => Text(Localized("cli.runtime.diagnostic.external",
         ("value", string.IsNullOrWhiteSpace(value) ? "—" : value)));
 
+    internal void ReportTurnFailureDiagnostic(ExplorerTurn.TurnResult result, Action<string> writeLine)
+    {
+        if (!string.IsNullOrWhiteSpace(result.FailureDiagnostic))
+            writeLine(ExternalDiagnostic(RedactSensitive(result.FailureDiagnostic)));
+        else if (ExhaustedOutputWithoutAnswer(result))
+            writeLine(Text(LocalizedText.Of("cli.runtime.turn.output_exhausted_without_answer")));
+    }
+
+    internal static bool ExhaustedOutputWithoutAnswer(ExplorerTurn.TurnResult result) =>
+        result.StopReason == StopReason.MaxOutputTokens && string.IsNullOrWhiteSpace(result.FinalText)
+        && result.ResponseArtifactId is null;
+
     private string CommandError(string? error, string fallbackKey) => error is null
         ? Text(LocalizedText.Of(fallbackKey)) : ExternalDiagnostic(ResolveWire(error));
 
@@ -3612,6 +3624,7 @@ public sealed class OmniCliRuntime : IDisposable
             }
 
             var result = askExecution.Result;
+            ReportTurnFailureDiagnostic(result, writeLine);
             if (HandlePendingBudget(server, sessionId, runId, interactive, writeLine) is { } budgetCode)
                 return budgetCode;
             if (result.StopReason == StopReason.InputRequired && result.PendingInteractionId is { } questionId)
@@ -3702,7 +3715,7 @@ public sealed class OmniCliRuntime : IDisposable
                 writeLine(Text(LocalizedText.Of("cli.runtime.act.noResponse")));
             }
 
-            if (result.StopReason is StopReason.Error or StopReason.Cancelled) return 1;
+            if (result.StopReason is StopReason.Error or StopReason.Cancelled || ExhaustedOutputWithoutAnswer(result)) return 1;
             return act && (result.StopReason != StopReason.EndTurn || result.FinalText is null) ? 1 : 0;
         }
         catch (Exception ex)

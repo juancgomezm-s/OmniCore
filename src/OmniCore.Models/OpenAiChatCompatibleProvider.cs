@@ -34,6 +34,7 @@ public sealed class OpenAiProviderOptions
 /// </summary>
 public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequestAttemptBound
 {
+    public const string LlamaCppProfileName = "llamaCpp";
     private readonly ProviderDescriptor _descriptor;
     private readonly ISecretProvider _secrets;
     private readonly Func<HttpClient> _httpFactory;
@@ -283,7 +284,9 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
         request.Model.Route?.ReasoningCapability.ValidateRequest(reasoning);
         // Response reasoning_content does not establish a request-side dialect for
         // arbitrary compatible endpoints. Reject rather than invent an extension.
-        if (reasoning is not null)
+        var llamaCppReasoningOff = _descriptor.Profile == LlamaCppProfileName
+            && reasoning is { Kind: "off", BudgetTokens: null };
+        if (reasoning is not null && !llamaCppReasoningOff)
             throw new NotSupportedException("Selected reasoning has no representation in this adapter.");
         var messages = new List<ChatRequestMessage>();
         if (!string.IsNullOrEmpty(request.Instructions))
@@ -346,6 +349,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
             Tools = tools.Count == 0 ? null : tools,
             Stream = true,
             MaxTokens = request.Model.MaxOutputTokens,
+            ReasoningEffort = llamaCppReasoningOff ? "none" : null,
             ToolChoice = request.ToolChoice.Mode switch
             {
                 "none" => JsonSerializer.SerializeToElement("none", OpenAiJsonContext.Default.String),
@@ -554,6 +558,8 @@ internal partial class OpenAiJsonContext : JsonSerializerContext;
 
 internal sealed class ChatRequestDto
 {
+    [JsonPropertyName("reasoning_effort")]
+    public string? ReasoningEffort { get; set; }
     public string Model { get; set; } = "";
     public List<ChatRequestMessage> Messages { get; set; } = [];
     public List<ChatRequestTool>? Tools { get; set; }
