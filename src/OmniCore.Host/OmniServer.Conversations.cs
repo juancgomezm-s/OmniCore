@@ -125,7 +125,12 @@ public sealed partial class OmniServer
                 _lastSessionId = target; _lastRunId = run; _lastSnapshot = null; _lastWorkingStateText = "";
                 _writerOwnershipUnavailable = false;
                 _recoveryProblem = null;
-                if (run is not null) { RecoverPendingEffects(); RecoverPendingAgentOrchestration(); }
+                if (run is not null)
+                {
+                    ReconcileObsoleteMonetaryBudget();
+                    RecoverPendingEffects();
+                    RecoverPendingAgentOrchestration();
+                }
                 SaveLastSession();
                 var ack = CommandOutcomeAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
                     target, sequenceBefore, new CommandId(Guid.Parse(command.MessageId)));
