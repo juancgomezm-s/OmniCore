@@ -1,5 +1,109 @@
 # Plataforma de extensiones — validación Windows y Debian, 2026-10-21
 
+## Cierre de seguridad y cuatro pendientes
+
+Ampliación local sobre `codex/extensions-platform`, base `6433efd`. No se hizo
+merge, commit ni push en este cierre. Al comenzar la carpeta estaba en
+`codex/m9-extension-batch-publication`; un cambio externo devolvió la carpeta a la rama de extensiones.
+No se movieron ramas ni se alteró el commit M9 `67e7fba`. Las siguientes cifras
+son de las focales nuevas, no de las integrales históricas documentadas más abajo.
+
+Implementado:
+
+- Contexto denegado por defecto. Previsualización humana y aprobación de un lote
+  inmutable, vinculadas a workspace, Session/Run, contribuidor y hashes del paquete,
+  consentimiento y contenido. Revalidación antes de admitir el request; revocación,
+  regrant, nuevos previews y cambios de paquete/sesión invalidan. Sin persistencia
+  de la autorización entre Hosts ni herencia a alternativas.
+- Contributors y skills empaquetadas no incorporan texto al habilitarse. Los hooks
+  no pueden eludir el cierre: su origen se conserva al normalizar anotaciones y
+  no se incorporan automáticamente. La consulta del catálogo no ejecuta procesos.
+- Los datos de referencia, archivos, memorias y resúmenes no se concatenan a
+  `ModelRequest.Instructions`; siguen en el request como mensajes de datos, sin
+  modificar el texto humano original. El conteo incluye el prefijo de esos datos.
+  La prueba usa el request real entregado a un proveedor fixture, no inferencia live.
+- Avisos públicos mediante `presentation.notify`, capacidad explícita, texto literal
+  depurado de secretos, cola de 64, máximo 20/minuto/extensión, alcance sesión/workspace y
+  deduplicación. La TUI los recibe sin escribirlos en journal/contexto ni alterar
+  el borrador, con cancelación al salir y traducciones es/en/fr/it.
+- Identidad resuelta de extensión/herramienta persistida en `toolcall.started` v4.
+  Upcasters v1/v2/v3 no inventan atribución. Reapertura SQLite y proyección pública
+  comprobadas; correlación/causación se conservan cuando están disponibles.
+- Cliente Node independiente contra `omni host --stdio`: tres pilotos con sesión
+  real; rechazo de preview sin prueba humana y hash modificado; aprobación exacta,
+  revocación y rechazo de reuso; crear/reabrir alternativa, recuperar conversación y
+  archivos y mantener el Git/archivo sucio y sesión originales intactos.
+- C#/TS/JSON Schema alineados en defaults y autoridad explícita de acciones.
+  Perfil `x-coreView` documentado con corpus compartido de **40 casos**. Un schema
+  genérico sin ese perfil sólo valida la parte estructural.
+
+Evidencia Windows (regresión amplia y comprobación focal posterior al último ajuste):
+
+| Comprobación | Resultado | Resultado generado |
+|---|---|---|
+| Solución completa, net8/net10 incluidos | 0 errores, 0 advertencias | salida de compilación |
+| Seguridad/plataforma/M8, contexto, memoria, skills, hooks, compactación, herencia y replay | 328 correctas, 1 omitida, 0 fallos (329 total) | `TestResults/extensions-security.xml` |
+| TUI cuatro idiomas + acciones stdio + cliente independiente | 14 correctas, 0 fallos/omisiones | `TestResults/extensions-boundaries.xml` |
+| Arquitectura | 62 correctas, 0 fallos/omisiones | `TestResults/extensions-architecture.log` |
+| SDK compilado + corpus Node | 44 correctas, 0 fallos/omisiones | `TestResults/extensions-sdk.log` |
+
+La omisión Windows es exclusivamente la fixture de ejecutable Python con shebang
+Linux. Son **404 pruebas C# correctas** en conjuntos separados (342 funcionales +
+62 de arquitectura), más 44 Node; no una nueva integral de todas las pruebas.
+Se guardaron frames de las celdas del driver real para es/en/fr/it (80×25 y
+120×35) bajo `TestResults/extensions-context-frames`; se revisó el texto de los
+frames es/fr: fuente, hash, contenido y tres acciones visibles sin solapamiento.
+No se afirma aceptación visual humana ni prueba de escritorio físico.
+
+Último ajuste: consultar sin Run activo devuelve un array vacío y descarta
+previews. Cambiar de conversación/workspace invalida las decisiones, incluso si
+se vuelve a la conversación original. Se repitieron **75 correctas, 1 omitida**
+en Platform/Conversation y las **14/14** de transporte/TUI sobre ese árbol final:
+`TestResults/extensions-security-final.xml` y `extensions-boundaries.xml`.
+Son subconjuntos de las anteriores, no pruebas adicionales distintas. El cliente
+independiente conserva una autorización activa en el original antes de comprobar
+que ni la alternativa ni otro Host la reciben.
+
+Evidencia Debian 13 / .NET 10.0.401 / Node 22 LTS, copia aislada
+`/root/.cache/omni-context-security-6dvTLu`:
+
+- Solución completa: 0 errores, 0 advertencias. Compilación final repetida tras
+  el último ajuste, con la misma salida limpia.
+- Regresión amplia: **329/329**, sin omisiones (incluye el ejecutable Python Linux).
+- Comprobación focal posterior: **76/76** Platform/Conversation, sin omisiones.
+- Transporte/cliente independiente/TUI: **14/14**, incluidas reapertura y no herencia
+  de una autorización activa en el original.
+- Arquitectura: **62/62**. SDK y corpus Node: **44/44**.
+- Son **405 pruebas C# distintas correctas**, no la suma con las repeticiones
+  focales. Se comprobó por SHA-256 la paridad de los 55 archivos modificados/nuevos
+  de código, SDK y pruebas entre Windows y la copia Linux.
+
+Los XML Linux están en el directorio `TestResults` de la copia aislada y se
+copiaron a `TestResults` del repositorio con sufijo `-linux`; las salidas de build,
+SDK y pruebas permanecen allí para consulta. Las pasadas intermedias fallidas
+(suposiciones antiguas sobre `Instructions`, registro de consultas stdio y
+consulta sin Run) no se cuentan como aprobadas; las focales citadas son posteriores.
+
+Alcance: el Host v2 confiable continúa con permisos de su usuario del SO. Este
+cierre controla las rutas de Core, **no es un sandbox** contra código malicioso
+del mismo usuario capaz de modificar archivos o suplantar procesos. El contenido
+aprobado sigue siendo no confiable; separar roles no garantiza que un modelo lo
+ignore. Las políticas de herramientas se aplican fuera del modelo. Revocar no
+retira datos ya enviados al proveedor. No hubo proveedores de pago ni gasto de cuota.
+
+Reproducción (SDK primero, después build):
+
+```powershell
+npm ci --prefix sdk/extensions --ignore-scripts
+npm test --prefix sdk/extensions
+dotnet build OmniCore.slnx --no-restore
+dotnet run --project tests/OmniCore.Tests --no-build -- -class '*ExtensionPlatformTests' -class '*ExtensionManifestTests' -class '*ToolCallStartedV3ContractTests' -class '*ActiveSkillsTurnIntegrationTests' -class '*SessionMemoryTurnIntegrationTests' -class '*InternalCompletionCommandTests' -class '*ContextManagementTests' -class '*ContextInheritanceTests' -class '*DelegationContextPacketTests' -class '*LaneContextIsolationTests' -class '*SkillLifecycleTests' -class '*LifecycleHookDispatcherTests' -class '*ConversationLifecycleTests' -class '*ConversationHistoryCanonicalTests' -class '*ExternalAgentDiscoveryTests' -class '*RunSummaryTests' -class '*M8RetrospectiveAuditTests' -parallelMode none -noLogo
+dotnet run --project tests/OmniCore.Tests --no-build -- -method '*Independent_Node_headless*' -method '*Extension_forms_updates*' -method '*Extension_form_edits*' -method '*Extension_indicator_renderer*' -method '*Extension_context_requires_preview*' -parallelMode none -noLogo
+dotnet run --project tests/OmniCore.ArchitectureTests --no-build -- -noLogo
+```
+
+## Evidencia histórica anterior al cierre de seguridad
+
 Repositorio único: OmniCore. Rama `codex/extensions-platform`, base
 `b81b3c212ad51a4e085b8f2dce8aed79ec80b454`. Cambios locales, sin merge ni push.
 No se modificó OmniCoder ni se cambiaron credenciales/configuraciones reales.

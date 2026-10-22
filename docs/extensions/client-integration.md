@@ -20,6 +20,46 @@ Consultas de `IOmniClient.Query` o del request stdio `query`:
 | `extensions.views` | `{extensionId,viewId,kind}[]` de contribuciones habilitadas | No |
 | `extensions.view:<encodeURIComponent(JSON)>` | `ExtensionView` | Sólo la apertura explícita de una vista ejecutable consentida |
 | `extensions.configuration:<encodeURIComponent(JSON)>` | Valor JSON de una clave declarada | No |
+| `extensions.context.catalog` | Paquetes habilitados y contributors/skills previsualizables | No |
+| `extensions.context` | Lotes previsualizados de la Session/Run actual | No |
+| `extensions.notifications:<afterSequence>` | `ExtensionNotificationPage` acotada | No |
+
+## Autorización de contexto y avisos
+
+El cliente debe ofrecer una revisión de contenido separada de habilitar paquetes.
+No conviertas una acción ni un aviso de una extensión en aprobación automática.
+Usa exclusivamente el canal humano firmado existente (`extensions.package`):
+
+1. `action:"context-preview"`, `extensionId`, `contributor`,
+   `expectedManifestSha256`, `expectedPackageSha256`. Es la única acción que
+   ejecuta el contribuidor para obtener el texto; `skill:<id>` previsualiza una skill.
+2. Consulta `extensions.context` y muestra el lote completo, propietario, versión y
+   `contentSha256`. Nada se incorpora por consultarlo. Core limita cada lote a
+   16 items/32 KiB UTF-8 y mantiene un máximo de 32 previews en memoria.
+3. Tras una decisión humana explícita, `action:"context-approve"` con el mismo
+   paquete/hashes, `previewId` y `contentSha256`. No vuelvas a ejecutar el proceso
+   para obtener texto distinto del que vio la persona.
+4. `action:"context-revoke"`, `extensionId` revoca los lotes de ese paquete.
+
+El alcance lo determina Core: workspace, Session/Run activos y revisión del
+consentimiento. Cambios de paquete, regrant y nuevas previsualizaciones invalidan
+los lotes anteriores. Las decisiones no sobreviven al Host ni se importan al
+crear una alternativa. Revocar no puede retirar datos ya enviados a un proveedor.
+La extensión no recibe la clave/prueba humana ni tiene un servicio de aprobación.
+
+`extensions.notifications:<cursor>` es una cola efímera, no journal ni prompt.
+Renderiza sólo texto literal con `extensionId`/nivel; deduplica por `sequence`,
+guarda `nextSequence` y atiende `gap` si perdiste avisos. No interpretes etiquetas
+como permisos, comandos, markup ejecutable ni solicitudes de autoridad. La TUI
+sondea una página cada dos segundos y cancela al cerrar. La cola contiene como
+máximo 64 avisos; sólo devuelve los del workspace y sesión actuales.
+
+El esquema público se valida con el perfil semántico `x-coreView` de
+`sdk/extensions/schema-validation.mjs`, no sólo con el Draft genérico. El corpus
+compartido clasifica los mismos casos en C# y Node; IDs duplicados, valores de
+formularios y reglas de acciones también se comprueban fuera de la UI.
+
+## Solicitar vistas
 
 Request de vista: `{extensionId, viewId, path:"", search:"", afterRevision:null,
 clientKinds:["tree","list","table","form","indicator","details"]}`. Envía sólo los renderizadores

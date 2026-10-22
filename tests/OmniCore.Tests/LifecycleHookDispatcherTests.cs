@@ -357,7 +357,8 @@ public sealed class LifecycleHookDispatcherTests
             var result = turn.Ask("read", "system", session, run.RunId, run.RootLane, "", CancellationToken.None);
             Assert.True(result.StopReason == StopReason.EndTurn, result.FailureDiagnostic ?? result.FinalText ?? "no turn diagnostic");
             Assert.DoesNotContain(requests[0].Tools, definition => definition.Name == "filesystem.read");
-            Assert.Contains("hook context evidence", requests[0].Instructions, StringComparison.Ordinal);
+            Assert.DoesNotContain("hook context evidence", requests[0].Instructions ?? "", StringComparison.Ordinal);
+            Assert.DoesNotContain(requests[0].Messages.SelectMany(message => message.Content).OfType<TextBlock>(), block => block.Text.Contains("hook context evidence", StringComparison.Ordinal));
             Assert.DoesNotContain(store.ReadFrom(session, 1).Select(codecs.Decode), item => item is ToolCallStarted);
             Assert.Contains(store.ReadFrom(session, 1).Select(codecs.Decode).OfType<ToolCallRejected>(),
                 rejected => rejected.ErrorCode == ToolErrorCode.UnknownTool);
@@ -590,7 +591,10 @@ public sealed class LifecycleHookDispatcherTests
             Assert.Contains(SecretRedactor.Marker, observed.Received.RedactedArgumentsJson ?? "");
             var allInstructions = string.Join("\n", requests.Select(request => request.Instructions));
             Assert.DoesNotContain(annotationSecret, allInstructions);
-            Assert.Contains(SecretRedactor.Marker, allInstructions);
+            Assert.DoesNotContain(SecretRedactor.Marker, allInstructions);
+            var data = string.Join("\n", requests.SelectMany(request => request.Messages).SelectMany(message => message.Content).OfType<TextBlock>().Select(block => block.Text));
+            Assert.DoesNotContain(annotationSecret, data);
+            Assert.DoesNotContain(SecretRedactor.Marker, data);
         }
         finally { Directory.Delete(root, true); }
     }

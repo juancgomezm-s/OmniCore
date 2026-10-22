@@ -596,9 +596,9 @@ public static class StdioProtocolHost
         if (commandName == "extensions.package")
         {
             if (properties.Distinct(StringComparer.Ordinal).Count() != properties.Length
-                || properties.Except(["cmd", "action", "extensionId", "source", "trustProcess", "expectedManifestSha256", "expectedPackageSha256", "key", "value", "submission"], StringComparer.Ordinal).Any()
+                || properties.Except(["cmd", "action", "extensionId", "source", "trustProcess", "expectedManifestSha256", "expectedPackageSha256", "key", "value", "submission", "contributor", "previewId", "contentSha256"], StringComparer.Ordinal).Any()
                 || !payload.RootElement.TryGetProperty("action", out var action) || action.ValueKind != JsonValueKind.String
-                || action.GetString() is not ("install" or "enable" or "disable" or "uninstall" or "configure" or "update" or "rollback" or "submit-view")
+                || action.GetString() is not ("install" or "enable" or "disable" or "uninstall" or "configure" or "update" or "rollback" or "submit-view" or "context-preview" or "context-approve" or "context-revoke")
                 || !payload.RootElement.TryGetProperty(action.GetString() == "install" ? "source" : "extensionId", out var target)
                 || target.ValueKind != JsonValueKind.String || target.GetString() is not { Length: > 0 and <= 1024 }) return false;
             if (action.GetString() == "update"

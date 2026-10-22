@@ -63,6 +63,8 @@ public sealed partial class OmniServer
 
     internal SessionQueryResult QueryExtensionPlatform(string name, CancellationToken token)
     {
+        if (name is "extensions.context" or "extensions.context.catalog") return QueryExtensionContext(name);
+        if (name.StartsWith("extensions.notifications:", StringComparison.Ordinal)) return QueryExtensionNotifications(name);
         var manager = new ExtensionPackageManager(_platformPathsFactory());
         if (name.StartsWith("extensions.configuration:", StringComparison.Ordinal))
         {
@@ -75,6 +77,7 @@ public sealed partial class OmniServer
         {
             var packages = manager.List().Select(package =>
             {
+                package = package with { ContextContributors = manager.Find(package.Id).Manifest?.Provides?.ContextContributors };
                 var running = _extensionProcesses.FirstOrDefault(pair => pair.Key.StartsWith(package.Id + ":", StringComparison.Ordinal)).Value;
                 return running is null ? package : package with { State = package.Enabled ? running.State : package.State,
                     Diagnostic = running.Diagnostics.LastOrDefault() ?? package.Diagnostic };
@@ -251,9 +254,11 @@ public sealed partial class OmniServer
             "history.timeline" or "activity.read" => "history.read",
             "sessions.agents" or "sessions.current" => "sessions.read",
             "config.get" => "configuration.read", "config.set" => "configuration.write",
+            "presentation.notify" => "presentation.notify",
             _ => throw new UnauthorizedAccessException("extension_service_not_exposed"),
         };
         if (!state.GrantedCapabilities.Contains(capability, StringComparer.Ordinal)) throw new UnauthorizedAccessException("extension_capability_denied");
+        if (method == "presentation.notify") return PublishExtensionNotification(state, boundSession, parameters);
         if (capability == "workspace.read" && extension.Manifest?.Requests?.Permissions?.Paths?.Read?.Contains("**", StringComparer.Ordinal) != true)
             throw new UnauthorizedAccessException("extension_workspace_ceiling_requires_explicit_read");
         if (method.StartsWith("config.", StringComparison.Ordinal)) return ExtensionConfiguration(extension, method, parameters);
@@ -286,7 +291,8 @@ public sealed partial class OmniServer
         var remaining = timeline.Where(item => item.Sequence > after).ToArray();
         var selected = remaining.Take(limit).Select(item => new ExtensionActivityEvent(item.Sequence, item.Kind, item.Text,
             item.RunId, item.ExecutionId, item.Agent, item.Files, item.Activity, item.Checkpoint?.Id,
-            item.Checkpoint is { Snapshot: not null, UnavailableReason: null })).ToArray();
+            item.Checkpoint is { Snapshot: not null, UnavailableReason: null }, item.ExtensionId, item.ToolId,
+            item.CorrelationId, item.CausationId)).ToArray();
         while (true)
         {
             var page = new ExtensionActivityPage(panel.SessionId,
@@ -386,6 +392,12 @@ public sealed partial class OmniServer
         {
             var manager = new ExtensionPackageManager(_platformPathsFactory());
             var action = fields.GetValueOrDefault("action") ?? ""; var id = fields.GetValueOrDefault("extensionId") ?? "";
+            if (action is "context-preview" or "context-approve" or "context-revoke")
+            {
+                ChangeExtensionContext(action, fields, token);
+                return new(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
+            }
+            if (action is "enable" or "disable" or "uninstall" or "update" or "rollback") InvalidateExtensionContext(id);
             if (action is "enable" or "uninstall" or "update" or "rollback")
             {
                 var expected = manager.Inspect(id);

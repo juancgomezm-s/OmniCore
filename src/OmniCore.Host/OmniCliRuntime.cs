@@ -2771,7 +2771,7 @@ public sealed class OmniCliRuntime : IDisposable
                     lifecycleHooks = ProjectExtensionHooks.Load(workspaceRoot, paths,
                         workspaceTrusted: true, invoker: extensionRpcInvoker);
                     extensionContributors = ProjectExtensionContributors.Load(workspaceRoot, paths,
-                        workspaceTrusted: true, extensionRpcInvoker);
+                        workspaceTrusted: true, extensionRpcInvoker, server.ReadApprovedExtensionContext);
                 }
                 catch (Exception failure) when (failure is IOException or InvalidDataException or JsonException
                     or InvalidOperationException or UnauthorizedAccessException or ArgumentException)
@@ -2913,7 +2913,7 @@ public sealed class OmniCliRuntime : IDisposable
                     : [],
                 extensionContributorFactory: () => delegation is null
                     ? ProjectExtensionContributors.Load(workspaceRoot, paths, workspaceConfig.Trusted,
-                        extensionRpcInvoker).Append((IContextContributor)new ExternalAgentContextContributor(
+                        extensionRpcInvoker, server.ReadApprovedExtensionContext).Append((IContextContributor)new ExternalAgentContextContributor(
                             DiscoverExternalSources, ExternalAgentSourceKind.Instruction))
                         .Append(new ExternalAgentContextContributor(DiscoverExternalSources,
                             ExternalAgentSourceKind.Memory)).ToArray()
@@ -3067,6 +3067,7 @@ public sealed class OmniCliRuntime : IDisposable
                     sessionMemoryPolicy: sessionMemoryPolicy,
                     sessionSecurityPolicy: () => server.ReadSessionSecurityPolicy(sessionId),
                     workflowStageDefinition: turnWorkflowStage,
+                    externalContextAdmission: server.ValidateApprovedExtensionContext,
                     resolveLifecycleValidations: delegation is null
                         ? (ids, read, context, token) =>
                         {

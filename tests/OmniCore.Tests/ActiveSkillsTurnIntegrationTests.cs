@@ -70,7 +70,8 @@ public sealed class ActiveSkillsTurnIntegrationTests
             Assert.Equal(StopReason.EndTurn,
                 firstTurn.Ask("Use compile.safe", "system", session, run.RunId, run.RootLane, "", CancellationToken.None).StopReason);
             Assert.Contains(firstRequests[0].Tools, definition => definition.Name == "skill.load");
-            Assert.Contains("compile.safe", firstRequests[0].Instructions ?? "", StringComparison.Ordinal);
+            Assert.DoesNotContain("compile.safe", firstRequests[0].Instructions ?? "", StringComparison.Ordinal);
+            Assert.Contains(firstRequests[0].Messages.SelectMany(message => message.Content).OfType<TextBlock>(), block => block.Text.Contains("compile.safe", StringComparison.Ordinal));
             Assert.Equal(skill.ManifestSha256, Assert.Single(activations.Read(session)).Value);
             Assert.Single(store.ReadFrom(session, 1).Select(codecs.Decode).OfType<SkillActivationChanged>(),
                 item => item.Activated && item.Origin == "Model" && item.Scope == ScopeLevel.Project);
@@ -94,7 +95,8 @@ public sealed class ActiveSkillsTurnIntegrationTests
                 activeSkillToolIds: loaded.Skill.Manifest.Tools);
             Assert.Equal(StopReason.EndTurn,
                 secondTurn.Ask("continue", "system", session, run.RunId, run.RootLane, "", CancellationToken.None).StopReason);
-            Assert.Contains(instructions, Assert.Single(secondRequests).Instructions ?? "", StringComparison.Ordinal);
+            Assert.DoesNotContain(instructions, Assert.Single(secondRequests).Instructions ?? "", StringComparison.Ordinal);
+            Assert.Contains(secondRequests[0].Messages.SelectMany(message => message.Content).OfType<TextBlock>(), block => block.Text.Contains(instructions, StringComparison.Ordinal));
             Assert.Contains(Assert.Single(secondRequests).Tools, definition => definition.Name == "fixture.compile");
         }
         finally { Directory.Delete(root, true); }

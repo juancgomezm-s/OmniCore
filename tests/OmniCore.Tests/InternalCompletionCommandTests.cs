@@ -357,9 +357,10 @@ public sealed class InternalCompletionCommandTests
         Assert.Contains(requests[0].Tools, tool => tool.Name == "skill.load");
         Assert.DoesNotContain(requests[1].Tools, tool => tool.Name == "ext.fixture.package.compile");
         Assert.Contains(requests[2].Tools, tool => tool.Name == "ext.fixture.package.compile");
-        Assert.Contains(instructions, requests[2].Instructions ?? "", StringComparison.Ordinal);
-        Assert.Contains("offline extension contribution", requests[2].Instructions ?? "", StringComparison.Ordinal);
-        Assert.Contains(extensionLauncher.Methods, method => method == "context/contribute");
+        Assert.DoesNotContain(instructions, requests[2].Instructions ?? "", StringComparison.Ordinal);
+        Assert.Contains(requests[2].Messages.SelectMany(message => message.Content).OfType<TextBlock>(), block => block.Text.Contains(instructions, StringComparison.Ordinal));
+        Assert.DoesNotContain("offline extension contribution", requests[2].Instructions ?? "", StringComparison.Ordinal);
+        Assert.DoesNotContain(extensionLauncher.Methods, method => method == "context/contribute");
         Assert.Contains(extensionLauncher.Methods, method => method == "completion/validate");
         Assert.Equal(1, extensionLauncher.Methods.Count(method => method == "tools/call"));
         var extensionLaunch = extensionLauncher.LastLaunch!;

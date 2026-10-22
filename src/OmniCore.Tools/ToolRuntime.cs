@@ -849,6 +849,9 @@ public sealed class ToolRuntime
             if (reconciliation?.StartedEntityEvent is { } entityEvent) _emit(entityEvent);
             _emit(new ToolCallStarted(call.ToolCallId, intent.Effect, durableReconciliation)
             {
+                Attribution = new ToolCallAttribution(tool.Descriptor.Id.ToString(), tool.Descriptor.Source.Kind.ToString(),
+                    tool.Descriptor.Source.Kind == SourceKind.Extension ? tool.Descriptor.Source.Owner : null,
+                    tool.Descriptor.Source.Version, tool.Descriptor.Source.ContentIdentity),
                 // Attribution is not proof of reversibility: pre/post hashes cannot restore bytes.
                 TargetRef = RelativeTargetRef(intent.Claims.Writes, execContext.WorkspaceRoot),
                 Reversibility = reconciliation?.Reversibility ?? Reversibility.Unknown,

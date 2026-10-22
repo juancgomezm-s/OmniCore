@@ -23,13 +23,14 @@ public sealed class ContextInheritanceTests
         var explorer = fx.Explorer((request, _) => { received = request; return Response(); }, contributors: new[] { contributor });
         Assert.Equal(StopReason.EndTurn, explorer.Ask("child current intent", "child system", fx.Session,
             fx.Run.RunId, child.Lane, "fresh child state", TestContext.Current.CancellationToken).StopReason);
-        Assert.Contains("selected principal fact", received!.Instructions);
+        Assert.DoesNotContain("selected principal fact", received!.Instructions);
+        Assert.Contains(received.Messages.SelectMany(message => message.Content).OfType<TextBlock>(), text => text.Text.Contains("selected principal fact", StringComparison.Ordinal));
         Assert.DoesNotContain("other parent input", received.Instructions);
         Assert.DoesNotContain("parent private working state", received.Instructions);
         Assert.DoesNotContain("parent system", received.Instructions);
         Assert.Contains("fresh child state", received.Instructions);
         Assert.Contains(received.Messages.SelectMany(message => message.Content).OfType<TextBlock>(), text => text.Text == "child current intent");
-        Assert.DoesNotContain(received.Messages.SelectMany(message => message.Content).OfType<TextBlock>(), text => text.Text.Contains("principal"));
+        Assert.DoesNotContain(received.Messages.SelectMany(message => message.Content).OfType<TextBlock>(), text => text.Text.Contains("other parent input", StringComparison.Ordinal));
         var item = Assert.Single(await contributor.GetContextAsync(Request(fx, child.Task, child.Lane),
             TestContext.Current.CancellationToken));
         Assert.False(item.PreserveWhenTrimming);

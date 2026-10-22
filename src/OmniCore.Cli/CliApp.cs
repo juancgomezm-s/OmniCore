@@ -427,8 +427,8 @@ public sealed partial class CliApp
     private static Task<int> RunExtensions(string[] args)
     {
         if (args is ["extensions", "--help"])
-        { Console.WriteLine(Loc().Resolve("extension.platform.usage")); Console.WriteLine(Loc().Resolve("extension.platform.update_usage")); return Task.FromResult(0); }
-        if (args.Length >= 2 && args[1] is "install" or "enable" or "disable" or "uninstall" or "update" or "rollback" or "inspect" or "list" or "views" or "view" or "config")
+        { Console.WriteLine(Loc().Resolve("extension.platform.usage")); Console.WriteLine(Loc().Resolve("extension.platform.update_usage")); Console.WriteLine(Loc().Resolve("extension.context.usage")); return Task.FromResult(0); }
+        if (args.Length >= 2 && args[1] is "install" or "enable" or "disable" or "uninstall" or "update" or "rollback" or "inspect" or "list" or "views" or "view" or "config" or "context")
             return RunExtensionPlatform(args);
         if (args.Length == 1)
         {

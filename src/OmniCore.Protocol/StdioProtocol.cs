@@ -130,6 +130,9 @@ public static class StdioProtocol
         new("extensions.packages", "query.extensionPlatform", "Local package lifecycle and exact consent", "user", "configuration-read", true),
         new("extensions.views", "query.extensionPlatform", "Available declarative contributions; no activation", "workspace", "workspace-read", true),
         new("extensions.configuration", "query.extensionPlatform", "Declared extension-owned configuration in the selected scope", "workspace", "configuration-read", true),
+        new("extensions.context.catalog", "query.extensionPlatform", "Previewable context contributions; never activates code", "workspace", "configuration-read", true),
+        new("extensions.context", "query.extensionPlatform", "Exact human-previewed data for the active Session and Run", "session", "configuration-read", false),
+        new("extensions.notifications", "query.extensionPlatform", "Bounded UI-only notices; never model context", "session", "extension-read", false),
         new("extensions.view", "query.extensionPlatform", "Explicit extension view snapshot; may activate consented code", "session", "extension-read", false),
         new("mcp", "query.mcpConfiguration", "Configured MCP endpoints and trust metadata; does not probe endpoints", "workspace", "workspace-read", true),
         new("hooks", "query.hookCatalog", "Hook inventory and effective state", "workspace", "workspace-read", true),
@@ -154,7 +157,8 @@ public static class StdioProtocol
             || name.StartsWith("sessionObservability:", StringComparison.Ordinal)
             || name.StartsWith("workspace.panel:", StringComparison.Ordinal)
             || name.StartsWith("extensions.view:", StringComparison.Ordinal)
-            || name.StartsWith("extensions.configuration:", StringComparison.Ordinal);
+            || name.StartsWith("extensions.configuration:", StringComparison.Ordinal)
+            || name.StartsWith("extensions.notifications:", StringComparison.Ordinal);
 
     public static bool TryGetQuery(string name, out NativeQueryDescriptor descriptor)
     {
@@ -162,7 +166,8 @@ public static class StdioProtocol
             || query.Name == "sessionObservability" && name.StartsWith("sessionObservability:", StringComparison.Ordinal)
             || query.Name == "workspace.panel" && name.StartsWith("workspace.panel:", StringComparison.Ordinal)
             || query.Name == "extensions.view" && name.StartsWith("extensions.view:", StringComparison.Ordinal)
-            || query.Name == "extensions.configuration" && name.StartsWith("extensions.configuration:", StringComparison.Ordinal))!;
+            || query.Name == "extensions.configuration" && name.StartsWith("extensions.configuration:", StringComparison.Ordinal)
+            || query.Name == "extensions.notifications" && name.StartsWith("extensions.notifications:", StringComparison.Ordinal))!;
         return descriptor is not null;
     }
 
@@ -263,7 +268,8 @@ public sealed record NativeQueryDescriptor(string Name, string Capability, strin
         && requestedName.StartsWith("sessionObservability:", StringComparison.Ordinal)
         || Name == "workspace.panel" && requestedName.StartsWith("workspace.panel:", StringComparison.Ordinal)
         || Name == "extensions.view" && requestedName.StartsWith("extensions.view:", StringComparison.Ordinal)
-        || Name == "extensions.configuration" && requestedName.StartsWith("extensions.configuration:", StringComparison.Ordinal))
+        || Name == "extensions.configuration" && requestedName.StartsWith("extensions.configuration:", StringComparison.Ordinal)
+        || Name == "extensions.notifications" && requestedName.StartsWith("extensions.notifications:", StringComparison.Ordinal))
         ? requestedName : WireName;
 }
 

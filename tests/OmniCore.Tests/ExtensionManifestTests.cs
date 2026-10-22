@@ -373,11 +373,12 @@ public sealed class ExtensionManifestTests
             Assert.Empty(ProjectExtensionContributors.Load(workspace, paths, workspaceTrusted: true, invoker));
             new ExtensionConsentStore(paths, workspace).Grant(candidate,
                 new HashSet<string>(["context.contribute", "completion.validate"], StringComparer.Ordinal));
-            var contributor = Assert.Single(ProjectExtensionContributors.Load(workspace, paths,
-                workspaceTrusted: true, invoker));
+            Assert.Empty(ProjectExtensionContributors.Load(workspace, paths, workspaceTrusted: true, invoker));
+            var contextPackage = Assert.Single(ProjectExtensionPackageCatalog.Ready(workspace, paths, true)).Extension;
+            var contributor = new ExtensionContextContributor(contextPackage, contextPackage.Manifest!.Provides!.ContextContributors!.Single(), workspace, invoker);
             var fingerprint = new ExecutionFingerprint("fixture", "h", "t", "c", "o", "build");
             var request = new MaterializeRequest(SessionId.New(), RunId.New(), null, null, null, 0, fingerprint);
-            var items = await contributor.GetContextAsync(request, CancellationToken.None);
+            var items = await contributor.ReadPreviewAsync(request, CancellationToken.None);
             var item = Assert.Single(items);
             Assert.Equal(ContextItemKind.Knowledge, item.Kind);
             Assert.Equal("offline contributed knowledge", item.Content);
@@ -463,11 +464,14 @@ public sealed class ExtensionManifestTests
             var toolLaunch = rpcToolLauncher.LastLaunch!;
             Assert.Equal(SandboxStrength.Strong, toolLaunch.RequestedStrength);
             Assert.Equal(SandboxNetworkMode.Deny, toolLaunch.Network.Mode);
-            var contributor = Assert.Single(ProjectExtensionContributors.Load(workspace, paths,
-                workspaceTrusted: false, new ExtensionRpcProcessInvoker(new ProtocolFixtureLauncher("contributor"))));
+            Assert.Empty(ProjectExtensionContributors.Load(workspace, paths, workspaceTrusted: false,
+                new ExtensionRpcProcessInvoker(new ProtocolFixtureLauncher("contributor"))));
+            var contextPackage = Assert.Single(ProjectExtensionPackageCatalog.Ready(workspace, paths, false)).Extension;
+            var contributor = new ExtensionContextContributor(contextPackage, contextPackage.Manifest!.Provides!.ContextContributors!.Single(), workspace,
+                new ExtensionRpcProcessInvoker(new ProtocolFixtureLauncher("contributor")));
             var request = new MaterializeRequest(SessionId.New(), RunId.New(), null, null, null, 0,
                 new ExecutionFingerprint("fixture", "h", "t", "c", "o", "build"));
-            var item = Assert.Single(await contributor.GetContextAsync(request, CancellationToken.None));
+            var item = Assert.Single(await contributor.ReadPreviewAsync(request, CancellationToken.None));
             Assert.Equal(OmniCore.Domain.ScopeLevel.User, item.Provenance.Scope);
 
             var validators = ProjectExtensionValidators.Load(workspace, paths, workspaceTrusted: false,

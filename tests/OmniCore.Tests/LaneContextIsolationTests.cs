@@ -58,9 +58,11 @@ public sealed class LaneContextIsolationTests
             childTarget ? child.Lane : fx.Run.RootLane, "fresh state", TestContext.Current.CancellationToken);
         Assert.Equal(StopReason.EndTurn, result.StopReason);
         Assert.NotNull(request);
-        Assert.Contains((childTarget ? "child" : "principal") + " checkpoint", request.Instructions);
+        Assert.DoesNotContain((childTarget ? "child" : "principal") + " checkpoint", request.Instructions);
         Assert.DoesNotContain((childTarget ? "principal" : "child") + " checkpoint", request.Instructions);
         var text = HistoryText(request.Messages);
+        Assert.Contains((childTarget ? "child" : "principal") + " checkpoint", text);
+        Assert.DoesNotContain((childTarget ? "principal" : "child") + " checkpoint", text);
         Assert.Contains("current intent", text);
         Assert.DoesNotContain((childTarget ? "principal" : "child") + " input", text);
         Assert.Contains("fresh state", request.Instructions);
@@ -170,7 +172,9 @@ public sealed class LaneContextIsolationTests
             var restored = fx.Explorer((received, _) => { request = received; return Response(); });
             Assert.Equal(StopReason.EndTurn, restored.Ask("continue " + lane, "system", fx.Session,
                 fx.Run.RunId, lane, "fresh state", TestContext.Current.CancellationToken).StopReason);
-            Assert.Contains("goal " + lane, request!.Instructions);
+            Assert.DoesNotContain("goal " + lane, request!.Instructions);
+            Assert.Contains("goal " + lane, HistoryText(request.Messages));
+            Assert.DoesNotContain("goal " + (lane == child.Lane ? fx.Run.RootLane : child.Lane), HistoryText(request.Messages));
             Assert.DoesNotContain("goal " + (lane == child.Lane ? fx.Run.RootLane : child.Lane), request.Instructions);
         }
     }

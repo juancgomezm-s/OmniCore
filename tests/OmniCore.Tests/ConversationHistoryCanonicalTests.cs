@@ -82,7 +82,8 @@ public sealed class ConversationHistoryCanonicalTests
                 TestContext.Current.CancellationToken);
         Assert.Equal(StopReason.EndTurn, result.StopReason);
         Assert.NotNull(submitted);
-        Assert.Contains("Context checkpoint", submitted.Instructions);
+        Assert.DoesNotContain("Context checkpoint", submitted.Instructions);
+        Assert.Contains(submitted.Messages.SelectMany(message => message.Content).OfType<TextBlock>(), block => block.Text.Contains("Context checkpoint", StringComparison.Ordinal));
         Assert.Contains(submitted.Messages.SelectMany(message => message.Content).OfType<TextBlock>(),
             block => block.Text == "continue without resending");
         Assert.DoesNotContain(submitted.Messages.SelectMany(message => message.Content).OfType<TextBlock>(),

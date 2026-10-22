@@ -8,7 +8,8 @@ public sealed record WorkspacePanelRequest(string Kind, string Path = "", string
 public sealed record WorkspaceCheckpoint(string Id, string SessionId, long Sequence, string Kind,
     DateTimeOffset CreatedAt, WorkspaceSnapshot? Snapshot, string? UnavailableReason);
 public sealed record WorkspaceActivity(long Sequence, string Kind, string Text, string? RunId, string? ExecutionId,
-    string? Agent, IReadOnlyList<string> Files, string Activity, WorkspaceCheckpoint? Checkpoint);
+    string? Agent, IReadOnlyList<string> Files, string Activity, WorkspaceCheckpoint? Checkpoint,
+    string? ExtensionId = null, string? ToolId = null, string? CorrelationId = null, string? CausationId = null);
 public sealed record WorkspaceAlternative(string CommandId, string Workspace, string Branch, string SessionId,
     string SourceWorkspace, string SourceSessionId, long ThroughSequence, string CheckpointId, string State);
 public sealed record WorkspacePanelResult(int Version, string? SessionId, long Revision, string Kind,

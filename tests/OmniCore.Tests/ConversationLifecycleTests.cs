@@ -197,7 +197,8 @@ public sealed class ConversationLifecycleTests
             Assert.Equal("ok", Command(server, "conversation.resume", opened.SessionId.ToString()).Status);
             Assert.Equal("ok", Command(server, "conversation.compact").Status);
             turn.Ask("continue-after-compaction", "Follow the task.", opened.SessionId, opened.RunId, opened.RootLane, "state", CancellationToken.None);
-            Assert.Contains("seed-answer-á", requests[^1].Instructions);
+            Assert.DoesNotContain("seed-answer-á", requests[^1].Instructions);
+            Assert.Contains(requests[^1].Messages.SelectMany(message => message.Content).OfType<TextBlock>(), block => block.Text.Contains("seed-answer-á", StringComparison.Ordinal));
             Assert.Contains(requests[^1].Messages, message => message.Content.OfType<TextBlock>().Any(text => text.Text == "seed-user-ñ"));
             Assert.Contains(requests[^1].Messages, message => message.Content.OfType<TextBlock>().Any(text => text.Text == "question-0"));
         });
@@ -222,11 +223,13 @@ public sealed class ConversationLifecycleTests
             Assert.Equal("manual-session-v1", checkpoint.MetaModelFingerprint);
             Assert.Contains("question-1", artifacts.GetText(checkpoint.CheckpointArtifact.Hash));
             Assert.Equal(StopReason.EndTurn, turn.Ask("after-compaction", "Follow the task.", opened.SessionId, opened.RunId, opened.RootLane, "state", CancellationToken.None).StopReason);
-            Assert.Contains("question-1", requests[^1].Instructions);
+            Assert.DoesNotContain("question-1", requests[^1].Instructions);
+            Assert.Contains(requests[^1].Messages.SelectMany(message => message.Content).OfType<TextBlock>(), block => block.Text.Contains("question-1", StringComparison.Ordinal));
             Assert.DoesNotContain(requests[^1].Messages, message => message.Content.OfType<TextBlock>().Any(text => text.Text == "question-1"));
             var next = TestRun.Open(store, opened.SessionId);
             Assert.Equal(StopReason.EndTurn, turn.Ask("another-run", "Follow the task.", opened.SessionId, next.RunId, next.RootLane, "new state", CancellationToken.None).StopReason);
-            Assert.Contains("question-1", requests[^1].Instructions);
+            Assert.DoesNotContain("question-1", requests[^1].Instructions);
+            Assert.Contains(requests[^1].Messages.SelectMany(message => message.Content).OfType<TextBlock>(), block => block.Text.Contains("question-1", StringComparison.Ordinal));
             Assert.Contains(requests[^1].Messages, message => message.Content.OfType<TextBlock>().Any(text => text.Text == "question-0"));
         });
     }
@@ -260,8 +263,10 @@ public sealed class ConversationLifecycleTests
             var text = artifacts.GetText(checkpoint.CheckpointArtifact.Hash)!;
             Assert.Contains("E17: missing file", text); Assert.Contains("keep Spanish", text);
             turn.Ask("continue", "Follow the task.", opened.SessionId, opened.RunId, opened.RootLane, "state", CancellationToken.None);
-            Assert.Contains("E17: missing file", requests[^1].Instructions);
-            Assert.Contains("keep Spanish", requests[^1].Instructions);
+            Assert.DoesNotContain("E17: missing file", requests[^1].Instructions);
+            Assert.DoesNotContain("keep Spanish", requests[^1].Instructions);
+            Assert.Contains(requests[^1].Messages.SelectMany(message => message.Content).OfType<TextBlock>(), block => block.Text.Contains("E17: missing file", StringComparison.Ordinal));
+            Assert.Contains(requests[^1].Messages.SelectMany(message => message.Content).OfType<TextBlock>(), block => block.Text.Contains("keep Spanish", StringComparison.Ordinal));
         });
     }
 

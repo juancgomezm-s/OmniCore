@@ -199,6 +199,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     public void ConfigureWorkspaceRoot(string workspaceRoot)
     {
+        if (_workspaceRoot != Path.GetFullPath(workspaceRoot)) InvalidateExtensionContextScope();
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
         // A host can start without a last-session pointer (first launch, or a removed state
         // file). Once the caller supplies its physically established workspace, recovery may
@@ -2913,6 +2914,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                     RuntimeCommandOutcome.Rejected());
 
             var store = new ExtensionConsentStore(paths, extensionScope, _workspaceRoot);
+            InvalidateExtensionContext(extensionId);
             if (grant) store.Grant(extension, capabilities);
             else store.Revoke(extensionId);
             return new CommandAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted());
@@ -2945,8 +2947,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (name is "extensions.packages" or "extensions.views" || name.StartsWith("extensions.view:", StringComparison.Ordinal)
-            || name.StartsWith("extensions.configuration:", StringComparison.Ordinal))
+        if (name is "extensions.packages" or "extensions.views" or "extensions.context" or "extensions.context.catalog" || name.StartsWith("extensions.view:", StringComparison.Ordinal)
+            || name.StartsWith("extensions.configuration:", StringComparison.Ordinal) || name.StartsWith("extensions.notifications:", StringComparison.Ordinal))
             return QueryExtensionPlatform(name, cancellationToken);
         if (name == "workspace.panel" || name.StartsWith("workspace.panel:", StringComparison.Ordinal))
             return QueryWorkspacePanel(name, cancellationToken);

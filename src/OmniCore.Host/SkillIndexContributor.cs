@@ -15,7 +15,7 @@ public sealed class SkillIndexContributor(SessionId session, IReadOnlyList<Disco
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!enabled || request.SessionId != session) return System.Threading.Tasks.Task.FromResult<IReadOnlyList<ContextItem>>([]);
-        var visible = candidates.Where(item => item.State == SkillLifecycleState.Eligible
+        var visible = candidates.Where(item => item.ParentPackageId is null).Where(item => item.State == SkillLifecycleState.Eligible
                 || item.Manifest.ModelInvocable)
             .Where(item => item.InvocationRestrictions?.AllowModelInvocation is not false)
             .Where(item => item.State is not (SkillLifecycleState.Conflict or SkillLifecycleState.Released)

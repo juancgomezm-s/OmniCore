@@ -9,6 +9,7 @@ using OmniCore.Protocol;
 using OmniCore.Abstractions;
 using OmniCore.Security;
 using OmniCore.Tools;
+using OmniCore.Engine;
 using Task = System.Threading.Tasks.Task;
 
 namespace OmniCore.Tests;
@@ -215,6 +216,9 @@ public sealed partial class ExtensionPlatformTests
         Assert.Equal(["extensions", "install", "package-path"], HumanCommandAliases.NormalizeCli(["extensiones", "instalar", "package-path"]));
         Assert.Equal(["extensions", "enable", "test.files"], HumanCommandAliases.NormalizeCli(["extensions", "activer", "test.files"]));
         Assert.Equal(["extensions", "uninstall", "test.files"], HumanCommandAliases.NormalizeCli(["estensioni", "disinstalla", "test.files"]));
+        Assert.Equal(["extensions", "context", "preview", "test.files", "notes"], HumanCommandAliases.NormalizeCli(["extensiones", "contexto", "previsualizar", "test.files", "notes"]));
+        Assert.Equal(["extensions", "context", "approve", "preview", "hash"], HumanCommandAliases.NormalizeCli(["extensions", "contexte", "autoriser", "preview", "hash"]));
+        Assert.Equal(["extensions", "context", "revoke", "test.files"], HumanCommandAliases.NormalizeCli(["estensioni", "contesto", "revoca", "test.files"]));
     }
     [Fact]
     public void V2_Node_tool_runs_through_existing_permission_and_executor_pipeline()
@@ -238,6 +242,24 @@ public sealed partial class ExtensionPlatformTests
             userApprovesAsk: true, TestContext.Current.CancellationToken);
         Assert.True(result.Succeeded, result.Summary);
         Assert.Single(result.Events.OfType<ToolCallSucceeded>());
+        var attribution = Assert.IsType<ToolCallAttribution>(Assert.Single(result.Events.OfType<ToolCallStarted>()).Attribution);
+        Assert.Equal(tool.Descriptor.Id.ToString(), attribution.ToolId);
+        Assert.Equal("test.files", attribution.ExtensionId);
+        Assert.Equal(fixture.Packages.Inspect("test.files").PackageSha256, attribution.PackageSha256);
+        Assert.Equal("ok", fixture.Server.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"session.input\",\"text\":\"Activity test\"}"), CancellationToken.None).Status);
+        var session = fixture.Server.LastSessionId()!;
+        var run = fixture.Server.LastRunId()!;
+        var lane = fixture.Server.AcquireStore().ReadFrom(session, 1).Select(fixture.Server.AcquireCodecs().Decode).OfType<LaneCreated>().First().LaneId;
+        using (ExecutionScope.Begin(new(run, null, lane)))
+        {
+            var stream = new EventStream(fixture.Server.AcquireStore(), fixture.Server.AcquireCodecs(), session);
+            foreach (var payload in result.Events) stream.Append(payload);
+        }
+        var timeline = JsonSerializer.Deserialize(fixture.Server.Query("workspace.panel:" + Uri.EscapeDataString("{\"kind\":\"timeline\"}"), CancellationToken.None)!.Json,
+            WorkspacePanelJson.Default.WorkspacePanelResult)!;
+        var activity = Assert.Single(timeline.Timeline!, row => row.ToolId == attribution.ToolId);
+        Assert.Equal(attribution.ExtensionId, activity.ExtensionId);
+        Assert.Equal(run.ToString(), activity.RunId);
     }
     [Fact]
     public void Incremental_views_repair_gaps_and_observe_external_files()

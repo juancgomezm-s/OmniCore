@@ -144,7 +144,7 @@ public static class HumanCommandAliases
             "skills" => new[] { "load", "release" },
             "memory" => new[] { "session" },
             "permissions" => new[] { "list", "revoke" },
-            "extensions" => new[] { "trust", "revoke", "install", "enable", "disable", "uninstall", "update", "rollback", "inspect", "list", "views", "view", "config" },
+            "extensions" => new[] { "trust", "revoke", "install", "enable", "disable", "uninstall", "update", "rollback", "inspect", "list", "views", "view", "config", "context" },
             "mcp" => new[] { "list", "trust", "revoke" },
             "model" => new[] { "list", "select", "policy", "qualify", "refresh" },
             "worktree" => new[] { "inspect", "preview", "retention", "cleanup", "discard", "undo" },
@@ -160,6 +160,8 @@ public static class HumanCommandAliases
         result[0] = Subcommand(result[0], allowed);
         if (result.Length > 1 && command == "memory" && result[0] == "session")
             result[1] = Subcommand(result[1], new[] { "add", "forget" });
+        if (result.Length > 1 && command == "extensions" && result[0] == "context")
+            result[1] = Subcommand(result[1], new[] { "preview", "approve", "revoke", "status" });
         if (result.Length > 1 && command == "model" && result[0] == "policy")
             result[1] = Subcommand(result[1], new[] { "show", "set", "delete", "history" });
         if (result.Length > 1 && command == "reasoning" && result[0] is "default" or "run" or "boost")
@@ -194,6 +196,8 @@ public static class HumanCommandAliases
         ["qualify"] = ["cualificar", "qualifier", "qualifica"], ["refresh"] = ["actualizar", "actualiser", "aggiorna"],
         ["show"] = ["mostrar", "afficher", "mostra"], ["set"] = ["establecer", "definir", "imposta"],
         ["delete"] = ["eliminar", "supprimer", "elimina"], ["history"] = ["historial", "historique", "cronologia"],
+        ["context"] = ["contexto", "contexte", "contesto"], ["approve"] = ["autorizar", "autoriser", "autorizza"],
+        ["status"] = ["estado", "etat", "stato"],
         ["inspect"] = ["inspeccionar", "inspecter", "ispeziona"], ["preview"] = ["previsualizar", "apercu", "anteprima"],
         ["retention"] = ["retencion", "conservation", "conservazione"], ["cleanup"] = ["limpiar", "nettoyer", "pulisci"],
         ["discard"] = ["descartar", "abandonner", "scarta"], ["undo"] = ["deshacer", "retablir", "ripristina"],
