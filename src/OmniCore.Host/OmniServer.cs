@@ -239,6 +239,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         // Recuperación del Run real (ADR-0004 §5): idempotente, no-op sin run persistido.
         if (!_writerOwnershipUnavailable)
         {
+            ReconcileObsoleteMonetaryBudget();
             RecoverPendingEffects();
             RecoverPendingAgentOrchestration();
             RecoverExpiredWorktreesAtStartup();
@@ -268,6 +269,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         // Recuperación del Run real (ADR-0004 §5): idempotente, no-op sin run persistido.
         if (!_writerOwnershipUnavailable)
         {
+            ReconcileObsoleteMonetaryBudget();
             RecoverPendingEffects();
             RecoverPendingAgentOrchestration();
             RecoverExpiredWorktreesAtStartup();
@@ -313,6 +315,12 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             _writerOwnershipUnavailable = true;
             _lastSnapshot = null;
         }
+    }
+
+    private void ReconcileObsoleteMonetaryBudget()
+    {
+        if (_lastSessionId is { } session)
+            ObsoleteMonetaryBudgetRecovery.Reconcile(_store, _codecs, session);
     }
 
     internal SqliteEventStore? ReceiptStore => _store as SqliteEventStore;

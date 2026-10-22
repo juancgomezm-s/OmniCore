@@ -533,6 +533,9 @@ Una petición de razonamiento incompatible no se transmite al proveedor.
 
 Los modelos **locales** y las **suscripciones** no quedan bloqueados por topes
 monetarios en USD, incluso si una conversación antigua conserva esos valores.
+Al abrir o retomar una sesión que sólo autoriza estas rutas, las solicitudes
+monetarias antiguas que quedaron pendientes caducan sin detener el Run ni
+simular una respuesta del usuario. El historial original se conserva.
 El porcentaje de cuota restante es informativo para las preguntas del usuario:
 no se pide confirmar cada llamada por estar debajo del 10 %. Los límites reales
 del proveedor siguen aplicándose; una cuota baja puede omitir tareas auxiliares

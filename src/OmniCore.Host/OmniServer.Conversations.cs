@@ -85,7 +85,12 @@ public sealed partial class OmniServer
                 _lastSessionId = target; _lastRunId = run; _lastSnapshot = null; _lastWorkingStateText = "";
                 _writerOwnershipUnavailable = false;
                 _recoveryProblem = null;
-                if (run is not null) { RecoverPendingEffects(); RecoverPendingAgentOrchestration(); }
+                if (run is not null)
+                {
+                    ReconcileObsoleteMonetaryBudget();
+                    RecoverPendingEffects();
+                    RecoverPendingAgentOrchestration();
+                }
                 SaveLastSession();
                 if (_store is SqliteEventStore owned && previous._lastSessionId is { } old && old != target)
                     owned.ReleaseSessionWriterLease(old);
