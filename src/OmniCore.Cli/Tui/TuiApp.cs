@@ -40,7 +40,7 @@ public sealed partial class TuiApp
     private string? _renderedConversation;
     private ComposerView? _composer;
     private int _composerRows = 1;
-    private bool _followConversationEnd;
+    private bool _followConversationEnd = true;
     private bool _renderingConversation;
     private FrameView? _composerFrame;
     private Label? _attachmentChips;
@@ -356,6 +356,13 @@ public sealed partial class TuiApp
         else if (code == "Esc" && _preferencesCenterActive) { HandlePreferencesEscape(); key.Handled = true; }
         else if (code == "Esc" && _overlay is not null) { CloseOverlay(); key.Handled = true; }
         else if (code == "Esc" && _commandHelper is not null) { HideCommandHelper(); key.Handled = true; }
+        else if (code == "Esc")
+        {
+            // Esc dismisses/interrupts, never exits the chat via the framework's Quit binding.
+            // Explicit app.exit commands retain their normal shutdown path.
+            if (_turnBusy) _turnCancellation?.Cancel();
+            key.Handled = true;
+        }
     }
 
     private bool HandleOperationalPreferencesEscape()
