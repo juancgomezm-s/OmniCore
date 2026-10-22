@@ -169,6 +169,17 @@ public sealed class WorkspacePanelTests
             server.RecordWorkspaceCheckpoint(session, store.CurrentSequence(session), "after-tool");
             var point = Assert.Single(Query(server, new("timeline")).Timeline!, row => row.Kind == "tool");
             Assert.Equal("read", point.Activity); Assert.Equal(["a.txt"], point.Files); Assert.NotNull(point.Checkpoint!.Snapshot);
+            var source = new DirectoryInfo(AppContext.BaseDirectory);
+            while (source is not null && !File.Exists(Path.Combine(source.FullName, "OmniCore.slnx"))) source = source.Parent;
+            Assert.NotNull(source);
+            var extensions = new ExtensionPackageManager(paths);
+            extensions.Install(Path.Combine(source.FullName, "extensions", "pilots", "time-machine"), CancellationToken.None);
+            extensions.Change("omnicore.time-machine", "enable");
+            var view = ExtensionProtocol.Decode(server.Query("extensions.view:" + Uri.EscapeDataString(ExtensionProtocol.EncodeRequest(
+                new("omnicore.time-machine", "history"))), CancellationToken.None)!.Json);
+            var recoverable = Assert.Single(view.Actions, action => action.Id == "alternative");
+            var selectedPoint = Assert.Single(view.Items, item => item.Id == recoverable.ItemId).Data!.Value.GetProperty("checkpoint").GetProperty("id").GetString();
+            Assert.Equal(point.Checkpoint.Id, selectedPoint);
             stream.Append(new UserInputReceived(opened.RunId, "\"must not leak after cut\"", null));
             var orphan = ToolCallId.New(); stream.Append(new ToolCallRequested(orphan, "orphan", "filesystem.read", "{\"path\":\"later.txt\"}"));
             stream.Append(new ToolCallPrepared(orphan, "{}")); stream.Append(new ToolCallAuthorized(orphan)); stream.Append(new ToolCallStarted(orphan, EffectClass.None, null));

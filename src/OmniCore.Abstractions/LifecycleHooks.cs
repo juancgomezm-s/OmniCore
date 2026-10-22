@@ -227,7 +227,8 @@ public sealed class LifecycleHookDispatcher
             item.Content, Math.Max(1, (item.Content.Length + 3) / 4), ContextPriority.Low,
             RetentionPolicy.ConversationWindow,
             new ContextProvenance("hook." + registration.Id, ContributionCategory.Knowledge,
-                source.Owner, source.Scope, item.Provenance.Sensitive, item.Provenance.Refs));
+                source.Kind == SourceKind.Extension ? "Extension:" + source.Owner + "@" + source.Version : source.Owner,
+                source.Scope, item.Provenance.Sensitive, item.Provenance.Refs));
     }
 
     private static string SafeId(string value)

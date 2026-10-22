@@ -1,0 +1,30 @@
+manifestVersion: 2
+id: example.hello
+publisher: example
+version: 1.0.0
+displayName: Hello
+omnicoreApi: '1.x'
+executionMode: restricted
+activationEvents: [onView, onCommand]
+runtime:
+  kind: node
+  command: dist/examples/minimal.js
+provides:
+  tools:
+    - name: hello
+      schema: schemas/hello.json
+  commands:
+    - name: hello
+      kind: Extension
+      tool: hello
+  views:
+    - id: hello
+      kind: details
+      source: extension
+requests:
+  capabilities: [presentation.read, workspace.read, tool.register, command.register]
+  permissions:
+    process:
+      - executable: '**/minimal.js'
+    paths:
+      read: ['**']

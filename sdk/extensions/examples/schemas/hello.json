@@ -1,0 +1,5 @@
+{
+  "type": "object",
+  "properties": { "name": { "type": "string", "maxLength": 200 } },
+  "additionalProperties": false
+}

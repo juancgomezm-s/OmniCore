@@ -1,0 +1,23 @@
+manifestVersion: 2
+id: omnicore.agent-flow
+publisher: omnicore
+version: 1.0.0
+displayName: Agent Flow
+omnicoreApi: '1.x'
+activationEvents: [onView]
+provides:
+  views:
+    - id: agents
+      kind: table
+      source: agents
+requests:
+  capabilities: [presentation.read, sessions.read]
+uiResources:
+  es:
+    extension.displayName: Agentes
+  en:
+    extension.displayName: Agents
+  fr:
+    extension.displayName: Agents
+  it:
+    extension.displayName: Agenti

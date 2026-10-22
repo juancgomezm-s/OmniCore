@@ -46,6 +46,7 @@ public static class StdioProtocol
         "query.commandOutcome",
         "query.toolCatalog",
         "query.extensionCatalog",
+        "query.extensionPlatform",
         "query.mcpConfiguration",
         "query.hookCatalog",
         "query.skillCatalog",
@@ -97,6 +98,7 @@ public static class StdioProtocol
         "command.attachment.upload.chunk.user",
         "command.attachment.upload.finish.user",
         "command.external.memory.consent.user",
+        "command.extensions.package.user",
         "query.humanActionScope",
     ];
 
@@ -125,6 +127,13 @@ public static class StdioProtocol
         new("humanActionScope", "query.humanActionScope", "Current trusted-action scope on this native connection", "trusted-session", "session-read", false),
         new("tools", "query.toolCatalog", "Effective tool catalog and policy decisions", "session", "workspace-read", true),
         new("extensions", "query.extensionCatalog", "Installed extension inventory and consent metadata", "workspace", "workspace-read", true),
+        new("extensions.packages", "query.extensionPlatform", "Local package lifecycle and exact consent", "user", "configuration-read", true),
+        new("extensions.views", "query.extensionPlatform", "Available declarative contributions; no activation", "workspace", "workspace-read", true),
+        new("extensions.configuration", "query.extensionPlatform", "Declared extension-owned configuration in the selected scope", "workspace", "configuration-read", true),
+        new("extensions.context.catalog", "query.extensionPlatform", "Previewable context contributions; never activates code", "workspace", "configuration-read", true),
+        new("extensions.context", "query.extensionPlatform", "Exact human-previewed data for the active Session and Run", "session", "configuration-read", false),
+        new("extensions.notifications", "query.extensionPlatform", "Bounded UI-only notices; never model context", "session", "extension-read", false),
+        new("extensions.view", "query.extensionPlatform", "Explicit extension view snapshot; may activate consented code", "session", "extension-read", false),
         new("mcp", "query.mcpConfiguration", "Configured MCP endpoints and trust metadata; does not probe endpoints", "workspace", "workspace-read", true),
         new("hooks", "query.hookCatalog", "Hook inventory and effective state", "workspace", "workspace-read", true),
         new("skills", "query.skillCatalog", "Skill inventory and activation metadata", "session", "workspace-read", true),
@@ -146,13 +155,19 @@ public static class StdioProtocol
         ? true
         : NativeQueries.Any(query => query.Name == name || query.WireName == name)
             || name.StartsWith("sessionObservability:", StringComparison.Ordinal)
-            || name.StartsWith("workspace.panel:", StringComparison.Ordinal);
+            || name.StartsWith("workspace.panel:", StringComparison.Ordinal)
+            || name.StartsWith("extensions.view:", StringComparison.Ordinal)
+            || name.StartsWith("extensions.configuration:", StringComparison.Ordinal)
+            || name.StartsWith("extensions.notifications:", StringComparison.Ordinal);
 
     public static bool TryGetQuery(string name, out NativeQueryDescriptor descriptor)
     {
         descriptor = NativeQueries.FirstOrDefault(query => query.Name == name || query.WireName == name
             || query.Name == "sessionObservability" && name.StartsWith("sessionObservability:", StringComparison.Ordinal)
-            || query.Name == "workspace.panel" && name.StartsWith("workspace.panel:", StringComparison.Ordinal))!;
+            || query.Name == "workspace.panel" && name.StartsWith("workspace.panel:", StringComparison.Ordinal)
+            || query.Name == "extensions.view" && name.StartsWith("extensions.view:", StringComparison.Ordinal)
+            || query.Name == "extensions.configuration" && name.StartsWith("extensions.configuration:", StringComparison.Ordinal)
+            || query.Name == "extensions.notifications" && name.StartsWith("extensions.notifications:", StringComparison.Ordinal))!;
         return descriptor is not null;
     }
 
@@ -198,10 +213,11 @@ public static class StdioProtocol
         or "run.interrupt" or "run.cancel" or "run.mode.select"
         or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish"
         or "external.memory.consent" or "interaction.respond" or "interaction.continue"
-        or "command.invoke.user" or "command.continue" or "workflow.continue";
+        or "command.invoke.user" or "command.continue" or "workflow.continue" or "extensions.package";
 
     public static IReadOnlyList<NativeCommandDescriptor> NativeCommands { get; } =
     [
+        new("extensions.package", "command.extensions.package.user", "native-confirmation+hmac+scope+package-hashes", "command.result.lookup", "Manage local extensions with explicit user consent; install never executes code"),
         new("sim", "command.sim", "generic", "command.result.lookup", "Submit a deterministic simulation scenario"),
         new("sim.resume", "command.sim.resume", "generic", "command.result.lookup", "Resume a deterministic simulation"),
         new("session.input", "command.session.input", "generic", "command.result.lookup", "Persist literal user input without inference"),
@@ -250,7 +266,10 @@ public sealed record NativeQueryDescriptor(string Name, string Capability, strin
     public string ResultName => WireName;
     public string DispatchName(string requestedName) => (Name == "sessionObservability"
         && requestedName.StartsWith("sessionObservability:", StringComparison.Ordinal)
-        || Name == "workspace.panel" && requestedName.StartsWith("workspace.panel:", StringComparison.Ordinal))
+        || Name == "workspace.panel" && requestedName.StartsWith("workspace.panel:", StringComparison.Ordinal)
+        || Name == "extensions.view" && requestedName.StartsWith("extensions.view:", StringComparison.Ordinal)
+        || Name == "extensions.configuration" && requestedName.StartsWith("extensions.configuration:", StringComparison.Ordinal)
+        || Name == "extensions.notifications" && requestedName.StartsWith("extensions.notifications:", StringComparison.Ordinal))
         ? requestedName : WireName;
 }
 

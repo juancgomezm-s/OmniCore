@@ -454,7 +454,8 @@ public sealed class ContextManagementTests
             Assert.Contains(checkpointJson.RootElement.GetProperty("facts").EnumerateArray(),
                 fact => fact.GetString()!.Contains("durable decision", StringComparison.Ordinal));
             Assert.Contains("P3 in progress", lastRequest!.Instructions);
-            Assert.Contains("durable decision from old history", lastRequest.Instructions);
+            Assert.DoesNotContain("durable decision from old history", lastRequest.Instructions);
+            Assert.Contains(lastRequest.Messages.SelectMany(message => message.Content).OfType<TextBlock>(), block => block.Text.Contains("durable decision from old history", StringComparison.Ordinal));
             Assert.True(lastRequest.Instructions!.Length < 6000, $"context chars {lastRequest.Instructions.Length}");
             Assert.True(lastRequest.Messages.Count <= 20, $"messages {lastRequest.Messages.Count}");
             var latestSnapshot = persisted.Reverse().Select(evt => codecs.Decode(evt))

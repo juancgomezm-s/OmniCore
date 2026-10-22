@@ -49,7 +49,13 @@ public sealed record SandboxLaunchSpec(
     IReadOnlyList<SandboxAllowedPath> AllowedPaths,
     SandboxNetworkPolicy Network,
     TimeSpan? Timeout = null,
-    string? InitialStandardInput = null);
+    string? InitialStandardInput = null)
+{
+    /// <summary>Caller owns the three protocol streams instead of batch capture.</summary>
+    public bool Duplex { get; init; }
+    /// <summary>Opt out of ambient ALL APPLICATION PACKAGES access on Windows.</summary>
+    public bool LessPrivilegedAppContainer { get; init; }
+}
 
 /// <summary>Reports which strengths the current Sandbox implementation can provide.</summary>
 public sealed record SandboxCapabilities(
@@ -184,6 +190,14 @@ public interface ISandboxProcessControl : IAsyncDisposable
 
     /// <summary>Requests termination of the process and its descendants.</summary>
     ValueTask TerminateAsync(CancellationToken cancellationToken);
+}
+
+/// <summary>Persistent transport; no concurrent batch reader consumes these streams.</summary>
+public interface ISandboxDuplexProcessControl : ISandboxProcessControl
+{
+    Stream StandardInput { get; }
+    Stream StandardOutput { get; }
+    Stream StandardError { get; }
 }
 
 /// <summary>

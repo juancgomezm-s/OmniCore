@@ -83,7 +83,8 @@ public sealed class ExtensionTool : ITool
         try
         {
             var parameters = "{\"name\":\"" + Escape(_tool.Name!) + "\""
-                + ",\"arguments\":" + intent.Intent.NormalizedArgumentsJson + "}";
+                + ",\"arguments\":" + intent.Intent.NormalizedArgumentsJson
+                + (_extension.Manifest?.ManifestVersion == 2 ? ",\"toolCallId\":\"" + intent.Intent.ToolCallId + "\"" : "") + "}";
             var response = await _invoker.InvokeAsync(_extension, "tools/call", parameters, intent.Intent.Claims, cancellationToken)
                 .ConfigureAwait(false);
             using var document = JsonDocument.Parse(response);

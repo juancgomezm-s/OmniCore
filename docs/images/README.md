@@ -35,3 +35,17 @@ node tools/render-readme-images.cjs C:/ruta/node_modules/sharp
 
 No se descargan fuentes ni imágenes remotas. Al actualizar hitos, cambiar también
 sus etiquetas y el texto del README según las evidencias de `docs/validation`.
+
+## Formularios e indicadores de extensiones
+
+`settings-extension-form-es-80x25` y
+`settings-extension-indicators-en-120x35` proceden del búfer RGB real de
+Terminal.Gui con `example.preferences`, proceso Node/Core y datos locales de
+prueba. Se inspeccionaron sus PNG; no son capturas del escritorio ni aceptación
+visual humana. El indicador de cuota es desconocido, no un proveedor simulado.
+
+Para regenerar los SVG, compila el SDK y la solución; ejecuta las pruebas
+`Extension_form_edits*` y `Extension_indicator_renderer*` con
+`OMNICORE_TUI_SNAPSHOT_DIR` apuntando al destino, `TERM=xterm-256color`,
+`COLORTERM=truecolor` y sin `NO_COLOR`. Rasteriza los SVG como se indica arriba.
+Conserva las dimensiones de celda y los colores del driver.

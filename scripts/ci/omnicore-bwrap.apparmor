@@ -1,0 +1,9 @@
+# CI runner prerequisite only. Do not install or disable AppArmor from product code.
+# Permit the fixed sandbox launcher to create its namespaces; the launcher then
+# drops capabilities and disables further user namespaces before executing code.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+}

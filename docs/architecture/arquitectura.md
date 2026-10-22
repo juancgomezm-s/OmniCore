@@ -991,6 +991,14 @@ El frame de gestión Git del repositorio vivo, con comparación lado a lado y ed
 
 M4/M5.5 conservan sus cierres y M6 queda cerrado en Windows con el alcance y límites del acta. M8–M10 tienen avances parciales que no equivalen a los cierres de esos hitos.
 
+### Ampliación M8: plataforma de extensiones (2026-10-21)
+
+Implementación incremental exclusivamente en OmniCore, según [plan coordinado](../plans/extensions-platform.md)
+y [ADR-0061](../adr/0061-plataforma-de-extensiones.md): lifecycle local, manifiesto v2
+compatible con v1, host supervisado/SDK TypeScript, fachadas y vistas declarativas
+para Filetree, Agent Flow y Time Machine. Reutiliza permisos, hooks, journal y
+checkpoints; no introduce un framework paralelo ni cierra las aceptaciones M8/M9.
+
 ### 24.3. Idiomas y convenciones de usuario en M8–M10
 
 Revisión del 2026-10-11 solicitada por el usuario. El [plan de preferencias e idiomas](../plans/preferences-and-localization.md) define el mecanismo compartido; el [plan de pendientes M8–M10](../plans/m8-m10-user-localization.md) asigna cada función restante, su presentación y su evidencia de cierre. No se construye un traductor alternativo en cada hito. La cobertura del código existente no demuestra cobertura de un backend futuro.

@@ -213,10 +213,16 @@ Se requiere el **SDK de .NET 10** y Git. Protocol, Client y Sandbox también tie
 git clone https://github.com/juancgomezm-s/OmniCore.git
 cd OmniCore
 dotnet build OmniCore.slnx
+npm ci --prefix sdk/extensions --ignore-scripts
+npm test --prefix sdk/extensions
 dotnet test --solution OmniCore.slnx
 ```
 
 ### Instalar `omni` en Windows
+
+Las pruebas del host de extensiones ejecutables requieren Node LTS 22+ y el SDK
+TypeScript compilado con los pasos anteriores. La aplicación y los paquetes
+declarativos no adquieren esa dependencia al compilarse con .NET.
 
 Esta instalación de desarrollo compila el checkout elegido y registra `omni`
 con npm. Requiere Git, **Node.js 20 o posterior con npm** y el **SDK de .NET
@@ -653,6 +659,39 @@ Son principios de diseño, no una declaración de aceptación total. Entre los e
 | `OmniCore.Cli` | TUI, plain y JSON |
 
 </details>
+
+## Extensiones locales
+
+La ampliación de M8 incorpora paquetes locales con manifiesto versionado,
+consentimiento ligado a hashes, administración CLI/TUI y vistas declarativas.
+Los pilotos Filetree, Agent Flow y Time Machine reutilizan archivos/Git, agentes
+y checkpoints de Core; no necesitan Node. El SDK TypeScript permite extensiones
+ejecutables en un proceso Node LTS separado, sin depender de Electron.
+
+En la TUI: **F4 → Extensiones y habilidades → Paquetes y vistas**. Instalar no
+ejecuta código. Habilitar código confiable requiere consentimiento explícito:
+ese proceso tiene acceso del usuario y no constituye un sandbox. La modalidad
+restringida se rechaza mientras no exista un backend verificado para este host.
+
+Las vistas abiertas se actualizan en segundo plano. Time Machine permite crear y
+abrir una alternativa con conversación y archivos recuperables, conservando el
+checkout original. La administración permite actualizar y volver al paquete
+anterior sin borrar datos; cada versión resultante requiere habilitación explícita.
+
+Las vistas incluyen formularios nativos de texto, número, opciones y booleanos,
+e indicadores de estado, valor y unidad. Guardar valida el formulario completo y
+escribe sólo configuración propia declarada, con autoridad humana y snapshot
+vigente; el refresh no sobrescribe borradores. Los valores no reportados se
+muestran como desconocidos. El SDK incluye un ejemplo ejecutable para probarlos.
+
+![Formulario nativo de extensión, búfer real de Terminal.Gui con paquete de prueba local.](docs/images/settings-extension-form-es-80x25.png)
+
+Captura del driver RGB con el paquete de ejemplo y datos locales: no es una
+maqueta ni una prueba de inferencia, y no sustituye la aceptación manual en terminal.
+
+[Instalación, SDK y ejemplos](sdk/extensions/README.md) ·
+[Contratos e integración futura de clientes](docs/extensions/client-integration.md) ·
+[Plan coordinado M8](docs/plans/extensions-platform.md).
 
 ## Documentación
 

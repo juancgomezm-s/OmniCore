@@ -1,0 +1,22 @@
+manifestVersion: 2
+id: example.preferences
+publisher: example
+version: 1.0.0
+displayName: Formularios e indicadores
+omnicoreApi: '1.x'
+activationEvents: [onView]
+configuration: [display]
+executionMode: restricted
+runtime:
+  kind: node
+  command: dist/examples/preferences.js
+provides:
+  views:
+    - id: preferences
+      kind: form
+      source: extension
+    - id: indicators
+      kind: indicator
+      source: extension
+requests:
+  capabilities: [presentation.read, configuration.read, configuration.write]

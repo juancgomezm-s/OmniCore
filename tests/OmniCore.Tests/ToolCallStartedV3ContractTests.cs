@@ -10,11 +10,11 @@ using OmniCore.Security;
 public sealed class ToolCallStartedV3ContractTests
 {
     [Fact]
-    public void Started_contract_and_registered_codec_are_version_three()
+    public void Started_contract_and_registered_codec_are_version_four_with_durable_attribution()
     {
         var payload = new ToolCallStarted(ToolCallId.New(), EffectClass.None, null);
-        Assert.Equal(3, payload.SchemaVersion());
-        Assert.Equal(3, EventCodecs.Create().CurrentVersion(payload.Type()));
+        Assert.Equal(4, payload.SchemaVersion());
+        Assert.Equal(4, EventCodecs.Create().CurrentVersion(payload.Type()));
     }
 
     [Fact]
@@ -41,6 +41,8 @@ public sealed class ToolCallStartedV3ContractTests
     [InlineData(1, EffectClass.Reconcilable)]
     [InlineData(2, EffectClass.None)]
     [InlineData(2, EffectClass.Reconcilable)]
+    [InlineData(3, EffectClass.None)]
+    [InlineData(3, EffectClass.Reconcilable)]
     public void Legacy_events_preserve_reconciliation_without_inventing_reversibility(int version, EffectClass effect)
     {
         var call = ToolCallId.New();
@@ -50,6 +52,7 @@ public sealed class ToolCallStartedV3ContractTests
         json.Remove("Reversibility");
         json.Remove("TargetRef");
         json.Remove("BeforeStateRef");
+        json.Remove("Attribution");
         if (version == 1) json.Remove("ReconciliationJson");
         var stored = DomainEvent.Stored(EventId.New(), SessionId.New(), 1, payload.Type(), version,
             DateTimeOffset.UtcNow, null, null, null, null, null, null, null, call, [], json.ToJsonString());
@@ -60,6 +63,7 @@ public sealed class ToolCallStartedV3ContractTests
         Assert.Equal(Reversibility.Unknown, decoded.Reversibility);
         Assert.Null(decoded.TargetRef);
         Assert.Null(decoded.BeforeStateRef);
+        Assert.Null(decoded.Attribution);
         Assert.Equal(version, stored.SchemaVersion);
         Assert.Equal(json.ToJsonString(), stored.PayloadJson);
     }
@@ -114,6 +118,7 @@ public sealed class ToolCallStartedV3ContractTests
                 Reversibility = hasBeforeState ? Reversibility.Reversible : Reversibility.Unknown,
                 TargetRef = "src/one.txt",
                 BeforeStateRef = before,
+                Attribution = new("fixture.inspect", "Extension", "fixture.package", "1.0.0", new string('A', 64)),
             };
             using (ExecutionScope.Begin(new ExecutionScopeState(run.RunId, run.RootTask, run.RootLane, turn,
                 call, execution)))

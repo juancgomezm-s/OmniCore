@@ -88,6 +88,8 @@ public record ToolCallAuthorized(ToolCallId ToolCallId) : DomainEventPayload
 public record ToolCallStarted(ToolCallId ToolCallId, EffectClass EffectClass, string? ReconciliationJson)
     : DomainEventPayload
 {
+    /// <summary>Runtime-resolved identity committed before invocation; never inferred from visible names.</summary>
+    public ToolCallAttribution? Attribution { get; init; }
     /// <summary>Independent of crash reconciliation and idempotency. Legacy events are Unknown.</summary>
     public Reversibility Reversibility { get; init; } = Reversibility.Unknown;
 
@@ -101,8 +103,11 @@ public record ToolCallStarted(ToolCallId ToolCallId, EffectClass EffectClass, st
 
     public EventType Type() => EventType.Of("toolcall.started");
 
-    public int SchemaVersion() => 3;
+    public int SchemaVersion() => 4;
 }
+
+public sealed record ToolCallAttribution(string ToolId, string SourceKind, string? ExtensionId,
+    string Version, string? PackageSha256);
 
 /// <summary>Effect reversibility attribution (ADR-0046 §6), not execution or recovery state.</summary>
 public enum Reversibility

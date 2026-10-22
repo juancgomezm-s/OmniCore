@@ -34,7 +34,12 @@ internal sealed class ExtensionContextContributor : IContextContributor
             "ExtensionContextContributor", WorkingDirectory: _workspaceRoot), []);
     }
 
-    public async Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request,
+    // Invocation is only available to the explicit human preview path. Package consent alone
+    // must never execute a contributor or admit its output into a model request.
+    public Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request,
+        CancellationToken cancellationToken) => System.Threading.Tasks.Task.FromResult<IReadOnlyList<ContextItem>>([]);
+
+    internal async Task<IReadOnlyList<ContextItem>> ReadPreviewAsync(MaterializeRequest request,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -94,19 +99,16 @@ internal sealed class ExtensionContextContributor : IContextContributor
 public static class ProjectExtensionContributors
 {
     public static IReadOnlyList<IContextContributor> Load(string workspaceRoot, IPlatformPaths paths,
-        bool workspaceTrusted, IExtensionRpcInvoker invoker)
+        bool workspaceTrusted, IExtensionRpcInvoker invoker,
+        Func<MaterializeRequest, IReadOnlyList<ContextItem>>? approvedContext = null)
     {
         ArgumentNullException.ThrowIfNull(invoker);
-        return ProjectExtensionPackageCatalog.Ready(workspaceRoot, paths, workspaceTrusted)
-            .Where(item => item.Capabilities.Contains("context.contribute"))
-            .SelectMany(item => (item.Extension.Manifest!.Provides?.ContextContributors ?? [])
-                .Select(name => (IContextContributor)new ExtensionContextContributor(item.Extension, name,
-                    workspaceRoot, invoker, () => ProjectExtensionPackageCatalog.Ready(workspaceRoot, paths, workspaceTrusted)
-                        .Any(current => current.Capabilities.Contains("context.contribute")
-                            && current.Extension.Manifest?.Id == item.Extension.Manifest?.Id
-                            && current.Extension.Trust == item.Extension.Trust
-                            && current.Extension.ManifestSha256 == item.Extension.ManifestSha256
-                            && current.Extension.PackageSha256 == item.Extension.PackageSha256))))
-            .ToArray();
+        return approvedContext is null ? [] : [new ApprovedContributor(approvedContext)];
+    }
+
+    private sealed class ApprovedContributor(Func<MaterializeRequest, IReadOnlyList<ContextItem>> read) : IContextContributor
+    {
+        public Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request, CancellationToken token)
+        { token.ThrowIfCancellationRequested(); return System.Threading.Tasks.Task.FromResult(read(request)); }
     }
 }

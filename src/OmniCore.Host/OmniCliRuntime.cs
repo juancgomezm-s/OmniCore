@@ -126,6 +126,30 @@ public sealed class OmniCliRuntime : IDisposable
     public static OmniCliRuntime Create(string workspaceRoot,
         Func<string, CancellationToken, Task<ProviderQuotaSnapshot>>? queryQuota = null) => new(workspaceRoot, queryQuota);
 
+    /// <summary>Opens only a published alternative of the current Session. Never rebinds the original Host/store.</summary>
+    public OmniCliRuntime OpenAlternative(WorkspaceAlternative target, CancellationToken cancellationToken)
+    {
+        var original = Connect(cancellationToken);
+        var receipt = JsonSerializer.Deserialize(original.Query("workspace.panel:" + Uri.EscapeDataString(
+            "{\"kind\":\"alternative\"," + JsonObj.Field("commandId", target.CommandId) + "}"), cancellationToken)?.Json ?? "{}",
+            WorkspacePanelJson.Default.WorkspacePanelResult)?.Alternative;
+        if (receipt != target || target.State != "ready") throw new InvalidOperationException("alternative_not_published");
+        var next = Create(target.Workspace, _queryQuota);
+        try
+        {
+            next.UiLocale = UiLocale; next.Localize = Localize;
+            next.QuestionnaireInput = QuestionnaireInput; next.UseConsoleInput = UseConsoleInput;
+            var client = next.Connect(cancellationToken);
+            var history = JsonSerializer.Deserialize(client.Query("workspace.panel:" + Uri.EscapeDataString("{\"kind\":\"timeline\"}"), cancellationToken)?.Json ?? "{}",
+                WorkspacePanelJson.Default.WorkspacePanelResult);
+            if (history?.SessionId != target.SessionId || history.Origin?.SourceWorkspace != target.SourceWorkspace
+                || history.Origin.SourceSessionId != target.SourceSessionId || history.Origin.CheckpointId != target.CheckpointId)
+                throw new InvalidOperationException("alternative_origin_mismatch");
+            return next;
+        }
+        catch { next.Dispose(); throw; }
+    }
+
     /// <summary>Explicit CLI consent action bound to the exact project manifest hash and version.</summary>
     public ProjectExtensionConsentResult SetProjectExtensionConsent(string extensionId, bool grant)
     {
@@ -2738,7 +2762,7 @@ public sealed class OmniCliRuntime : IDisposable
             IReadOnlyList<LoadedSkill> loadedProjectSkills = [];
             IReadOnlyList<IHook> lifecycleHooks = Array.Empty<IHook>();
             IReadOnlyList<IContextContributor> extensionContributors = Array.Empty<IContextContributor>();
-            var extensionRpcInvoker = new ExtensionRpcProcessInvoker();
+            var extensionRpcInvoker = server.CreateExtensionInvoker();
             extensionBoundaries.Add(new McpIntentBoundary());
             if (delegation is null)
             {
@@ -2747,7 +2771,7 @@ public sealed class OmniCliRuntime : IDisposable
                     lifecycleHooks = ProjectExtensionHooks.Load(workspaceRoot, paths,
                         workspaceTrusted: true, invoker: extensionRpcInvoker);
                     extensionContributors = ProjectExtensionContributors.Load(workspaceRoot, paths,
-                        workspaceTrusted: true, extensionRpcInvoker);
+                        workspaceTrusted: true, extensionRpcInvoker, server.ReadApprovedExtensionContext);
                 }
                 catch (Exception failure) when (failure is IOException or InvalidDataException or JsonException
                     or InvalidOperationException or UnauthorizedAccessException or ArgumentException)
@@ -2889,7 +2913,7 @@ public sealed class OmniCliRuntime : IDisposable
                     : [],
                 extensionContributorFactory: () => delegation is null
                     ? ProjectExtensionContributors.Load(workspaceRoot, paths, workspaceConfig.Trusted,
-                        extensionRpcInvoker).Append((IContextContributor)new ExternalAgentContextContributor(
+                        extensionRpcInvoker, server.ReadApprovedExtensionContext).Append((IContextContributor)new ExternalAgentContextContributor(
                             DiscoverExternalSources, ExternalAgentSourceKind.Instruction))
                         .Append(new ExternalAgentContextContributor(DiscoverExternalSources,
                             ExternalAgentSourceKind.Memory)).ToArray()
@@ -3043,6 +3067,7 @@ public sealed class OmniCliRuntime : IDisposable
                     sessionMemoryPolicy: sessionMemoryPolicy,
                     sessionSecurityPolicy: () => server.ReadSessionSecurityPolicy(sessionId),
                     workflowStageDefinition: turnWorkflowStage,
+                    externalContextAdmission: server.ValidateApprovedExtensionContext,
                     resolveLifecycleValidations: delegation is null
                         ? (ids, read, context, token) =>
                         {

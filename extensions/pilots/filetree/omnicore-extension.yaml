@@ -1,0 +1,26 @@
+manifestVersion: 2
+id: omnicore.filetree
+publisher: omnicore
+version: 1.0.0
+displayName: Filetree
+omnicoreApi: '1.x'
+activationEvents: [onView]
+provides:
+  views:
+    - id: files
+      kind: tree
+      source: workspace
+requests:
+  capabilities: [presentation.read, workspace.read, history.read]
+  permissions:
+    paths:
+      read: ['**']
+uiResources:
+  es:
+    extension.displayName: Archivos
+  en:
+    extension.displayName: Files
+  fr:
+    extension.displayName: Fichiers
+  it:
+    extension.displayName: File

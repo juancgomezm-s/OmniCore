@@ -17,7 +17,11 @@ internal static class ProjectExtensionPackageCatalog
         if (workspaceTrusted)
             Add(Path.Combine(Path.GetFullPath(workspaceRoot), ".omnicore", "extensions"), TrustLevel.Project,
                 trusted: true, new ExtensionConsentStore(paths, workspaceRoot));
-        return result.GroupBy(item => item.Extension.Manifest?.Id ?? "", StringComparer.Ordinal)
+        var manager = new ExtensionPackageManager(paths);
+        return result.Where(item => item.Extension.Manifest?.ManifestVersion != 2
+                ? item.Extension.Trust != TrustLevel.Trusted || manager.Enabled(item.Extension)
+                : item.Extension.Trust == TrustLevel.Trusted && manager.Enabled(item.Extension))
+            .GroupBy(item => item.Extension.Manifest?.Id ?? "", StringComparer.Ordinal)
             .Where(group => group.Count() == 1).Select(group => group.Single()).ToArray();
 
         void Add(string root, TrustLevel trust, bool trusted, ExtensionConsentStore store)

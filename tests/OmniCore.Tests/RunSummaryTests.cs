@@ -148,8 +148,10 @@ public sealed class RunSummaryTests
             text => text.Text == "continúa con esa base");
         if (expectSummary)
         {
-            Assert.Contains("Historical Run summary", received.Instructions);
-            Assert.Contains("Durable decision: PostgreSQL", received.Instructions);
+            Assert.DoesNotContain("Historical Run summary", received.Instructions);
+            Assert.DoesNotContain("Durable decision: PostgreSQL", received.Instructions);
+            Assert.Contains(received.Messages.SelectMany(message => message.Content).OfType<TextBlock>(), text => text.Text.Contains("Historical Run summary", StringComparison.Ordinal));
+            Assert.Contains(received.Messages.SelectMany(message => message.Content).OfType<TextBlock>(), text => text.Text.Contains("Durable decision: PostgreSQL", StringComparison.Ordinal));
             Assert.DoesNotContain(received.Messages.SelectMany(message => message.Content).OfType<TextBlock>(), text => text.Text == answer);
         }
         else

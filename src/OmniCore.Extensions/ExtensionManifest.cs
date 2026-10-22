@@ -16,6 +16,11 @@ public sealed class ExtensionManifest
     public ExtensionRequestsManifest? Requests { get; set; }
     public ExtensionRuntimeManifest? Runtime { get; set; }
     public ExtensionSourceManifest? Source { get; set; }
+    public List<string>? ActivationEvents { get; set; }
+    public List<string>? Platforms { get; set; }
+    public List<string>? Dependencies { get; set; }
+    public List<string>? Configuration { get; set; }
+    public string? ExecutionMode { get; set; }
     /// <summary>Optional literal UI copy by locale and stable key; never used as model instructions.</summary>
     public Dictionary<string, Dictionary<string, string>>? UiResources { get; set; }
 }
@@ -29,6 +34,14 @@ public sealed class ExtensionProvidesManifest
     public List<string>? ContextContributors { get; set; }
     public List<string>? Validators { get; set; }
     public List<string>? CompletionGates { get; set; }
+    public List<ExtensionViewManifest>? Views { get; set; }
+}
+
+public sealed class ExtensionViewManifest
+{
+    public string? Id { get; set; }
+    public string? Kind { get; set; }
+    public string? Source { get; set; }
 }
 
 public sealed class ExtensionToolManifest

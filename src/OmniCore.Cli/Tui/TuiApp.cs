@@ -120,6 +120,7 @@ public sealed partial class TuiApp
     internal ClientState ProjectionState => _state;
     internal bool SidebarOpen => _sidebarOpen;
     internal ModelPolicyHost Policies => _policies;
+    internal WorkspaceAlternative? RequestedAlternative { get; private set; }
 
     public TuiApp(IOmniClient client, string locale = "es", ModelPolicyHost? policies = null, ITuiAccountHost? account = null, ITuiTurnHost? turnHost = null, ITuiProviderConnectionHost? providerConnections = null,
         string? animationSettingsPath = null, LocaleSelection? localeSelection = null,
@@ -177,7 +178,8 @@ public sealed partial class TuiApp
 
     public static int Run(IOmniClient client, string locale = "es", ITuiTurnHost? turnHost = null,
         LocaleSelection? localeSelection = null, Action<string>? localeChanged = null,
-        ITuiClaudeAccountHost? claudeAccounts = null, ITuiLocalEngineSupervisor? localEngineSupervisor = null)
+        ITuiClaudeAccountHost? claudeAccounts = null, ITuiLocalEngineSupervisor? localEngineSupervisor = null,
+        Action<WorkspaceAlternative>? alternativeRequested = null)
     {
         var app = new TuiApp(client, locale, turnHost: turnHost, localeSelection: localeSelection,
             localeChanged: localeChanged, claudeAccounts: claudeAccounts, localEngineSupervisor: localEngineSupervisor);
@@ -187,7 +189,9 @@ public sealed partial class TuiApp
         if (OperatingSystem.IsWindows() && string.IsNullOrWhiteSpace(application.ForceDriver))
             application.ForceDriver = DriverRegistry.Names.WINDOWS;
         application.Init();
-        return app.RunWith(application);
+        var result = app.RunWith(application);
+        if (app.RequestedAlternative is { } target) alternativeRequested?.Invoke(target);
+        return result;
     }
 
     /// <summary>
@@ -216,6 +220,7 @@ public sealed partial class TuiApp
         finally
         {
             application.LayoutAndDrawComplete -= AfterDraw;
+            CancelExtensionViewRefresh();
             try { _loginCancellation?.Cancel(); } catch (ObjectDisposedException) { }
             try { _catalogCancellation?.Cancel(); } catch (ObjectDisposedException) { }
             ClearProviderApiKey();
@@ -254,6 +259,8 @@ public sealed partial class TuiApp
                 }
             }
             _delegationTasks.Clear();
+            _extensionNoticeCancellation?.Cancel();
+            _extensionNoticeCancellation?.Dispose();
             _suspendedSecurityForm?.Dispose(); _suspendedSecurityForm = null; _cancelSecurityConfirmation = null;
             DisposeRetiredOverlays();
             if (_ownsPolicies) _policies.Dispose();
@@ -267,6 +274,8 @@ public sealed partial class TuiApp
         while (_uiActions.TryDequeue(out var action)) action();
         ReflowPreferencesIfNeeded();
         PollEvents();
+        _refreshExtensionView?.Invoke(false);
+        PollExtensionNotifications();
         return true;
     }
 
@@ -2696,6 +2705,7 @@ public sealed partial class TuiApp
     private void CloseOverlay()
     {
         if (_overlay is null || _window is null) return;
+        CancelExtensionViewRefresh();
         if (_themeBeforePreview is { } originalTheme) { _theme = originalTheme; _themeBeforePreview = null; }
         if (_suspendedSecurityForm is { } securityDraft)
         {
