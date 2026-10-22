@@ -1,7 +1,13 @@
 # Extensiones: aislamiento obligatorio — 2026-10-22
 
-Rama `codex/extensions-platform`. Cierre anterior conservado en `78808c1`.
-Un solo agente, sólo OmniCore. No se fusionó ni publicó esta implementación.
+Validación previa a la integración en `codex/extensions-platform`. Cierre anterior
+conservado en `78808c1`; aislamiento guardado posteriormente en `9018e62`.
+Un solo agente, sólo OmniCore. El usuario autorizó después integrar/publicar:
+`main` conserva los merges `da2280d`, `3ebcd14` y `3a864e5`, incluyendo los tips
+`61c0cc6` de publicación M9 y `74a827c` de TUI/recuperación. Todos los demás
+worktrees estaban limpios y sus commits ya estaban contenidos en main; no se
+eliminaron ramas ni worktrees. Las cifras siguientes son locales, no resultados
+de CI remoto. La verificación del run del SHA publicado se entrega por separado.
 
 ## Resultado
 
