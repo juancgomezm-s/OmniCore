@@ -85,15 +85,35 @@ publica ninguna herramienta que no aparezca en el manifiesto.
 ```sh
 omni extensions install /ruta/al/paquete
 omni extensions inspect example.hello
-omni extensions enable example.hello --trust-process
+omni extensions enable example.hello
 omni extensions view example.hello hello
 omni extensions disable example.hello
 omni extensions uninstall example.hello
 ```
 
-`--trust-process` autoriza código con el acceso del usuario: **no es un sandbox**.
-Un paquete que solicita `restricted` se rechaza en esta entrega; nunca se convierte
-en confiable implícitamente. La instalación sólo copia y valida, no ejecuta npm,
+Todo ejecutable v2 requiere aislamiento del SO: Windows LPAC + Job Object o
+Linux Bubblewrap con namespaces de montaje, usuario, PID y red. Si no se puede
+crear, no se ejecuta. `executionMode: trusted` y `--trust-process` se aceptan por
+compatibilidad pero nunca permiten ejecución libre; `restricted` usa la misma
+política obligatoria. Un paquete habilitado con la política anterior debe
+reactivarse en Preferencias. Las extensiones declarativas no crean procesos.
+
+Runtime y paquete se copian a una imagen privada de sólo lectura. Sólo los datos
+privados de esa activación y su temporal son escribibles. No se heredan secretos,
+bootstrap humano ni acceso directo a workspace/Core/configuración/red. La lectura
+del proyecto y la configuración persistente se solicitan mediante los servicios
+autorizados de Core; los datos privados crudos son efímeros. Incluye el SDK y las
+dependencias de ejecución en el paquete: no importes archivos del repositorio.
+Linux expone árboles de runtime del sistema en sólo lectura, no el directorio
+personal ni `/etc`; el kernel debe permitir user namespaces y Bubblewrap debe
+soportar `--disable-userns`. macOS no ejecuta paquetes v2 en esta entrega.
+
+Preferencias → Extensiones → Paquetes y vistas muestra la protección requerida o
+efectiva. Habilitar ejecución o lectura no autoriza contexto: vista previa y
+aprobación humana exacta siguen siendo independientes. El aislamiento no restaura
+efectos externos ni promete protección frente a vulnerabilidades del kernel.
+
+La instalación sólo copia y valida, no ejecuta npm,
 scripts, inicializadores ni la entrada del paquete. Node se resuelve desde User,
 excluyendo el workspace del PATH; `OMNICORE_EXTENSION_NODE` permite una ruta User.
 

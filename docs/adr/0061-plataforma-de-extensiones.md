@@ -2,6 +2,43 @@
 
 Estado: aceptada para implementación incremental (2026-10-21).
 
+## Aislamiento obligatorio (decisión del usuario, 2026-10-22)
+
+Reemplaza la excepción de host v2 confiable descrita históricamente más abajo:
+ninguna extensión ejecutable v2 se lanza libre, aunque su manifest conserve
+`executionMode: trusted` por compatibilidad. La política efectiva siempre es
+aislada y no admite fallback Weak/None. Sin backend verificado no arranca. Esta
+regla es específica de extensiones y no modifica procesos nativos/build de ADR-0038.
+
+Execution adapta el lanzador compartido Sandbox; Host conserva el supervisor y
+sus servicios. No cambia el grafo de ADR-0009. El contrato compartido admite stdio
+duplex sin competir con el capturador batch existente. Windows reutiliza AppContainer
+y Job; Linux usa bubblewrap con namespaces/red privada, raíz cerrada y runtime/paquete
+de lectura. Sólo son escribibles los datos privados del proceso. Workspace, Core,
+configuración/credenciales y bootstrap humano no se montan ni se heredan.
+
+Las concesiones previas de ejecución libre no son suficientes: la política de
+aislamiento se versiona y exige reactivar esos paquetes. UI informa protección
+requerida/activa/bloqueada; el antiguo flag `trustProcess` no desactiva aislamiento.
+Instalación pura, capacidades exactas y aprobación explícita de contexto se conservan.
+
+Detalle de plataforma: Windows usa **LPAC** (opt-out de `ALL APPLICATION PACKAGES`),
+`registryRead` únicamente para claves del runtime/Winsock que ya conceden lectura
+a esa capacidad y un Job que bloquea procesos hijos. No se concede red ni se
+amplían las ACL de los ancestros del paquete; Node usa preservación de rutas en
+una imagen sin enlaces. Linux elimina capacidades y namespaces adicionales de
+usuario; los hijos permanecen en los namespaces privados y se terminan con ellos.
+Sus árboles de runtime del sistema son visibles en sólo lectura. macOS bloquea
+ejecutables v2 hasta contar con un backend, sin degradación silenciosa.
+
+Los datos crudos de la activación son efímeros; la configuración persistente usa
+el servicio namespaced de Core. No hay proxy genérico de ejecución ni escritura
+del workspace. Los permisos de manifest no se convierten en grants directos de SO.
+El aislamiento no constituye una garantía contra vulnerabilidades del kernel,
+agotamiento de CPU/memoria/disco ni recursos que el administrador haya hecho públicos
+expresamente al sandbox. Los perfiles AppContainer conservan la política de retención
+del lanzador compartido; ACL temporales e imagen privada se limpian al cerrar.
+
 ## Autorización explícita del contexto (aclaración del usuario, 2026-10-21)
 
 Habilitar o confiar en una extensión no autoriza incorporar texto al contexto.

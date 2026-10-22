@@ -6,7 +6,7 @@ displayName: Formularios e indicadores
 omnicoreApi: '1.x'
 activationEvents: [onView]
 configuration: [display]
-executionMode: trusted
+executionMode: restricted
 runtime:
   kind: node
   command: dist/examples/preferences.js

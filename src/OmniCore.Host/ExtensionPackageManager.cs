@@ -108,7 +108,7 @@ internal sealed class ExtensionPackageManager
                 discovered.Status == ExtensionDiscoveryStatus.IncompatibleApi || !SupportsPlatform(manifest) ? "incompatible" : "installed",
                 discovered.ManifestSha256, discovered.PackageSha256, Path.GetFullPath(source), false, false, [],
                 RuntimeKind: manifest.Runtime?.Kind, RequestedCapabilities: manifest.Requests?.Capabilities,
-                ConfigurationKeys: manifest.Configuration);
+                ConfigurationKeys: manifest.Configuration, Protection: manifest.Runtime is null ? "declarative" : "required");
             if (replacingId is not null)
             {
                 var previous = Inspect(replacingId);
@@ -213,7 +213,7 @@ internal sealed class ExtensionPackageManager
     internal bool HasProcessGrant(ExtensionPackageState expected)
     {
         var current = Read(expected.Id);
-        return current is { Enabled: true, TrustedProcess: true }
+        return current is { Enabled: true, IsolationPolicyVersion: 1 }
             && current.ManifestSha256 == expected.ManifestSha256 && current.PackageSha256 == expected.PackageSha256
             && current.GrantedCapabilities.All(CurrentConsent(current).Contains);
     }
@@ -248,6 +248,10 @@ internal sealed class ExtensionPackageManager
             return saved with { State = "inactive", Enabled = false, Diagnostic = "extension_dependency_inactive" };
         if (saved is { Enabled: true } && !saved.GrantedCapabilities.All(CurrentConsent(saved).Contains))
             return saved with { State = "inactive", Enabled = false, Diagnostic = "extension_capabilities_revoked", GrantedCapabilities = [] };
+        if (saved is { Enabled: true, IsolationPolicyVersion: not 1 } && extension.Manifest?.ManifestVersion == 2
+            && extension.Manifest.Runtime is not null)
+            return saved with { State = "inactive", Enabled = false, TrustedProcess = false,
+                Protection = "reactivation-required", Diagnostic = "extension_isolation_reactivation_required" };
         return saved ?? new(id, extension.Manifest?.Version ?? "", extension.Status.ToString(), extension.ManifestSha256,
             extension.PackageSha256, extension.Directory, true, false,
             new ExtensionConsentStore(paths, ScopeLevel.User).ConsentedCapabilities(extension).ToArray(),
@@ -268,14 +272,13 @@ internal sealed class ExtensionPackageManager
         else if (action == "enable")
         {
             if (extension.Manifest is not { } manifest || extension.Status == ExtensionDiscoveryStatus.IncompatibleApi
-                || !SupportsPlatform(manifest) || state.Diagnostic is not (null or "extension_capabilities_revoked")) throw new InvalidOperationException("extension_incompatible_or_changed");
-            if (manifest.ExecutionMode == "restricted" && manifest.Runtime is not null)
-                throw new InvalidOperationException("extension_restricted_host_unavailable_no_downgrade");
-            if (manifest.ManifestVersion == 2 && manifest.Runtime is not null && !trustProcess)
-                throw new InvalidOperationException("extension_trusted_process_requires_explicit_user_consent");
+                || !SupportsPlatform(manifest) || state.Diagnostic is not (null or "extension_capabilities_revoked" or "extension_isolation_reactivation_required")) throw new InvalidOperationException("extension_incompatible_or_changed");
             var granted = (manifest.Requests?.Capabilities ?? []).Order(StringComparer.Ordinal).ToArray();
             new ExtensionConsentStore(paths, ScopeLevel.User).Grant(extension, new HashSet<string>(granted, StringComparer.Ordinal));
-            state = state with { Enabled = true, TrustedProcess = trustProcess, GrantedCapabilities = granted, State = "inactive", Diagnostic = null };
+            // The legacy trustProcess field is accepted for wire compatibility, never as a bypass.
+            state = state with { Enabled = true, TrustedProcess = false, GrantedCapabilities = granted,
+                IsolationPolicyVersion = 1, Protection = manifest.Runtime is null ? "declarative" : "required",
+                State = "inactive", Diagnostic = null };
         }
         else throw new ArgumentException("extension_action_invalid", nameof(action));
         Save(state); return state;
@@ -298,7 +301,7 @@ internal sealed class ExtensionPackageManager
     {
         if (extension.Manifest?.ManifestVersion != 2 && !File.Exists(Path.Combine(StateRoot, (extension.Manifest?.Id ?? "") + ".json"))) return true;
         var state = Inspect(extension);
-        return state.Enabled && (extension.Manifest?.ManifestVersion != 2 || extension.Manifest.Runtime is null || state.TrustedProcess);
+        return state.Enabled && (extension.Manifest?.ManifestVersion != 2 || extension.Manifest.Runtime is null || state.IsolationPolicyVersion == 1);
     }
     public DiscoveredExtension Find(string id)
     {

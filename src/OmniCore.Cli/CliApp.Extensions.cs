@@ -62,7 +62,7 @@ public sealed partial class CliApp
                 return Task.FromResult(outcome.Status == "ok" ? 0 : 1);
             }
             if (args.Length is < 3 or > 4 || args.Length == 4 && (operation != "enable" || args[3] != "--trust-process"))
-                throw new ArgumentException("extensions install <directory|zip> | enable <id> [--trust-process] | disable|uninstall <id>");
+                throw new ArgumentException("extensions install <directory|zip> | enable <id> | disable|uninstall <id>");
             if (client is not ITrustedUserActionClient trusted) throw new UnauthorizedAccessException("trusted_user_action_required");
             ExtensionPackageState? expected = null;
             if (operation is "enable" or "uninstall")

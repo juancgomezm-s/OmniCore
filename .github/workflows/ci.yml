@@ -34,6 +34,19 @@ jobs:
       - name: Prepare Windows AppContainer prerequisites
         if: runner.os == 'Windows'
         run: ./scripts/prepare-windows-ci.ps1 -Action Enable
+      - name: Prepare Linux extension isolation prerequisites
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap apparmor
+          # Ephemeral CI runner only: permit user namespaces for bwrap, not globally.
+          # Product launch still fails closed when the host does not permit isolation.
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = '1' ]; then
+            sudo install -m 0644 scripts/ci/omnicore-bwrap.apparmor /etc/apparmor.d/bwrap
+            sudo apparmor_parser -r /etc/apparmor.d/bwrap
+          fi
+          bwrap --unshare-all --unshare-user --disable-userns --new-session --die-with-parent --cap-drop ALL --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /lib /lib --ro-bind /lib64 /lib64 --proc /proc --dev /dev --tmpfs /tmp -- /usr/bin/true
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json

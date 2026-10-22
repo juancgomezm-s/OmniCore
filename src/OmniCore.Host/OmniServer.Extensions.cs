@@ -12,6 +12,7 @@ public sealed partial class OmniServer
 {
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SupervisedExtensionProcess> _extensionProcesses = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _extensionStarts = new(StringComparer.Ordinal);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _extensionActivationFailures = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _extensionActivation = new(1, 1);
     private readonly Dictionary<string, (string Content, ExtensionView View)> _extensionViewCache = new(StringComparer.Ordinal);
 
@@ -79,7 +80,10 @@ public sealed partial class OmniServer
             {
                 package = package with { ContextContributors = manager.Find(package.Id).Manifest?.Provides?.ContextContributors };
                 var running = _extensionProcesses.FirstOrDefault(pair => pair.Key.StartsWith(package.Id + ":", StringComparison.Ordinal)).Value;
+                if (running is null && _extensionActivationFailures.TryGetValue(package.Id, out var failure))
+                    return package with { Protection = "blocked", Diagnostic = failure };
                 return running is null ? package : package with { State = package.Enabled ? running.State : package.State,
+                    Protection = running.State == "active" ? running.Protection : "blocked",
                     Diagnostic = running.Diagnostics.LastOrDefault() ?? package.Diagnostic };
             }).ToArray();
             return new(name, JsonSerializer.Serialize(packages, ExtensionJson.Default.ExtensionPackageStateArray));
@@ -345,11 +349,11 @@ public sealed partial class OmniServer
             var manifest = extension.Manifest!; var workspace = _workspaceRoot!;
             var key = state.Id + ":" + workspace + ":" + session;
             if (_extensionProcesses.TryGetValue(key, out var running) && running.State == "active") return running;
-            if (!state.TrustedProcess || manifest.ExecutionMode == "restricted" || manifest.Runtime is null
+            if (state.IsolationPolicyVersion != 1 || manifest.Runtime is null
                 || manifest.ActivationEvents?.Contains(activationEvent, StringComparer.Ordinal) != true)
                 throw new UnauthorizedAccessException("extension_activation_not_authorized");
             var current = new ExtensionPackageManager(_platformPathsFactory()).Inspect(state.Id);
-            if (!current.Enabled || current.Diagnostic is not null || !current.TrustedProcess) throw new UnauthorizedAccessException("extension_activation_revoked");
+            if (!current.Enabled || current.Diagnostic is not null || current.IsolationPolicyVersion != 1) throw new UnauthorizedAccessException("extension_activation_revoked");
             var starts = _extensionStarts.GetValueOrDefault(key);
             if (starts >= 3) throw new IOException("extension_restart_limit");
             // A normal Session switch is not a crash/restart of the previous scope.
@@ -370,16 +374,27 @@ public sealed partial class OmniServer
             }
             var args = (manifest.Runtime.Kind == "node" ? new[] { entry } : Array.Empty<string>()).Concat(manifest.Runtime.Args ?? []).ToArray();
             SupervisedExtensionProcess process;
-            using (new ExtensionPackageManager(_platformPathsFactory()).AcquireActivationLease(state))
-                process = new SupervisedExtensionProcess(executable, args, extension.Directory,
+            try
+            {
+                using (new ExtensionPackageManager(_platformPathsFactory()).AcquireActivationLease(state))
+                    process = new SupervisedExtensionProcess(executable, args, extension.Directory,
                     (method, parameters, cancel) => _workspaceRoot != workspace
                         ? Task.FromException<JsonElement>(new UnauthorizedAccessException("extension_workspace_changed"))
                         : ExtensionServiceAsync(extension, state, session, method, parameters, cancel),
                     () => _workspaceRoot == workspace && session == _lastSessionId?.ToString()
-                        && new ExtensionPackageManager(_platformPathsFactory()).HasProcessGrant(state));
+                        && new ExtensionPackageManager(_platformPathsFactory()).HasProcessGrant(state),
+                    Path.Combine(_platformPathsFactory().DataDirectory, "extension-runtime"), token);
+            }
+            catch (IOException)
+            { _extensionActivationFailures[state.Id] = "extension_isolation_start_failed_no_downgrade"; throw; }
             _extensionProcesses[key] = process;
             try { await process.InitializeAsync(new(ExtensionProtocol.Version, state.Id, state.GrantedCapabilities, session), token).ConfigureAwait(false); }
-            catch { await process.DisposeAsync().ConfigureAwait(false); throw; }
+            catch
+            {
+                _extensionActivationFailures[state.Id] = "extension_activation_failed";
+                await process.DisposeAsync().ConfigureAwait(false); throw;
+            }
+            _extensionActivationFailures.TryRemove(state.Id, out _);
             return process;
         }
         finally { _extensionActivation.Release(); }

@@ -5,7 +5,7 @@ namespace OmniCore.Tests;
 public sealed partial class ExtensionPlatformTests
 {
     [Fact]
-    public void Trusted_non_Node_executable_negotiates_and_serves_a_real_view_without_the_SDK()
+    public void Isolated_non_Node_executable_negotiates_and_serves_a_real_view_without_the_SDK()
     {
         if (!OperatingSystem.IsLinux()) { Assert.Skip("The executable fixture uses a Linux Python shebang."); return; }
         if (!File.Exists("/usr/bin/python3")) { Assert.Skip("Python 3 is required for this interoperability fixture."); return; }

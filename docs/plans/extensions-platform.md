@@ -1,5 +1,44 @@
 # Ampliación M8: plataforma de extensiones (2026-10-21)
 
+## Aislamiento obligatorio autorizado (2026-10-22)
+
+Cierre anterior conservado en `78808c1`. Un solo agente, sólo OmniCore, sin publicar
+ni fusionar automáticamente. Las extensiones declarativas siguen sin proceso.
+Todo ejecutable v2 debe arrancar en aislamiento fuerte: nunca se usa una concesión
+"trusted" como fallback libre. Si el backend no está disponible, no arranca.
+
+Orden: (1) ampliar el lanzador compartido de Windows con stdio bidireccional;
+(2) supervisor v2 sobre un adapter de Execution, paquete/runtime en imagen de
+lectura y datos privados de escritura, sin montar workspace/configuración/secretos;
+(3) permisos y protección efectiva dentro de Preferencias existentes; (4) backend
+Linux de namespaces con política cerrada y pruebas adversariales en ambas plataformas.
+Core conserva la única autoridad sobre los servicios y el consentimiento de contexto.
+
+La instalación no ejecuta código. La nueva política exige reactivar paquetes
+ejecutables que estaban habilitados con la política libre anterior. Los permisos
+de filesystem/red del manifest no son montajes ni acceso de SO: los servicios de
+Core siguen comprobando capacidad, scope y política. No se modifica el sandbox de
+los procesos nativos/build de ADR-0038 ni se duplica el runtime de herramientas.
+
+Aceptación: RPC real bidireccional; intento de escritura del paquete/Core y lectura
+de secretos rechazados; red/loopback denegados; hijos contenidos y terminados al
+cerrar; ausencia de backend sin ejecución libre; contexto siempre sujeto al cierre
+anterior. Registrar capacidades y límites reales, no sólo un arranque correcto.
+
+Implementado y validado en `docs/validation/extensions-isolation-20261022.md`:
+
+- [x] Transporte duplex y LPAC/Job en Sandbox, sin romper batch v1.
+- [x] Adapter en Execution y supervisor v2 sin arranque libre; imagen privada y
+  servicios concedidos por Core, con cancelación y limpieza.
+- [x] Política versionada, reactivación de permisos antiguos y protección en
+  Preferencias existentes; textos es/en/fr/it y flag histórico sin bypass.
+- [x] Backend Linux Bubblewrap; RPC, negativas adversariales, interoperabilidad
+  Python y stdio real con los pilotos/contexto. Arranque como UID no privilegiado.
+
+No amplía el soporte Strong de procesos/build ni del invocador M8 v1 en Linux.
+macOS ejecutable, cuotas duras de recursos y un almacén privado de blobs persistentes
+no forman parte de este cierre; permanecen explícitamente fuera de sus garantías.
+
 ## Cierre autorizado: contexto protegido y cuatro pendientes
 
 Solicitud del usuario: ninguna extensión incorpora contexto sin autorización

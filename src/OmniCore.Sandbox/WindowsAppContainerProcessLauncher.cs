@@ -143,6 +143,8 @@ public sealed class WindowsAppContainerProcessLauncher : ISandboxProcessLauncher
             throw new NotSupportedException("This launcher is only for Strong sandbox requests.");
         if (launch.InitialStandardInput?.Length > 262_144)
             throw new ArgumentException("Initial process input exceeds the size limit.", nameof(launch));
+        if (launch.Duplex && launch.InitialStandardInput is not null)
+            throw new ArgumentException("Duplex transport cannot also request batch input.", nameof(launch));
         if (launch.Timeout is { } timeout && timeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(launch), "The process timeout must be positive.");
         if (!OperatingSystem.IsWindows())
@@ -174,6 +176,7 @@ public sealed class WindowsAppContainerProcessLauncher : ISandboxProcessLauncher
         var tempDirectory = Path.Combine(Path.GetTempPath(), "OmniCore-AppContainer", Guid.NewGuid().ToString("N"));
         SafeFileHandle? stdoutRead = null;
         SafeFileHandle? stderrRead = null;
+        SafeFileHandle? stdinWrite = null;
         SafeFileHandle? job = null;
         SafeProcessHandle? process = null;
         try
@@ -211,16 +214,18 @@ public sealed class WindowsAppContainerProcessLauncher : ISandboxProcessLauncher
             var capabilities = launch.Network.Mode == SandboxNetworkMode.AllowAll
                 ? AppContainerNative.CreateInternetClientCapability()
                 : Array.Empty<AppContainerNative.SidAndAttributes>();
+            if (launch.LessPrivilegedAppContainer)
+                capabilities = capabilities.Concat(AppContainerNative.CreateRegistryReadCapability()).ToArray();
             using var securityCapabilities = AppContainerNative.CreateSecurityCapabilities(sid, capabilities);
             var commandLine = BuildCommandLine(executable, launch.Arguments);
             AppContainerNative.CreateSuspendedProcess(
                 executable, commandLine, workingDirectory, launch.Environment, tempDirectory, securityCapabilities,
-                launch.InitialStandardInput,
-                out stdoutRead, out stderrRead, out job, out process);
+                launch.InitialStandardInput, launch.Duplex, launch.LessPrivilegedAppContainer,
+                out stdinWrite, out stdoutRead, out stderrRead, out job, out process);
             return ValueTask.FromResult<ISandboxProcessControl>(
                 new AppContainerProcessControl(process!, job!, stdoutRead!, stderrRead!, aclLease!, tempDirectory,
                     launch.Timeout, profileLease, profileName,
-                    reason => QuarantinedProfiles[profileName] = reason));
+                    reason => QuarantinedProfiles[profileName] = reason, stdinWrite));
         }
         catch (Exception launchFailure)
         {
@@ -228,6 +233,7 @@ public sealed class WindowsAppContainerProcessLauncher : ISandboxProcessLauncher
             job?.Dispose();
             stdoutRead?.Dispose();
             stderrRead?.Dispose();
+            stdinWrite?.Dispose();
             Exception? aclCleanupFailure = null;
             try { aclLease?.Dispose(); }
             catch (Exception exception) { aclCleanupFailure = exception; }
@@ -465,7 +471,7 @@ internal sealed class AppContainerAclLease : IDisposable
 }
 
 [SupportedOSPlatform("windows")]
-internal sealed class AppContainerProcessControl : ISandboxProcessControl
+internal sealed class AppContainerProcessControl : ISandboxDuplexProcessControl
 {
     private readonly SafeProcessHandle _process;
     private readonly SafeFileHandle _job;
@@ -481,16 +487,30 @@ internal sealed class AppContainerProcessControl : ISandboxProcessControl
     private readonly Task<string> _stderrTask;
     private bool _finished;
     private bool _disposed;
+    public Stream StandardInput { get; } = Stream.Null;
+    public Stream StandardOutput { get; } = Stream.Null;
+    public Stream StandardError { get; } = Stream.Null;
 
     public AppContainerProcessControl(SafeProcessHandle process, SafeFileHandle job,
         SafeFileHandle stdout, SafeFileHandle stderr, AppContainerAclLease aclLease, string tempDirectory,
-        TimeSpan? timeout, Semaphore profileLease, string profileName, Action<string> quarantineProfile)
+        TimeSpan? timeout, Semaphore profileLease, string profileName, Action<string> quarantineProfile,
+        SafeFileHandle? stdin = null)
     {
         _process = process; _job = job; _stdout = stdout; _stderr = stderr;
         _aclLease = aclLease; _tempDirectory = tempDirectory; _timeout = timeout; _profileLease = profileLease;
         _profileName = profileName; _quarantineProfile = quarantineProfile;
-        _stdoutTask = ReadOutputAsync(_stdout);
-        _stderrTask = ReadOutputAsync(_stderr);
+        if (stdin is not null)
+        {
+            StandardInput = new FileStream(stdin, FileAccess.Write, 4096, isAsync: false);
+            StandardOutput = new FileStream(stdout, FileAccess.Read, 4096, isAsync: false);
+            StandardError = new FileStream(stderr, FileAccess.Read, 4096, isAsync: false);
+            _stdoutTask = _stderrTask = Task.FromResult("");
+        }
+        else
+        {
+            _stdoutTask = ReadOutputAsync(_stdout);
+            _stderrTask = ReadOutputAsync(_stderr);
+        }
     }
 
     public async ValueTask<SandboxProcessOutput> WaitForExitAsync(CancellationToken cancellationToken)
@@ -567,6 +587,7 @@ internal sealed class AppContainerProcessControl : ISandboxProcessControl
         }
         try { await Task.WhenAll(_stdoutTask, _stderrTask).ConfigureAwait(false); }
         catch (IOException) { }
+        StandardInput.Dispose(); StandardOutput.Dispose(); StandardError.Dispose();
         _stdout.Dispose(); _stderr.Dispose(); _process.Dispose(); _job.Dispose();
         Exception? aclCleanupFailure = null;
         try { _aclLease.Dispose(); }
@@ -625,6 +646,7 @@ internal static partial class AppContainerNative
     private const uint HandleFlagInherit = 1;
     private const uint ProcThreadAttributeSecurityCapabilities = 0x00020009;
     private const uint ProcThreadAttributeHandleList = 0x00020002;
+    private const uint ProcThreadAttributeAllApplicationPackagesPolicy = 0x0002000f;
     private const uint JobObjectExtendedLimitInformation = 9;
     private const uint JobObjectLimitKillOnJobClose = 0x00002000;
     private const uint ResumeFailed = 0xFFFFFFFF;
@@ -736,6 +758,30 @@ internal static partial class AppContainerNative
         return new[] { new SidAndAttributes { Sid = sid, Attributes = 0x4 } };
     }
 
+    internal static SidAndAttributes[] CreateRegistryReadCapability()
+    {
+        // Windows runtime/Winsock initialization needs registryRead in LPAC. This is
+        // read-only access to keys explicitly ACL'd to that capability, not HKCU authority,
+        // network capability, impersonation, or access to Core's private configuration.
+        if (!DeriveCapabilitySidsFromName("registryRead", out var groups, out var groupCount, out var caps, out var capCount))
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to derive LPAC runtime capability.");
+        try
+        {
+            if (capCount != 1) throw new NotSupportedException("Unexpected LPAC runtime capability count.");
+            var identity = new SecurityIdentifier(Marshal.ReadIntPtr(caps));
+            var bytes = new byte[identity.BinaryLength]; identity.GetBinaryForm(bytes, 0);
+            var copy = Marshal.AllocHGlobal(bytes.Length); Marshal.Copy(bytes, 0, copy, bytes.Length);
+            return [new SidAndAttributes { Sid = copy, Attributes = 0x4 }];
+        }
+        finally
+        {
+            for (var index = 0u; index < groupCount; index++) LocalFree(Marshal.ReadIntPtr(groups, checked((int)index * IntPtr.Size)));
+            for (var index = 0u; index < capCount; index++) LocalFree(Marshal.ReadIntPtr(caps, checked((int)index * IntPtr.Size)));
+            if (groups != IntPtr.Zero) LocalFree(groups);
+            if (caps != IntPtr.Zero) LocalFree(caps);
+        }
+    }
+
     private static IntPtr BuildAppContainerEnvironmentBlock(IntPtr securityCapabilities,
         IReadOnlyDictionary<string, string> requested, string tempDirectory, string workingDirectory)
     {
@@ -812,24 +858,31 @@ internal static partial class AppContainerNative
 
     internal static bool CreateSuspendedProcess(string application, string commandLine, string workingDirectory,
         IReadOnlyDictionary<string, string> requestedEnvironment, string tempDirectory,
-        SecurityCapabilitiesBuffer securityCapabilities, string? initialStandardInput, out SafeFileHandle? stdoutRead,
+        SecurityCapabilitiesBuffer securityCapabilities, string? initialStandardInput, bool duplex, bool lessPrivileged,
+        out SafeFileHandle? retainedInput, out SafeFileHandle? stdoutRead,
         out SafeFileHandle? stderrRead, out SafeFileHandle? job, out SafeProcessHandle? process)
     {
-        stdoutRead = stderrRead = null; job = null; process = null;
+        retainedInput = null; stdoutRead = stderrRead = null; job = null; process = null;
         var startupSize = (nuint)0;
-        InitializeProcThreadAttributeList(IntPtr.Zero, 2, 0, ref startupSize);
+        var attributeCount = lessPrivileged ? 3 : 2;
+        InitializeProcThreadAttributeList(IntPtr.Zero, attributeCount, 0, ref startupSize);
         var attributes = Marshal.AllocHGlobal(checked((int)startupSize));
+        var policy = Marshal.AllocHGlobal(sizeof(int));
         IntPtr stdoutWrite = IntPtr.Zero, stderrWrite = IntPtr.Zero, stdinRead = IntPtr.Zero,
             stdinWrite = IntPtr.Zero, threadHandle = IntPtr.Zero;
         IntPtr processHandle = IntPtr.Zero, jobHandle = IntPtr.Zero;
         var processCreated = false;
         try
         {
-            if (!InitializeProcThreadAttributeList(attributes, 2, 0, ref startupSize))
+            if (!InitializeProcThreadAttributeList(attributes, attributeCount, 0, ref startupSize))
                 throw new Win32Exception(Marshal.GetLastPInvokeError());
             if (!UpdateProcThreadAttribute(attributes, 0, ProcThreadAttributeSecurityCapabilities,
                 securityCapabilities.Pointer, (nuint)Marshal.SizeOf<SecurityCapabilities>(), IntPtr.Zero, IntPtr.Zero))
                 throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to set AppContainer security capabilities.");
+            Marshal.WriteInt32(policy, 1); // PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT
+            if (lessPrivileged && !UpdateProcThreadAttribute(attributes, 0, ProcThreadAttributeAllApplicationPackagesPolicy,
+                policy, sizeof(int), IntPtr.Zero, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastPInvokeError(), "LPAC is required; no AppContainer downgrade is permitted.");
             var pipeAttributes = new SecurityAttributes { Length = Marshal.SizeOf<SecurityAttributes>(), InheritHandle = 1 };
             if (!CreatePipe(out var stdoutReadRaw, out stdoutWrite, ref pipeAttributes, 0))
                 throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to create stdout pipe.");
@@ -885,7 +938,12 @@ internal static partial class AppContainerNative
 
             jobHandle = CreateJobObject(IntPtr.Zero, null);
             if (jobHandle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to create process Job Object.");
-            var limits = new ExtendedLimitInformation { BasicLimitInformation = new BasicLimitInformation { LimitFlags = JobObjectLimitKillOnJobClose } };
+            var limits = new ExtendedLimitInformation { BasicLimitInformation = new BasicLimitInformation
+            {
+                LimitFlags = JobObjectLimitKillOnJobClose | (lessPrivileged ? 0x00000008u : 0u),
+                // Extensions use Core's broker, not child processes. Legacy batch policy is unchanged.
+                ActiveProcessLimit = lessPrivileged ? 1u : 0u
+            } };
             var limitsPointer = Marshal.AllocHGlobal(Marshal.SizeOf<ExtendedLimitInformation>());
             try
             {
@@ -904,7 +962,12 @@ internal static partial class AppContainerNative
             if (ResumeThread(threadHandle) == ResumeFailed)
                 throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to resume AppContainer process.");
             CloseHandle(threadHandle); threadHandle = IntPtr.Zero;
-            using (var inputHandle = new SafeFileHandle(stdinWrite, ownsHandle: true))
+            if (duplex)
+            {
+                retainedInput = new SafeFileHandle(stdinWrite, ownsHandle: true);
+                stdinWrite = IntPtr.Zero;
+            }
+            else using (var inputHandle = new SafeFileHandle(stdinWrite, ownsHandle: true))
             {
                 stdinWrite = IntPtr.Zero;
                 if (initialStandardInput is not null)
@@ -929,7 +992,7 @@ internal static partial class AppContainerNative
             if (threadHandle != IntPtr.Zero) CloseHandle(threadHandle);
             if (stdinRead != IntPtr.Zero) CloseHandle(stdinRead);
             if (stdinWrite != IntPtr.Zero) CloseHandle(stdinWrite);
-            process?.Dispose(); job?.Dispose(); stdoutRead?.Dispose(); stderrRead?.Dispose();
+            process?.Dispose(); job?.Dispose(); retainedInput?.Dispose(); stdoutRead?.Dispose(); stderrRead?.Dispose();
             throw;
         }
         finally
@@ -938,11 +1001,17 @@ internal static partial class AppContainerNative
             if (stderrWrite != IntPtr.Zero) CloseHandle(stderrWrite);
             DeleteProcThreadAttributeList(attributes);
             Marshal.FreeHGlobal(attributes);
+            Marshal.FreeHGlobal(policy);
         }
     }
 
     [LibraryImport("kernel32.dll", EntryPoint = "GetCurrentProcess")]
     private static partial IntPtr GetCurrentProcess();
+    [LibraryImport("kernelbase.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DeriveCapabilitySidsFromName(string name, out IntPtr groups, out uint groupCount, out IntPtr capabilities, out uint capabilityCount);
+    [LibraryImport("kernel32.dll")]
+    private static partial IntPtr LocalFree(IntPtr memory);
     [LibraryImport("advapi32.dll", EntryPoint = "OpenProcessToken", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)] private static partial bool OpenProcessToken(IntPtr process, uint access, out Microsoft.Win32.SafeHandles.SafeAccessTokenHandle token);
     [LibraryImport("kernelbase.dll", EntryPoint = "CreateAppContainerToken", SetLastError = true)]

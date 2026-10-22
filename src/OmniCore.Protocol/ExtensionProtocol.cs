@@ -28,11 +28,14 @@ public sealed record ExtensionFormSubmission(string ExtensionId, string ViewId, 
     long ExpectedRevision, ExtensionViewScope Scope, JsonElement Values, string Path = "", string Search = "");
 public sealed record ExtensionViewRequest(string ExtensionId, string ViewId, string Path = "", string Search = "",
     long? AfterRevision = null, IReadOnlyList<string>? ClientKinds = null);
+/// <summary>TrustedProcess is a legacy wire field, never authority to bypass OS isolation.
+/// Protection is required until an actual runtime handshake reports its active backend.</summary>
 public sealed record ExtensionPackageState(string Id, string Version, string State, string ManifestSha256,
     string PackageSha256, string Provenance, bool Enabled, bool TrustedProcess,
     IReadOnlyList<string> GrantedCapabilities, string? Diagnostic = null, string? RuntimeKind = null,
     IReadOnlyList<string>? RequestedCapabilities = null, IReadOnlyList<string>? ConfigurationKeys = null,
-    IReadOnlyList<string>? ContextContributors = null);
+    IReadOnlyList<string>? ContextContributors = null, int IsolationPolicyVersion = 0,
+    string Protection = "declarative");
 public sealed record ExtensionContextPreview(string Id, string ExtensionId, string Contributor, string Version,
     string WorkspaceId, string SessionId, string RunId, string ManifestSha256, string PackageSha256,
     string ContentSha256, IReadOnlyList<ExtensionContextText> Items, bool Approved, string? ConsentSha256 = null);

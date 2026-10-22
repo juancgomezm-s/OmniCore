@@ -98,6 +98,10 @@ public sealed partial class TuiWiringTests
         fx.Invoke(() => fx.App.ShowExtensionPackages());
         fx.Wait(() => fx.App.Overlay?.Id == "extension-packages", "package screen opened");
         Assert.Equal(3, fx.App.Overlay!.SubViews.OfType<ListView>().Single().Source!.Count);
+#pragma warning disable CS0618
+        var protection = fx.App.Overlay.SubViews.OfType<TextView>().Single(view => view.Id == "extension-package-details");
+        Assert.Contains("Protección: Declarativa", fx.Read(() => protection.Text.ToString()));
+#pragma warning restore CS0618
         var packages = fx.App.Overlay.SubViews.OfType<ListView>().Single();
         var filetreeIndex = packages.Source!.ToList().Cast<string>().ToList().FindIndex(label => label.StartsWith("omnicore.filetree", StringComparison.Ordinal));
         fx.Invoke(() => packages.SelectedItem = filetreeIndex);

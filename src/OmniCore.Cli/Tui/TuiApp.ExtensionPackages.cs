@@ -42,7 +42,10 @@ public sealed partial class TuiApp
         var details = new TextView { Id = "extension-package-details", X = Pos.Percent(44), Y = 2, Width = Dim.Fill(2), Height = Dim.Fill(8), ReadOnly = true, WordWrap = true };
 #pragma warning restore CS0618
         ExtensionPackageState? Selected() => list.SelectedItem is int index && index >= 0 && index < packages.Length ? packages[index] : null;
-        void Sync() { details.Text = Selected() is { } package ? JsonSerializer.Serialize(package, ExtensionJson.Default.ExtensionPackageState) : ExtensionText("platform.empty"); }
+        void Sync() { details.Text = Selected() is { } package
+            ? ExtensionText("platform.protection") + ": " + ExtensionText("protection." + package.Protection)
+                + "\n\n" + JsonSerializer.Serialize(package, ExtensionJson.Default.ExtensionPackageState)
+            : ExtensionText("platform.empty"); }
         list.ValueChanged += (_, _) => Sync();
         var source = new TextField { Id = "extension-package-source", X = 2, Y = Pos.AnchorEnd(6), Width = Dim.Fill(20), Text = "" };
         var install = new Button { Id = "extension-package-install", X = Pos.AnchorEnd(17), Y = Pos.AnchorEnd(6), Text = ExtensionText("platform.install") };

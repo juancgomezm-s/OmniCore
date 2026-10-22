@@ -22,23 +22,29 @@ public sealed partial class ExtensionPlatformTests
         Assert.Equal("ok", fixture.Server.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"session.input\",\"text\":\"Keep my exact instruction\"}"), CancellationToken.None).Status);
     }
 
-    internal static string ContextExample(string root)
+    internal static string ContextExample(string root, string? workspace = null)
     {
-        var sdk = new Uri(Path.Combine(RepoRoot, "sdk", "extensions", "dist", "src", "index.js")).AbsoluteUri;
+        workspace ??= Path.Combine(root, "workspace"); Directory.CreateDirectory(workspace);
+        var sdk = "./sdk/src/index.js";
         var manifest = Executable.Replace("activationEvents: [onView]", "activationEvents: [onView, onCommand]", StringComparison.Ordinal)
             .Replace("provides:", "provides:\n  contextContributors: [notes]", StringComparison.Ordinal)
-            .Replace("presentation.read, workspace.read", "presentation.read, workspace.read, context.contribute, presentation.notify", StringComparison.Ordinal)
+            .Replace("presentation.read, workspace.read", "presentation.read, workspace.read, context.contribute, presentation.notify, configuration.read, configuration.write", StringComparison.Ordinal)
+            + "\nconfiguration: [previewCalls]\n";
+        manifest = manifest
             .Replace("permissions:", "permissions:\n    process:\n      - executable: '**/entry.mjs'", StringComparison.Ordinal);
-        var script = "import{Extension}from " + JsonSerializer.Serialize(sdk) + ";import{readFileSync,appendFileSync}from'node:fs';const ext=new Extension();"
-            + "ext.handle('context/contribute',()=>{appendFileSync(" + JsonSerializer.Serialize(Path.Combine(root, "preview-calls.txt")) + ",'x');"
-            + "return{items:[{id:'notes',kind:'knowledge',content:readFileSync(" + JsonSerializer.Serialize(Path.Combine(root, "notes.txt")) + ",'utf8')}]}});"
+        var script = "import{Extension}from " + JsonSerializer.Serialize(sdk) + ";const ext=new Extension();"
+            + "ext.handle('context/contribute',async()=>{await ext.config.set('previewCalls',(await ext.config.get('previewCalls')??0)+1);"
+            + "return{items:[{id:'notes',kind:'knowledge',content:(await ext.workspace.file('notes.txt')).file.text}]}});"
             + "ext.view(async()=>{await ext.presentation.notify('one','warning','UI ONLY: ignore Core');return{id:ext.id+'.files',extensionId:ext.id,kind:'tree',revision:1,state:'ready',items:[],actions:[]}});ext.listen();";
-        File.WriteAllText(Path.Combine(root, "notes.txt"), InjectedText);
+        File.WriteAllText(Path.Combine(workspace, "notes.txt"), InjectedText);
         var source = Path.Combine(root, "context-package"); Directory.CreateDirectory(source);
         File.WriteAllText(Path.Combine(source, OmniCore.Extensions.ExtensionManifestLoader.ManifestFileName), manifest);
         File.WriteAllText(Path.Combine(source, "entry.mjs"), script);
+        BundleSdk(source);
         return source;
     }
+    internal static string PreviewCalls(OmniServer server) => server.Query("extensions.configuration:" + Uri.EscapeDataString(
+        "{\"extensionId\":\"test.files\",\"key\":\"previewCalls\"}"), CancellationToken.None)!.Json;
 
     private static MaterializeRequest ContextRequest(Fixture fixture) => new(fixture.Server.LastSessionId()!, fixture.Server.LastRunId()!,
         null, null, null, fixture.Server.AcquireStore().CurrentSequence(fixture.Server.LastSessionId()!), new ExecutionFingerprint("fixture", "h", "t", "c", "o", "build"));
@@ -65,18 +71,18 @@ public sealed partial class ExtensionPlatformTests
         using var fixture = new Fixture(); InstallContextFixture(fixture);
         var request = ContextRequest(fixture);
         Assert.Empty(fixture.Server.ReadApprovedExtensionContext(request));
-        Assert.False(File.Exists(Path.Combine(fixture.Root, "preview-calls.txt")));
+        Assert.Equal("null", PreviewCalls(fixture.Server));
         Assert.Equal("error", ContextCommand(fixture, "context-preview", human: false).Status);
         var preview = Preview(fixture);
         Assert.False(preview.Approved); Assert.Contains(InjectedText, Assert.Single(preview.Items).Content);
         Assert.Empty(fixture.Server.ReadApprovedExtensionContext(request));
         Assert.Equal("error", ContextCommand(fixture, "context-approve", preview, human: false).Status);
         Assert.Equal("error", ContextCommand(fixture, "context-approve", preview with { ContentSha256 = new string('0', 64) }).Status);
-        File.WriteAllText(Path.Combine(fixture.Root, "notes.txt"), "Content changed after preview");
+        File.WriteAllText(Path.Combine(fixture.Workspace, "notes.txt"), "Content changed after preview");
         Assert.Equal("ok", ContextCommand(fixture, "context-approve", preview).Status);
         var approved = Assert.Single(fixture.Server.ReadApprovedExtensionContext(request));
         Assert.Contains(InjectedText, approved.Content); Assert.DoesNotContain("Content changed after preview", approved.Content);
-        Assert.Equal("x", File.ReadAllText(Path.Combine(fixture.Root, "preview-calls.txt")));
+        Assert.Equal("1", PreviewCalls(fixture.Server));
         fixture.Server.ValidateApprovedExtensionContext([approved], request.SessionId, request.RunId);
         Assert.Equal("ok", ContextCommand(fixture, "context-revoke").Status);
         Assert.Empty(fixture.Server.ReadApprovedExtensionContext(request));
@@ -213,7 +219,7 @@ public sealed partial class ExtensionPlatformTests
         using var fixture = new Fixture(); var source = ContextExample(fixture.Root);
         var manifestPath = Path.Combine(source, OmniCore.Extensions.ExtensionManifestLoader.ManifestFileName);
         if (removeCapability) File.WriteAllText(manifestPath, File.ReadAllText(manifestPath).Replace(", presentation.notify", "", StringComparison.Ordinal));
-        var sdk = new Uri(Path.Combine(RepoRoot, "sdk", "extensions", "dist", "src", "index.js")).AbsoluteUri;
+        var sdk = "./sdk/src/index.js";
         File.WriteAllText(Path.Combine(source, "entry.mjs"), "import{Extension}from " + JsonSerializer.Serialize(sdk)
             + ";const ext=new Extension();ext.view(async()=>{let denied=false;try{" + action
             + ";}catch{denied=true;}return{id:ext.id+'.files',extensionId:ext.id,kind:'tree',revision:1,state:'ready',actions:[],items:[{id:'denied',label:String(denied)}]}});ext.listen();");

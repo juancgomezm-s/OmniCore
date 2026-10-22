@@ -18,14 +18,14 @@ public sealed partial class TuiWiringTests
     {
         var paths = new DefaultPlatformPaths(Path.Combine(fx.Root, "host-data"), Path.Combine(fx.Root, "host-config"));
         var packages = new ExtensionPackageManager(paths);
-        packages.Install(ExtensionPlatformTests.ContextExample(fx.Root), CancellationToken.None);
+        packages.Install(ExtensionPlatformTests.ContextExample(fx.Root, fx.Workspace), CancellationToken.None);
         packages.Change("test.files", "enable", true);
         fx.StartTui(initialColumns: width, initialRows: height, localeSelection: new(locale, LocaleSelectionSource.CommandLine));
         fx.Invoke(() => fx.App.Composer!.Text = "My draft must survive");
         fx.Invoke(() => fx.App.ShowExtensionContext());
         var approve = Descendants(fx.App.Overlay!).OfType<Button>().Single(button => button.Id == "extension-context-approve");
         Assert.False(fx.Read(() => approve.Enabled));
-        Assert.False(File.Exists(Path.Combine(fx.Root, "preview-calls.txt")));
+        Assert.Equal("null", ExtensionPlatformTests.PreviewCalls(fx.Server));
         ExtensionContextPreview[] Read() => JsonSerializer.Deserialize(fx.Server.Query("extensions.context", CancellationToken.None)!.Json,
             ExtensionJson.Default.ExtensionContextPreviewArray)!;
         ClickId(fx, "extension-context-preview");
@@ -40,7 +40,7 @@ public sealed partial class TuiWiringTests
         Assert.False(fx.Read(() => approve.Enabled));
         ClickId(fx, "extension-context-revoke");
         Assert.Empty(Read());
-        Assert.Equal("x", File.ReadAllText(Path.Combine(fx.Root, "preview-calls.txt")));
+        Assert.Equal("1", ExtensionPlatformTests.PreviewCalls(fx.Server));
         _ = fx.Server.Query("extensions.view:" + Uri.EscapeDataString(ExtensionProtocol.EncodeRequest(new("test.files", "files"))), CancellationToken.None);
         fx.Wait(() => fx.App.ProjectionState.Conversation.Blocks.Any(block => block.Id.StartsWith("extension-notification:", StringComparison.Ordinal)), "Core notice reaches the UI only");
         Assert.Single(fx.Read(() => fx.App.ProjectionState.Conversation.Blocks.Where(block => block.Id.StartsWith("extension-notification:", StringComparison.Ordinal)).ToArray()));

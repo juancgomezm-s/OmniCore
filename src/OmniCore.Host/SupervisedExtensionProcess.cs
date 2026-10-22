@@ -3,13 +3,14 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using OmniCore.Protocol;
+using OmniCore.Execution;
 
 namespace OmniCore.Host;
 
-/// <summary>One trusted executable, bound to one identity and session. Not a sandbox.</summary>
+/// <summary>One OS-isolated executable, bound to one identity and session.</summary>
 internal sealed class SupervisedExtensionProcess : IAsyncDisposable
 {
-    private readonly Process _process;
+    private readonly IsolatedExtensionProcess _process;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _writer = new(1, 1);
     private readonly SemaphoreSlim _outgoing = new(4, 4);
@@ -23,6 +24,7 @@ internal sealed class SupervisedExtensionProcess : IAsyncDisposable
     private long _id;
     private int _stopped;
     public string State { get; private set; } = "activating";
+    public string Protection => _process.Protection;
     public IReadOnlyList<string> Diagnostics => _diagnostics.ToArray();
 
     internal static async Task VerifyNodeLtsAsync(string executable, CancellationToken token)
@@ -47,19 +49,13 @@ internal sealed class SupervisedExtensionProcess : IAsyncDisposable
     }
 
     internal SupervisedExtensionProcess(string executable, IReadOnlyList<string> args, string directory,
-        Func<string, JsonElement, CancellationToken, Task<JsonElement>> services, Func<bool>? stillGranted = null)
+        Func<string, JsonElement, CancellationToken, Task<JsonElement>> services, Func<bool>? stillGranted = null,
+        string? storageRoot = null, CancellationToken launchToken = default)
     {
         _services = services;
-        var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
-            WorkingDirectory = directory, StandardInputEncoding = new UTF8Encoding(false),
-            StandardOutputEncoding = new UTF8Encoding(false, true), StandardErrorEncoding = new UTF8Encoding(false, true) };
-        start.Environment.Clear();
-        foreach (var name in new[] { "PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG" })
-            if (Environment.GetEnvironmentVariable(name) is { } value) start.Environment[name] = value;
-        foreach (var argument in args) start.ArgumentList.Add(argument);
-        try { _process = Process.Start(start) ?? throw new IOException("extension_process_start_failed"); }
-        catch (System.ComponentModel.Win32Exception error) { throw new IOException("extension_process_start_failed", error); }
+        try { _process = IsolatedExtensionProcess.StartAsync(executable, args, directory, storageRoot, launchToken).GetAwaiter().GetResult(); }
+        catch (Exception error) when (error is NotSupportedException or System.ComponentModel.Win32Exception)
+        { throw new IOException("extension_strong_sandbox_unavailable_no_downgrade", error); }
         _reader = Task.Run(ReadAsync); _stderr = Task.Run(ReadErrorsAsync);
         _revocation = stillGranted is null ? Task.CompletedTask : WatchGrantAsync(stillGranted);
     }
@@ -125,7 +121,7 @@ internal sealed class SupervisedExtensionProcess : IAsyncDisposable
     {
         try
         {
-            using var stream = new BufferedStream(_process.StandardOutput.BaseStream, 4096);
+            using var stream = new BufferedStream(_process.StandardOutput, 4096);
             while (await ReadFrameAsync(stream, _lifetime.Token).ConfigureAwait(false) is { } line)
             {
                 using var document = JsonDocument.Parse(line); var root = document.RootElement;
@@ -175,7 +171,7 @@ internal sealed class SupervisedExtensionProcess : IAsyncDisposable
     {
         try
         {
-            using var stream = new BufferedStream(_process.StandardError.BaseStream, 4096);
+            using var stream = new BufferedStream(_process.StandardError, 4096);
             while (await ReadFrameAsync(stream, _lifetime.Token).ConfigureAwait(false) is { } line)
             {
                 // Only structured severity/code, never arbitrary secret-bearing extension output.
@@ -211,7 +207,7 @@ internal sealed class SupervisedExtensionProcess : IAsyncDisposable
         if (Interlocked.Exchange(ref _stopped, 1) != 0) return;
         State = "failed"; _diagnostics.Enqueue(diagnostic); _lifetime.Cancel();
         foreach (var pending in _pending.Values) pending.TrySetException(new IOException(diagnostic));
-        try { if (!_process.HasExited) _process.Kill(true); } catch (InvalidOperationException) { }
+        try { _process.Kill(); } catch (InvalidOperationException) { }
     }
     public async ValueTask DisposeAsync()
     {
@@ -221,7 +217,7 @@ internal sealed class SupervisedExtensionProcess : IAsyncDisposable
             catch (Exception error) when (error is IOException or OperationCanceledException) { }
         }
         Stop("extension_disabled"); await Task.WhenAll(_reader, _stderr, _revocation).ConfigureAwait(false);
-        State = "inactive"; _process.Dispose();
+        State = "inactive"; await _process.DisposeAsync().ConfigureAwait(false);
     }
     private static string Quote(string text) => "\"" + JsonEncodedText.Encode(text) + "\"";
 }

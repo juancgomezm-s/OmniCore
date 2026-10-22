@@ -4,7 +4,7 @@ publisher: example
 version: 1.0.0
 displayName: Hello
 omnicoreApi: '1.x'
-executionMode: trusted
+executionMode: restricted
 activationEvents: [onView, onCommand]
 runtime:
   kind: node

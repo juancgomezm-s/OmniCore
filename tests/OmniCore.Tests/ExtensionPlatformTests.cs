@@ -33,7 +33,12 @@ public sealed partial class ExtensionPlatformTests
         {
             var path = Path.Combine(Root, "source-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(path);
             File.WriteAllText(Path.Combine(path, ExtensionManifestLoader.ManifestFileName), yaml);
-            if (code is not null) File.WriteAllText(Path.Combine(path, "entry.mjs"), code);
+            if (code is not null)
+            {
+                var sdkUri = new Uri(Path.Combine(RepoRoot, "sdk", "extensions", "dist", "src", "index.js")).AbsoluteUri;
+                File.WriteAllText(Path.Combine(path, "entry.mjs"), code.Replace(sdkUri, "./sdk/src/index.js", StringComparison.Ordinal));
+                BundleSdk(path);
+            }
             return path;
         }
         public void Dispose()
@@ -64,6 +69,16 @@ public sealed partial class ExtensionPlatformTests
         """;
     private static string Executable => Declarative.Replace("source: workspace", "source: extension", StringComparison.Ordinal)
         + "\nexecutionMode: trusted\nruntime:\n  kind: node\n  command: entry.mjs\n";
+    private static void BundleSdk(string package)
+    {
+        var source = Path.Combine(RepoRoot, "sdk", "extensions", "dist", "src");
+        foreach (var file in Directory.EnumerateFiles(source, "*.js", SearchOption.AllDirectories))
+        {
+            var target = Path.Combine(package, "sdk", "src", Path.GetRelativePath(source, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!); File.Copy(file, target, overwrite: true);
+        }
+        File.WriteAllText(Path.Combine(package, "sdk", "package.json"), "{\"type\":\"module\"}");
+    }
     private static string RepoRoot
     {
         get
@@ -105,14 +120,31 @@ public sealed partial class ExtensionPlatformTests
     {
         using var fixture = new Fixture();
         fixture.Packages.Install(fixture.Package(Executable, "// test"), CancellationToken.None);
-        Assert.Throws<InvalidOperationException>(() => fixture.Packages.Change("test.files", "enable"));
-        fixture.Packages.Change("test.files", "enable", true);
+        var enabled = fixture.Packages.Change("test.files", "enable");
+        Assert.Equal(1, enabled.IsolationPolicyVersion); Assert.False(enabled.TrustedProcess);
         File.AppendAllText(Path.Combine(fixture.Data, "extensions", "test.files", "entry.mjs"), "// changed");
         Assert.Equal("failed", fixture.Packages.Inspect("test.files").State);
         Assert.Throws<UnauthorizedAccessException>(() => fixture.Server.Query(ViewQuery(), CancellationToken.None));
         fixture.Packages.Uninstall("test.files");
         fixture.Packages.Install(fixture.Package(Executable.Replace("executionMode: trusted", "executionMode: restricted", StringComparison.Ordinal), "// test"), CancellationToken.None);
-        Assert.Throws<InvalidOperationException>(() => fixture.Packages.Change("test.files", "enable", true));
+        Assert.Equal("required", fixture.Packages.Change("test.files", "enable", true).Protection);
+    }
+    [Fact]
+    public void Old_unisolated_consent_cannot_start_until_the_user_reenables_the_package()
+    {
+        using var fixture = new Fixture();
+        fixture.Packages.Install(fixture.Package(Executable, "throw new Error('must-not-run')"), CancellationToken.None);
+        var current = fixture.Packages.Change("test.files", "enable");
+        var old = current with { IsolationPolicyVersion = 0, TrustedProcess = true };
+        File.WriteAllText(Path.Combine(fixture.Data, "extension-state", "test.files.json"),
+            JsonSerializer.Serialize(old, ExtensionJson.Default.ExtensionPackageState));
+        Assert.False(fixture.Packages.Inspect("test.files").Enabled);
+        Assert.False(fixture.Packages.HasProcessGrant(old));
+        Assert.Equal("reactivation-required", fixture.Packages.Inspect("test.files").Protection);
+        Assert.Throws<UnauthorizedAccessException>(() => fixture.Server.Query(ViewQuery(), CancellationToken.None));
+        Assert.False(Directory.Exists(Path.Combine(fixture.Data, "extension-runtime")));
+        var isolated = fixture.Packages.Change("test.files", "enable");
+        Assert.Equal(1, isolated.IsolationPolicyVersion); Assert.False(isolated.TrustedProcess);
     }
     [Fact]
     public void Traversal_collisions_dependencies_and_versions_fail_without_partial_install()
