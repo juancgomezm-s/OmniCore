@@ -27,7 +27,7 @@ public sealed partial class StdioTransportTests
             start.Environment["OMNICORE_DATA_DIR"] = Path.Combine(root, "data");
             start.Environment["OMNICORE_CONFIG_DIR"] = Path.Combine(root, "config");
             start.ArgumentList.Add(Path.Combine(repo, "sdk", "extensions", "test", "headless-pilots.mjs"));
-            start.ArgumentList.Add(Path.Combine(repo, "src", "OmniCore.Cli", "bin", "Debug", "net10.0", "omni.dll"));
+            start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "omni.dll"));
             start.ArgumentList.Add(workspace); start.ArgumentList.Add(Path.Combine(repo, "extensions", "pilots"));
             start.ArgumentList.Add(ExtensionPlatformTests.ContextExample(root));
             using var process = Process.Start(start)!;

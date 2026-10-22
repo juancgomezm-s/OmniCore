@@ -491,6 +491,11 @@ public sealed class OmniHost
         var store = new OmniCore.Security.FilePermissionGrantStore(
             WorkspaceDataDirectory(paths, workspaceRoot), audit ?? new FileAuditSink(paths.DataDirectory));
         return CreateProjectRestrictionPolicy(mode, restrictions, UserPermissionsLoader.Load(paths))
+            .WithCurrentUserPermissions(() =>
+            {
+                var current = UserPermissionsLoader.Load(paths);
+                return (current.Profile, current.Rules);
+            })
             .WithGrantStore(store, workspace, runId);
     }
 

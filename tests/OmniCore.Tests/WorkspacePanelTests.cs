@@ -62,6 +62,13 @@ public sealed class WorkspacePanelTests
         JsonSerializer.Deserialize(server.Query("workspace.panel:" + Uri.EscapeDataString(JsonSerializer.Serialize(request,
             WorkspacePanelJson.Default.WorkspacePanelRequest)), CancellationToken.None)!.Json, WorkspacePanelJson.Default.WorkspacePanelResult)!;
 
+    private static IEnumerable<DirectoryInfo> Ancestors(DirectoryInfo? directory)
+    {
+        for (; directory is not null; directory = directory.Parent) yield return directory;
+    }
+
+    private static string RepositorySourcePath([System.Runtime.CompilerServices.CallerFilePath] string sourcePath = "") => sourcePath;
+
     [Fact]
     public void Session_input_checkpoint_and_workspace_panel_query_complete_under_non_pumping_context()
     {
@@ -167,10 +174,33 @@ public sealed class WorkspacePanelTests
             stream.Append(new ToolCallSucceeded(call, "{\"text\":\"base\"}"));
             File.WriteAllText(Path.Combine(repo.Root, "a.txt"), "checkpoint content\n");
             server.RecordWorkspaceCheckpoint(session, store.CurrentSequence(session), "after-tool");
-            var point = Assert.Single(Query(server, new("timeline")).Timeline!, row => row.Kind == "tool");
+            var extensionCall = ToolCallId.New();
+            stream.Append(new ToolCallRequested(extensionCall, "extension-provider", "ext.sample.run", "{}"));
+            stream.Append(new ToolCallPrepared(extensionCall, "{}"));
+            stream.Append(new ToolCallAuthorized(extensionCall));
+            stream.Append(new ToolCallStarted(extensionCall, EffectClass.NonIdempotent, null)
+            {
+                Attribution = new("ext.sample.run", "Extension", "sample", "1.0.0", new string('A', 64)),
+            });
+            var batchCall = ToolCallId.New();
+            stream.Append(new ToolCallRequested(batchCall, "internal-extension-batch-" + extensionCall,
+                "extension.batch.apply", "{}") { ParentToolCallId = extensionCall });
+            stream.Append(new ToolCallPrepared(batchCall, "{}"));
+            stream.Append(new ToolCallAuthorized(batchCall));
+            stream.Append(new ToolCallStarted(batchCall, EffectClass.Reconcilable, null));
+            stream.Append(new ToolCallSucceeded(batchCall, "published batch"));
+            stream.Append(new ToolCallEffectUnknown(extensionCall, EffectClass.NonIdempotent));
+            stream.Append(new ToolCallReconciled(extensionCall, ReconciliationOutcome.Applied, "fixture recovery"));
+            var timeline = Query(server, new("timeline")).Timeline!;
+            var point = Assert.Single(timeline, row => row.Kind == "tool" && row.Activity == "read");
+            var uncertainExtension = Assert.Single(timeline, row => row.Kind == "tool" && row.Activity == "uncertain");
+            Assert.Contains("ext.sample.run", uncertainExtension.Text);
+            Assert.Equal("sample", uncertainExtension.ExtensionId);
+            Assert.Equal("ext.sample.run", uncertainExtension.ToolId);
+            Assert.DoesNotContain(timeline, row => row.Text.Contains("extension.batch.apply", StringComparison.Ordinal));
             Assert.Equal("read", point.Activity); Assert.Equal(["a.txt"], point.Files); Assert.NotNull(point.Checkpoint!.Snapshot);
-            var source = new DirectoryInfo(AppContext.BaseDirectory);
-            while (source is not null && !File.Exists(Path.Combine(source.FullName, "OmniCore.slnx"))) source = source.Parent;
+            var source = Ancestors(new DirectoryInfo(Path.GetDirectoryName(RepositorySourcePath())!))
+                .FirstOrDefault(directory => File.Exists(Path.Combine(directory.FullName, "OmniCore.slnx")));
             Assert.NotNull(source);
             var extensions = new ExtensionPackageManager(paths);
             extensions.Install(Path.Combine(source.FullName, "extensions", "pilots", "time-machine"), CancellationToken.None);

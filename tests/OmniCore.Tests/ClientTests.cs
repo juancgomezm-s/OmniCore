@@ -2,6 +2,7 @@ using OmniCore.Client;
 using OmniCore.Cli;
 using OmniCore.Protocol;
 using System.Text.Json;
+using ToolCallId = OmniCore.Domain.ToolCallId;
 
 namespace OmniCore.Tests;
 
@@ -109,6 +110,83 @@ public sealed class ClientTests
         var next = projection.Apply(state, envelope);
 
         Assert.Empty(next.Conversation.Blocks);
+    }
+
+    [Fact]
+    public void Projection_groups_a_validated_internal_batch_child_under_the_extension_call()
+    {
+        var projection = new ClientProjection();
+        var parent = ToolCallId.New().ToString();
+        var child = ToolCallId.New().ToString();
+        var state = ClientState.Empty();
+        static WireEnvelope Event(string id, string json) => WireEnvelope.Event(id,
+            "{" + JsonObj.Field("type", "toolcall.requested") + "," + json + "}");
+        state = projection.Apply(state, Event(Ids.NewV7(), JsonObj.Field("toolCallId", parent) + ","
+            + JsonObj.Field("tool", "ext.sample.run") + "," + JsonObj.Field("providerCallId", "provider-1")
+            + "," + JsonObj.Field("category", "Extension")));
+        state = projection.Apply(state, Event(Ids.NewV7(), JsonObj.Field("toolCallId", child) + ","
+            + JsonObj.Field("tool", "extension.batch.apply") + ","
+            + JsonObj.Field("providerCallId", "internal-extension-batch-" + parent) + ","
+            + JsonObj.Field("parentToolCallId", parent) + "," + JsonObj.Field("category", "Extension")));
+
+        Assert.Single(state.Conversation.Blocks);
+        Assert.Contains(child, state.HiddenToolCallIds);
+
+        state = projection.Apply(state, WireEnvelope.Event(Ids.NewV7(), "{" + JsonObj.Field("type", "toolcall.failed")
+            + "," + JsonObj.Field("toolCallId", child) + "," + JsonObj.Field("cause", "policy") + "}"));
+        Assert.Single(state.Conversation.Blocks);
+        Assert.DoesNotContain(child, state.HiddenToolCallIds);
+
+        // Replaying the durable causal pair after restart yields the same one-action view.
+        state = ClientState.Empty();
+        state = projection.Apply(state, Event(Ids.NewV7(), JsonObj.Field("toolCallId", parent) + ","
+            + JsonObj.Field("tool", "ext.sample.run") + "," + JsonObj.Field("providerCallId", "provider-1")
+            + "," + JsonObj.Field("category", "Extension")));
+        state = projection.Apply(state, Event(Ids.NewV7(), JsonObj.Field("toolCallId", child) + ","
+            + JsonObj.Field("tool", "extension.batch.apply") + ","
+            + JsonObj.Field("providerCallId", "internal-extension-batch-" + parent) + ","
+            + JsonObj.Field("parentToolCallId", parent) + "," + JsonObj.Field("category", "Extension")));
+        state = projection.Apply(state, WireEnvelope.Event(Ids.NewV7(), "{" + JsonObj.Field("type", "toolcall.effect_unknown")
+            + "," + JsonObj.Field("toolCallId", child) + "," + JsonObj.Field("effect", "NonIdempotent") + "}"));
+        state = projection.Apply(state, WireEnvelope.Event(Ids.NewV7(), "{" + JsonObj.Field("type", "toolcall.effect_unknown")
+            + "," + JsonObj.Field("toolCallId", parent) + "," + JsonObj.Field("effect", "NonIdempotent") + "}"));
+        Assert.Single(state.Conversation.Blocks);
+        Assert.Contains("resultado", state.Conversation.Blocks[0].Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("es", "resultado")]
+    [InlineData("en", "result")]
+    [InlineData("fr", "résultat")]
+    [InlineData("it", "risultato")]
+    public void Projection_localizes_unknown_effect_for_core_and_dynamic_parent_tools(string locale,
+        string expectedWord)
+    {
+        foreach (var tool in new[] { "filesystem.patch", "ext.sample.run" })
+        {
+            var projection = new ClientProjection(new Localization(locale));
+            var callId = ToolCallId.New().ToString();
+            var state = projection.Apply(ClientState.Empty(), WireEnvelope.Event(Ids.NewV7(),
+                "{" + JsonObj.Field("type", "toolcall.requested") + ","
+                + JsonObj.Field("toolCallId", callId) + "," + JsonObj.Field("tool", tool) + ","
+                + JsonObj.Field("providerCallId", "provider-call") + ","
+                + JsonObj.Field("category", "Extension") + "}"));
+
+            state = projection.Apply(state, WireEnvelope.Event(Ids.NewV7(),
+                "{" + JsonObj.Field("type", "toolcall.effect_unknown") + ","
+                + JsonObj.Field("toolCallId", callId) + ","
+                + JsonObj.Field("effect", "NonIdempotent") + "}"));
+
+            var block = Assert.Single(state.Conversation.Blocks);
+            Assert.Contains(expectedWord, block.Text, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(tool, block.Text, StringComparison.Ordinal);
+            Assert.Contains("NonIdempotent", block.Text, StringComparison.Ordinal);
+            Assert.DoesNotContain("tool.effect_unknown", block.Text, StringComparison.Ordinal);
+            Assert.DoesNotContain("succeeded", block.Text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("failed", block.Text, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("NonIdempotent", block.Arguments!["effect"]);
+            Assert.Equal(tool, block.Arguments["tool"]);
+        }
     }
 
     [Fact]

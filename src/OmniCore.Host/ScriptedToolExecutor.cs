@@ -540,7 +540,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
                 && approvedWeakSandboxOption == "consent_once",
             mutationHistory: _mutationHistory,
             mutationRunId: ExecutionScope.Current?.RunId?.ToString(),
-            mutationTurnId: ExecutionScope.Current?.TurnId?.ToString());
+            mutationTurnId: ExecutionScope.Current?.TurnId?.ToString(),
+            mutationLaneId: ExecutionScope.Current?.LaneId?.ToString());
         var outcome = approvedWeakSandboxInteraction is { } weakInteraction
             ? runtime.ResumeWeakSandboxConsent(validated, prepContext, execContext, cancellationToken,
                 weakInteraction, approvedWeakSandboxOption!, expectedPreparedArguments!, expectedIntentFingerprint!)

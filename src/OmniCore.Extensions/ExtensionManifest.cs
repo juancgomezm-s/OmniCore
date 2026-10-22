@@ -125,10 +125,39 @@ public interface IExtensionRpcInvoker
         ResourceClaims authorizedClaims, CancellationToken cancellationToken);
 }
 
+/// <summary>Optional v1 writer path: the child is run against a host-created private workspace.</summary>
+public interface IStagedExtensionRpcInvoker : IExtensionRpcInvoker
+{
+    Task<StagedExtensionRpcResult> InvokeStagedAsync(DiscoveredExtension extension, string method, string parametersJson,
+        ResourceClaims authorizedClaims, string workspaceRoot, CancellationToken cancellationToken);
+}
+
+public sealed record StagedExtensionRpcResult(string Response, IReadOnlyList<ExtensionWorkspaceChange> Changes);
+public sealed record ExtensionWorkspaceChange(string RelativePath, string? BeforeSha256, string? AfterSha256,
+    byte[]? AfterBytes);
+
+/// <summary>Host-protected immutable proposal from one Strong v1 extension invocation.</summary>
+public sealed record ExtensionWriteBatchProposal(int Version, string ProposalId, string WorkspaceRoot,
+    string ToolCallId, string ToolId, string ExtensionId, string ExtensionVersion,
+    string PackageSha256, string ManifestSha256, string Isolation, string MutationRunId, string MutationTurnId,
+    string MutationLaneId,
+    IReadOnlyList<ExtensionWriteBatchChange> Changes);
+public sealed record ExtensionWriteBatchChange(string Path, string? BeforeSha256,
+    string? AfterSha256, byte[]? AfterBytes);
+
+/// <summary>Host catalog callback for revalidating the live source of a protected extension proposal.</summary>
+public interface IExtensionBatchProposalValidator
+{
+    bool ValidateCurrentBatchProposal(ExtensionWriteBatchProposal proposal, string workspaceRoot);
+}
+
 /// <summary>
 /// ExtensionBoundary is an intersection ceiling. It verifies the requests declared by an
 /// extension; it never creates a permission grant or turns an Ask into Allow.
 /// </summary>
+[System.Text.Json.Serialization.JsonSerializable(typeof(ExtensionWriteBatchProposal))]
+public partial class ExtensionWriteBatchJsonContext : System.Text.Json.Serialization.JsonSerializerContext { }
+
 public sealed class ExtensionBoundary : IToolIntentBoundary
 {
     private readonly ExtensionPermissionManifest _ceiling;

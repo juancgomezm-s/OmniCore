@@ -128,7 +128,9 @@ public sealed class ProtocolMapper
         var fields = new Dictionary<string, string>
         {
             ["toolCallId"] = requested.ToolCallId.ToString(), ["tool"] = requested.ToolName,
+            ["providerCallId"] = requested.ProviderCallId,
         };
+        if (requested.ParentToolCallId is { } parent) fields["parentToolCallId"] = parent.ToString();
         if (ToolPresentation.Of(requested.ToolName) is not { } presentation) return fields;
         fields["category"] = presentation.Category.ToString();
         // Cada campo declarado viaja siempre (con «…» si no se puede leer) para que la etiqueta nunca quede a medias.
@@ -249,6 +251,10 @@ public sealed class ProtocolMapper
             ["effect"] = e.EffectOutcome.ToString(),
             // Código tipado (spec §71) al wire; "" preserva los journals v1 sin campo.
             ["errorCode"] = e.ErrorCode?.Value ?? "",
+        },
+        ToolCallEffectUnknown e => new()
+        {
+            ["toolCallId"] = e.ToolCallId.ToString(), ["effect"] = e.EffectClass.ToString(),
         },
         ToolCallRejected e => new()
         {

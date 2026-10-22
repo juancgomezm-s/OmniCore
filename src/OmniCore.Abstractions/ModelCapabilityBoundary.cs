@@ -73,6 +73,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             // existing destructive capability so only Full mutation policy can expose it and
             // Delete=Ask/Deny is honored for the entire batch.
             { "worktree.integrate", ModelToolCapability.DeleteFile },
+            { "extension.batch.apply", ModelToolCapability.ReplaceFile },
             { "process.exec", ModelToolCapability.GeneralProcess },
             { "shell.exec", ModelToolCapability.Shell },
             { "user.ask", ModelToolCapability.PlanProposal },
@@ -165,6 +166,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
     public ModelCapabilityDecision Evaluate(ToolIntent intent)
     {
         var toolName = intent.ToolId.ToString();
+        var privateExtensionStage = IsPrivateExtensionStageIntent(intent, toolName);
         var sessionDecision = EvaluateSessionSecurityCeiling(intent, toolName);
         if (sessionDecision is { Allowed: false }) return sessionDecision;
 
@@ -186,7 +188,8 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         // filesystem.write intent after checking target metadata. The policy ceiling follows
         // the effective operation (create, localized edit, or full replacement), not payload
         // shape. Namespaced extension tools cannot claim this core identity.
-        if (toolName == "filesystem.write" && intent.EffectiveMutationOperation is { } effectiveOperation)
+        if (toolName is "filesystem.write" or "filesystem.patch" or "extension.batch.apply"
+            && intent.EffectiveMutationOperation is { } effectiveOperation)
             capability = effectiveOperation;
 
         if (toolName == "worktree.integrate")
@@ -254,7 +257,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         }
 
         // 2/6. Mutación: cualquier claim de escritura exige mutación permitida por el techo.
-        if (intent.Claims.Writes.Count > 0 && !MutationAllowed(capability)
+        if (intent.Claims.Writes.Count > 0 && !privateExtensionStage && !MutationAllowed(capability)
             && !IsBoundValidationProcess(capability, intent))
         {
             return ModelCapabilityDecision.Reject(
@@ -305,7 +308,8 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
 
         if (!_toolCapabilities.TryGetValue(toolName, out var capability))
             return ModelCapabilityDecision.Reject("tool has no Session security classification: " + toolName, null);
-        if (toolName == "filesystem.write" && intent.EffectiveMutationOperation is { } effectiveOperation)
+        if (toolName is "filesystem.write" or "filesystem.patch" or "extension.batch.apply"
+            && intent.EffectiveMutationOperation is { } effectiveOperation)
             capability = effectiveOperation;
         if (toolName == "worktree.integrate")
         {
@@ -346,7 +350,8 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
                 WorkingDirectory: { Length: > 0 } cwd } && intent.Claims.Writes.Count == 1
             && string.Equals(intent.Claims.Writes.Single(), cwd,
                 OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
-        if (intent.Claims.Writes.Count > 0 && !MutationAllowed(ceiling.FileMutationMode, capability)
+        if (intent.Claims.Writes.Count > 0 && !IsPrivateExtensionStageIntent(intent, toolName)
+            && !MutationAllowed(ceiling.FileMutationMode, capability)
             && !(boundedValidation && ceiling.FileMutationMode is FileMutationMode.PatchAndCreate or FileMutationMode.Full))
             return ModelCapabilityDecision.Reject("file mutation is outside the current Session security ceiling", capability);
         if (capability is ModelToolCapability.DeleteFile or ModelToolCapability.MoveOrRename)
@@ -361,6 +366,13 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             ? ModelCapabilityDecision.Ask("action requires confirmation under Session security policy", capability)
             : ModelCapabilityDecision.Allow();
     }
+
+    private static bool IsPrivateExtensionStageIntent(ToolIntent intent, string toolName) =>
+        toolName.StartsWith("ext.", StringComparison.Ordinal)
+        && intent.Effect == EffectClass.NonIdempotent
+        && intent.Claims.Process is { Isolation: ProcessIsolation.PrivateExtensionWorkspace,
+            NetworkRequired: false, WorkingDirectory: { Length: > 0 } }
+        && intent.Claims.Network.Count == 0 && intent.Claims.Writes.Count is > 0 and <= 64;
 
     private FileMutationPolicy? IntersectedMutationPolicy()
     {

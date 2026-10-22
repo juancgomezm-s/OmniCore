@@ -83,11 +83,13 @@ public sealed partial class ExtensionPlatformTests
     {
         get
         {
-            for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+            var source = new DirectoryInfo(Path.GetDirectoryName(RepositorySourcePath())!);
+            for (var dir = source; dir is not null; dir = dir.Parent)
                 if (File.Exists(Path.Combine(dir.FullName, "OmniCore.slnx"))) return dir.FullName;
             throw new IOException("repo_not_found");
         }
     }
+    private static string RepositorySourcePath([System.Runtime.CompilerServices.CallerFilePath] string sourcePath = "") => sourcePath;
     private static string ViewQuery(string id = "test.files", string view = "files") => "extensions.view:"
         + Uri.EscapeDataString(ExtensionProtocol.EncodeRequest(new(id, view)));
 

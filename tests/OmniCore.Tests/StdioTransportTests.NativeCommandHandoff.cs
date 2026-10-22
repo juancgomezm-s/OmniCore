@@ -455,6 +455,7 @@ public sealed partial class StdioTransportTests
         private readonly string? _oldConfig;
         private readonly string _oldDirectory;
         private readonly byte[] _key;
+        private readonly SemaphoreSlim _providerBodyArrived = new(0);
         private OmniCliRuntime? _runtime;
         private RecoveryDuplex? _duplex;
         private Task<int>? _hostTask;
@@ -485,6 +486,12 @@ public sealed partial class StdioTransportTests
         public string JournalPath => Path.Combine(OmniHost.WorkspaceDataDirectory(
             OmniHost.CreatePlatformPaths(), Workspace), "journal.db");
 
+        public async Task WaitForProviderBodiesAsync(int count, CancellationToken cancellationToken)
+        {
+            while (ProviderBodies.Count < count)
+                await _providerBodyArrived.WaitAsync(cancellationToken);
+        }
+
         public string ModelPolicySummary()
         {
             using var policies = OmniHost.CreateModelPolicyService(Path.Combine(_root, "data"));
@@ -514,6 +521,7 @@ public sealed partial class StdioTransportTests
             provider.RespondWith((index, body) =>
             {
                 fixture.ProviderBodies.Enqueue(body);
+                fixture._providerBodyArrived.Release();
                 return providerResponse?.Invoke(index, body)
                     ?? CliEndToEndTests.ResponsesTextResponse("The local native-command fixture completed this Turn.");
             });
@@ -783,6 +791,7 @@ public sealed partial class StdioTransportTests
             _duplex?.Dispose();
             _runtime?.Dispose();
             await Provider.DisposeAsync();
+            _providerBodyArrived.Dispose();
             CryptographicOperations.ZeroMemory(_key);
             Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", _oldData);
             Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", _oldConfig);

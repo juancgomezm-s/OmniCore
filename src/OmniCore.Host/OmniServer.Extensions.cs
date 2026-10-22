@@ -17,9 +17,18 @@ public sealed partial class OmniServer
     private readonly Dictionary<string, (string Content, ExtensionView View)> _extensionViewCache = new(StringComparer.Ordinal);
 
     internal IExtensionRpcInvoker CreateExtensionInvoker() => new VersionedExtensionInvoker(this);
-    private sealed class VersionedExtensionInvoker(OmniServer owner) : IExtensionRpcInvoker
+    private sealed class VersionedExtensionInvoker(OmniServer owner) : IStagedExtensionRpcInvoker
     {
         private readonly ExtensionRpcProcessInvoker _legacy = new();
+        public Task<StagedExtensionRpcResult> InvokeStagedAsync(DiscoveredExtension extension, string method,
+            string parametersJson, ResourceClaims claims, string workspaceRoot, CancellationToken cancellationToken)
+        {
+            if (extension.Manifest?.ManifestVersion != 1)
+                throw new NotSupportedException("Staged extension writing is available only to the Strong v1 process adapter.");
+            return _legacy.InvokeStagedAsync(extension, method, parametersJson, claims, workspaceRoot,
+                cancellationToken);
+        }
+
         public async Task<string> InvokeAsync(DiscoveredExtension extension, string method, string parametersJson,
             ResourceClaims claims, CancellationToken cancellationToken)
         {

@@ -134,6 +134,7 @@ public sealed partial class OmniServer
             .Select(path => JsonSerializer.Deserialize(File.ReadAllText(path), WorkspacePanelJson.Default.WorkspaceCheckpoint)!)
             .OrderBy(point => point.Sequence).ToArray() : [];
         var calls = new Dictionary<ToolCallId, ToolCallRequested>();
+        var internalBatchChildren = new HashSet<ToolCallId>();
         var attributions = new Dictionary<ToolCallId, ToolCallAttribution?>();
         var inputSequences = journal.Where(evt => _codecs.Decode(evt) is UserInputReceived).Select(evt => evt.Sequence).ToArray();
         var beforeInput = checkpoints.Where(p => p.Kind == "before-instruction")
@@ -150,7 +151,24 @@ public sealed partial class OmniServer
                 models[(modelRun, modelLane)] = model.ModelId;
             var kind = ""; var text = ""; var activity = ""; IReadOnlyList<string> files = [];
             if (payload is UserInputReceived input) { kind = "instruction"; text = InputText(input.InputPartsJson); }
-            else if (payload is ToolCallRequested requested) { calls[requested.ToolCallId] = requested; continue; }
+            else if (payload is ToolCallRequested requested)
+            {
+                calls[requested.ToolCallId] = requested;
+                if (requested.ParentToolCallId is { } parentId
+                    && requested.ToolName == "extension.batch.apply"
+                    && string.Equals(requested.ProviderCallId, "internal-extension-batch-" + parentId,
+                        StringComparison.Ordinal)
+                    && calls.TryGetValue(parentId, out var parent)
+                    && parent.ToolName.StartsWith("ext.", StringComparison.Ordinal))
+                    internalBatchChildren.Add(requested.ToolCallId);
+                continue;
+            }
+            else if (payload is ToolCallEffectUnknown hiddenUnknown
+                && internalBatchChildren.Contains(hiddenUnknown.ToolCallId)) continue;
+            else if (payload is ToolCallFailed hiddenFailure
+                && internalBatchChildren.Contains(hiddenFailure.ToolCallId)) continue;
+            else if (payload is ToolCallSucceeded hiddenSuccess
+                && internalBatchChildren.Contains(hiddenSuccess.ToolCallId)) continue;
             else if (payload is ToolCallSucceeded success && calls.TryGetValue(success.ToolCallId, out var call))
             {
                 kind = "tool"; text = call.ToolName; files = ToolFiles(call.ArgumentsJson);
@@ -159,6 +177,8 @@ public sealed partial class OmniServer
             }
             else if (payload is ToolCallFailed failed && calls.TryGetValue(failed.ToolCallId, out var failedCall))
             { kind = "tool"; text = failedCall.ToolName + ": " + failed.Cause; files = ToolFiles(failedCall.ArgumentsJson); activity = "failed"; }
+            else if (payload is ToolCallEffectUnknown unknownParent && calls.TryGetValue(unknownParent.ToolCallId, out var unknownCall))
+            { kind = "tool"; text = unknownCall.ToolName + ": publication outcome uncertain"; activity = "uncertain"; }
             else if (payload is TurnCompleted) { kind = "turn"; text = "Turn completed"; }
             if (kind.Length == 0) continue;
             if (files.Count > 0 && evt.RunId is { } scopedRun)
@@ -172,7 +192,13 @@ public sealed partial class OmniServer
             }
             var checkpoint = kind == "instruction" ? beforeInput.GetValueOrDefault(evt.Sequence)
                 : checkpoints.LastOrDefault(p => p.Sequence == evt.Sequence);
-            var callId = payload switch { ToolCallSucceeded done => done.ToolCallId, ToolCallFailed failed => failed.ToolCallId, _ => null };
+            var callId = payload switch
+            {
+                ToolCallSucceeded done => done.ToolCallId,
+                ToolCallFailed failed => failed.ToolCallId,
+                ToolCallEffectUnknown unknown => unknown.ToolCallId,
+                _ => null,
+            };
             var attribution = callId is null ? null : attributions.GetValueOrDefault(callId);
             var cause = evt.Causation switch { CommandCausation command => "command:" + command.CommandId,
                 EventCausation source => "event:" + source.EventId, _ => null };

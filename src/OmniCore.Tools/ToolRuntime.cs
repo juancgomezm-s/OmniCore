@@ -172,7 +172,9 @@ public sealed class ToolRuntime
         GrantLifetime approvalLifetime, ToolCallRequestReceipt? requestReceipt,
         InteractionId? resumedPermission = null, string? resumedPermissionOption = null,
         InteractionId? resumedWeakSandboxConsent = null, string? resumedWeakSandboxOption = null,
-        string? expectedPreparedArguments = null, string? expectedIntentFingerprint = null)
+        string? expectedPreparedArguments = null, string? expectedIntentFingerprint = null,
+        bool automaticApply = false, ToolCallId? parentToolCallId = null,
+        ToolIntent? automaticSourceIntent = null)
     {
         void RejectBeforeAuthorization(string reason, ToolErrorCode errorCode) =>
             _emit(resumedPermission is not null || resumedWeakSandboxConsent is not null
@@ -180,7 +182,8 @@ public sealed class ToolRuntime
                 : new ToolCallRejected(validated.ToolCallId, reason, errorCode));
         if (requestReceipt is null && resumedPermission is null && resumedWeakSandboxConsent is null)
             _emit(new ToolCallRequested(validated.ToolCallId, validated.ProviderCallId,
-                validated.ToolId.ToString(), validated.NormalizedArgumentsJson));
+                validated.ToolId.ToString(), validated.NormalizedArgumentsJson)
+            { ParentToolCallId = parentToolCallId });
         var tool = _catalog.Find(validated.ToolId);
         if (tool is null)
         {
@@ -245,6 +248,28 @@ public sealed class ToolRuntime
                 execContext.MutationHistory);
             effectiveIntent = FilesystemWriteTool.EffectivePatchAuthorizationIntent(intent);
         }
+        IReadOnlyList<ToolIntent> additionalEffectiveIntents = [];
+        if (tool is IEffectiveToolAuthorizationIntents batchResolver)
+        {
+            try
+            {
+                additionalEffectiveIntents = batchResolver.ResolveEffectiveAuthorizationIntents(intent,
+                    prepContext, execContext, cancellationToken);
+                ValidateEffectiveBatchIntents(intent, additionalEffectiveIntents, execContext.WorkspaceRoot);
+            }
+            catch (ToolPreflightException ex)
+            {
+                RejectBeforeAuthorization(ex.Message, ex.ErrorCode);
+                return new Outcome(false, ex.Message, ToolCallState.Rejected, EffectOutcome.None);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException
+                or System.Text.Json.JsonException or InvalidOperationException or ArgumentException)
+            {
+                RejectBeforeAuthorization("Effective batch authorization could not be resolved.", ToolErrorCode.StaleWrite);
+                return new Outcome(false, "Effective batch authorization could not be resolved.",
+                    ToolCallState.Rejected, EffectOutcome.None);
+            }
+        }
 
         // La resolución se realiza entre Prepare (puro) y la evaluación del Permission Engine,
         // para que Security autorice el ejecutable real, nunca el nombre solicitado (ADR-0015).
@@ -296,7 +321,7 @@ public sealed class ToolRuntime
         if ((resumedPermission is not null || resumedWeakSandboxConsent is not null)
             && (expectedIntentFingerprint is not { Length: 64 }
                 || !expectedIntentFingerprint.All(Uri.IsHexDigit)
-                || !string.Equals(IntentFingerprint(intent, effectiveIntent), expectedIntentFingerprint,
+                || !string.Equals(IntentFingerprint(intent, effectiveIntent, additionalEffectiveIntents), expectedIntentFingerprint,
                     StringComparison.OrdinalIgnoreCase)))
         {
             _emit(new PermissionDenied(validated.ToolCallId,
@@ -309,12 +334,14 @@ public sealed class ToolRuntime
         // La frontera restringe; jamás autoriza (INV-018): una tool fuera del techo de la
         // categoría muere aquí aunque el Permission Engine la permitiría.
         var boundaryAsk = false;
-        IReadOnlyList<ToolIntent> authorizationIntents = effectiveIntent is null
-            ? [intent] : [intent, effectiveIntent];
+        IReadOnlyList<ToolIntent> authorizationIntents = new[] { intent }
+            .Concat(effectiveIntent is null ? [] : [effectiveIntent]).Concat(additionalEffectiveIntents).ToArray();
+        if (intent.ToolId.ToString() == "extension.batch.apply" && additionalEffectiveIntents.Count > 0)
+            authorizationIntents = additionalEffectiveIntents;
         foreach (var activeBoundary in ActiveBoundaries())
         foreach (var boundaryIntent in authorizationIntents)
         {
-            var boundaryDecision = activeBoundary.Evaluate(boundaryIntent);
+            var boundaryDecision = EvaluateBoundary(activeBoundary, tool, boundaryIntent);
             boundaryAsk |= boundaryDecision.RequiresAsk;
             if (!boundaryDecision.Allowed)
             {
@@ -328,6 +355,14 @@ public sealed class ToolRuntime
         if (resumedPermission is null && resumedWeakSandboxConsent is null)
             _emit(new ToolCallPrepared(validated.ToolCallId, intent.NormalizedArgumentsJson));
 
+        var automaticSourceRequested = tool is IStagedExtensionBatchProducer stagedSource
+            && stagedSource.IsTrustedPrivateWorkspaceWriter(intent)
+            && _policy is IAutomaticExtensionBatchAuthority sourceAuthority
+            && sourceAuthority.AllowsAutomaticExtensionBatch(intent);
+        var automaticNoPromptRequested = automaticSourceRequested
+            || tool is ITrustedBatchPublicationTool && _policy is IAutomaticExtensionBatchAuthority publicationAuthority
+                && publicationAuthority.AllowsAutomaticExtensionBatchPublicationCurrently();
+
         // 2. Permission Engine (ADR-0037 §2): traza siempre; Ask según flujo de interacción.
         PermissionDecisionRecord decision;
         try
@@ -335,6 +370,8 @@ public sealed class ToolRuntime
             decision = _policy.Evaluate(intent);
             if (effectiveIntent is not null)
                 decision = CombinePermissionDecisions(decision, _policy.Evaluate(effectiveIntent), "effective filesystem.patch");
+            foreach (var batchIntent in additionalEffectiveIntents)
+                decision = CombinePermissionDecisions(decision, _policy.Evaluate(batchIntent), "effective batch operation");
         }
         catch (Exception ex)
         {
@@ -362,7 +399,55 @@ public sealed class ToolRuntime
             };
             decision = new PermissionDecisionRecord(PermissionDecision.Ask, layers, null);
         }
+        if (_policy is IAutomaticExtensionBatchAuthority currentAuthority)
+        {
+            if (automaticNoPromptRequested && !automaticApply)
+            {
+                var current = currentAuthority.EvaluateCurrentPermission(intent);
+                decision = CombinePermissionDecisions(decision,
+                    new PermissionDecisionRecord(current,
+                        [new LayerDecision("current-user-permissions", current, "permissions.yaml")], null),
+                    "current user permission");
+            }
+            if (automaticApply)
+            {
+                if (automaticSourceIntent is not null)
+                {
+                    var sourceCurrent = currentAuthority.EvaluateCurrentPermission(automaticSourceIntent);
+                    decision = CombinePermissionDecisions(decision,
+                        new PermissionDecisionRecord(sourceCurrent,
+                            [new LayerDecision("current-user-permissions", sourceCurrent, "permissions.yaml")], null),
+                        "current extension source permission");
+                    if (!currentAuthority.AllowsAutomaticExtensionBatchCurrently(automaticSourceIntent))
+                        decision = CombinePermissionDecisions(decision,
+                            new PermissionDecisionRecord(PermissionDecision.Deny,
+                                [new LayerDecision("current-user-permissions", PermissionDecision.Deny, "automatic-source-revoked")], null),
+                            "current automatic source authority");
+                }
+                foreach (var effective in additionalEffectiveIntents)
+                {
+                    var current = currentAuthority.EvaluateCurrentPermission(effective);
+                    decision = CombinePermissionDecisions(decision,
+                        new PermissionDecisionRecord(current,
+                            [new LayerDecision("current-user-permissions", current, "permissions.yaml")], null),
+                        "current effective file permission");
+                }
+            }
+        }
         _emit(new PermissionEvaluated(validated.ToolCallId, decision.Final, LayersToJson(decision), null));
+        if (automaticNoPromptRequested
+            && (decision.Final != PermissionDecision.Allow || execContext.RequiresSubstitutionAsk))
+        {
+            const string cause = "Automatic extension execution is blocked by current permission or model policy.";
+            _emit(new PermissionDenied(validated.ToolCallId, cause));
+            return new Outcome(false, cause, ToolCallState.Rejected, EffectOutcome.None);
+        }
+        if (automaticApply && decision.Final != PermissionDecision.Allow)
+        {
+            const string cause = "Automatic extension publication is blocked by current permission or model policy.";
+            _emit(new PermissionDenied(validated.ToolCallId, cause));
+            return new Outcome(false, cause, ToolCallState.Rejected, EffectOutcome.None);
+        }
         if (decision.Final == PermissionDecision.Deny)
         {
             _emit(new PermissionDenied(validated.ToolCallId, "deny por política"));
@@ -410,7 +495,7 @@ public sealed class ToolRuntime
                 "allow_workspace" => GrantLifetime.Workspace,
                 _ => throw new InvalidOperationException("Unsupported Permission choice."),
             };
-            if (effectiveIntent is not null && lifetime != GrantLifetime.Once)
+            if ((effectiveIntent is not null || additionalEffectiveIntents.Count > 0) && lifetime != GrantLifetime.Once)
             {
                 _emit(new PermissionDenied(validated.ToolCallId,
                     "A normalized existing-file write requires a one-call approval."));
@@ -437,11 +522,12 @@ public sealed class ToolRuntime
             _emit(new PermissionGranted(validated.ToolCallId, grant, lifetime));
             try
             {
-                var authorized = AuthorizeIntents(intent, effectiveIntent, grant, approved: true);
+                var authorized = AuthorizeIntents(intent, effectiveIntent, grant, approved: true, additionalEffectiveIntents);
                 _emit(new ToolCallAuthorized(validated.ToolCallId));
                 return Execute(validated, authorized, intent, tool, execContext, cancellationToken,
                     boundaryAskApproved: decision.Final == PermissionDecision.Ask,
-                    effectiveIntent: effectiveIntent, permissionAskApproved: true);
+                    effectiveIntent: effectiveIntent, permissionAskApproved: true,
+                    additionalEffectiveIntents: additionalEffectiveIntents);
             }
             catch (OmniCore.Domain.PermissionDeniedException ex)
             {
@@ -457,8 +543,8 @@ public sealed class ToolRuntime
             // ADR-0034/0036 §5: el Ask abre un InteractionRequest con sujeto y opciones del
             // servidor. El default es Deny (más restrictiva, ADR-0034 §1).
             var interaction = new InteractionRequested(interactionId, InteractionKind.Permission,
-                SubjectJson(intent, effectiveIntent, execContext.ProtectedSubstitution),
-                OptionsJson(effectiveIntent is null
+                SubjectJson(intent, effectiveIntent, execContext.ProtectedSubstitution, additionalEffectiveIntents),
+                OptionsJson(effectiveIntent is null && additionalEffectiveIntents.Count == 0
                     && _policy is IGrantablePermissionPolicy { CanCreatePersistentGrants: true }
                     && IsGrantableAsk(decision.Layers)),
                 "deny", null, null, null, null, 0, 1);
@@ -491,7 +577,7 @@ public sealed class ToolRuntime
             }
 
             var optionId = selectedOption;
-            var effectiveLifetime = effectiveIntent is not null ? GrantLifetime.Once : optionId switch
+            var effectiveLifetime = effectiveIntent is not null || additionalEffectiveIntents.Count > 0 ? GrantLifetime.Once : optionId switch
             {
                 "allow_once" => GrantLifetime.Once,
                 "allow_run" => GrantLifetime.Run,
@@ -499,7 +585,7 @@ public sealed class ToolRuntime
                 _ => GrantLifetime.Once,
             };
             GrantId? approvedGrant = effectiveLifetime == GrantLifetime.Once ? null : GrantId.New();
-            if (effectiveLifetime != GrantLifetime.Once && effectiveIntent is null)
+            if (effectiveLifetime != GrantLifetime.Once && effectiveIntent is null && additionalEffectiveIntents.Count == 0)
             {
                 if (_policy is not IGrantablePermissionPolicy grantable)
                 {
@@ -528,11 +614,11 @@ public sealed class ToolRuntime
             // nuevo permiso. La política de Security comprueba de nuevo que no exista Deny.
             try
             {
-                var approved = AuthorizeIntents(intent, effectiveIntent, approvedGrant, approved: true);
+                var approved = AuthorizeIntents(intent, effectiveIntent, approvedGrant, approved: true, additionalEffectiveIntents);
                 _emit(new ToolCallAuthorized(validated.ToolCallId));
                 return Execute(validated, approved, intent, tool, execContext, cancellationToken,
                     boundaryAskApproved: boundaryAsk, effectiveIntent: effectiveIntent,
-                    permissionAskApproved: true);
+                    permissionAskApproved: true, additionalEffectiveIntents: additionalEffectiveIntents);
             }
             catch (OmniCore.Domain.PermissionDeniedException ex)
             {
@@ -544,11 +630,15 @@ public sealed class ToolRuntime
         // 3. Solo el Permission Engine construye el intent autorizado (INV-018).
         try
         {
-            var authorized = AuthorizeIntents(intent, effectiveIntent, null, approved: false);
+            var authorized = AuthorizeIntents(intent, effectiveIntent, null, approved: false, additionalEffectiveIntents);
             _emit(new ToolCallAuthorized(validated.ToolCallId));
         return Execute(validated, authorized, intent, tool, execContext, cancellationToken,
                 boundaryAskApproved: boundaryAsk, effectiveIntent: effectiveIntent,
-                permissionAskApproved: false);
+                permissionAskApproved: false, additionalEffectiveIntents: additionalEffectiveIntents,
+                automaticApply: automaticApply,
+                automaticApplyEligible: decision.Final == PermissionDecision.Allow
+                    && automaticSourceRequested && !execContext.RequiresSubstitutionAsk,
+                automaticSourceIntent: automaticSourceIntent);
         }
         catch (OmniCore.Domain.PermissionDeniedException ex)
         {
@@ -559,7 +649,10 @@ public sealed class ToolRuntime
 
     private Outcome Execute(ValidatedToolCall call, AuthorizedToolIntent authorized, ToolIntent intent, ITool tool,
         ToolExecutionContext execContext, CancellationToken cancellationToken, bool boundaryAskApproved,
-        ToolIntent? effectiveIntent = null, bool permissionAskApproved = false)
+        ToolIntent? effectiveIntent = null, bool permissionAskApproved = false,
+        IReadOnlyList<ToolIntent>? additionalEffectiveIntents = null,
+        bool automaticApplyEligible = false, bool automaticApply = false,
+        ToolIntent? automaticSourceIntent = null)
     {
         if (tool is FilesystemWriteTool writeTool)
         {
@@ -583,12 +676,50 @@ public sealed class ToolRuntime
                 intent.RequiresPhysicalCreateCapability, intent.EffectiveMutationHistoryRevision);
         }
 
-        IReadOnlyList<ToolIntent> effectiveIntents = effectiveIntent is null
-            ? [intent] : [intent, effectiveIntent];
-        var currentPermission = _policy.Evaluate(intent);
+        additionalEffectiveIntents ??= [];
+        if (tool is IEffectiveToolAuthorizationIntents batchResolver)
+        {
+            IReadOnlyList<ToolIntent> refreshed;
+            try
+            {
+                refreshed = batchResolver.ResolveEffectiveAuthorizationIntents(intent,
+                    new ToolPreparationContext(execContext.WorkspaceRoot, DateTimeOffset.UtcNow), execContext, cancellationToken);
+                ValidateEffectiveBatchIntents(intent, refreshed, execContext.WorkspaceRoot);
+                if (PreflightEffectiveMutationBatch(refreshed, execContext) is { } refusal)
+                    throw new ToolPreflightException(refusal.Code, refusal.Message);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException
+                or System.Text.Json.JsonException or InvalidOperationException or ArgumentException
+                or ToolPreflightException)
+            {
+                var code = ex is ToolPreflightException preflight ? preflight.ErrorCode : ToolErrorCode.StaleWrite;
+                var message = ex is ToolPreflightException ? ex.Message : "Batch authorization changed before execution.";
+                _emit(new ToolCallFailed(call.ToolCallId, message, EffectOutcome.None, code));
+                return new Outcome(false, message, null, ToolCallState.Failed, EffectOutcome.None);
+            }
+            if (!string.Equals(IntentFingerprint(intent, effectiveIntent, refreshed),
+                    IntentFingerprint(intent, effectiveIntent, additionalEffectiveIntents), StringComparison.OrdinalIgnoreCase))
+            {
+                _emit(new ToolCallFailed(call.ToolCallId, "Batch targets changed after authorization.",
+                    EffectOutcome.None, ToolErrorCode.StaleWrite));
+                return new Outcome(false, "Batch targets changed after authorization.", null,
+                    ToolCallState.Failed, EffectOutcome.None);
+            }
+            additionalEffectiveIntents = refreshed;
+        }
+        IReadOnlyList<ToolIntent> effectiveIntents = new[] { intent }
+            .Concat(effectiveIntent is null ? [] : [effectiveIntent]).Concat(additionalEffectiveIntents).ToArray();
+        if (intent.ToolId.ToString() == "extension.batch.apply" && additionalEffectiveIntents.Count > 0)
+            effectiveIntents = additionalEffectiveIntents;
+        var currentPermission = _policy.Evaluate(automaticApply && IsTrustedBatchPublicationTool(tool)
+            ? authorized.Intent : intent);
         if (effectiveIntent is not null)
             currentPermission = CombinePermissionDecisions(currentPermission,
                 _policy.Evaluate(effectiveIntent), "effective filesystem.patch");
+        foreach (var batchIntent in additionalEffectiveIntents)
+            currentPermission = CombinePermissionDecisions(currentPermission,
+                _policy.Evaluate(batchIntent), "effective batch operation");
         if (currentPermission.Final == PermissionDecision.Deny
             || currentPermission.Final == PermissionDecision.Ask && !permissionAskApproved)
         {
@@ -604,7 +735,7 @@ public sealed class ToolRuntime
         foreach (var activeBoundary in ActiveBoundaries())
         foreach (var boundaryIntent in effectiveIntents)
         {
-            var boundaryDecision = activeBoundary.Evaluate(boundaryIntent);
+            var boundaryDecision = EvaluateBoundary(activeBoundary, tool, boundaryIntent);
             if (!boundaryDecision.Allowed)
             {
                 _emit(new ToolCallFailed(call.ToolCallId,
@@ -666,9 +797,14 @@ public sealed class ToolRuntime
         // efecto desde el journal sin re-ejecutar (ADR-0004 §4). Si la tool calcula esos metadatos
         // (IReconcilableTool), se piden aquí: ya autorizada y antes del efecto, nunca en Prepare.
         IDisposable? workspaceWriteLease = null;
+        var privateStagedWriter = tool is IStagedExtensionBatchProducer stagedWriter
+            && stagedWriter.IsTrustedPrivateWorkspaceWriter(intent)
+            && intent.Claims.Process?.Isolation == ProcessIsolation.PrivateExtensionWorkspace;
         try
         {
-            if (intent.Effect != EffectClass.None && intent.Claims.Writes.Count > 0)
+            if (intent.Effect != EffectClass.None && (intent.Claims.Writes.Count > 0
+                || additionalEffectiveIntents.Any(effective => effective.Claims.Writes.Count > 0))
+                && !privateStagedWriter)
             {
                 if (execContext.WorkspaceWriteLeases is not null)
                     workspaceWriteLease = execContext.WorkspaceWriteLeases.Acquire(execContext.WorkspaceRoot, cancellationToken);
@@ -687,15 +823,16 @@ public sealed class ToolRuntime
             _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.ToolFailure));
             return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
         }
-        using var heldWorkspaceWrite = workspaceWriteLease;
+        using var heldWorkspaceWrite = new IdempotentLease(workspaceWriteLease);
 
         IDisposable? durableWorkspaceFence = null;
         try
         {
             var toolName = tool.Descriptor.Id.ToString();
             if (execContext.MutationHistory is not null && intent.Effect != EffectClass.None
-                && intent.Claims.Writes.Count > 0
-                && toolName is ("filesystem.write" or "filesystem.patch" or "worktree.integrate"))
+                && (intent.Claims.Writes.Count > 0
+                    || additionalEffectiveIntents.Any(effective => effective.Claims.Writes.Count > 0))
+                && toolName is ("filesystem.write" or "filesystem.patch" or "worktree.integrate" or "extension.batch.apply"))
             {
                 durableWorkspaceFence = execContext.MutationHistory.AcquireFence(execContext.WorkspaceRoot,
                     cancellationToken);
@@ -788,15 +925,19 @@ public sealed class ToolRuntime
             return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
         }
 
-        if (tool is IRequiresReconciliationTool && (!IsTrustedIntegrationTool(tool)
-            || reconciliation is null || !ValidateIntegrationEnvelope(intent, execContext, reconciliation)))
+        var trustedBatchPublication = IsTrustedBatchPublicationTool(tool);
+        var validRequiredEnvelope = reconciliation is not null && (IsTrustedIntegrationTool(tool)
+            ? ValidateIntegrationEnvelope(intent, execContext, reconciliation)
+            : trustedBatchPublication && ((ITrustedBatchPublicationTool)tool)
+                .ValidatePublicationEnvelope(intent, effectiveIntents, execContext, reconciliation));
+        if (tool is IRequiresReconciliationTool && !validRequiredEnvelope)
         {
-            const string cause = "Required integration metadata did not match its authorized targets.";
+            const string cause = "Required batch metadata did not match its authorized targets.";
             _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.ToolFailure));
             return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
         }
 
-        if (reconciliation?.DurableMetadataJson is not null && !trustedIntegration)
+        if (reconciliation?.DurableMetadataJson is not null && !trustedIntegration && !trustedBatchPublication)
         {
             const string cause = "Custom reconciliation metadata is restricted to the registered integration tool.";
             _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.ToolFailure));
@@ -817,10 +958,43 @@ public sealed class ToolRuntime
         using (intent.Effect != EffectClass.None || call.ToolId.ToString() == "core.agents.mailbox.receive"
             ? execContext.AcquireSessionSecurityAdmission?.Invoke() : null)
         {
-            var finalPermission = _policy.Evaluate(intent);
+            if (PreflightEffectiveMutationBatch(additionalEffectiveIntents, execContext) is { } budgetRefusal)
+            {
+                _emit(new ToolCallFailed(call.ToolCallId, budgetRefusal.Message, EffectOutcome.None, budgetRefusal.Code));
+                return new Outcome(false, budgetRefusal.Message, null, ToolCallState.Failed, EffectOutcome.None);
+            }
+            var finalPermission = _policy.Evaluate(automaticApply && IsTrustedBatchPublicationTool(tool)
+                ? authorized.Intent : intent);
             if (effectiveIntent is not null)
                 finalPermission = CombinePermissionDecisions(finalPermission,
                     _policy.Evaluate(effectiveIntent), "effective filesystem.patch");
+            foreach (var batchIntent in additionalEffectiveIntents)
+                finalPermission = CombinePermissionDecisions(finalPermission,
+                    _policy.Evaluate(batchIntent), "effective batch operation");
+            if (_policy is IAutomaticExtensionBatchAuthority currentAuthority)
+            {
+                if (automaticApply && automaticSourceIntent is not null)
+                {
+                    var sourceCurrent = currentAuthority.EvaluateCurrentPermission(automaticSourceIntent);
+                    finalPermission = CombinePermissionDecisions(finalPermission,
+                        new PermissionDecisionRecord(sourceCurrent,
+                            [new LayerDecision("current-user-permissions", sourceCurrent, "permissions.yaml")], null),
+                        "current extension source permission");
+                    if (!currentAuthority.AllowsAutomaticExtensionBatchCurrently(automaticSourceIntent))
+                        finalPermission = CombinePermissionDecisions(finalPermission,
+                            new PermissionDecisionRecord(PermissionDecision.Deny,
+                                [new LayerDecision("current-user-permissions", PermissionDecision.Deny, "automatic-source-revoked")], null),
+                            "current automatic source authority");
+                }
+                foreach (var effective in additionalEffectiveIntents)
+                {
+                    var current = currentAuthority.EvaluateCurrentPermission(effective);
+                    finalPermission = CombinePermissionDecisions(finalPermission,
+                        new PermissionDecisionRecord(current,
+                            [new LayerDecision("current-user-permissions", current, "permissions.yaml")], null),
+                        "current effective file permission");
+                }
+            }
             if (finalPermission.Final == PermissionDecision.Deny
                 || finalPermission.Final == PermissionDecision.Ask && !permissionAskApproved)
             {
@@ -833,7 +1007,7 @@ public sealed class ToolRuntime
             foreach (var activeBoundary in ActiveBoundaries())
             foreach (var boundaryIntent in effectiveIntents)
             {
-                var boundaryDecision = activeBoundary.Evaluate(boundaryIntent);
+                var boundaryDecision = EvaluateBoundary(activeBoundary, tool, boundaryIntent);
                 if (!boundaryDecision.Allowed || (boundaryDecision.RequiresAsk && !boundaryAskApproved))
                 {
                     _emit(new ToolCallFailed(call.ToolCallId,
@@ -904,6 +1078,57 @@ public sealed class ToolRuntime
             return new Outcome(false, result.Summary, result.Preview, ToolCallState.Failed, effect);
         }
 
+        if (automaticApplyEligible && tool is IStagedExtensionBatchProducer stagedProducer
+            && stagedProducer.IsTrustedPrivateWorkspaceWriter(intent) && result.Artifact is { } proposalArtifact
+            && result.Preview is { Length: > 0 } proposalPreview
+            && _catalog.Find(new ToolId("extension.batch.apply")) is { } applyTool)
+        {
+            try
+            {
+                using var proposalDocument = System.Text.Json.JsonDocument.Parse(proposalPreview);
+                var proposalRoot = proposalDocument.RootElement;
+                var proposalId = proposalRoot.GetProperty("proposalId").GetString()!;
+                var artifactHash = proposalRoot.GetProperty("artifactHash").GetString()!;
+                var artifactSize = proposalRoot.GetProperty("artifactSize").GetInt64();
+                if (artifactHash == proposalArtifact.Hash.Value && artifactSize == proposalArtifact.Size)
+                {
+                    var encodedProposalId = System.Text.Json.JsonEncodedText.Encode(proposalId).ToString();
+                    var encodedArtifactHash = System.Text.Json.JsonEncodedText.Encode(artifactHash).ToString();
+                    var arguments = $"{{\"proposalId\":\"{encodedProposalId}\",\"artifactHash\":\"{encodedArtifactHash}\",\"artifactSize\":{artifactSize}}}";
+                    var internalCall = new ValidatedToolCall(ToolCallId.New(), applyTool.Descriptor.Id,
+                        "internal-extension-batch-" + call.ToolCallId, arguments);
+                    // The private stage has produced a protected proposal. Release its write
+                    // lease before the publisher acquires the same workspace lease; publication
+                    // revalidates the complete preimage and takes its own lease/fence.
+                    heldWorkspaceWrite.Dispose();
+                    var applied = RunCore(internalCall,
+                        new ToolPreparationContext(execContext.WorkspaceRoot, DateTimeOffset.UtcNow),
+                        execContext, userApprovesAsk: false, cancellationToken, GrantLifetime.Once,
+                        requestReceipt: null, automaticApply: true, parentToolCallId: call.ToolCallId,
+                        automaticSourceIntent: intent);
+                    if (applied.Effect == EffectOutcome.Unknown || applied.FinalState == ToolCallState.EffectUnknown)
+                    {
+                        const string uncertain = "Extension process completed; batch publication is uncertain and requires reconciliation. Do not rerun the extension.";
+                        _emit(new ToolCallEffectUnknown(call.ToolCallId, intent.Effect));
+                        return new Outcome(false, uncertain, ExtensionPublicationPreview(proposalPreview, "unknown"), ToolCallState.EffectUnknown,
+                            EffectOutcome.Unknown, artifact: result.Artifact);
+                    }
+                    result = applied.Succeeded
+                        ? new ToolResult("Extension execution and its complete write batch were automatically published.",
+                            ExtensionPublicationPreview(proposalPreview, "applied"), result.Artifact, result.OriginalSize,
+                            result.WasExternalized, EffectOutcome.Applied)
+                        : new ToolResult("Extension proposal is retained; automatic publication was blocked by current policy or a stale target.",
+                            ExtensionPublicationPreview(proposalPreview, "blocked"), result.Artifact, result.OriginalSize,
+                            result.WasExternalized, EffectOutcome.Applied);
+                }
+            }
+            catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException or ArgumentException)
+            {
+                result = new ToolResult("Extension proposal is retained; automatic publication could not be resolved safely.",
+                    ExtensionPublicationPreview(result.Preview, "blocked"), result.Artifact, result.OriginalSize,
+                    result.WasExternalized, EffectOutcome.Applied);
+            }
+        }
         _emit(new ToolCallSucceeded(call.ToolCallId, "{\"summary\":\"" + Esc(result.Summary) + "\"}")
         { AfterStateRef = tool is FilesystemWriteTool or FilesystemPatchTool && result.AfterStateBytes is { } bytes
             && reconciliation?.ExpectedPostHash == FileVersion.VersionToken(bytes)
@@ -912,6 +1137,77 @@ public sealed class ToolRuntime
         // Preview: contenido real de la herramienta (p. ej. el archivo leído) → vuelve al modelo.
         return new Outcome(true, result.Summary, result.Preview, ToolCallState.Succeeded, effect,
             artifact: result.Artifact);
+    }
+
+    private sealed class IdempotentLease(IDisposable? inner) : IDisposable
+    {
+        private IDisposable? _inner = inner;
+        public void Dispose() => Interlocked.Exchange(ref _inner, null)?.Dispose();
+    }
+
+    private static string ExtensionPublicationPreview(string? proposalPreview, string status)
+    {
+        try
+        {
+            using var source = System.Text.Json.JsonDocument.Parse(proposalPreview ?? "{}");
+            var root = source.RootElement;
+            var proposalId = default(System.Text.Json.JsonElement);
+            var artifactHash = default(System.Text.Json.JsonElement);
+            var artifactSize = default(System.Text.Json.JsonElement);
+            var hasProtectedReference = root.ValueKind == System.Text.Json.JsonValueKind.Object
+                && root.TryGetProperty("proposalId", out proposalId)
+                && proposalId.ValueKind == System.Text.Json.JsonValueKind.String
+                && Guid.TryParseExact(proposalId.GetString(), "N", out _)
+                && root.TryGetProperty("artifactHash", out artifactHash)
+                && artifactHash.ValueKind == System.Text.Json.JsonValueKind.String
+                && IsSha256Hex(artifactHash.GetString())
+                && root.TryGetProperty("artifactSize", out artifactSize)
+                && artifactSize.ValueKind == System.Text.Json.JsonValueKind.Number
+                && artifactSize.TryGetInt64(out var artifactSizeValue)
+                && artifactSizeValue is > 0 and <= 16 * 1024 * 1024;
+            using var buffer = new System.IO.MemoryStream();
+            using (var writer = new System.Text.Json.Utf8JsonWriter(buffer))
+            {
+                writer.WriteStartObject();
+                writer.WriteString("publication", status);
+                if (hasProtectedReference)
+                {
+                    writer.WriteString("proposalId", proposalId.GetString());
+                    writer.WriteString("artifactHash", artifactHash.GetString());
+                    writer.WriteNumber("artifactSize", artifactSize.GetInt64());
+                }
+                if (root.ValueKind == System.Text.Json.JsonValueKind.Object
+                    && root.TryGetProperty("files", out var files)
+                    && files.ValueKind == System.Text.Json.JsonValueKind.Array
+                    && files.GetArrayLength() is > 0 and <= 64
+                    && files.EnumerateArray().All(file => file.ValueKind == System.Text.Json.JsonValueKind.String
+                        && IsSafeExtensionBatchPreviewPath(file.GetString())))
+                {
+                    writer.WritePropertyName("files");
+                    files.WriteTo(writer);
+                }
+                writer.WriteEndObject();
+            }
+            return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return "{\"publication\":\"" + status + "\"}";
+        }
+    }
+
+    private static bool IsSha256Hex(string? value) => value is { Length: 64 }
+        && value.All(Uri.IsHexDigit);
+
+    private static bool IsSafeExtensionBatchPreviewPath(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Any(char.IsControl)) return false;
+        var normalized = value.Replace('\\', '/');
+        var parts = normalized.Split('/');
+        return !Path.IsPathRooted(normalized) && !normalized.Contains(':')
+            && parts.All(part => part is not ("" or "." or ".."))
+            && !parts[0].Equals(".git", StringComparison.OrdinalIgnoreCase)
+            && !new RedactionPolicy().IsSecretPath(normalized);
     }
 
     /// <summary>Rebuilds the model's Run/Turn mutation counters from durable receipts while
@@ -952,15 +1248,73 @@ public sealed class ToolRuntime
         }
     }
 
+    private static MutationRefusal? PreflightEffectiveMutationBatch(IReadOnlyList<ToolIntent> intents,
+        ToolExecutionContext context)
+    {
+        if (intents.Count == 0) return null;
+        var proposals = intents.Select(item => item.EffectiveMutationProposal).ToArray();
+        if (proposals.Any(item => item is null))
+            return new MutationRefusal(ToolErrorCode.LimitExceeded,
+                "Every file in a published batch must have a complete mutation budget proposal.");
+        if (context.ReadRegistry is null)
+            return new MutationRefusal(ToolErrorCode.LimitExceeded,
+                "Mutation budget state is unavailable for the complete batch.");
+        return context.ReadRegistry.Ledger.RefuseMutationBatch(proposals.Select(item => item!).ToArray());
+    }
+
+    private static void ValidateEffectiveBatchIntents(ToolIntent parent, IReadOnlyList<ToolIntent> intents,
+        string workspaceRoot)
+    {
+        if (intents is null || intents.Count is < 1 or > 64)
+            throw new InvalidDataException("Effective batch intent count is outside its safe bound.");
+        var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        var targets = new HashSet<string>(comparer);
+        foreach (var item in intents)
+        {
+            if (item is null || item.ToolCallId != parent.ToolCallId || item.Claims.Writes.Count != 1
+                || item.EffectiveMutationProposal is null)
+                throw new InvalidDataException("Effective batch intent identity or mutation proposal is invalid.");
+            var path = Path.GetFullPath(item.Claims.Writes[0], workspaceRoot);
+            if (!targets.Add(path)) throw new InvalidDataException("Effective batch contains duplicate targets.");
+        }
+    }
     private IEnumerable<IToolIntentBoundary> ActiveBoundaries()
     {
         if (_boundary is not null) yield return _boundary;
         foreach (var boundary in _additionalBoundaries) yield return boundary;
     }
 
+    private static ModelCapabilityDecision EvaluateBoundary(IToolIntentBoundary boundary, ITool tool,
+        ToolIntent intent)
+    {
+        if (boundary is ModelCapabilityBoundary && tool is IStagedExtensionBatchProducer producer
+            && producer.IsTrustedPrivateWorkspaceWriter(intent)
+            && intent.Claims.Process?.Isolation == ProcessIsolation.PrivateExtensionWorkspace
+            && intent.Claims.Writes.Count > 0)
+        {
+            // Process writes land only in the Host-created private copy. The checkout mutations
+            // are separately resolved as native filesystem intents by extension.batch.apply.
+            var stagedClaims = new ResourceClaims(intent.Claims.Reads, [], intent.Claims.Network,
+                intent.Claims.Process, intent.Claims.Secrets);
+            var stagedIntent = new ToolIntent(intent.ToolCallId, intent.ToolId, intent.NormalizedArgumentsJson,
+                intent.Effect, stagedClaims, intent.Risk, intent.Reconciliation,
+                intent.EffectiveMutationOperation, intent.RequiresPhysicalCreateCapability,
+                intent.EffectiveMutationHistoryRevision, intent.EffectiveMutationProposal);
+            return boundary.Evaluate(stagedIntent);
+        }
+        return boundary.Evaluate(intent);
+    }
+
     private static bool IsTrustedIntegrationTool(ITool tool) =>
         tool is WorktreeIntegrationApplyTool
         && tool.Descriptor.Id.ToString() == "worktree.integrate"
+        && tool.Descriptor.Source.Kind == SourceKind.BuiltIn
+        && tool.Descriptor.Source.Trust == TrustLevel.Core
+        && tool.Descriptor.Protection == ToolProtection.Protected;
+
+    private static bool IsTrustedBatchPublicationTool(ITool tool) =>
+        tool is ITrustedBatchPublicationTool
+        && tool.Descriptor.Id.ToString() == "extension.batch.apply"
         && tool.Descriptor.Source.Kind == SourceKind.BuiltIn
         && tool.Descriptor.Source.Trust == TrustLevel.Core
         && tool.Descriptor.Protection == ToolProtection.Protected;
@@ -1109,7 +1463,7 @@ public sealed class ToolRuntime
 
     /// <summary>Sujeto de la interacción (redactado; ADR-0034 §1, ADR-0018).</summary>
     private static string SubjectJson(ToolIntent intent, ToolIntent? effectiveIntent = null,
-        ProtectedToolSubstitution? substitution = null)
+        ProtectedToolSubstitution? substitution = null, IReadOnlyList<ToolIntent>? additionalEffectiveIntents = null)
     {
         var reason = substitution?.SourceToolId == "mcp.first-effect"
             ? "mcp.first_effect" : "permission.required";
@@ -1120,6 +1474,11 @@ public sealed class ToolRuntime
             details.Add("process: " + process.Executable);
         foreach (var read in intent.Claims.Reads) details.Add("read: " + read);
         foreach (var write in intent.Claims.Writes) details.Add("write: " + write);
+        foreach (var effective in additionalEffectiveIntents ?? [])
+        {
+            foreach (var read in effective.Claims.Reads) details.Add("read: " + read);
+            foreach (var write in effective.Claims.Writes) details.Add("write: " + write);
+        }
         using var output = new System.IO.MemoryStream();
         using (var writer = new System.Text.Json.Utf8JsonWriter(output))
         {
@@ -1127,9 +1486,15 @@ public sealed class ToolRuntime
             writer.WriteString("operation", intent.ToolId.ToString());
             writer.WriteString("risk", intent.Risk.ToString().ToLowerInvariant());
             writer.WriteString("reason", reason);
-            writer.WriteString("intentFingerprint", IntentFingerprint(intent, effectiveIntent));
+            writer.WriteString("intentFingerprint", IntentFingerprint(intent, effectiveIntent, additionalEffectiveIntents));
             if (effectiveIntent is not null)
                 writer.WriteString("effectiveOperation", effectiveIntent.ToolId.ToString());
+            if (additionalEffectiveIntents is { Count: > 0 })
+            {
+                writer.WriteStartArray("effectiveOperations");
+                foreach (var effective in additionalEffectiveIntents) writer.WriteStringValue(effective.ToolId.ToString());
+                writer.WriteEndArray();
+            }
             if (substitution is not null && substitution.SourceToolId != "mcp.first-effect")
             {
                 writer.WriteStartObject("toolPreferenceSubstitution");
@@ -1152,7 +1517,8 @@ public sealed class ToolRuntime
 
     internal static string IntentFingerprint(ToolIntent intent) => IntentFingerprint(intent, null);
 
-    internal static string IntentFingerprint(ToolIntent intent, ToolIntent? effectiveIntent)
+    internal static string IntentFingerprint(ToolIntent intent, ToolIntent? effectiveIntent,
+        IReadOnlyList<ToolIntent>? additionalEffectiveIntents = null)
     {
         using var output = new System.IO.MemoryStream();
         using (var writer = new System.Text.Json.Utf8JsonWriter(output))
@@ -1168,6 +1534,17 @@ public sealed class ToolRuntime
                 writer.WriteBoolean("requiresPhysicalCreateCapability", true);
             if (intent.EffectiveMutationHistoryRevision is { } historyRevision)
                 writer.WriteNumber("effectiveMutationHistoryRevision", historyRevision);
+            if (intent.EffectiveMutationProposal is { } proposal)
+            {
+                writer.WriteStartObject("effectiveMutationProposal");
+                writer.WriteString("targetPath", proposal.Path);
+                writer.WriteString("operation", proposal.Operation.ToString());
+                writer.WriteBoolean("existedBefore", proposal.TargetExists);
+                writer.WriteNumber("deletedLines", proposal.DeletedLines);
+                writer.WriteNumber("insertedLines", proposal.InsertedLines);
+                writer.WriteNumber("priorLineCount", proposal.OriginalLines);
+                writer.WriteEndObject();
+            }
             WriteStrings(writer, "reads", intent.Claims.Reads);
             WriteStrings(writer, "writes", intent.Claims.Writes);
             writer.WriteStartArray("network");
@@ -1190,15 +1567,22 @@ public sealed class ToolRuntime
                 writer.WriteBoolean("networkRequired", process.NetworkRequired);
                 if (process.WorkingDirectory is { } cwd) writer.WriteString("workingDirectory", cwd);
                 else writer.WriteNull("workingDirectory");
+                if (process.Isolation != ProcessIsolation.None)
+                    writer.WriteString("isolation", process.Isolation.ToString());
                 writer.WriteEndObject();
             }
             else writer.WriteNull("process");
             writer.WriteEndObject();
         }
         var primary = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(output.ToArray()));
-        return effectiveIntent is null ? primary : Convert.ToHexString(
+        var fingerprint = effectiveIntent is null ? primary : Convert.ToHexString(
             System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.ASCII.GetBytes(
                 primary + ":" + IntentFingerprint(effectiveIntent))));
+        if (additionalEffectiveIntents is null || additionalEffectiveIntents.Count == 0) return fingerprint;
+        foreach (var effective in additionalEffectiveIntents)
+            fingerprint = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.ASCII.GetBytes(fingerprint + ":" + IntentFingerprint(effective))));
+        return fingerprint;
     }
 
     private static PermissionDecisionRecord CombinePermissionDecisions(PermissionDecisionRecord primary,
@@ -1215,13 +1599,18 @@ public sealed class ToolRuntime
     }
 
     private AuthorizedToolIntent AuthorizeIntents(ToolIntent primary, ToolIntent? effective,
-        GrantId? approvedGrant, bool approved)
+        GrantId? approvedGrant, bool approved, IReadOnlyList<ToolIntent>? additionalEffectiveIntents = null)
     {
         var authorized = approved ? _policy.AuthorizeApproved(primary, approvedGrant) : _policy.Authorize(primary);
         if (effective is not null)
         {
             if (approved) _ = _policy.AuthorizeApproved(effective, approvedGrant);
             else _ = _policy.Authorize(effective);
+        }
+        foreach (var batchIntent in additionalEffectiveIntents ?? [])
+        {
+            if (approved) _ = _policy.AuthorizeApproved(batchIntent, approvedGrant);
+            else _ = _policy.Authorize(batchIntent);
         }
         return authorized;
     }

@@ -2,8 +2,9 @@
 
 Estado: recorrido integrado del workflow aceptado localmente el 2026-10-18,
 Core `582dc9c` y Coder bundle `1fb3639`/test `b919802`. La atribución de
-mutaciones de procesos al ledger es otro pendiente explícito. Publicación y CI
-de este incremento se comprueban por separado.
+mutaciones de procesos al ledger tiene un primer vertical v1 Strong construido
+y validado localmente el 2026-10-22. La paridad de procesos generales sigue
+pendiente; publicación y CI de cada incremento se comprueban por separado.
 M9 sigue abierto; M8 espera pruebas manuales.
 
 ## Problema
@@ -94,7 +95,7 @@ solos procesos escritores: su contabilidad de mutaciones requiere otro contrato.
 No se publica ni cierra este slice por pasar un build. Ver el hallazgo posterior
 en [el acta de comandos](../validation/m9-native-command-handoff-20261018.md).
 
-## Alcance de la corrección en construcción
+## Alcance de la corrección de procesos escritores
 
 El primer vertical de procesos mutadores requiere un checkout Git y aislamiento
 Strong real. La raíz original conserva los claims y la autorización; la ejecución
@@ -110,15 +111,81 @@ Delete/Move denegados o con Ask sin resolver rechazan/difieren el lote completo;
 una aprobación específica vigente permite evaluarlos bajo los mismos límites.
 La autorización genérica del proceso no sustituye esa aprobación. No hay
 fallback silencioso en workspaces no Git ni cuando Strong no esté disponible.
-Esta sección fija el alcance previsto; todavía no acredita su implementación.
+Esta sección conserva el contrato general. El vertical de extensión v1 descrito
+abajo ya tiene implementación y validación local; no acredita todos los canales
+de procesos escritores.
+
+### Vertical de extensión escritor: dos acciones con aplicación automática autorizada
+
+Decisión consolidada del usuario del 2026-10-21, implementada y validada
+localmente el 2026-10-22 según [el acta](../validation/m9-isolated-extension-publication-20261021.md).
+La publicación requiere la CI del incremento. Reutilizar el control de autonomía/permisos que ya existe, sin añadir
+un selector de publicación, perfiles paralelos ni formularios nuevos de alcance.
+
+| Permisos elegidos por el usuario | Comportamiento |
+|---|---|
+| Normales | Ejecutar genera una propuesta; aplicar el lote completo es la segunda acción. Las aprobaciones necesarias se agrupan por lote. |
+| Elevados/autónomos | Ejecutar genera, valida y publica la propuesta como una sola operación continua, sin preguntas ni otra llamada al modelo. |
+
+El Host deriva el comportamiento del perfil User humano existente
+(`Autonomous` para el recorrido automático), el workspace, las reglas y los
+límites vigentes. El usuario no configura rutas, operaciones ni duración de
+nuevo por cada extensión o modificación. Las excepciones se gestionan desde los
+controles de permisos existentes. CLI/TUI y OmniCoder comparten la decisión
+canónica del Host y su revisión. Cambiar permisos no inicia trabajo ni aplica
+propuestas anteriores. Al retirarlos, la próxima autorización usa el perfil
+actual; una aprobación antigua no conserva autoridad retirada.
+
+El proceso se ejecuta Strong sobre una copia privada, sin escritura al checkout
+ni al common-dir originales. La copia excluye secretos e ignorados de entrada;
+la inspección de salida incluye archivos nuevos ignorados y valida topología,
+alcance y límites. El Host conserva una propuesta protegida con procedencia
+Extension propia, sin fabricar ownership Git.
+
+La aplicación consume el lote inmutable mediante el aplicador común. Resuelve
+las operaciones exactas antes del permiso y valida el conjunto completo antes
+del primer cambio. Conserva lectura efectiva del modelo, tokens/versiones,
+historia durable, presupuestos, fence, pre/postimágenes y recibos. La lectura
+interna del arnés no concede lectura al modelo. Ejecutar un proceso no basta
+para autorizar la publicación.
+
+En automático no se abren diálogos ante falta de permiso, Deny, conflicto o
+límite: la operación informa su estado y conserva la propuesta válida si existe.
+El usuario puede intervenir por iniciativa propia desde sus controles habituales.
+La fuerza de aislamiento Strong/Weak, la categoría del modelo, un probe o los
+privilegios OS del proceso no sustituyen la elección humana de permisos.
+Este vertical conserva Strong; no añade fallback Weak silencioso.
+
+Los recibos de proceso y publicación son separados. Consultar o reconectar no
+inicia trabajo; una continuación usa la fase durable comprobada y no relanza un
+proceso incierto. Una publicación interrumpida exige reconciliación y no promete
+atomicidad global del filesystem. El aplicador deriva operaciones nativas por
+destino y comprueba el lote completo bajo fence. La configuración User vigente
+se vuelve a leer; una política anterior al proceso no conserva permisos retirados.
+El resultado al modelo incluye el estado de publicación y la causalidad durable
+agrupa la subacción en la conversación y el cliente. El aplicador autoriza el
+intent Reconcilable real y no amplía grants a lotes futuros.
+
+La aceptación exige proceso Strong real, allow/deny, validación conjunta,
+conflictos/límites y recuperación; además, cero preguntas en automático,
+perfil elevado que lo activa sin otra selección, retirada de permisos y cambio
+de perfil pasivo. Luna alto acreditó build sin errores/advertencias; Luna bajo
+aprobó 86 casos focales sin fallos ni omisiones, incluidos siete caminos de lote
+con AppContainer real y el siguiente request al proveedor. El acta conserva los
+comandos y el alcance de esa evidencia. Este vertical publica texto completo
+con reemplazo atómico y directorios padre existentes; no anuncia PatchOnly
+localizado. El supervisor v2 trusted conserva su acceso OS declarado en
+ADR-0061, fuera del confinamiento Strong de este canal.
+No se anuncia todavía paridad de process.exec/shell.exec,
+wrappers generales, procesos persistentes ni ConPTY.
 
 **Corrección acordada M9-L-MUT-01 (2026-10-18), implementación parcial:** la
 normalización Host de write existente a edición por diff está publicada y la
 [CI del checkpoint `e84949c`](https://github.com/juancgomezm-s/OmniCore/actions/runs/39517765699)
 está aprobada. La continuidad durable de borrado/movimiento seguido de recreación
-a reemplazo contra preimagen CAS está implementada y validada localmente en el
+a reemplazo contra preimagen CAS está publicada en main `b81b3c2` en el
 [bloque del 2026-10-20](../validation/m9-durable-file-history-20261020.md);
-su acta distingue validación local de la CI exigida antes de integrar. No hay prohibición general
+su acta registra validación local y CI aprobada antes y después del merge. No hay prohibición general
 de write ni de borrar/recrear. El contrato exige preservar
 lectura previa efectiva del modelo, identidad/historial entre Lanes y reinicios,
 permisos y presupuesto del cambio completo. La lectura del arnés no concede

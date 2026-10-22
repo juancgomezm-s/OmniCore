@@ -1367,6 +1367,11 @@ public sealed class FilesystemWriteToolTests
             Assert.False(stale.Succeeded);
             Persist(stale);
 
+            // Reabrimos antes del replay para comprobar que el contrato v4 conserva atribución
+            // además de los metadatos canónicos de reconciliación.
+            store.Close();
+            store = new SqliteEventStore(storePath);
+
             // Metadatos canónicos en el ToolCallStarted de la CREACIÓN: pre = centinela absent.
             var events = store.ReadFrom(sessionId, 1);
             var tracker = CanonicalStateTracker.Replay(codecs, events); // replay limpio: no lanza
@@ -1384,7 +1389,13 @@ public sealed class FilesystemWriteToolTests
                     Assert.Equal("nuevo.txt", started.TargetRef);
                     Assert.Equal(Reversibility.Unknown, started.Reversibility);
                     Assert.Null(started.BeforeStateRef); // Reconciliation hashes are not a captured pre-image.
-                    Assert.Equal(3, evt.SchemaVersion);
+                    Assert.Equal(4, evt.SchemaVersion);
+                    Assert.Equal(4, started.SchemaVersion());
+                    Assert.Equal("filesystem.write", started.Attribution!.ToolId);
+                    Assert.Equal("BuiltIn", started.Attribution.SourceKind);
+                    Assert.Null(started.Attribution.ExtensionId);
+                    Assert.Null(started.Attribution.PackageSha256);
+                    Assert.False(string.IsNullOrWhiteSpace(started.Attribution.Version));
                     Assert.Equal(FilesystemReconciliationMetadata.AbsentPreHash, meta.ExpectedPreHash);
                     Assert.Equal(VersionOf(content), meta.ExpectedPostHash);
                 }
@@ -1398,6 +1409,8 @@ public sealed class FilesystemWriteToolTests
                     Assert.Equal(Reversibility.Unknown, started2.Reversibility);
                     Assert.Null(started2.BeforeStateRef);
                     Assert.Equal(VersionOf("reemplazado\n"), meta.ExpectedPostHash);
+                    Assert.Equal("filesystem.write", started2.Attribution!.ToolId);
+                    Assert.Equal("BuiltIn", started2.Attribution.SourceKind);
                 }
             }
 

@@ -4,14 +4,419 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using OmniCore.Abstractions;
+using OmniCore.Context;
+using OmniCore.Domain;
+using OmniCore.Engine;
 using OmniCore.Execution;
 using OmniCore.Extensions;
 using OmniCore.Host;
+using OmniCore.Infrastructure;
 using OmniCore.Sandbox;
-using TrustLevel = OmniCore.Domain.TrustLevel;
+using OmniCore.Security;
+using OmniCore.Tools;
+using Task = System.Threading.Tasks.Task;
 
 public sealed class WindowsAppContainerSandboxTests
 {
+    [Theory]
+    [InlineData(PermissionProfile.Balanced, false, PermissionDecision.Ask, false, false, false, false, false)]
+    [InlineData(PermissionProfile.Autonomous, true, PermissionDecision.Allow, false, false, false, false, false)]
+    [InlineData(PermissionProfile.Balanced, false, PermissionDecision.Ask, true, false, false, false, false)]
+    [InlineData(PermissionProfile.Balanced, false, PermissionDecision.Deny, true, false, false, false, false)]
+    [InlineData(PermissionProfile.Balanced, false, PermissionDecision.Allow, false, true, false, false, false)]
+    [InlineData(PermissionProfile.Balanced, false, PermissionDecision.Allow, false, false, true, false, false)]
+    [InlineData(PermissionProfile.Autonomous, true, PermissionDecision.Allow, false, false, false, true, false)]
+    [InlineData(PermissionProfile.Autonomous, true, PermissionDecision.Allow, false, false, false, true, true)]
+    public async Task Strong_extension_batch_is_published_as_one_protected_host_action(
+        PermissionProfile profile, bool automatic, PermissionDecision applyDecision, bool blockApplySilently,
+        bool staleBeforeApply, bool rejectByBudget, bool seedTombstone, bool retryBlockedProposal)
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("AppContainer integration tests run only on Windows."); return; }
+        var capabilities = new WindowsAppContainerCapabilitiesProbe().Probe();
+        if (!capabilities.StrongAvailable) { Assert.Skip("AppContainer is unavailable: " + capabilities.StrongUnavailableReason); return; }
+
+        var root = Path.Combine(Path.GetTempPath(), "OmniExtensionBatchE2E" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var package = Path.Combine(root, "package");
+        var data = Path.Combine(root, "runtime");
+        Directory.CreateDirectory(workspace); Directory.CreateDirectory(package);
+        try
+        {
+            File.WriteAllText(Path.Combine(workspace, ".gitignore"), "m9-extension-marker.txt\n");
+            File.WriteAllText(Path.Combine(workspace, "tracked.txt"), "baseline\n");
+            RunGit(workspace, "init"); RunGit(workspace, "config", "user.name", "Test");
+            RunGit(workspace, "config", "user.email", "test@localhost");
+            RunGit(workspace, "add", ".gitignore", "tracked.txt"); RunGit(workspace, "commit", "-m", "base");
+            foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory, "OmniCore.SandboxTestProcess*")
+                .Concat(Directory.EnumerateFiles(AppContext.BaseDirectory, "OmniCore.*.dll")))
+                File.Copy(file, Path.Combine(package, Path.GetFileName(file)), overwrite: true);
+            File.WriteAllText(Path.Combine(package, ExtensionManifestLoader.ManifestFileName), """
+                manifestVersion: 1
+                id: fixture.batch
+                version: 1.0.0
+                displayName: Batch fixture
+                publisher: tests
+                omnicoreApi: '1.0'
+                provides:
+                  tools:
+                    - name: mutate
+                      schema: schema.json
+                requests:
+                  capabilities: [tool.register]
+                  permissions:
+                    process:
+                      - executable: OmniCore.SandboxTestProcess.exe
+                    paths:
+                      write: [m9-extension-marker.txt]
+                runtime:
+                  kind: process
+                  command: OmniCore.SandboxTestProcess.exe
+                  args: [extension-rpc-write-marker, ., m9-extension-marker.txt]
+                """);
+            File.WriteAllText(Path.Combine(package, "schema.json"), "{\"type\":\"object\"}");
+            var discovered = Assert.Single(new ExtensionManifestLoader().Discover(package, TrustLevel.Project,
+                workspaceTrusted: true, consentedCapabilities: new HashSet<string>(["tool.register"], StringComparer.Ordinal)));
+            var extensionTool = new ExtensionTool(discovered, Assert.Single(discovered.Manifest!.Provides!.Tools!),
+                File.ReadAllText(Path.Combine(package, "schema.json")),
+                new ExtensionRpcProcessInvoker(new WindowsAppContainerProcessLauncher()), workspace,
+                stillConsented: () => true);
+
+            var artifacts = new FileArtifactStore(data);
+            using var history = new SqliteWorkspaceMutationHistoryStore(data);
+            string? tombstoneHashForRead = null;
+            if (seedTombstone)
+            {
+                var oldImage = System.Text.Encoding.UTF8.GetBytes("old logical image\n");
+                var oldHash = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(oldImage));
+                tombstoneHashForRead = oldHash;
+                history.RecordObservation(workspace, "m9-extension-marker.txt", oldHash,
+                    TestContext.Current.CancellationToken);
+                var deletion = new WorkspaceMutationReceipt(history.GetWorkspaceId(workspace),
+                    "m9-extension-marker.txt", ToolCallId.New(), "seed-run", "seed-turn", "DeleteFile",
+                    oldHash, null, FilesystemPreimage.CaptureHistoryImage(artifacts, oldImage), null,
+                    1, 0, WorkspaceMutationReceiptState.Prepared);
+                history.Prepare([deletion], TestContext.Current.CancellationToken);
+                history.Complete([deletion with { State = WorkspaceMutationReceiptState.Applied }],
+                    [new WorkspaceFileHistoryEntry(deletion.WorkspaceId, deletion.RelativePath,
+                        WorkspaceFileHistoryState.Tombstone, oldHash, deletion.PreimageRef, 2, deletion.ToolCallId)],
+                    TestContext.Current.CancellationToken);
+            }
+            var coordinator = new WorktreeIntegrationHostCoordinator(workspace, data, artifacts,
+                new GitWorktreeStore(SystemProcessRuntime.Instance()));
+            var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
+                includeMutationTools: true, includeProcessTools: false, worktreeIntegrationCoordinator: coordinator);
+            hostTools.RegisterExtensionTool(extensionTool);
+            var catalog = hostTools.Catalog();
+            var key = ModelPolicyKey.For("extension-batch-fixture", "extension-batch-fixture");
+            var fullAgent = ModelPolicyPresets.FullAgent();
+            var selectedPolicy = rejectByBudget
+                ? new UserModelPolicy(fullAgent.Category, fullAgent.ToolPolicy,
+                    new FileMutationPolicy(FileMutationMode.Full, DestructiveActionPolicy.Ask,
+                        DestructiveActionPolicy.Ask, 8, 0, 1.0, requirePriorRead: true,
+                        requireExpectedVersionToken: true, requirePostEditValidation: true,
+                        allowParallelMutations: false), fullAgent.Source, fullAgent.Note,
+                    fullAgent.MaxModelStepsPerTurn, fullAgent.MaxToolCallsPerTurn,
+                    fullAgent.AllowOrchestration, fullAgent.MaxGenerationSeconds)
+                : fullAgent;
+            var modelPolicy = EffectiveModelPolicy.Resolve(key,
+                new StoredModelPolicy(key, 1, selectedPolicy, DateTimeOffset.UnixEpoch,
+                    DateTimeOffset.UnixEpoch),
+                new HarnessPolicy(ToolCallFormat.Native, ToolMode.Direct, 16, GuidanceLevel.Full, 3,
+                    PlanControl.Assisted, 8));
+            var boundary = OmniCliRuntime.CreateBoundary(modelPolicy, workspace, catalog);
+            var events = new List<DomainEventPayload>();
+            var permissions = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>())
+                .WithModeDefaults(RunMode.Act).WithProfile(profile);
+            if (!automatic)
+                permissions.WithUserPolicyTool("extension.batch.apply", PermissionDecision.Ask)
+                    .WithUserPolicyTool("filesystem.write", PermissionDecision.Ask);
+            if (automatic && retryBlockedProposal)
+                permissions.WithUserPolicyTool("filesystem.write", PermissionDecision.Deny);
+            var runtime = new ToolRuntime(catalog, permissions, payload => { events.Add(payload); return VoidBox.Instance; },
+                boundary, executableResolver: null, additionalBoundaries: [extensionTool.Boundary]);
+            var runId = RunId.New().ToString();
+            var turnId = TurnId.New().ToString();
+            var expectedRunId = runId;
+            var readRegistry = boundary.ReadRegistry();
+            if (tombstoneHashForRead is not null)
+                readRegistry.RecordRead("m9-extension-marker.txt", tombstoneHashForRead);
+            var context = new ToolExecutionContext(workspace, readRegistry, emitEvent: events.Add,
+                artifacts: artifacts, workspaceWriteLeases: HostWorkspaceWriteLeases.Shared,
+                mutationHistory: history, mutationRunId: runId, mutationTurnId: turnId,
+                mutationLaneId: LaneId.New().ToString());
+            var originalCall = new ValidatedToolCall(ToolCallId.New(), extensionTool.Descriptor.Id,
+                "model-extension-call", "{\"name\":\"mutate\",\"arguments\":{}}");
+            if (automatic)
+            {
+                var store = new InMemoryEventStore();
+                var codecs = EventCodecs.Create();
+                var session = SessionId.New();
+                var run = TestRun.Open(store, session);
+                expectedRunId = run.RunId.ToString();
+                var requests = new List<ModelRequest>();
+                var providerCalls = 0;
+                ToolCallId? explicitApplyCallId = null;
+                string? retainedProposalId = null;
+                string? retainedArtifactHash = null;
+                long? retainedArtifactSize = null;
+                var providerCallId = originalCall.ToolCallId;
+                var turn = new ExplorerTurn((request, _) =>
+                {
+                    requests.Add(request);
+                    var providerCall = providerCalls++;
+                    if (providerCall == 0)
+                        return new ModelResponse([new ToolCallBlock(providerCallId, originalCall.ProviderCallId,
+                            originalCall.ToolId.ToString(), originalCall.NormalizedArgumentsJson)], StopReason.ToolUse,
+                            new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null));
+                    if (retryBlockedProposal && providerCall == 1)
+                    {
+                        var retainedResult = Assert.Single(request.Messages.SelectMany(message => message.Content)
+                            .OfType<ToolResultBlock>(), result => result.Id == originalCall.ToolCallId);
+                        var retainedJson = Assert.Single(retainedResult.Content.OfType<TextBlock>()).Text;
+                        using var retained = System.Text.Json.JsonDocument.Parse(retainedJson);
+                        var retainedRoot = retained.RootElement;
+                        Assert.Equal("blocked", retainedRoot.GetProperty("publication").GetString());
+                        retainedProposalId = retainedRoot.GetProperty("proposalId").GetString();
+                        retainedArtifactHash = retainedRoot.GetProperty("artifactHash").GetString();
+                        retainedArtifactSize = retainedRoot.GetProperty("artifactSize").GetInt64();
+                        var protectedArtifact = Assert.Single(store.ReadFrom(session, 1).Select(codecs.Decode)
+                            .OfType<ToolCallSucceeded>(), succeeded => succeeded.ToolCallId == originalCall.ToolCallId)
+                            .ResultArtifact;
+                        Assert.NotNull(protectedArtifact);
+                        Assert.Equal(retainedArtifactHash, protectedArtifact.Hash.Value);
+                        Assert.Equal(retainedArtifactSize, protectedArtifact.Size);
+                        Assert.True(artifacts.Verify(protectedArtifact.Hash, protectedArtifact.Size));
+                        Assert.Equal(new[] { "publication", "proposalId", "artifactHash", "artifactSize", "files" },
+                            retainedRoot.EnumerateObject().Select(property => property.Name));
+
+                        // Resolve only the user permission that blocked publication. The read
+                        // registry already contains the tombstone preimage, so the same CAS proposal
+                        // can now be applied without invoking the extension again.
+                        permissions.WithUserPolicyTool("filesystem.write", PermissionDecision.Allow);
+                        explicitApplyCallId = ToolCallId.New();
+                        var applyArgs = System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            proposalId = retainedProposalId,
+                            artifactHash = retainedArtifactHash,
+                            artifactSize = retainedArtifactSize,
+                        });
+                        return new ModelResponse([new ToolCallBlock(explicitApplyCallId!,
+                            "fixture-explicit-batch-apply", "extension.batch.apply", applyArgs)], StopReason.ToolUse,
+                            new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null));
+                    }
+                    if (retryBlockedProposal && providerCall == 2)
+                    {
+                        var appliedResult = Assert.Single(request.Messages.SelectMany(message => message.Content)
+                            .OfType<ToolResultBlock>(), result => result.Id == explicitApplyCallId);
+                        Assert.Contains("Extension batch applied.",
+                            Assert.Single(appliedResult.Content.OfType<TextBlock>()).Text, StringComparison.Ordinal);
+                    }
+                    return new ModelResponse([new TextBlock("published")], StopReason.EndTurn,
+                        new TokenUsage(1, 1, 0, 0, 0), null, new ProviderMetadata("fixture", "fixture", null));
+                }, new ScriptedToolExecutor(catalog, permissions, workspace, boundary, null, null, false,
+                        artifacts: artifacts, workspaceWriteLeases: HostWorkspaceWriteLeases.Shared,
+                        additionalBoundaries: [extensionTool.Boundary], mutationHistory: history),
+                    catalog, new ContextMaterializer(new FakeTokenCounter(), []),
+                    new ExecutionFingerprint("fixture", "h", "t", "c", "o", "fixture-build"),
+                    new ModelSelection(new ModelIdValue("fixture"), 8192, ToolMode.Direct, null),
+                    store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(), boundary: boundary);
+                var turnResult = turn.Ask("run extension", "system", session, run.RunId,
+                    run.RootLane, "", TestContext.Current.CancellationToken);
+                Assert.True(turnResult.StopReason == StopReason.EndTurn,
+                    "turn=" + turnResult.StopReason + " failure=" + turnResult.FailureDiagnostic);
+                var allEvents = store.ReadFrom(session, 1).Select(codecs.Decode).ToArray();
+                Assert.Empty(allEvents.OfType<PermissionRequested>());
+                var child = Assert.Single(allEvents.OfType<ToolCallRequested>(), request => request.ParentToolCallId == originalCall.ToolCallId);
+                Assert.Equal("extension.batch.apply", child.ToolName);
+                var nextRequest = requests[^1];
+                var visibleResult = Assert.Single(nextRequest.Messages.SelectMany(message => message.Content)
+                    .OfType<ToolResultBlock>(), result => result.Id == originalCall.ToolCallId);
+                var resultJson = Assert.Single(visibleResult.Content.OfType<TextBlock>()).Text;
+                using var status = System.Text.Json.JsonDocument.Parse(resultJson);
+                Assert.True(status.RootElement.GetProperty("publication").GetString() == (retryBlockedProposal ? "blocked" : "applied"),
+                    "result=" + resultJson + " permissions=" + string.Join(",", allEvents.OfType<PermissionEvaluated>().Select(evt => evt.Decision))
+                    + " rejected=" + string.Join("|", allEvents.OfType<ToolCallRejected>().Select(evt => evt.Reason))
+                    + " denied=" + string.Join("|", allEvents.OfType<PermissionDenied>().Select(evt => evt.Cause))
+                    + " failed=" + string.Join("|", allEvents.OfType<ToolCallFailed>().Select(evt => evt.Cause)));
+                Assert.Equal("m9-extension-marker.txt", status.RootElement.GetProperty("files")[0].GetString());
+                Assert.Equal("extension-applied", File.ReadAllText(Path.Combine(workspace, "m9-extension-marker.txt")));
+                Assert.Equal(2, allEvents.OfType<ToolCallStarted>().Count());
+                Assert.Single(allEvents.OfType<ToolCallStarted>(), started =>
+                    started.Attribution?.ToolId == extensionTool.Descriptor.Id.ToString());
+                Assert.DoesNotContain(nextRequest.Messages.SelectMany(message => message.Content)
+                    .OfType<ToolCallBlock>(), call => call.Id == child.ToolCallId);
+                Assert.DoesNotContain(nextRequest.Messages.SelectMany(message => message.Content)
+                    .OfType<ToolResultBlock>(), result => result.Id == child.ToolCallId);
+            }
+            else
+            {
+                var staged = runtime.Run(originalCall, new ToolPreparationContext(workspace, DateTimeOffset.UtcNow),
+                    context, userApprovesAsk: true, TestContext.Current.CancellationToken);
+                Assert.True(staged.Succeeded, "extension-stage-failed:" + staged.Summary);
+                using var preview = System.Text.Json.JsonDocument.Parse(staged.Preview!);
+                var previewRoot = preview.RootElement;
+                Assert.Equal("m9-extension-marker.txt", previewRoot.GetProperty("files")[0].GetString());
+                Assert.False(previewRoot.TryGetProperty("afterBytes", out _));
+                Assert.False(File.Exists(Path.Combine(workspace, "m9-extension-marker.txt")),
+                    "Strong staging must not publish to the checkout.");
+                Assert.False(previewRoot.TryGetProperty("publication", out _));
+                Assert.False(File.Exists(Path.Combine(workspace, "m9-extension-marker.txt")));
+                var applyArgs = System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    proposalId = previewRoot.GetProperty("proposalId").GetString(),
+                    artifactHash = previewRoot.GetProperty("artifactHash").GetString(),
+                    artifactSize = previewRoot.GetProperty("artifactSize").GetInt64(),
+                });
+                var apply = new ValidatedToolCall(ToolCallId.New(), new ToolId("extension.batch.apply"),
+                    "model-extension-batch-apply", applyArgs);
+                if (blockApplySilently || staleBeforeApply || rejectByBudget)
+                {
+                    if (blockApplySilently)
+                        permissions.WithProfile(PermissionProfile.Autonomous)
+                            .WithUserPolicyTool("filesystem.write", applyDecision);
+                    if (staleBeforeApply)
+                        File.WriteAllText(Path.Combine(workspace, "m9-extension-marker.txt"), "concurrent editor");
+                    var requestsBeforeBlock = events.OfType<InteractionRequested>().Count();
+                    var startedBeforeBlock = events.OfType<ToolCallStarted>().Count();
+                    var blocked = runtime.Run(apply, new ToolPreparationContext(workspace, DateTimeOffset.UtcNow),
+                        context, userApprovesAsk: false, TestContext.Current.CancellationToken);
+                    Assert.False(blocked.Succeeded);
+                    if (staleBeforeApply)
+                        Assert.Equal("concurrent editor", File.ReadAllText(Path.Combine(workspace, "m9-extension-marker.txt")));
+                    else
+                        Assert.False(File.Exists(Path.Combine(workspace, "m9-extension-marker.txt")));
+                    Assert.Equal(requestsBeforeBlock, events.OfType<InteractionRequested>().Count());
+                    Assert.Equal(startedBeforeBlock, events.OfType<ToolCallStarted>().Count());
+                    return;
+                }
+                var published = runtime.Run(apply, new ToolPreparationContext(workspace, DateTimeOffset.UtcNow),
+                    context, userApprovesAsk: true, TestContext.Current.CancellationToken);
+                Assert.True(published.Succeeded, "batch-apply-failed:" + published.Summary);
+                Assert.Equal("extension-applied", File.ReadAllText(Path.Combine(workspace, "m9-extension-marker.txt")));
+                Assert.Equal(2, events.OfType<InteractionRequested>().Count());
+            }
+            if (seedTombstone)
+            {
+                var current = Assert.IsType<WorkspaceFileHistoryEntry>(history.ReadFile(workspace, "m9-extension-marker.txt"));
+                Assert.Equal(WorkspaceFileHistoryState.Present, current.State);
+                var charge = Assert.Single(history.ReadBudgetChargesForRun(workspace, expectedRunId));
+                Assert.Equal("ReplaceFile", charge.Operation);
+            }
+        }
+        finally { TryDelete(root); }
+    }
+
+    [Fact]
+    public async Task Strong_extension_writer_runs_in_private_copy_and_captures_ignored_output()
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("AppContainer integration tests run only on Windows."); return; }
+        var capabilities = new WindowsAppContainerCapabilitiesProbe().Probe();
+        if (!capabilities.StrongAvailable) { Assert.Skip("AppContainer is unavailable: " + capabilities.StrongUnavailableReason); return; }
+
+        var root = Path.Combine(Path.GetTempPath(), "OmniExtensionStaged" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var package = Path.Combine(root, "package");
+        Directory.CreateDirectory(workspace); Directory.CreateDirectory(package);
+        try
+        {
+            File.WriteAllText(Path.Combine(workspace, ".gitignore"), "m9-extension-marker.txt\n");
+            File.WriteAllText(Path.Combine(workspace, "tracked.txt"), "base\n");
+            File.WriteAllText(Path.Combine(workspace, "m9-extension-marker.txt"), "original\n");
+            RunGit(workspace, "init"); RunGit(workspace, "config", "user.name", "Test");
+            RunGit(workspace, "config", "user.email", "test@localhost");
+            RunGit(workspace, "add", ".gitignore", "tracked.txt"); RunGit(workspace, "commit", "-m", "base");
+            foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory, "OmniCore.SandboxTestProcess.*")
+                .Concat(Directory.EnumerateFiles(AppContext.BaseDirectory, "OmniCore.*.dll")))
+                File.Copy(file, Path.Combine(package, Path.GetFileName(file)), overwrite: true);
+            File.WriteAllText(Path.Combine(package, ExtensionManifestLoader.ManifestFileName), """
+                manifestVersion: 1
+                id: fixture.staged
+                version: 1.0.0
+                displayName: Staged fixture
+                publisher: tests
+                omnicoreApi: '1.0'
+                requests:
+                  capabilities: [tool.register]
+                  permissions:
+                    process:
+                      - executable: OmniCore.SandboxTestProcess.exe
+                    paths:
+                      write: [m9-extension-marker.txt]
+                runtime:
+                  kind: process
+                  command: OmniCore.SandboxTestProcess.exe
+                  args: [extension-rpc-write-marker, ., m9-extension-marker.txt]
+                """);
+            var extension = Assert.Single(new ExtensionManifestLoader().Discover(package, TrustLevel.Trusted,
+                workspaceTrusted: true, consentedCapabilities: new HashSet<string>(["tool.register"], StringComparer.Ordinal)));
+            var process = new OmniCore.Domain.ProcessClaim(Path.Combine(package, "OmniCore.SandboxTestProcess.exe"),
+                ["extension-rpc-write-marker", ".", "m9-extension-marker.txt"], "ExtensionTool",
+                WorkingDirectory: workspace, Isolation: OmniCore.Domain.ProcessIsolation.PrivateExtensionWorkspace);
+            var invocation = await new ExtensionRpcProcessInvoker(new WindowsAppContainerProcessLauncher())
+                .InvokeStagedAsync(extension, "tools/call", "{\"name\":\"mutate\"}",
+                    new OmniCore.Domain.ResourceClaims([], ["m9-extension-marker.txt"], [], process, []), workspace,
+                    TestContext.Current.CancellationToken);
+            Assert.Contains("extension-applied", invocation.Response);
+            var output = Assert.Single(invocation.Changes, change => change.RelativePath == "m9-extension-marker.txt");
+            Assert.Null(output.BeforeSha256);
+            Assert.Equal("extension-applied", System.Text.Encoding.UTF8.GetString(output.AfterBytes!));
+            Assert.Equal("original\n", File.ReadAllText(Path.Combine(workspace, "m9-extension-marker.txt")));
+        }
+        finally { TryDelete(root); }
+    }
+
+    [Fact]
+    public async Task Strong_read_only_v1_extension_receives_no_checkout_wide_write_access()
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("AppContainer integration tests run only on Windows."); return; }
+        var capabilities = new WindowsAppContainerCapabilitiesProbe().Probe();
+        if (!capabilities.StrongAvailable) { Assert.Skip("AppContainer is unavailable: " + capabilities.StrongUnavailableReason); return; }
+
+        var root = Path.Combine(Path.GetTempPath(), "OmniExtensionReadonly" + Guid.NewGuid().ToString("N"));
+        var workspace = Path.Combine(root, "workspace");
+        var package = Path.Combine(root, "package");
+        Directory.CreateDirectory(workspace); Directory.CreateDirectory(package);
+        try
+        {
+            File.WriteAllText(Path.Combine(workspace, "marker.txt"), "original");
+            foreach (var file in Directory.EnumerateFiles(AppContext.BaseDirectory, "OmniCore.SandboxTestProcess.*")
+                .Concat(Directory.EnumerateFiles(AppContext.BaseDirectory, "OmniCore.*.dll")))
+                File.Copy(file, Path.Combine(package, Path.GetFileName(file)), overwrite: true);
+            File.WriteAllText(Path.Combine(package, ExtensionManifestLoader.ManifestFileName), $$"""
+                manifestVersion: 1
+                id: fixture.readonly
+                version: 1.0.0
+                displayName: Read only fixture
+                publisher: tests
+                omnicoreApi: '1.0'
+                requests:
+                  capabilities: [tool.register]
+                  permissions:
+                    process:
+                      - executable: OmniCore.SandboxTestProcess.exe
+                runtime:
+                  kind: process
+                  command: OmniCore.SandboxTestProcess.exe
+                  args: [extension-rpc-write-marker, '{{workspace}}', marker.txt]
+                """);
+            var extension = Assert.Single(new ExtensionManifestLoader().Discover(package, TrustLevel.Trusted,
+                workspaceTrusted: true, consentedCapabilities: new HashSet<string>(["tool.register"], StringComparer.Ordinal)));
+            var process = new OmniCore.Domain.ProcessClaim(Path.Combine(package, "OmniCore.SandboxTestProcess.exe"),
+                ["extension-rpc-write-marker", workspace, "marker.txt"], "ExtensionTool", WorkingDirectory: workspace);
+            InvalidDataException? denied = null;
+            try
+            {
+                await new ExtensionRpcProcessInvoker(new WindowsAppContainerProcessLauncher())
+                    .InvokeAsync(extension, "tools/call", "{\"name\":\"mutate\"}",
+                        new OmniCore.Domain.ResourceClaims([], [], [], process, []), TestContext.Current.CancellationToken);
+            }
+            catch (InvalidDataException ex) { denied = ex; }
+            Assert.NotNull(denied);
+            Assert.Equal("original", File.ReadAllText(Path.Combine(workspace, "marker.txt")));
+        }
+        finally { TryDelete(root); }
+    }
+
     [Fact]
     public async Task Extension_JSON_RPC_runs_as_a_real_Strong_stdio_process()
     {
@@ -329,6 +734,16 @@ public sealed class WindowsAppContainerSandboxTests
 
     private static string HelperExecutable() => Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows()
         ? "OmniCore.SandboxTestProcess.exe" : "OmniCore.SandboxTestProcess");
+
+    private static void RunGit(string root, params string[] args)
+    {
+        var start = new ProcessStartInfo("git") { WorkingDirectory = root, UseShellExecute = false,
+            RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+        foreach (var argument in args) start.ArgumentList.Add(argument);
+        using var process = Process.Start(start)!;
+        var output = process.StandardOutput.ReadToEnd(); var error = process.StandardError.ReadToEnd(); process.WaitForExit();
+        Assert.True(process.ExitCode == 0, output + error);
+    }
 
     private static string OutputText(SandboxProcessOutput output) => string.Concat(output.Chunks.Select(chunk => chunk.Text));
 
