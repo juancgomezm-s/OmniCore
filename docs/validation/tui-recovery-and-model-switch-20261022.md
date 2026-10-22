@@ -30,6 +30,7 @@ Después de corregir:
 - 11 pruebas de TUI aprobadas: recuperación, resize, ocho cambios de modelo, Esc en generación,
   salida explícita, catálogo deliberadamente pendiente/tardío, selección y scroll existentes.
 - 104 pruebas de observabilidad, consumo, historial, lifecycle y protocolo aprobadas.
+- 16 pruebas del instalador/launcher npm aprobadas (131 comprobaciones en total).
 - Build de los proyectos afectados sin advertencias ni errores.
 - Frames RGB del driver, con datos sintéticos, en
   `%TEMP%/omni-tui-recovery-frames-20261022/`: final visible a 80×25 y 120×40, y chat vivo
@@ -56,6 +57,16 @@ No se incluyen los cambios de Companion que otro trabajo está editando en el ch
 El instalador oficial `npm run install:cli` compila, empaqueta y reemplaza el paquete global;
 la comprobación compara los hashes de las DLL instaladas con las recién publicadas.
 Configuración, credenciales y journals del usuario no forman parte del paquete npm.
+
+Instalación completada y verificada: `omni` conserva su ruta global y carga
+`0.1.0+b6ac1f91b429a83af586cf8ce4e8ef25a7120c55`. Las 55 DLL publicadas coinciden
+por SHA-256 con las instaladas; `omni --help`, simulación y verificación de un journal
+real temporal pasan mediante el launcher instalado. SHA-256 de `omni.dll`:
+`a1dfd41210c888a9749e71356347bc7988ff0ba558f4c180fcd225bfa6cef99f`.
+Evidencia del smoke en `%TEMP%/omni-installed-tui-smoke-20261022/`.
+Respaldo del paquete anterior en
+`%TEMP%/omni-installed-backup-20261022/omnicore-cli-0.1.0.tgz`.
+El checkout principal, con cambios ajenos en curso, no se sobrescribió ni se fusionó a la fuerza.
 
 La reproducción interactiva usa Terminal.Gui real con driver DOTNET, journal SQLite y CAS
 temporales, eventos/teclas reales y proveedor determinista. No acredita una inferencia real
