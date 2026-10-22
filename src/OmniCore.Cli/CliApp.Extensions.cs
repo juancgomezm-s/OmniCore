@@ -11,6 +11,7 @@ public sealed partial class CliApp
         try
         {
             var client = Runtime.Connect(CancellationToken.None); var operation = args[1];
+            if (operation == "context") return Task.FromResult(RunExtensionContext(client, args));
             if (operation == "config")
             {
                 if (args.Length is < 4 or > 5) throw new ArgumentException("extensions config <extensionId> <key> [JSON-value]");
@@ -78,5 +79,44 @@ public sealed partial class CliApp
         }
         catch (Exception error) when (error is IOException or InvalidOperationException or ArgumentException or JsonException or UnauthorizedAccessException)
         { Console.Error.WriteLine(Loc().Resolve("extension.platform.failed") + ": " + error.Message); return Task.FromResult(1); }
+    }
+
+    private static int RunExtensionContext(IOmniClient client, string[] args)
+    {
+        if (args.Length == 2) { Console.WriteLine(client.Query("extensions.context.catalog", CancellationToken.None)?.Json); return 0; }
+        var operation = args[2];
+        if (operation == "status") { Console.WriteLine(client.Query("extensions.context", CancellationToken.None)?.Json); return 0; }
+        if (client is not ITrustedUserActionClient human || args.Length < 4) throw new ArgumentException(Loc().Resolve("extension.context.usage"));
+        string id; string fields;
+        if (operation == "approve")
+        {
+            if (args.Length != 5 || Console.IsInputRedirected || Console.IsOutputRedirected)
+                throw new UnauthorizedAccessException(Loc().Resolve("extension.context.help"));
+            var preview = (JsonSerializer.Deserialize(client.Query("extensions.context", CancellationToken.None)?.Json ?? "[]",
+                ExtensionJson.Default.ExtensionContextPreviewArray) ?? []).Single(item => item.Id == args[3] && item.ContentSha256 == args[4]);
+            Console.WriteLine(string.Join("\n\n", preview.Items.Select(item => SessionPreferencesPresentation.SafeText(item.Content))));
+            Console.WriteLine(Loc().Resolve("extension.context.help"));
+            Console.WriteLine(Loc().Resolve("extension.context.confirm"));
+            if (!string.Equals(Console.ReadLine(), "CONFIRM", StringComparison.Ordinal)) return 1;
+            id = preview.ExtensionId; fields = JsonObj.Field("previewId", preview.Id) + "," + JsonObj.Field("contentSha256", preview.ContentSha256)
+                + "," + JsonObj.Field("expectedManifestSha256", preview.ManifestSha256) + "," + JsonObj.Field("expectedPackageSha256", preview.PackageSha256);
+        }
+        else
+        {
+            id = args[3];
+            if (operation == "revoke") fields = "";
+            else if (operation == "preview" && args.Length == 5)
+            {
+                var source = (JsonSerializer.Deserialize(client.Query("extensions.context.catalog", CancellationToken.None)?.Json ?? "[]",
+                    ExtensionJson.Default.ExtensionPackageStateArray) ?? []).Single(item => item.Id == id);
+                fields = JsonObj.Field("contributor", args[4]) + "," + JsonObj.Field("expectedManifestSha256", source.ManifestSha256)
+                    + "," + JsonObj.Field("expectedPackageSha256", source.PackageSha256);
+            }
+            else throw new ArgumentException("extension.context.invalid_operation");
+        }
+        var ack = human.SendUserAction(WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"extensions.package\","
+            + JsonObj.Field("action", "context-" + operation) + "," + JsonObj.Field("extensionId", id) + (fields.Length == 0 ? "" : "," + fields) + "}"), CancellationToken.None);
+        if (ack.Status != "ok") { Console.Error.WriteLine(Loc().Resolve("extension.context.failed")); return 1; }
+        Console.WriteLine(client.Query("extensions.context", CancellationToken.None)?.Json); return 0;
     }
 }

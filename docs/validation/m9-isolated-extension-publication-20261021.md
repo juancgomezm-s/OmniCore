@@ -151,6 +151,58 @@ SHA-256 de la DLL final con ambas correcciones:
 Los workers trabajaron de forma secuencial. No se amplió el timeout de CI ni se
 suprimió ninguna de las pruebas fallidas; la nueva matriz vuelve a ejecutarlas.
 
+## Integración con la revisión final de plataforma
+
+La [matriz corregida de `9bef507`](https://github.com/juancgomezm-s/OmniCore/actions/runs/39775150062)
+aprobó sus cinco jobs: suites Windows/Linux, instalación y actualización npm en
+ambos sistemas y paquete Linux. Windows registró 5082 correctas, 12 omitidas y
+cero fallos de 5094; los siete escenarios de publicación Strong se ejecutaron y
+aprobaron. Esta evidencia corresponde a ese commit, no a revisiones posteriores.
+
+Antes del merge a main apareció la revisión comprometida `78808c1` de
+`extensions-platform`: autorización explícita de contexto, avisos y atribución
+v4 de herramientas, cliente headless y contratos de SDK/esquema. Se combina en
+el worktree aislado con `9bef507`, conservando las dos líneas de historia. La
+aceptación de ese árbol combinado requiere validación focal independiente y una
+nueva CI completa; la matriz de `9bef507` no la sustituye.
+
+Luna alto resolvió el conflicto en `OmniServer.WorkspacePanel.cs` conservando
+el filtro causal de subacciones M9 y la atribución de herramientas v4. La
+proyección conserva también la identidad cuando el efecto queda incierto; la
+fixture comprueba su rastro y lo reconcilia antes de iniciar otra operación.
+Se corrigió la localización del repositorio en las pruebas de plataforma para
+ejecutarlas desde artifacts-path, sin cambiar sus comprobaciones funcionales.
+
+En el árbol combinado: SDK **44/44**, build aislado de solución sin errores ni
+advertencias y **29/29** focos de Strong, v4/replay, autorización de contexto y
+proyección, sin omisiones. El árbol no incorpora cambios sin commit del checkout
+compartido. Los focos de Luna bajo se registran a continuación; no se suman como
+pruebas distintas a los resultados de construcción.
+
+La validación independiente aprobó 17 focos de publicación, permisos, contexto,
+atribución y replay, y detectó un fallo adicional de la fixture headless: otro
+helper todavía buscaba el repositorio desde AppContext y suponía el CLI en el bin
+convencional. Ese resultado inicial fue **17 correctas y una fallida**, no una
+aceptación completa. El binario de esa pasada tenía hash
+`A042C7AE943DB189CADB500EC32413E6C83B364AE0397A7C99A491C9FEAEC07F`.
+
+Finalizado Luna bajo, Luna alto corrigió la búsqueda desde CallerFilePath y el
+uso del CLI fresco copiado al output de pruebas. El build incremental aislado
+terminó sin errores ni advertencias; el caso headless aprobó 1/1. Después Luna
+bajo revisó el ajuste y repitió sólo ese cierre: **1/1, sin omisiones**. Confirmó
+los tres pilotos, la alternativa reabierta, contexto autorizado y original intacto.
+
+~~~powershell
+dotnet exec C:/Users/juanc/AppData/Local/Temp/omnicore-m9-extension-batch-build/bin/OmniCore.Tests/debug/OmniCore.Tests.dll -method '*StdioTransportTests.Independent_Node_headless_client_accepts_all_three_pilots_and_reopens_the_alternative' -parallelMode none -reporter verbose
+~~~
+
+Hash final de la DLL de pruebas:
+`6A24F4269EE3BDA92915BE5BB4A4FD4D1603BF3565B5AAF2EECE28903178F157`.
+Hash del CLI del mismo output:
+`DE63903963A0A760EFE872952869B698EDB26A439C7EE317908531810EFCCDA0`.
+No se repitieron los 17 focos por cambios exclusivos de fixture; la CI final
+verifica la suite completa sobre el árbol que se publica.
+
 ## Publicación y límites
 
 La integración en main exige la CI del PR asociado para su revisión exacta:

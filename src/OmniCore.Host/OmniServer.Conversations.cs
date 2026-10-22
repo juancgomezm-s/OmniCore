@@ -121,6 +121,7 @@ public sealed partial class OmniServer
                 // copied from the previously selected conversation.
                 if (name == "conversation.new") StartSession(target);
                 EnsureSessionSecurityPolicy(target);
+                if (_lastSessionId != target) InvalidateExtensionContextScope();
                 _lastSessionId = target; _lastRunId = run; _lastSnapshot = null; _lastWorkingStateText = "";
                 _writerOwnershipUnavailable = false;
                 _recoveryProblem = null;

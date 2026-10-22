@@ -191,6 +191,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("interaction.resolved"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 2))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 3))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.succeeded"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.succeeded"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 1))
@@ -977,7 +978,7 @@ public sealed class Typed
         Of(EventType.Of("toolcall.authorized"), EventJsonContext.Default.ToolCallAuthorized);
 
     public static CodecPair ToolCallStarted() =>
-        Of(EventType.Of("toolcall.started"), EventJsonContext.Default.ToolCallStarted, currentVersion: 3);
+        Of(EventType.Of("toolcall.started"), EventJsonContext.Default.ToolCallStarted, currentVersion: 4);
 
     public static CodecPair ToolCallSucceeded() =>
         Of(EventType.Of("toolcall.succeeded"), EventJsonContext.Default.ToolCallSucceeded, currentVersion: 3);

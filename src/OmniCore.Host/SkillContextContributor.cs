@@ -10,8 +10,15 @@ public sealed class SkillContextContributor(SessionId session, LoadedSkill loade
     public Task<IReadOnlyList<ContextItem>> GetContextAsync(MaterializeRequest request,
         CancellationToken cancellationToken)
     {
+        if (loaded.Skill.ParentPackageId is not null)
+            return System.Threading.Tasks.Task.FromResult<IReadOnlyList<ContextItem>>([]);
+        return System.Threading.Tasks.Task.FromResult(ReadPreview(request, cancellationToken));
+    }
+
+    internal IReadOnlyList<ContextItem> ReadPreview(MaterializeRequest request, CancellationToken cancellationToken)
+    {
         cancellationToken.ThrowIfCancellationRequested();
-        if (request.SessionId != session) return System.Threading.Tasks.Task.FromResult<IReadOnlyList<ContextItem>>([]);
+        if (request.SessionId != session) return [];
         var manifest = loaded.Skill.Manifest;
         var id = manifest.Id!;
         var priority = manifest.Priority >= 50 ? ContextPriority.High : ContextPriority.Normal;
@@ -46,6 +53,6 @@ public sealed class SkillContextContributor(SessionId session, LoadedSkill loade
                     loaded.Skill.Scope, false, ["manifest-sha256=" + loaded.Skill.ManifestSha256,
                         "resource-sha256=" + resource.Sha256])));
         }
-        return System.Threading.Tasks.Task.FromResult<IReadOnlyList<ContextItem>>(items);
+        return items;
     }
 }

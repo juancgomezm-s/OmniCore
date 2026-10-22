@@ -4,8 +4,10 @@ using System.Text.Json.Serialization;
 namespace OmniCore.Protocol;
 
 /// <summary>Portable v1 presentation contract. Data is literal, never HTML or executable code.</summary>
-public sealed record ExtensionView(string Id, string ExtensionId, string Kind, long Revision,
-    string State, IReadOnlyList<ExtensionViewItem> Items, IReadOnlyList<ExtensionViewAction> Actions,
+public sealed record ExtensionView([property: JsonRequired] string Id, [property: JsonRequired] string ExtensionId,
+    [property: JsonRequired] string Kind, [property: JsonRequired] long Revision,
+    [property: JsonRequired] string State, [property: JsonRequired] IReadOnlyList<ExtensionViewItem> Items,
+    [property: JsonRequired] IReadOnlyList<ExtensionViewAction> Actions,
     string? Diagnostic = null, string? Cursor = null, bool Reset = true, IReadOnlyList<string>? RemovedIds = null,
     JsonElement? Metadata = null, IReadOnlyList<ExtensionViewColumn>? Columns = null,
     IReadOnlyList<ExtensionViewField>? Fields = null, IReadOnlyList<ExtensionViewIndicator>? Indicators = null,
@@ -17,9 +19,10 @@ public sealed record ExtensionViewColumn(string Id, string Label, string ValueTy
 public sealed record ExtensionViewField(string Id, string Label, string Kind, JsonElement? Value = null,
     bool Required = false, bool ReadOnly = false, IReadOnlyList<string>? Options = null);
 public sealed record ExtensionViewIndicator(string Id, string Label, string State, decimal? Value = null, string? Unit = null);
-public sealed record ExtensionViewAction(string Id, string Label, bool RequiresUserAuthority, string? ItemId = null,
+public sealed record ExtensionViewAction(string Id, string Label, [property: JsonRequired] bool RequiresUserAuthority, string? ItemId = null,
     string? ConfigurationKey = null, string ConfigurationScope = "workspace", bool Enabled = true, string? DisabledReason = null);
-public sealed record ExtensionViewScope(string WorkspaceId, string? SessionId, string ManifestSha256, string PackageSha256,
+public sealed record ExtensionViewScope([property: JsonRequired] string WorkspaceId, [property: JsonRequired] string? SessionId,
+    [property: JsonRequired] string ManifestSha256, [property: JsonRequired] string PackageSha256,
     string? SnapshotId = null);
 public sealed record ExtensionFormSubmission(string ExtensionId, string ViewId, string ActionId,
     long ExpectedRevision, ExtensionViewScope Scope, JsonElement Values, string Path = "", string Search = "");
@@ -28,12 +31,21 @@ public sealed record ExtensionViewRequest(string ExtensionId, string ViewId, str
 public sealed record ExtensionPackageState(string Id, string Version, string State, string ManifestSha256,
     string PackageSha256, string Provenance, bool Enabled, bool TrustedProcess,
     IReadOnlyList<string> GrantedCapabilities, string? Diagnostic = null, string? RuntimeKind = null,
-    IReadOnlyList<string>? RequestedCapabilities = null, IReadOnlyList<string>? ConfigurationKeys = null);
+    IReadOnlyList<string>? RequestedCapabilities = null, IReadOnlyList<string>? ConfigurationKeys = null,
+    IReadOnlyList<string>? ContextContributors = null);
+public sealed record ExtensionContextPreview(string Id, string ExtensionId, string Contributor, string Version,
+    string WorkspaceId, string SessionId, string RunId, string ManifestSha256, string PackageSha256,
+    string ContentSha256, IReadOnlyList<ExtensionContextText> Items, bool Approved, string? ConsentSha256 = null);
+public sealed record ExtensionContextText(string Id, string Kind, string Content);
+public sealed record ExtensionNotification(long Sequence, string Id, string ExtensionId, string? SessionId,
+    string Level, string Text, string ManifestSha256, string PackageSha256);
+public sealed record ExtensionNotificationPage(long NextSequence, bool Gap, IReadOnlyList<ExtensionNotification> Items);
 public sealed record ExtensionInitialize(string ProtocolVersion, string ExtensionId,
     IReadOnlyList<string> Capabilities, string? SessionId);
 public sealed record ExtensionActivityEvent(long Sequence, string Kind, string Text, string? RunId,
     string? ExecutionId, string? Agent, IReadOnlyList<string> Files, string Activity,
-    string? CheckpointId, bool Recoverable);
+    string? CheckpointId, bool Recoverable, string? ExtensionId = null, string? ToolId = null,
+    string? CorrelationId = null, string? CausationId = null);
 /// <summary>A bounded read projection, not a second journal or a push subscription.</summary>
 public sealed record ExtensionActivityPage(string? SessionId, long NextSequence, long HighWater,
     bool Gap, long? EarliestAvailableSequence, IReadOnlyList<ExtensionActivityEvent> Items);
@@ -135,4 +147,7 @@ public static class ExtensionProtocol
 [JsonSerializable(typeof(ExtensionInitialize))]
 [JsonSerializable(typeof(ExtensionActivityPage))]
 [JsonSerializable(typeof(ExtensionFormSubmission))]
+[JsonSerializable(typeof(ExtensionContextPreview))]
+[JsonSerializable(typeof(ExtensionContextPreview[]))]
+[JsonSerializable(typeof(ExtensionNotificationPage))]
 public partial class ExtensionJson : JsonSerializerContext;

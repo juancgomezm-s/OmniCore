@@ -135,6 +135,7 @@ public sealed partial class OmniServer
             .OrderBy(point => point.Sequence).ToArray() : [];
         var calls = new Dictionary<ToolCallId, ToolCallRequested>();
         var internalBatchChildren = new HashSet<ToolCallId>();
+        var attributions = new Dictionary<ToolCallId, ToolCallAttribution?>();
         var inputSequences = journal.Where(evt => _codecs.Decode(evt) is UserInputReceived).Select(evt => evt.Sequence).ToArray();
         var beforeInput = checkpoints.Where(p => p.Kind == "before-instruction")
             .Select(p => (Point: p, Input: inputSequences.FirstOrDefault(sequence => sequence > p.Sequence)))
@@ -145,6 +146,7 @@ public sealed partial class OmniServer
         foreach (var evt in journal)
         {
             var payload = _codecs.Decode(evt);
+            if (payload is ToolCallStarted started) { attributions[started.ToolCallId] = started.Attribution; continue; }
             if (payload is ModelStepStarted model && evt.RunId is { } modelRun && evt.LaneId is { } modelLane)
                 models[(modelRun, modelLane)] = model.ModelId;
             var kind = ""; var text = ""; var activity = ""; IReadOnlyList<string> files = [];
@@ -190,9 +192,20 @@ public sealed partial class OmniServer
             }
             var checkpoint = kind == "instruction" ? beforeInput.GetValueOrDefault(evt.Sequence)
                 : checkpoints.LastOrDefault(p => p.Sequence == evt.Sequence);
+            var callId = payload switch
+            {
+                ToolCallSucceeded done => done.ToolCallId,
+                ToolCallFailed failed => failed.ToolCallId,
+                ToolCallEffectUnknown unknown => unknown.ToolCallId,
+                _ => null,
+            };
+            var attribution = callId is null ? null : attributions.GetValueOrDefault(callId);
+            var cause = evt.Causation switch { CommandCausation command => "command:" + command.CommandId,
+                EventCausation source => "event:" + source.EventId, _ => null };
             rows.Add(new(evt.Sequence, kind, text.Length > 2000 ? text[..2000] : text, evt.RunId?.ToString(), evt.ExecutionId?.ToString(),
                 evt.RunId is { } agentRun && evt.LaneId is { } agentLane && models.TryGetValue((agentRun, agentLane), out var modelId)
-                    ? modelId + " · " + agentLane.ToString()[..8] : evt.LaneId?.ToString(), files, activity, checkpoint));
+                    ? modelId + " · " + agentLane.ToString()[..8] : evt.LaneId?.ToString(), files, activity, checkpoint,
+                    attribution?.ExtensionId, attribution?.ToolId, evt.CorrelationId?.ToString(), cause));
         }
         return rows.TakeLast(300).ToArray();
     }

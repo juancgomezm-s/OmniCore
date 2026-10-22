@@ -1758,9 +1758,10 @@ public sealed partial class StdioTransportTests
         Assert.Fail($"Owned handshake fixture process {processId} did not exit after cancellation/timeout.");
     }
 
-    private static string FindRepositoryRoot()
+    private static string FindRepositoryRoot([System.Runtime.CompilerServices.CallerFilePath] string sourcePath = "")
     {
-        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        var searchRoot = string.IsNullOrWhiteSpace(sourcePath) ? AppContext.BaseDirectory : Path.GetDirectoryName(sourcePath)!;
+        for (var directory = new DirectoryInfo(searchRoot); directory is not null; directory = directory.Parent)
             if (File.Exists(Path.Combine(directory.FullName, "OmniCore.slnx"))) return directory.FullName;
         throw new DirectoryNotFoundException("Could not locate the OmniCore worktree root.");
     }

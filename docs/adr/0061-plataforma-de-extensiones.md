@@ -2,8 +2,31 @@
 
 Estado: aceptada para implementación incremental (2026-10-21).
 
+## Autorización explícita del contexto (aclaración del usuario, 2026-10-21)
+
+Habilitar o confiar en una extensión no autoriza incorporar texto al contexto.
+El usuario previsualiza y aprueba un lote exacto para el workspace y Session/Run
+actuales, ligado al contribuidor, hashes del paquete y hash del contenido. La
+aprobación es efímera y se pierde al reiniciar; nunca la hereda una alternativa,
+otra sesión o una versión nueva. No hay aprobación por el modelo ni por RPC de
+la extensión. La revocación impide futuras admisiones, no puede retirar datos ya
+enviados a un proveedor.
+
+Core conserva sus instrucciones y el mensaje humano original. El texto externo
+aprobado sólo se transporta como datos separados con procedencia; nunca se
+concatena a `ModelRequest.Instructions`. Un snapshot antiguo no convierte el
+contenido en confiable al compactar o reanudar. Los permisos de herramientas
+siguen aplicándose fuera del modelo: etiquetar datos no elimina prompt injection.
+
+Notificaciones de extensiones son proyecciones UI literales, acotadas y sin ruta
+al contexto. No se usan para solicitar o simular autoridad humana. La separación
+de procesos confiables continúa sin ser una protección contra código malicioso
+con los mismos permisos del usuario (ADR-0050); este cierre protege la ruta de
+contribuciones y no afirma un sandbox que no exista.
+
 Amplía ADR-0023/M8; no sustituye sus herramientas, hooks, consentimiento ni MCP.
-El manifiesto v1 y su invocador Strong conservan su semántica. El manifiesto v2
+El manifiesto v1 y su invocador conservan su transporte y aislamiento Strong;
+la aprobación explícita de contexto aplica tanto a v1 como a v2. El manifiesto v2
 añade entradas opcionales, activación, requisitos, dependencias, configuración
 y vistas declarativas. Instalar nunca inicia procesos. Los paquetes User usan
 `<data>/extensions`; hashes y consentimiento siguen siendo los existentes.

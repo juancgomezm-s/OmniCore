@@ -4,6 +4,66 @@ SDK TypeScript compilado a JavaScript, JSON-RPC 2.0 local sobre stdio, sin Elect
 Requiere un Node **LTS >=22** sólo para paquetes ejecutables `kind: node`.
 Los tres pilotos de `extensions/pilots` son declarativos y no necesitan Node.
 
+## Contexto: autorización humana independiente
+
+Instalar, habilitar o confiar en un paquete **no autoriza inyectar contexto**.
+`context.contribute` sólo permite que el usuario solicite una previsualización.
+En TUI: F4 → Extensiones y habilidades → Paquetes y vistas → Contexto de
+extensiones. Previsualiza, revisa texto/origen/hash y pulsa «Autorizar este
+contenido». La decisión cubre ese lote inmutable en el workspace y Session/Run
+actuales, no futuras respuestas del proceso. Una nueva previsualización sustituye
+la anterior sin heredar permiso. Revocar, cambiar/reconceder el paquete, cambiar
+sesión/ejecución o reiniciar exige una nueva decisión. Una alternativa no la hereda.
+
+Core no ejecuta contributors al montar cada turno: sólo lee el lote aprobado.
+Las skills de paquetes tampoco incorporan cuerpo o descripciones automáticamente;
+se previsualizan como `skill:<id>`. Las anotaciones dinámicas de hooks no son una
+vía alternativa de contexto; utiliza un contribuidor previsualizable. Los hooks
+siguen pudiendo restringir o exigir validaciones según M8, nunca conceder permisos.
+
+El request conserva instrucciones de Core y mensajes humanos. Los datos externos,
+memorias y resúmenes se envían separados, no concatenados en `Instructions`.
+Etiquetar datos **no elimina** la posibilidad de prompt injection: los permisos
+y admisiones se comprueban fuera del modelo. El modo confiable continúa con los
+permisos del usuario del SO; no protege frente a código malicioso del mismo usuario
+que altere archivos o suplante procesos. El SDK no constituye un sandbox.
+
+No existe servicio RPC de aprobación para extensiones. Para clientes humanos
+persistentes, consulta [el contrato de autorización](../../docs/extensions/client-integration.md).
+La CLI permite inspeccionar `omni extensions context` y previsualizar mediante
+`context preview <id> <contributor>`; la aprobación requiere consola humana y un
+preview en el **mismo Host vivo**, nunca entrada redirigida. Los comandos CLI
+aislados no conservan estas autorizaciones entre procesos; usa la TUI para trabajar.
+
+## Avisos y atribución
+
+`presentation.notify(id, 'info'|'warning'|'error', text)` requiere la capacidad
+`presentation.notify` solicitada y consentida. Es texto literal **sólo para la UI**,
+no mensaje del usuario ni contexto del modelo. Límites: 2.048 caracteres, sin
+controles de terminal, 20 avisos/minuto por extensión, cola de 64 y deduplicación
+por ID/paquete/sesión mientras permanezca en cola. La TUI muestra procedencia y
+nivel, conserva el borrador y consulta cada dos segundos sin bloquear la entrada.
+
+`ActivityEvent` añade `extensionId`, `toolId`, `correlationId` y `causationId`
+cuando existen. La identidad sale del descriptor resuelto por el runtime y se
+guarda en `toolcall.started` v4 antes de invocar. Eventos v1/v2/v3 conservan campos
+desconocidos como `null`; no se inventa atribución al reabrir el journal.
+
+## Validar el contrato público
+
+`protocol-v1.schema.json` declara Draft 2020-12. `schema-validation.mjs` añade
+el perfil semántico `x-coreView` (IDs únicos, acciones y valores/opciones tipados)
+que un validador JSON Schema genérico no expresa por sí solo. Core y este perfil
+ejecutan el mismo corpus válido/inválido de `test/view-corpus.json`. Ajv es una
+dependencia de desarrollo de la validación, no del runtime de extensiones.
+
+La aceptación independiente `test/headless-pilots.mjs` arranca el Host real por
+stdio, sin TUI, CLR compartido ni proveedor de pago. La fixture de
+`StdioTransportTests.HeadlessPilots` prepara un Git y datos privados, prueba los
+tres pilotos, firma las acciones humanas, crea/reabre una alternativa y verifica
+que los archivos/conversación originales permanecen intactos. El bootstrap privado
+de esa fixture no se transmite a los procesos de extensiones.
+
 Un paquete `kind: process` puede implementar el mismo protocolo sin el SDK:
 ejecutable local dentro del paquete, JSON Lines UTF-8 por stdio y negociación
 de versión/identidad/capacidades. Se verificó ese recorrido con un ejecutable

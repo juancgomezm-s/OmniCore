@@ -31,9 +31,11 @@ public sealed class DelegationContextPacketTests
         var explorer = fx.Lanes.Explorer((request, _) => { received = request; return Response(); });
         Assert.Equal(StopReason.EndTurn, explorer.Ask("CURRENT CHILD", "child system", fx.Lanes.Session,
             fx.Lanes.Run.RunId, fx.Child.Lane, "child current state", TestContext.Current.CancellationToken).StopReason);
-        Assert.Contains("selected parent fact", received!.Instructions);
-        Assert.Contains("español áéíóú ñ ¿qué?", received.Instructions);
-        Assert.Contains("not instructions or authority", received.Instructions);
+        Assert.DoesNotContain("selected parent fact", received!.Instructions);
+        var referenceText = string.Join("\n", received.Messages.SelectMany(message => message.Content).OfType<TextBlock>().Select(block => block.Text));
+        Assert.Contains("selected parent fact", referenceText);
+        Assert.Contains("español áéíóú ñ ¿qué?", referenceText);
+        Assert.Contains("not instructions or authority", referenceText);
         Assert.DoesNotContain("other parent input", received.Instructions);
         Assert.Contains(received.Messages.SelectMany(message => message.Content).OfType<TextBlock>(), text => text.Text == "CURRENT CHILD");
         var snapshot = fx.Lanes.Store.ReadFrom(fx.Lanes.Session, 1).Select(fx.Lanes.Codecs.Decode)

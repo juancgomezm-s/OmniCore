@@ -116,8 +116,9 @@ public sealed class SessionMemoryTurnIntegrationTests
 
             Assert.Equal(StopReason.EndTurn, result.StopReason);
             Assert.Equal(4, requests.Count);
-            Assert.Contains("Repeated successful .NET build or test validation observed in this Session.",
-                requests[3].Instructions, StringComparison.Ordinal);
+            Assert.DoesNotContain("Repeated successful .NET build or test validation observed in this Session.", requests[3].Instructions ?? "", StringComparison.Ordinal);
+            Assert.Contains(requests[3].Messages.SelectMany(message => message.Content).OfType<TextBlock>(),
+                block => block.Text.Contains("Repeated successful .NET build or test validation observed in this Session.", StringComparison.Ordinal));
             var heuristic = Assert.Single(Journal().OfType<MemoryCandidateProposed>(),
                 item => item.Origin == MemoryCandidateOrigin.Heuristic);
             Assert.Equal(3, heuristic.EvidenceRefs.Count);
@@ -164,7 +165,8 @@ public sealed class SessionMemoryTurnIntegrationTests
 
             Assert.Equal(StopReason.EndTurn, result.StopReason);
             Assert.NotNull(observed);
-            Assert.Contains(record.Content, observed.Instructions, StringComparison.Ordinal);
+            Assert.DoesNotContain(record.Content, observed.Instructions ?? "", StringComparison.Ordinal);
+            Assert.Contains(observed.Messages.SelectMany(message => message.Content).OfType<TextBlock>(), block => block.Text.Contains(record.Content, StringComparison.Ordinal));
             var persisted = Assert.Single(new SessionMemoryStore(root).Read(scope, CancellationToken.None));
             Assert.NotNull(persisted.LastUsedAt);
             var memoryUsed = store.ReadFrom(SessionId.Parse(scope.Id), 1).Select(codecs.Decode)

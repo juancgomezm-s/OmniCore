@@ -259,6 +259,8 @@ public sealed partial class TuiApp
                 }
             }
             _delegationTasks.Clear();
+            _extensionNoticeCancellation?.Cancel();
+            _extensionNoticeCancellation?.Dispose();
             _suspendedSecurityForm?.Dispose(); _suspendedSecurityForm = null; _cancelSecurityConfirmation = null;
             DisposeRetiredOverlays();
             if (_ownsPolicies) _policies.Dispose();
@@ -273,6 +275,7 @@ public sealed partial class TuiApp
         ReflowPreferencesIfNeeded();
         PollEvents();
         _refreshExtensionView?.Invoke(false);
+        PollExtensionNotifications();
         return true;
     }
 

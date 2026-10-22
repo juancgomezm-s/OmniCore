@@ -61,10 +61,12 @@ public sealed partial class TuiApp
         var rollback = new Button { Id = "extension-package-rollback", X = Pos.Right(update) + 2, Y = Pos.AnchorEnd(3), Text = ExtensionText("platform.rollback") };
         update.Accepted += (_, _) => { if (Selected() is { } package) ConfirmExtensionPackage(package, "update", source.Text?.ToString()); };
         rollback.Accepted += (_, _) => { if (Selected() is { } package) ConfirmExtensionPackage(package, "rollback"); };
+        var context = new Button { Id = "extension-package-context", X = Pos.Right(rollback) + 2, Y = Pos.AnchorEnd(3), Text = ExtensionText("context.title") };
+        context.Accepted += (_, _) => ShowExtensionContext();
         var back = new Button { X = 2, Y = Pos.AnchorEnd(2), Text = ExtensionText("platform.back") };
         back.Accepted += (_, _) => { CloseOverlay(); ShowPreferences("extensions_skills", categoryPage: true); };
         frame.KeyDown += (_, key) => { if (key.KeyCode == KeyCode.Esc) { key.Handled = true; CloseOverlay(); ShowPreferences("extensions_skills", categoryPage: true); } };
-        frame.Add(list, details, source, install, enable, disable, uninstall, views, config, update, rollback, back,
+        frame.Add(list, details, source, install, enable, disable, uninstall, views, config, update, rollback, context, back,
             new Label { X = 2, Y = Pos.AnchorEnd(7), Width = Dim.Fill(4), Text = ExtensionText("platform.source") });
         Sync(); ApplyTheme(frame); _overlay = frame; _window.Add(frame); list.SetFocus();
     }

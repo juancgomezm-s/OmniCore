@@ -102,6 +102,8 @@ export class Extension {
     }
   }
   config = { get: (key: string, scope = 'workspace') => this.service('config.get', { key, scope }), set: (key: string, value: unknown, scope = 'workspace') => this.service('config.set', { key, value, scope }) };
+  /** UI-only literal notification. Never contributes model context or grants authority. */
+  presentation = { notify: (id: string, level: 'info' | 'warning' | 'error', text: string) => this.service('presentation.notify', { id, level, text }) };
   listen(): void {
     process.stdin.on('data', (chunk: Buffer) => {
       this.buffer = Buffer.concat([this.buffer, chunk]);

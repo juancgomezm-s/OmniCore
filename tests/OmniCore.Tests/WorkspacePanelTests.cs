@@ -178,7 +178,10 @@ public sealed class WorkspacePanelTests
             stream.Append(new ToolCallRequested(extensionCall, "extension-provider", "ext.sample.run", "{}"));
             stream.Append(new ToolCallPrepared(extensionCall, "{}"));
             stream.Append(new ToolCallAuthorized(extensionCall));
-            stream.Append(new ToolCallStarted(extensionCall, EffectClass.NonIdempotent, null));
+            stream.Append(new ToolCallStarted(extensionCall, EffectClass.NonIdempotent, null)
+            {
+                Attribution = new("ext.sample.run", "Extension", "sample", "1.0.0", new string('A', 64)),
+            });
             var batchCall = ToolCallId.New();
             stream.Append(new ToolCallRequested(batchCall, "internal-extension-batch-" + extensionCall,
                 "extension.batch.apply", "{}") { ParentToolCallId = extensionCall });
@@ -186,10 +189,14 @@ public sealed class WorkspacePanelTests
             stream.Append(new ToolCallAuthorized(batchCall));
             stream.Append(new ToolCallStarted(batchCall, EffectClass.Reconcilable, null));
             stream.Append(new ToolCallSucceeded(batchCall, "published batch"));
-            stream.Append(new ToolCallSucceeded(extensionCall, "extension completed and batch published"));
+            stream.Append(new ToolCallEffectUnknown(extensionCall, EffectClass.NonIdempotent));
+            stream.Append(new ToolCallReconciled(extensionCall, ReconciliationOutcome.Applied, "fixture recovery"));
             var timeline = Query(server, new("timeline")).Timeline!;
             var point = Assert.Single(timeline, row => row.Kind == "tool" && row.Activity == "read");
-            Assert.Single(timeline, row => row.Kind == "tool" && row.Text == "ext.sample.run");
+            var uncertainExtension = Assert.Single(timeline, row => row.Kind == "tool" && row.Activity == "uncertain");
+            Assert.Contains("ext.sample.run", uncertainExtension.Text);
+            Assert.Equal("sample", uncertainExtension.ExtensionId);
+            Assert.Equal("ext.sample.run", uncertainExtension.ToolId);
             Assert.DoesNotContain(timeline, row => row.Text.Contains("extension.batch.apply", StringComparison.Ordinal));
             Assert.Equal("read", point.Activity); Assert.Equal(["a.txt"], point.Files); Assert.NotNull(point.Checkpoint!.Snapshot);
             var source = Ancestors(new DirectoryInfo(Path.GetDirectoryName(RepositorySourcePath())!))

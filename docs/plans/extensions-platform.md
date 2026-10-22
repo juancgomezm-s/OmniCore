@@ -1,5 +1,47 @@
 # Ampliación M8: plataforma de extensiones (2026-10-21)
 
+## Cierre autorizado: contexto protegido y cuatro pendientes
+
+Solicitud del usuario: ninguna extensión incorpora contexto sin autorización
+humana explícita ni modifica las instrucciones de Core. Esta autorización es
+independiente de instalar, habilitar o confiar en un paquete.
+
+Orden y componentes afectados, conservando la publicación M9 ya integrada:
+
+1. Host/Protocol/Client/CLI/TUI: previsualizar y aprobar un lote exacto de contexto,
+   ligado a workspace, Session/Run, contribuidor y hashes. Denegado por defecto;
+   revocación y cambio de paquete invalidan la aprobación. Contributors y el
+   request final nunca elevan texto externo a `Instructions`; lo aprobado viaja
+   como datos externos identificados, sin alterar el mensaje original del usuario.
+2. Host/SDK/TUI: notificaciones literales acotadas, con capacidad propia, origen
+   visible y sin conexión con el contexto del modelo.
+3. Proyección compartida/Protocol/SDK: conservar la identidad de extensión y la
+   correlación disponible de herramientas en los eventos de actividad públicos.
+4. Cliente independiente: aceptar los tres pilotos por stdio con Session/Run,
+   crear/reabrir una alternativa y comprobar conversación, archivos y original intacto.
+5. C#/TypeScript/JSON Schema: alinear restricciones y comprobar el mismo corpus
+   válido/inválido en Core y el esquema público.
+
+Estado de este cierre: **implementados los cinco puntos**, incluidos los cuatro
+pendientes de la plataforma. Preferencias ofrece previsualizar/autorizar/revocar;
+el Host comprueba otra vez el lote exacto antes del envío. Los hooks conservan su
+procedencia de extensión y no pueden ocultarla al normalizar una anotación.
+`toolcall.started` v4 conserva atribución con lectura compatible v1/v2/v3; avisos
+UI tienen capacidad, límites y deduplicación propios. La aceptación Node firma
+acciones humanas contra Core real, rechaza intentos sin prueba y crea/reabre
+la alternativa. El corpus compartido tiene 40 casos válidos/inválidos.
+
+Resultados y alcance de las pruebas de este cierre en la sección
+«Cierre de seguridad y cuatro pendientes» del
+[acta](../validation/extensions-platform-20261021.md). No reutilizar cifras de la
+integral anterior como evidencia de este código nuevo.
+
+Verificación proporcional: casos negativos de autorización y escalamiento, salida
+final al provider fixture, recorridos reales Node/Core/TUI y headless, contratos y
+arquitectura. No se añade como requisito CI remoto, aceptación humana obligatoria,
+otro sandbox ni cambios en OmniCoder. No se modifica la política de publicación
+existente ni se publica/integra sin una solicitud aparte.
+
 Extensión del roadmap §24, no un hito ni framework paralelo. ADR-0061.
 
 | Estado | Componentes | Trabajo |
