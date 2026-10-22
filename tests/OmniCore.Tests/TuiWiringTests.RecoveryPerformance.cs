@@ -100,6 +100,7 @@ public sealed partial class TuiWiringTests
         fx.Wait(() => turn.Started.IsSet, "generación en curso");
         fx.InjectKey(new Key(KeyCode.Esc));
         fx.Wait(() => fx.App.Status!.Text.Contains(new Localization("es").Resolve("shell.cancelled")), "generación interrumpida");
+        fx.Wait(() => fx.App.Conversation!.Text.Contains("hola", StringComparison.Ordinal), "el input cancelado llega a la proyección de conversación");
         Assert.True(fx.Loop.IsAlive);
         Assert.Null(fx.LoopError);
         Assert.Contains("hola", fx.App.Conversation!.Text);

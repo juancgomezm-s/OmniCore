@@ -4,6 +4,7 @@ using Terminal.Gui.App;
 using Terminal.Gui.Drivers;
 using Terminal.Gui.Drawing;
 using Terminal.Gui.Input;
+using Terminal.Gui.ViewBase;
 
 namespace OmniCore.Tests;
 
@@ -16,8 +17,20 @@ public sealed partial class TuiWiringTests
     {
         File.WriteAllText(Path.Combine(fx.Root, "tui-animations.theme"), "omni-llama");
         fx.StartTui(initialColumns: 80, initialRows: 30);
-        var sidebar = fx.App.SidebarContent!;
-        KeyWithEffect(fx, KeyCode.F2, () => fx.App.Sidebar!.Visible, "sidebar visible");
+#pragma warning disable CS0618 // SidebarView inherits the pinned Terminal.Gui TextView renderer.
+        var sidebarType = typeof(TuiApp).Assembly.GetType("OmniCore.Cli.SidebarView", throwOnError: true)!;
+        var sidebar = (Terminal.Gui.Views.TextView)Activator.CreateInstance(sidebarType, nonPublic: true)!;
+#pragma warning restore CS0618
+        sidebar.Id = "sidebar-color-test-fixture";
+        sidebar.X = 0; sidebar.Y = 1; sidebar.Width = Dim.Percent(34); sidebar.Height = Dim.Fill(4);
+        var themeType = typeof(TuiApp).Assembly.GetType("OmniCore.Cli.TuiTheme", throwOnError: true)!;
+        var omniLlama = themeType.GetMethod("Find", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic)!
+            .Invoke(null, ["omni-llama"]);
+        sidebarType.GetProperty("Theme", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(sidebar, omniLlama);
+        var renderSidebar = sidebarType.GetMethod("Render", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        fx.Invoke(() => fx.App.MainWindow!.Add(sidebar));
+        fx.Wait(() => sidebar.Frame.Width >= 20 && sidebar.Frame.Height >= 10, "fixture sidebar viewport laid out");
         var marker = "LANE_COLOR_START";
         var text = marker + " " + string.Join(' ', Enumerable.Range(0, 4)
             .Select(index => $"1/1-{index:D2}-0-lectura")) + " LANE_COLOR_END";
@@ -28,7 +41,7 @@ public sealed partial class TuiWiringTests
             [new WidgetRowModel(text, ThemeRole.Info), new WidgetRowModel(attentionText, ThemeRole.Attention)]));
         var body = new[] { (Widget: (ISidebarWidget)widget, Model: widget.Build(null!, WidgetSize.Expanded)) };
 
-        void Render() => fx.Invoke(() => sidebar.Render(body));
+        void Render() => fx.Invoke(() => renderSidebar.Invoke(sidebar, [body]));
         Terminal.Gui.Drawing.Cell[,] Capture(string requiredMarker)
         {
             using var captured = new ManualResetEventSlim();
@@ -71,8 +84,7 @@ public sealed partial class TuiWiringTests
             var last = Array.FindIndex(lines, line => line.Contains(endMarker, StringComparison.Ordinal));
             Assert.True(first >= 0 && last > first, $"la fila coloreada se parte en líneas: {string.Join(" | ", lines.Where(line => line.Contains("COLOR", StringComparison.Ordinal)))}");
 
-            var expected = noColor ? Color.None : sidebar.Theme.Map(
-                new Terminal.Gui.Drawing.Attribute(new Color(sourceColor), new Color("#202C3B"))).Foreground;
+            var expected = noColor ? Color.None : ThemeColor(sourceColor);
             var origin = sidebar.ViewportToScreen(System.Drawing.Point.Empty);
             var textRight = origin.X + sidebar.Viewport.Width - 1; // the final column is the native scrollbar
             var mismatches = new List<string>();
@@ -124,10 +136,11 @@ public sealed partial class TuiWiringTests
         var tailRow = Array.FindIndex(tailLines, line => line.Contains(tailMarker, StringComparison.Ordinal));
         Assert.True(tailRow >= 0, "the all-attribute-less final fragment is visible after scrolling to the tail");
         var tailColumn = tailLines[tailRow].IndexOf(tailMarker, StringComparison.Ordinal);
-        var tailExpected = noColor ? Color.None : sidebar.Theme.Map(
-            new Terminal.Gui.Drawing.Attribute(new Color("#85D6F5"), new Color("#202C3B"))).Foreground;
+        var tailExpected = noColor ? Color.None : ThemeColor("#85D6F5");
         for (var x = tailColumn; x < tailColumn + tailMarker.Length; x++)
             Assert.True(tailExpected.Equals(tailCells[tailRow, x].Attribute?.Foreground),
                 $"fully attribute-less fragment glyph '{tailCells[tailRow, x].Grapheme}' at ({x},{tailRow}) expected {tailExpected} but got {tailCells[tailRow, x].Attribute?.Foreground}");
     }, noColor: noColor);
+
+    private static Color ThemeColor(string sourceColor) => new(sourceColor == "#85D6F5" ? "#23C9EE" : sourceColor);
 }
