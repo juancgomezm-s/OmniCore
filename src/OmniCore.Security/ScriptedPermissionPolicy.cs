@@ -11,7 +11,7 @@ using OmniCore.Domain;
 /// aquí Ask se trata como Deny salvo que el escenario tenga una respuesta; eso lo gestiona el
 /// Engine (ADR-0034).
 /// </summary>
-public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePermissionPolicy
+public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePermissionPolicy, IAutomaticExtensionBatchAuthority
 {
     private readonly Dictionary<string, PermissionDecision> _toolDecisions = new();
 
@@ -28,6 +28,54 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
     private WorkspaceId? _grantWorkspace;
 
     private RunId? _grantRun;
+
+    private Func<(PermissionProfile Profile, IReadOnlyDictionary<string, PermissionDecision> Rules)>? _currentUserPermissions;
+
+    public bool AllowsAutomaticExtensionBatch(ToolIntent intent) =>
+        _profile == PermissionProfile.Autonomous && _useModeDefaults && _modeForDefaults == RunMode.Act
+        && intent.ToolId.ToString().StartsWith("ext.", StringComparison.Ordinal)
+        && intent.Claims.Process?.Isolation == ProcessIsolation.PrivateExtensionWorkspace;
+
+    public bool AllowsAutomaticExtensionBatchCurrently(ToolIntent intent)
+    {
+        if (intent.ToolId.ToString() is not { } toolId || !toolId.StartsWith("ext.", StringComparison.Ordinal)
+            || intent.Claims.Process?.Isolation != ProcessIsolation.PrivateExtensionWorkspace
+            || !_useModeDefaults || _modeForDefaults != RunMode.Act) return false;
+        try { return CurrentUserPermissions().Profile == PermissionProfile.Autonomous; }
+        catch (Exception) { return false; }
+    }
+
+    public bool AllowsAutomaticExtensionBatchPublicationCurrently()
+    {
+        if (!_useModeDefaults || _modeForDefaults != RunMode.Act) return false;
+        try { return CurrentUserPermissions().Profile == PermissionProfile.Autonomous; }
+        catch (Exception) { return false; }
+    }
+
+    public PermissionDecision EvaluateCurrentPermission(ToolIntent intent)
+    {
+        ArgumentNullException.ThrowIfNull(intent);
+        if (_currentUserPermissions is null) return Evaluate(intent).Final;
+        try
+        {
+            var current = _currentUserPermissions();
+            var toolDecision = ToolDecision(intent.ToolId.ToString());
+            var hasUserRule = current.Rules.TryGetValue(intent.ToolId.ToString(), out var configuredUserDecision);
+            var userDecision = hasUserRule ? configuredUserDecision : PermissionDecision.Allow;
+            var final = Min(toolDecision, userDecision);
+            var modeDecision = _useModeDefaults
+                ? ModeDefaultsPolicy.Instance(current.Profile).ForRunMode(_modeForDefaults, Classify(intent))
+                : PermissionDecision.Allow;
+            final = Min(final, modeDecision);
+            // An explicit current User Allow lifts only profile/mode Ask. Project/scenario
+            // Ask and Deny remain authoritative, matching Evaluate's normal layering.
+            if (final == PermissionDecision.Ask && hasUserRule && userDecision == PermissionDecision.Allow
+                && toolDecision == PermissionDecision.Allow && modeDecision == PermissionDecision.Ask)
+                return PermissionDecision.Allow;
+            return final;
+        }
+        catch (Exception) { return PermissionDecision.Deny; }
+    }
 
     public ScriptedPermissionPolicy(Dictionary<string, PermissionDecision> toolDecisions)
     {
@@ -51,6 +99,16 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
         _profile = profile;
         return this;
     }
+
+    public ScriptedPermissionPolicy WithCurrentUserPermissions(
+        Func<(PermissionProfile Profile, IReadOnlyDictionary<string, PermissionDecision> Rules)> provider)
+    {
+        _currentUserPermissions = provider ?? throw new ArgumentNullException(nameof(provider));
+        return this;
+    }
+
+    private (PermissionProfile Profile, IReadOnlyDictionary<string, PermissionDecision> Rules) CurrentUserPermissions() =>
+        _currentUserPermissions?.Invoke() ?? (_profile, _userDecisions);
 
     /// <summary>Conecta grants del usuario, aislados por workspace y Run (ADR-0037 §5).</summary>
     public ScriptedPermissionPolicy WithGrantStore(IPermissionGrantStore store, WorkspaceId workspace, RunId? run)
@@ -224,6 +282,13 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
                 return PermissionResource.WriteInsideWorkspace;
             case "fake.test":
                 return PermissionResource.BuildTestProcess;
+            case "extension.batch.apply":
+                return intent.Effect == EffectClass.Reconcilable
+                    && intent.Claims.Process is null && intent.Claims.Reads.Count == 0
+                    && intent.Claims.Writes.Count == 0 && intent.Claims.Network.Count == 0
+                    && intent.Claims.Secrets.Count == 0
+                    ? PermissionResource.WriteInsideWorkspace
+                    : PermissionResource.ExternalOrUnknownProcess;
         }
 
         var claims = intent.Claims;
@@ -234,6 +299,10 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
 
         if (claims.Process is not null)
         {
+            if (intent.ToolId.ToString().StartsWith("ext.", StringComparison.Ordinal)
+                && claims.Process.Isolation == ProcessIsolation.PrivateExtensionWorkspace
+                && !claims.Process.NetworkRequired && claims.Network.Count == 0)
+                return PermissionResource.PrivateExtensionProcess;
             var processKind = ClassifyStructuredProcess(claims.Process);
             if (claims.Process.NetworkRequired && processKind is not ("WorkspaceEffect" or "Rerunnable"))
                 return PermissionResource.OtherNetwork;

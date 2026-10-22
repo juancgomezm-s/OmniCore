@@ -25,9 +25,11 @@ public sealed class ClientState
 
     public ConnectionState Connection { get; }
 
+    public IReadOnlySet<string> HiddenToolCallIds { get; }
+
     public ClientState(HeaderModel header, ConversationModel conversation, SidebarModel sidebar,
         ComposerModel composer, StatusLineModel statusLine, IReadOnlyList<InteractionOverlayModel> overlays,
-        ConnectionState connection)
+        ConnectionState connection, IReadOnlySet<string>? hiddenToolCallIds = null)
     {
         Header = header;
         Conversation = conversation;
@@ -36,6 +38,7 @@ public sealed class ClientState
         StatusLine = statusLine;
         Overlays = overlays;
         Connection = connection;
+        HiddenToolCallIds = hiddenToolCallIds ?? new HashSet<string>(StringComparer.Ordinal);
     }
 
     public static ClientState Empty() =>
@@ -333,6 +336,12 @@ public sealed class ClientProjection
                 return Get(f, "text").Length == 0 ? state : Append(state, Block(evt, ConversationRole.Assistant, Get(f, "text")));
             case "toolcall.requested":
             {
+                if (IsInternalBatchChild(state, f))
+                {
+                    var hidden = new HashSet<string>(state.HiddenToolCallIds, StringComparer.Ordinal)
+                        { Get(f, "toolCallId") };
+                    return WithHiddenToolCalls(state, hidden);
+                }
                 // ADR-0033 §2: un solo bloque por ToolCall, actualizado en su lugar. Con presentación declarada
                 // (categoría en el wire) lleva su etiqueta «en curso»; sin ella, la genérica.
                 if (Get(f, "category").Length == 0)
@@ -344,11 +353,21 @@ public sealed class ClientProjection
                     _text.Resolve("tool." + Get(f, "tool") + ".running", summary), Get(f, "tool"), summary));
             }
             case "toolcall.succeeded":
+                if (state.HiddenToolCallIds.Contains(Get(f, "toolCallId")))
+                    return WithHiddenToolCalls(state, state.HiddenToolCallIds.Where(id => id != Get(f, "toolCallId")).ToHashSet(StringComparer.Ordinal));
                 return ReplaceTool(state, ToolBlockId(f), "succeeded", null) ?? state;
+            case "toolcall.effect_unknown":
+                if (state.HiddenToolCallIds.Contains(Get(f, "toolCallId")))
+                    return WithHiddenToolCalls(state, state.HiddenToolCallIds.Where(id => id != Get(f, "toolCallId")).ToHashSet(StringComparer.Ordinal));
+                return ReplaceTool(state, ToolBlockId(f), "effect_unknown", Get(f, "effect"))
+                    ?? Append(state, Block(evt, ConversationRole.Tool,
+                        _text.Resolve("tool.effect_unknown", "effect", Get(f, "effect"))));
             case "toolcall.failed":
             case "toolcall.rejected":
             case "toolcall.permission_denied":
             case "toolcall.cancelled":
+                if (state.HiddenToolCallIds.Contains(Get(f, "toolCallId")))
+                    return WithHiddenToolCalls(state, state.HiddenToolCallIds.Where(id => id != Get(f, "toolCallId")).ToHashSet(StringComparer.Ordinal));
                 return ReplaceTool(state, ToolBlockId(f), "failed", Get(f, "cause"))
                     ?? Append(state, Block(evt, ConversationRole.Tool, _text.Resolve("tool.failed", "cause", Get(f, "cause"))));
             case "progress.stalled":
@@ -383,7 +402,7 @@ public sealed class ClientProjection
             var directory = fields.TryGetValue("workingDirectory", out var value) ? value ?? "" : "";
             return new ClientState(new HeaderModel(directory, null, null), state.Conversation,
                 new SidebarModel(new[] { "core.session", "core.plan", "core.files" }), state.Composer,
-                state.StatusLine, state.Overlays, state.Connection);
+                state.StatusLine, state.Overlays, state.Connection, state.HiddenToolCallIds);
         }
         return state;
     }
@@ -394,7 +413,7 @@ public sealed class ClientProjection
         {
             return new ClientState(state.Header, state.Conversation,
                 state.Sidebar, new ComposerModel(state.Composer.Placeholder, action.Arg ?? ""),
-                state.StatusLine, state.Overlays, state.Connection);
+                state.StatusLine, state.Overlays, state.Connection, state.HiddenToolCallIds);
         }
 
         return state;
@@ -502,6 +521,21 @@ public sealed class ClientProjection
 
     private static string ToolBlockId(Dictionary<string, string> f) => "tool:" + Get(f, "toolCallId");
 
+    private static bool IsInternalBatchChild(ClientState state, Dictionary<string, string> fields)
+    {
+        var parentId = Get(fields, "parentToolCallId");
+        var callId = Get(fields, "toolCallId");
+        var providerCallId = Get(fields, "providerCallId");
+        return parentId.Length > 0 && callId.Length > 0 && Get(fields, "tool") == "extension.batch.apply"
+            && string.Equals(providerCallId, "internal-extension-batch-" + parentId, StringComparison.Ordinal)
+            && state.Conversation.Blocks.Any(block => block.Id == "tool:" + parentId
+                && block.ToolName?.StartsWith("ext.", StringComparison.Ordinal) == true);
+    }
+
+    private static ClientState WithHiddenToolCalls(ClientState state, IReadOnlySet<string> hidden) =>
+        new(state.Header, state.Conversation, state.Sidebar, state.Composer, state.StatusLine,
+            state.Overlays, state.Connection, hidden);
+
     /// <summary>
     /// Sustituye el texto del bloque de la ToolCall por su etiqueta de <paramref name="phase"/>
     /// (<c>succeeded</c> o <c>failed</c>); null si la llamada no tenía bloque con presentación.
@@ -519,7 +553,7 @@ public sealed class ClientProjection
         blocks[index] = new ConversationBlock(existing.Id, existing.Role,
             _text.Resolve("tool." + existing.ToolName + "." + phase, args), existing.ToolName, existing.Arguments);
         return new(state.Header, new ConversationModel(blocks), state.Sidebar, state.Composer, state.StatusLine,
-            state.Overlays, state.Connection);
+            state.Overlays, state.Connection, state.HiddenToolCallIds);
     }
 
     private static ConversationBlock Block(WireEnvelope evt, ConversationRole role, string text) =>
@@ -527,7 +561,7 @@ public sealed class ClientProjection
 
     private static ClientState Append(ClientState state, ConversationBlock block) =>
         new(state.Header, new ConversationModel(state.Conversation.Blocks.Append(block).ToArray()), state.Sidebar,
-            state.Composer, state.StatusLine, state.Overlays, state.Connection);
+            state.Composer, state.StatusLine, state.Overlays, state.Connection, state.HiddenToolCallIds);
 
     private static ClientState WithStatus(ClientState state, string? mode, int? pending, string? effort = null,
         string? appliedReasoning = null, bool replaceAppliedReasoning = false) =>
@@ -536,12 +570,12 @@ public sealed class ClientProjection
                 string.IsNullOrEmpty(mode) ? state.StatusLine.Mode : mode!,
                 string.IsNullOrEmpty(effort) ? state.StatusLine.ProductEffort : effort!,
                 replaceAppliedReasoning ? appliedReasoning : state.StatusLine.AppliedReasoning),
-            state.Overlays, state.Connection);
+            state.Overlays, state.Connection, state.HiddenToolCallIds);
 
     /// <summary>Los overlays y el contador de pendientes de la status line cambian juntos.</summary>
     private static ClientState WithOverlays(ClientState state, IReadOnlyList<InteractionOverlayModel> overlays) =>
         new(state.Header, state.Conversation, state.Sidebar, state.Composer,
             new StatusLineModel(state.StatusLine.Quota, overlays.Count, state.StatusLine.Mode,
                 state.StatusLine.ProductEffort, state.StatusLine.AppliedReasoning),
-            overlays, state.Connection);
+            overlays, state.Connection, state.HiddenToolCallIds);
 }

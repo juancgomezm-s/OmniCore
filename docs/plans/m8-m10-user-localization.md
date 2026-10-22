@@ -129,7 +129,7 @@ reabren capacidades ya integradas ni sustituyen estas aceptaciones:
 |---|---|---|
 | Explain nativo y recuperación previa a inicio | Integrado, con CI aprobada en el checkpoint publicado | Conservar recibos, scope y recuperación explícita al ampliar comandos. |
 | Workflow Explore/Implement/Verify desde OmniCoder | Publicado en Core `c56123e`, Coder `2c31071`; bundle `1fb3639`. Reapertura con deny PASS 47.404 s y consentimiento único PASS 84.825 s; misma Session/Run, consultas pasivas, cero inicio tras deny y un único verificador exitoso tras consentir. Build 0W/0E, preflight 7/7, sin huérfanos. CI completa aprobada en ambos: cinco jobs Core y tres Coder | Conservar aceptación al ampliar comandos. La fixture local acredita cableado; inferencia live y los otros bloques M9 conservan su aceptación independiente. |
-| Extensiones con procesos escritores | Sin aceptación; falta atribución de mutaciones | Aislamiento, diff acotado, ledger/CAS durable y pruebas allow/deny con efecto real. No lo cubre el permiso del verificador. |
+| Extensiones con procesos escritores | Primer vertical v1 Strong construido y validado localmente el 2026-10-22: propuesta protegida, aplicador conjunto y automático según perfil User vigente; Luna bajo 86/86 sin omisiones. Publicación condicionada a la CI del incremento | Texto completo y directorios padre existentes; no anuncia PatchOnly, escrituras OS arbitrarias de v2 ni paridad de procesos generales. Evidencia y límites en [el acta](../validation/m9-isolated-extension-publication-20261021.md). Conservar prelectura, permisos, historia, cargos y recuperación al extenderlo. |
 | M9-L-MUT-01: normalización segura de write y borrado/recreación | Normalización e historia durable nativas publicadas en `b81b3c2`, con CI completa aprobada; write/patch, worktree.integrate y Deshacer conectados | Conservar lectura por cobertura, permisos y cargo único. Pendiente la paridad de procesos escritores generales de M9-M; no se reabre la entrega nativa ni se afirma esa paridad. |
 | Controladores de plan/lanes/worktrees y procesos persistentes/ConPTY | Pendientes | Construir consumidores y operaciones efectivas, sin confundir DTOs/catálogos con acciones disponibles. |
 | Adjuntos TUI en ACT | Publicados en main Core `330c51b`: producción `f2318d9`, tests `c75e50f`; cuatro focos únicos y frontera binaria CLI aprobados, build 0W/0E, sin huérfanos. Conserva autoridad/gates ACT y entrada canónica con objetivo+refs | CI posterior pendiente de comprobar; no se extrapola la de `c56123e`. Clipboard físico, aceptación manual y comprensión visual live conservan su evidencia pendiente en el acta M9-F. |
@@ -149,10 +149,14 @@ compartidos por CLI/TUI y OmniCoder. Las excepciones se gestionan en los control
 actuales. Ask se agrupa por lote en el recorrido normal; en automático, falta de
 permiso, conflicto o límite se informa sin diálogo y sin relanzar el proceso.
 Cambiar permisos no ejecuta ni aplica trabajo. Aislamiento Strong/Weak y categoría
-del modelo no acreditan elección humana de permisos elevados. Construcción
-pendiente: aplicador común, autorización compuesta/revisión y recuperación,
-allow/deny real y cero preguntas en automático. Los grants exactos existentes
-no demuestran todavía ese soporte. Contrato consolidado en
+del modelo no acreditan elección humana de permisos elevados. El primer vertical
+v1 Strong ya conecta el aplicador compuesto, las operaciones nativas por destino,
+la relectura de permisos User y la historia/cargos durables. Los siete escenarios
+Strong incluyen el siguiente request al proveedor sin subacción interna ni otra
+inferencia para aplicar; el resultado original comunica applied/blocked/unknown.
+La validación independiente aprobó 86 casos focales, sin sumar resultados
+solapados del constructor. El incremento exige su propia CI y mantiene abiertos
+los demás canales de procesos y M9 global. Contrato consolidado en
 [ADR-0060](../adr/0060-native-orchestration-workflow-recovery.md#vertical-de-extensión-escritor-dos-acciones-con-aplicación-automática-autorizada).
 
 <a id="m9-l-mut-01"></a>

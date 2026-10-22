@@ -8,7 +8,7 @@ using OmniCore.Protocol;
 using OmniCore.Sandbox;
 
 /// <summary>One-shot JSON-RPC/stdio adapter; every child starts Strong and receives only its package read access.</summary>
-public sealed class ExtensionRpcProcessInvoker : IExtensionRpcInvoker
+public sealed class ExtensionRpcProcessInvoker : IStagedExtensionRpcInvoker
 {
     private const int MaximumRequestCharacters = 262_144;
     private readonly ISandboxProcessLauncher _launcher;
@@ -16,8 +16,31 @@ public sealed class ExtensionRpcProcessInvoker : IExtensionRpcInvoker
     public ExtensionRpcProcessInvoker(ISandboxProcessLauncher? launcher = null) =>
         _launcher = launcher ?? OmniHost.CreateProcessSandboxLauncher(OmniCore.Execution.SystemProcessRuntime.Instance());
 
-    public async Task<string> InvokeAsync(DiscoveredExtension extension, string method, string parametersJson,
-        ResourceClaims authorizedClaims, CancellationToken cancellationToken)
+    public async Task<StagedExtensionRpcResult> InvokeStagedAsync(DiscoveredExtension extension, string method,
+        string parametersJson, ResourceClaims authorizedClaims, string workspaceRoot,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(authorizedClaims);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
+        if (authorizedClaims.Process is not { } process)
+            throw new InvalidDataException("The authorized extension intent has no process claim.");
+        using var workspace = ExtensionWriteWorkspace.Create(workspaceRoot,
+            Path.Combine(Path.GetTempPath(), "OmniCore", "extension-workspaces"), authorizedClaims);
+        var stagedRoot = Path.GetFullPath(workspace.Root);
+        var stagedClaims = new ResourceClaims(authorizedClaims.Reads, authorizedClaims.Writes,
+            authorizedClaims.Network, process with { WorkingDirectory = stagedRoot }, authorizedClaims.Secrets);
+        var response = await InvokeCoreAsync(extension, method, parametersJson, stagedClaims, stagedRoot,
+                cancellationToken)
+            .ConfigureAwait(false);
+        return new StagedExtensionRpcResult(response, workspace.CaptureChanges());
+    }
+
+    public Task<string> InvokeAsync(DiscoveredExtension extension, string method, string parametersJson,
+        ResourceClaims authorizedClaims, CancellationToken cancellationToken) =>
+        InvokeCoreAsync(extension, method, parametersJson, authorizedClaims, null, cancellationToken);
+
+    private async Task<string> InvokeCoreAsync(DiscoveredExtension extension, string method, string parametersJson,
+        ResourceClaims authorizedClaims, string? isolatedWorkingDirectory, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(extension);
         ArgumentNullException.ThrowIfNull(authorizedClaims);
@@ -74,8 +97,16 @@ public sealed class ExtensionRpcProcessInvoker : IExtensionRpcInvoker
         if (!boundary.AllowsClaims(authorizedClaims))
             throw new InvalidDataException("The authorized extension claims exceed the manifest or workspace scope.");
         var grantedPaths = ResolveAuthorizedPaths(workspaceRoot, authorizedClaims);
-        var allowedPaths = packagePaths.Concat(grantedPaths).ToArray();
-        var launch = new SandboxLaunchSpec(SandboxStrength.Strong, executable, runtime.Args ?? [], packageDirectory,
+        // The extension writer gets an entire disposable private copy. This permits creation of
+        // files that do not exist yet; the Host scans every output (including ignored files) and
+        // rejects paths beyond the extension's declared write patterns before making a proposal.
+        var allowedPaths = packagePaths.Concat(grantedPaths)
+            .Concat(isolatedWorkingDirectory is null ? [] :
+                [new SandboxAllowedPath(workspaceRoot, SandboxPathAccess.Read | SandboxPathAccess.Write)])
+            .DistinctBy(path => Path.GetFullPath(path.Path), OperatingSystem.IsWindows()
+                ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal).ToArray();
+        var launch = new SandboxLaunchSpec(SandboxStrength.Strong, executable, runtime.Args ?? [],
+            isolatedWorkingDirectory ?? packageDirectory,
             new Dictionary<string, string>(StringComparer.Ordinal),
             allowedPaths,
             new SandboxNetworkPolicy(SandboxNetworkMode.Deny, []), TimeSpan.FromSeconds(30), request);
@@ -86,7 +117,8 @@ public sealed class ExtensionRpcProcessInvoker : IExtensionRpcInvoker
             .Select(chunk => chunk.Text));
         var responseLine = stdout.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
         if (output.ExitCode != 0 || responseLine is null)
-            throw new InvalidDataException("The extension process did not return a successful JSON-RPC response.");
+            throw new InvalidDataException("The extension process did not return a successful JSON-RPC response (exit "
+                + output.ExitCode.ToString(System.Globalization.CultureInfo.InvariantCulture) + ").");
         using var response = JsonDocument.Parse(responseLine);
         var root = response.RootElement;
         if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("jsonrpc", out var version)
@@ -119,8 +151,8 @@ public sealed class ExtensionRpcProcessInvoker : IExtensionRpcInvoker
                     throw new InvalidDataException("The authorized extension path escaped its workspace scope.");
                 var matches = files.Where(file => IsMatch(pattern.Replace('\\', '/'),
                     Path.GetRelativePath(root, file).Replace('\\', '/'))).ToArray();
-                if (matches.Length == 0 || matches.Length > 128)
-                    throw new InvalidDataException("The authorized extension path resolved to no files or exceeded the path limit.");
+                if (matches.Length > 128 || matches.Length == 0 && access == SandboxPathAccess.Read)
+                    throw new InvalidDataException("The authorized extension path resolved to no readable files or exceeded the path limit.");
                 foreach (var file in matches) result[file] = result.TryGetValue(file, out var current) ? current | access : access;
             }
         }

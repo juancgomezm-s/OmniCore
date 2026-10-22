@@ -179,7 +179,8 @@ public sealed class EventStream
     {
         if (persisted.ToolCallId != expected.ToolCallId
             || !string.Equals(persisted.ProviderCallId, expected.ProviderCallId, StringComparison.Ordinal)
-            || !string.Equals(persisted.ToolName, expected.ToolName, StringComparison.Ordinal))
+            || !string.Equals(persisted.ToolName, expected.ToolName, StringComparison.Ordinal)
+            || persisted.ParentToolCallId != expected.ParentToolCallId)
             return false;
 
         try

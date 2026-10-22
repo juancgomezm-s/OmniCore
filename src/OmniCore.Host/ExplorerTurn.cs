@@ -1052,18 +1052,20 @@ public sealed class ExplorerTurn
             var runBudget = payloads.OfType<RunCreated>().SingleOrDefault()?.Budget;
             if (runBudget is null) return;
             var turns = payloads.OfType<TurnStarted>().Select(item => item.TurnId).Distinct().ToArray();
-            var toolUseCount = checked(payloads.OfType<ToolCallRequested>().Select(item => item.ToolCallId)
+            var toolUseCount = checked(payloads.OfType<ToolCallRequested>().Where(item => item.ParentToolCallId is null).Select(item => item.ToolCallId)
                 .Distinct().LongCount() + ExternalLaneAccounting.ToolUseCount(
                     payloads.OfType<ExternalLaneUsageRecorded>(), payloads.OfType<ExternalLaneActivityObserved>()));
             var allocations = RunBudgetPool.For(_store).ReadChildAllocations(journal, _codecs,
                 _artifacts, _store, _spendReservations, sessionId, runId, laneId);
             var addingTurn = newTurn && !turns.Contains(turnId) ? 1L : 0L;
             var addingTool = newToolCall is { } id
-                && !payloads.OfType<ToolCallRequested>().Any(item => item.ToolCallId == id) ? 1L : 0L;
+                && !payloads.OfType<ToolCallRequested>().Any(item => item.ToolCallId == id
+                    && item.ParentToolCallId is null) ? 1L : 0L;
             if (CurrentSessionSecurityPolicy() is { } sessionSecurity)
             {
                 var turnToolCalls = journal.Where(evt => evt.TurnId == turnId)
                     .Select(evt => _codecs.Decode(evt)).OfType<ToolCallRequested>()
+                    .Where(item => item.ParentToolCallId is null)
                     .Select(item => item.ToolCallId).Distinct().LongCount();
                 if (checked(turnToolCalls + addingTool) > sessionSecurity.MaxToolCallsPerTurn)
                     throw new BudgetExceededException("Session security tool-call limit for this Turn was reached.");
@@ -3065,6 +3067,8 @@ public sealed class ExplorerTurn
         var questionnaireArguments = new Dictionary<string, string>(StringComparer.Ordinal);
         var activeStepStarts = new Dictionary<int, ModelStepStarted>();
         var canonicalCalls = new Dictionary<string, ToolCallRequested>(StringComparer.Ordinal);
+        var internalToolCalls = new HashSet<string>(StringComparer.Ordinal);
+        var internalParentCalls = new HashSet<string>(StringComparer.Ordinal);
         var callsByStep = new Dictionary<int, Dictionary<string, ToolCallRequested>>();
         var restoredCalls = new HashSet<string>(StringComparer.Ordinal);
         // Chat continuity follows the canonical visible message, not the optional usage summary.
@@ -3099,6 +3103,18 @@ public sealed class ExplorerTurn
                 }
                 else if (evt.TurnId == activeTurnId && payload is ToolCallRequested canonicalCall)
                 {
+                    if (canonicalCall.ParentToolCallId is not null)
+                    {
+                        var parentId = canonicalCall.ParentToolCallId.Value.ToString();
+                        if (!canonicalCalls.TryGetValue(parentId, out var sourceCall)
+                            || !sourceCall.ToolName.StartsWith("ext.", StringComparison.Ordinal)
+                            || canonicalCall.ToolName != "extension.batch.apply"
+                            || canonicalCall.ProviderCallId != "internal-extension-batch-" + parentId
+                            || !internalParentCalls.Add(parentId))
+                            throw new InvalidDataException("Persisted internal tool causality is invalid.");
+                        internalToolCalls.Add(canonicalCall.ToolCallId.ToString());
+                        continue;
+                    }
                     var callId = canonicalCall.ToolCallId.ToString();
                     if (!canonicalCalls.TryAdd(callId, canonicalCall))
                         throw new InvalidDataException("Persisted visible reasoning is invalid.");
@@ -3218,6 +3234,11 @@ public sealed class ExplorerTurn
                 var call = _codecs.Decode(evt) as ToolCallRequested;
                 if (call is not null)
                 {
+                    if (call.ParentToolCallId is not null)
+                    {
+                        internalToolCalls.Add(call.ToolCallId.ToString());
+                        continue;
+                    }
                     if (restoredCalls.Contains(call.ToolCallId.ToString())) continue;
                     var arguments = questionnaireArguments.TryGetValue(call.ToolCallId.ToString(), out var schemaJson)
                         ? schemaJson : call.ArgumentsJson;
@@ -3240,6 +3261,7 @@ public sealed class ExplorerTurn
                     _ => (ToolCallId?)null,
                 };
                 if (callId is null) continue;
+                if (internalToolCalls.Contains(callId!.ToString())) continue;
                 var isQuestionnaireCall = questionnaireCalls.Contains(callId!.ToString());
                 if (isQuestionnaireCall && !questionnaireResults.TryGetValue(callId!.ToString(), out _))
                 {

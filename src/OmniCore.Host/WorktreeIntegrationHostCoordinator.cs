@@ -13,7 +13,7 @@ using OmniCore.Tools;
 
 /// <summary>Host-owned prepare/apply service for the authorized batch integration tool.
 /// The proposal and every pre/post image are protected CAS data referenced by ToolCallStarted.</summary>
-internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeIntegrationCoordinator
+internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeIntegrationCoordinator, IExtensionBatchPublicationCoordinator
 {
     private const long MaxBatchBytes = 8L * 1024 * 1024;
     private const int MaxFiles = 64;

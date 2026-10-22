@@ -11,7 +11,8 @@ using OmniCore.Domain;
 /// Path rules are workspace-relative globs or explicitly absolute physical-path rules;
 /// process argv patterns match the complete ordered argv, not a permissive prefix.
 /// </summary>
-public sealed class AgentProfilePermissionPolicy : IPermissionPolicy, IGrantablePermissionPolicy
+public sealed class AgentProfilePermissionPolicy : IPermissionPolicy, IGrantablePermissionPolicy,
+    IAutomaticExtensionBatchAuthority
 {
     private readonly IPermissionPolicy _inner;
     private readonly AgentProfile _profile;
@@ -19,6 +20,25 @@ public sealed class AgentProfilePermissionPolicy : IPermissionPolicy, IGrantable
     private readonly string _workspaceRoot;
 
     public AgentProfile Profile => _profile;
+
+    public bool AllowsAutomaticExtensionBatch(ToolIntent intent) =>
+        _inner is IAutomaticExtensionBatchAuthority authority
+        && authority.AllowsAutomaticExtensionBatch(intent)
+        && Ceiling(intent) == PermissionDecision.Allow;
+
+    public bool AllowsAutomaticExtensionBatchCurrently(ToolIntent intent) =>
+        _inner is IAutomaticExtensionBatchAuthority authority
+        && authority.AllowsAutomaticExtensionBatchCurrently(intent)
+        && Ceiling(intent) == PermissionDecision.Allow;
+
+    public bool AllowsAutomaticExtensionBatchPublicationCurrently() =>
+        _inner is IAutomaticExtensionBatchAuthority authority
+        && authority.AllowsAutomaticExtensionBatchPublicationCurrently();
+
+    public PermissionDecision EvaluateCurrentPermission(ToolIntent intent) =>
+        _inner is IAutomaticExtensionBatchAuthority authority
+            ? Min(authority.EvaluateCurrentPermission(intent), Ceiling(intent))
+            : PermissionDecision.Deny;
 
     public AgentProfilePermissionPolicy(IPermissionPolicy inner, AgentProfile profile,
         IPathBoundaryValidator paths, string workspaceRoot)

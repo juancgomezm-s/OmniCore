@@ -2,8 +2,9 @@
 
 Estado: recorrido integrado del workflow aceptado localmente el 2026-10-18,
 Core `582dc9c` y Coder bundle `1fb3639`/test `b919802`. La atribución de
-mutaciones de procesos al ledger es otro pendiente explícito. Publicación y CI
-de este incremento se comprueban por separado.
+mutaciones de procesos al ledger tiene un primer vertical v1 Strong construido
+y validado localmente el 2026-10-22. La paridad de procesos generales sigue
+pendiente; publicación y CI de cada incremento se comprueban por separado.
 M9 sigue abierto; M8 espera pruebas manuales.
 
 ## Problema
@@ -94,7 +95,7 @@ solos procesos escritores: su contabilidad de mutaciones requiere otro contrato.
 No se publica ni cierra este slice por pasar un build. Ver el hallazgo posterior
 en [el acta de comandos](../validation/m9-native-command-handoff-20261018.md).
 
-## Alcance de la corrección en construcción
+## Alcance de la corrección de procesos escritores
 
 El primer vertical de procesos mutadores requiere un checkout Git y aislamiento
 Strong real. La raíz original conserva los claims y la autorización; la ejecución
@@ -110,12 +111,15 @@ Delete/Move denegados o con Ask sin resolver rechazan/difieren el lote completo;
 una aprobación específica vigente permite evaluarlos bajo los mismos límites.
 La autorización genérica del proceso no sustituye esa aprobación. No hay
 fallback silencioso en workspaces no Git ni cuando Strong no esté disponible.
-Esta sección fija el alcance previsto; todavía no acredita su implementación.
+Esta sección conserva el contrato general. El vertical de extensión v1 descrito
+abajo ya tiene implementación y validación local; no acredita todos los canales
+de procesos escritores.
 
 ### Vertical de extensión escritor: dos acciones con aplicación automática autorizada
 
-Decisión consolidada del usuario del 2026-10-21. Implementación y aceptación
-pendientes. Reutilizar el control de autonomía/permisos que ya existe, sin añadir
+Decisión consolidada del usuario del 2026-10-21, implementada y validada
+localmente el 2026-10-22 según [el acta](../validation/m9-isolated-extension-publication-20261021.md).
+La publicación requiere la CI del incremento. Reutilizar el control de autonomía/permisos que ya existe, sin añadir
 un selector de publicación, perfiles paralelos ni formularios nuevos de alcance.
 
 | Permisos elegidos por el usuario | Comportamiento |
@@ -155,14 +159,24 @@ Este vertical conserva Strong; no añade fallback Weak silencioso.
 Los recibos de proceso y publicación son separados. Consultar o reconectar no
 inicia trabajo; una continuación usa la fase durable comprobada y no relanza un
 proceso incierto. Una publicación interrumpida exige reconciliación y no promete
-atomicidad global del filesystem. Los grants exactos existentes no acreditan
-todavía esta autorización compuesta: falta construir su enlace con el aplicador,
-la revisión del perfil y la evidencia de operaciones.
+atomicidad global del filesystem. El aplicador deriva operaciones nativas por
+destino y comprueba el lote completo bajo fence. La configuración User vigente
+se vuelve a leer; una política anterior al proceso no conserva permisos retirados.
+El resultado al modelo incluye el estado de publicación y la causalidad durable
+agrupa la subacción en la conversación y el cliente. El aplicador autoriza el
+intent Reconcilable real y no amplía grants a lotes futuros.
 
 La aceptación exige proceso Strong real, allow/deny, validación conjunta,
 conflictos/límites y recuperación; además, cero preguntas en automático,
 perfil elevado que lo activa sin otra selección, retirada de permisos y cambio
-de perfil pasivo. No se anuncia todavía paridad de process.exec/shell.exec,
+de perfil pasivo. Luna alto acreditó build sin errores/advertencias; Luna bajo
+aprobó 86 casos focales sin fallos ni omisiones, incluidos siete caminos de lote
+con AppContainer real y el siguiente request al proveedor. El acta conserva los
+comandos y el alcance de esa evidencia. Este vertical publica texto completo
+con reemplazo atómico y directorios padre existentes; no anuncia PatchOnly
+localizado. El supervisor v2 trusted conserva su acceso OS declarado en
+ADR-0061, fuera del confinamiento Strong de este canal.
+No se anuncia todavía paridad de process.exec/shell.exec,
 wrappers generales, procesos persistentes ni ConPTY.
 
 **Corrección acordada M9-L-MUT-01 (2026-10-18), implementación parcial:** la

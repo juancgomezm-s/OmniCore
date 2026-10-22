@@ -45,9 +45,22 @@ internal sealed class WorktreeIntegrationAwareReconciler : IArtifactAwareFilesys
         if (HasIntegrationKind(reconciliationJson))
             return _integration?.Reconcile(workspaceRoot, reconciliationJson, beforeStateRef, cancellationToken)
                 ?? FilesystemReconciliation.Unresolvable("protected integration recovery is unavailable");
-        return _files.Reconcile(workspaceRoot, reconciliationJson, cancellationToken);
+        if (HasExtensionBatchKind(reconciliationJson))
+            return _integration?.ReconcileExtensionBatch(workspaceRoot, reconciliationJson, beforeStateRef, cancellationToken)
+                ?? FilesystemReconciliation.Unresolvable("protected extension batch recovery is unavailable");        return _files.Reconcile(workspaceRoot, reconciliationJson, cancellationToken);
     }
 
+    private static bool HasExtensionBatchKind(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("kind", out var kind)
+                && kind.ValueKind == JsonValueKind.String && kind.GetString() == "extension.write.batch";
+        }
+        catch (JsonException) { return false; }
+    }
     private static bool HasIntegrationKind(string json)
     {
         try

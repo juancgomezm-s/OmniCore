@@ -5,6 +5,10 @@ namespace OmniCore.Domain;
 public record ToolCallRequested(ToolCallId ToolCallId, string ProviderCallId, string ToolName, string ArgumentsJson)
     : DomainEventPayload
 {
+    /// <summary>Host-owned child operation causally attached to a provider call; excluded from model history.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ToolCallId? ParentToolCallId { get; init; }
+
     public EventType Type() => EventType.Of("toolcall.requested");
 
     public int SchemaVersion() => 1;

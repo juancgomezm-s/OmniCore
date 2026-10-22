@@ -20,6 +20,7 @@ public sealed class HostTools
     private readonly FakeCatalog _catalog;
 
     private readonly PlanProposeTool _planPropose;
+    private readonly WorktreeIntegrationHostCoordinator? _extensionBatchCoordinator;
 
     public HostTools(IPathBoundaryValidator boundary, PlanService planService, bool includeSimulationTools = true,
         bool includeMutationTools = false, bool includeProcessTools = false,
@@ -41,6 +42,7 @@ public sealed class HostTools
         MediaReadTool? mediaReadTool = null)
     {
         _planPropose = new PlanProposeTool(planService);
+        _extensionBatchCoordinator = worktreeIntegrationCoordinator as WorktreeIntegrationHostCoordinator;
         var catalog = includeSimulationTools ? FakeCatalog.Default() : new FakeCatalog();
         if (includeControlTools) catalog = catalog.Add(new UserAskTool());
         catalog = catalog.Add(new ReadFileTool(boundary))
@@ -53,8 +55,11 @@ public sealed class HostTools
             // mutación; la frontera de capacidad decide la exposición por categoría.
             catalog = catalog.Add(new FilesystemWriteTool(boundary));
             if (worktreeIntegrationCoordinator is not null)
+            {
                 catalog = catalog.Add(new WorktreeIntegrationApplyTool(boundary, worktreeIntegrationCoordinator));
-        }
+                if (worktreeIntegrationCoordinator is IExtensionBatchPublicationCoordinator extensionBatchCoordinator)
+                    catalog = catalog.Add(new ExtensionBatchApplyTool(extensionBatchCoordinator));
+            }        }
         if (includeProcessTools)
         {
             var processLauncher = OmniHost.CreateProcessSandboxLauncher(processRuntime ?? SystemProcessRuntime.Instance());
@@ -133,6 +138,9 @@ public sealed class HostTools
             || tool.Descriptor.Source.Scope != ScopeLevel.Project)
             throw new InvalidOperationException("Only a trusted Project ExtensionTool using the Strong Host bridge may enter the session catalog.");
         _catalog.Add(tool);
+        if (_extensionBatchCoordinator is not null && tool is ExtensionTool extensionTool)
+            _extensionBatchCoordinator.RegisterExtensionProposalValidator(extensionTool.Descriptor.Id.ToString(),
+                extensionTool.ValidateCurrentBatchProposal);
     }
 
     internal void RegisterMcpTool(ITool tool)

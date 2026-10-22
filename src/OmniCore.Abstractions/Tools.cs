@@ -34,6 +34,45 @@ public interface IReconcilableTool
 /// <summary>Effect tool whose reconciliation manifest is mandatory. A missing/failed pre-image
 /// must stop before the durable start barrier, never fall through to an untracked effect.</summary>
 public interface IRequiresReconciliationTool : IReconcilableTool { }
+/// <summary>Core-owned batch publisher whose journal envelope is validated against the exact
+/// authorized targets and its protected source artifact before the durable effect barrier.</summary>
+public interface ITrustedBatchPublicationTool : IRequiresReconciliationTool
+{
+    bool ValidatePublicationEnvelope(ToolIntent intent, IReadOnlyList<ToolIntent> effectiveIntents,
+        ToolExecutionContext context, ReconciliationSpec reconciliation);
+}
+
+/// <summary>Host-provided publisher for a protected immutable extension write proposal.</summary>
+public interface IExtensionBatchPublicationCoordinator
+{
+    IReadOnlyList<ToolIntent> ResolveAuthorizedIntents(ToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken);
+    ReconciliationSpec PrepareExtensionBatch(AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken);
+    Task<ToolResult> ApplyExtensionBatchAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>Host-resolved operation intents whose exact targets are unavailable to pure Prepare.
+/// The runtime resolves them after Prepare and before permission/model-boundary evaluation.</summary>
+public interface IAutomaticExtensionBatchAuthority
+{
+    bool AllowsAutomaticExtensionBatch(ToolIntent intent);
+    bool AllowsAutomaticExtensionBatchCurrently(ToolIntent intent);
+    bool AllowsAutomaticExtensionBatchPublicationCurrently();
+    PermissionDecision EvaluateCurrentPermission(ToolIntent intent);
+}
+
+public interface IStagedExtensionBatchProducer
+{
+    bool IsTrustedPrivateWorkspaceWriter(ToolIntent intent);
+}
+public interface IEffectiveToolAuthorizationIntents
+{
+    IReadOnlyList<ToolIntent> ResolveEffectiveAuthorizationIntents(ToolIntent intent,
+        ToolPreparationContext preparation, ToolExecutionContext execution,
+        CancellationToken cancellationToken);
+}
 
 /// <summary>
 /// A process-backed tool may request one explicit, per-call sandbox downgrade before the
@@ -66,7 +105,6 @@ public interface IWorktreeIntegrationCoordinator
     Task<ToolResult> ApplyAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
         CancellationToken cancellationToken);
 }
-
 /// <summary>Descripción de una tool (spec §32, ADR-0027).</summary>
 public sealed class ToolDescriptor
 {
@@ -301,6 +339,7 @@ public sealed class ToolExecutionContext
     /// <summary>Durable mutation attribution. Empty only for primitive compositions without a Host run.</summary>
     public string MutationRunId { get; }
     public string MutationTurnId { get; }
+    public string MutationLaneId { get; }
 
     /// <summary>Model capability filter for catalog discovery; it discloses no grants.</summary>
     public Func<string, bool>? IsModelToolVisible { get; }
@@ -321,6 +360,7 @@ public sealed class ToolExecutionContext
         WorkspaceRoot = workspaceRoot;
         MutationRunId = string.Empty;
         MutationTurnId = string.Empty;
+        MutationLaneId = string.Empty;
     }
 
     public ToolExecutionContext(string workspaceRoot, FileReadRegistry? readRegistry,
@@ -338,7 +378,7 @@ public sealed class ToolExecutionContext
         bool allowDeferredWeakSandboxConsent = false,
         bool weakSandboxConsentForThisCall = false,
         IWorkspaceMutationHistoryStore? mutationHistory = null,
-        string? mutationRunId = null, string? mutationTurnId = null)
+        string? mutationRunId = null, string? mutationTurnId = null, string? mutationLaneId = null)
     {
         WorkspaceRoot = workspaceRoot;
         ReadRegistry = readRegistry;
@@ -354,6 +394,7 @@ public sealed class ToolExecutionContext
         MutationHistory = mutationHistory;
         MutationRunId = mutationRunId ?? string.Empty;
         MutationTurnId = mutationTurnId ?? string.Empty;
+        MutationLaneId = mutationLaneId ?? string.Empty;
         IsModelToolVisible = isModelToolVisible;
         AcquireSessionSecurityAdmission = acquireSessionSecurityAdmission;
         AllowDeferredInteraction = allowDeferredInteraction;
@@ -397,11 +438,15 @@ public sealed class ToolIntent
     /// <summary>Durable workspace-history revision bound to a mutation approval when one exists.</summary>
     public long? EffectiveMutationHistoryRevision { get; }
 
+    /// <summary>Host-derived proposal for atomic multi-file mutation budget preflight.</summary>
+    public MutationProposal? EffectiveMutationProposal { get; }
+
     public ToolIntent(ToolCallId toolCallId, ToolId toolId, string normalizedArgumentsJson, EffectClass effect,
         ResourceClaims claims, ToolRisk risk, ReconciliationSpec? reconciliation,
         ModelToolCapability? effectiveMutationOperation = null,
         bool requiresPhysicalCreateCapability = false,
-        long? effectiveMutationHistoryRevision = null)
+        long? effectiveMutationHistoryRevision = null,
+        MutationProposal? effectiveMutationProposal = null)
     {
         ToolCallId = toolCallId;
         ToolId = toolId;
@@ -413,6 +458,7 @@ public sealed class ToolIntent
         EffectiveMutationOperation = effectiveMutationOperation;
         RequiresPhysicalCreateCapability = requiresPhysicalCreateCapability;
         EffectiveMutationHistoryRevision = effectiveMutationHistoryRevision;
+        EffectiveMutationProposal = effectiveMutationProposal;
     }
 }
 

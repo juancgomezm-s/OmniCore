@@ -30,8 +30,18 @@
   </ItemGroup>
 
   <Target Name="CopySandboxTestProcess" AfterTargets="Build">
+    <MSBuild Projects="$(MSBuildThisFileDirectory)..\OmniCore.SandboxTestProcess\OmniCore.SandboxTestProcess.csproj"
+             Targets="GetTargetPath"
+             Properties="Configuration=$(Configuration);TargetFramework=net10.0;ArtifactsPath=$(ArtifactsPath)">
+      <Output TaskParameter="TargetOutputs" ItemName="SandboxTestProcessTarget" />
+    </MSBuild>
+    <PropertyGroup>
+      <SandboxTestProcessTargetDirectory>$([System.IO.Path]::GetDirectoryName('@(SandboxTestProcessTarget)'))</SandboxTestProcessTargetDirectory>
+    </PropertyGroup>
     <ItemGroup>
-      <SandboxTestProcessFiles Include="$(MSBuildThisFileDirectory)..\OmniCore.SandboxTestProcess\bin\$(Configuration)\net10.0\OmniCore.SandboxTestProcess*" />
+      <SandboxTestProcessFiles Include="@(SandboxTestProcessTarget)" />
+      <SandboxTestProcessFiles Include="$(SandboxTestProcessTargetDirectory)\OmniCore.SandboxTestProcess*"
+                              Exclude="@(SandboxTestProcessTarget)" />
     </ItemGroup>
     <Copy SourceFiles="@(SandboxTestProcessFiles)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
   </Target>

@@ -155,6 +155,22 @@ public sealed class UserPermissionsTests
             .Evaluate(Intent("fake.write")).Final);
     }
 
+    [Fact]
+    public void Exact_core_extension_batch_intent_uses_workspace_write_defaults_and_keeps_user_rules()
+    {
+        var batch = new ToolIntent(ToolCallId.New(), new ToolId("extension.batch.apply"), "{}",
+            EffectClass.Reconcilable, ResourceClaims.Empty(), ToolRisk.High, null);
+
+        Assert.Equal(PermissionDecision.Allow, Policy(RunMode.Act).Evaluate(batch).Final);
+        Assert.Equal(PermissionDecision.Ask, Policy(RunMode.Act, PermissionProfile.Autonomous,
+            new Dictionary<string, PermissionDecision> { ["extension.batch.apply"] = PermissionDecision.Ask })
+            .Evaluate(batch).Final);
+        Assert.Equal(PermissionDecision.Deny, Policy(RunMode.Act, PermissionProfile.Autonomous,
+            new Dictionary<string, PermissionDecision> { ["extension.batch.apply"] = PermissionDecision.Deny })
+            .Evaluate(batch).Final);
+        Assert.Equal(PermissionDecision.Allow, Policy(RunMode.Act, PermissionProfile.Balanced).Evaluate(batch).Final);
+    }
+
     // ---------------------------------------------------------------- cableado de producción
 
     [Fact]
@@ -177,12 +193,30 @@ public sealed class UserPermissionsTests
             Assert.Equal(PermissionDecision.Allow, OmniHost.CreateGrantAwarePolicy(RunMode.Act, null, workspace, null)
                 .Evaluate(Intent("fake.write")).Final);
 
+            var extensionWriter = new ToolIntent(ToolCallId.New(), new ToolId("ext.sample.run"), "{}",
+                EffectClass.NonIdempotent, new ResourceClaims([workspace], [workspace], [],
+                    new ProcessClaim("extension-host", [], "WorkspaceEffect", WorkingDirectory: workspace,
+                        Isolation: ProcessIsolation.PrivateExtensionWorkspace), []), ToolRisk.High, null);
+            var livePolicy = OmniHost.CreateGrantAwarePolicy(RunMode.Act, null, workspace, null);
+            var batchAuthority = Assert.IsAssignableFrom<IAutomaticExtensionBatchAuthority>(livePolicy);
+            Assert.True(batchAuthority.AllowsAutomaticExtensionBatch(extensionWriter));
+            Assert.True(batchAuthority.AllowsAutomaticExtensionBatchCurrently(extensionWriter));
+
             File.WriteAllText(Path.Combine(config, "permissions.yaml"),
-                "profile: conservative\nrules:\n  fake.test: deny\n");
+                "profile: balanced\nrules:\n  fake.test: deny\n  ext.sample.run: allow\n");
             var policy = OmniHost.CreateGrantAwarePolicy(RunMode.Act, null, workspace, null);
 
-            Assert.Equal(PermissionDecision.Ask, policy.Evaluate(Intent("fake.write")).Final);
+            Assert.Equal(PermissionDecision.Allow, policy.Evaluate(Intent("fake.write")).Final);
             Assert.Equal(PermissionDecision.Deny, policy.Evaluate(Intent("fake.test")).Final);
+            // An explicit Allow can lift a per-tool Ask, but must not turn Balanced into
+            // autonomous batch publication. The already-created policy reads the file afresh.
+            Assert.Equal(PermissionDecision.Allow, batchAuthority.EvaluateCurrentPermission(extensionWriter));
+            Assert.False(batchAuthority.AllowsAutomaticExtensionBatchCurrently(extensionWriter));
+
+            File.WriteAllText(Path.Combine(config, "permissions.yaml"),
+                "profile: autonomous\nrules:\n  ext.sample.run: deny\n");
+            Assert.Equal(PermissionDecision.Deny, batchAuthority.EvaluateCurrentPermission(extensionWriter));
+            Assert.True(batchAuthority.AllowsAutomaticExtensionBatchCurrently(extensionWriter));
 
             File.WriteAllText(Path.Combine(config, "permissions.yaml"), "profile: reckless\n");
             Assert.Throws<ConfigValidationException>(() => OmniHost.CreateGrantAwarePolicy(RunMode.Act, null, workspace, null));
