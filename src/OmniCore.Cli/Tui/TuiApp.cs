@@ -490,9 +490,8 @@ public sealed partial class TuiApp
         var layout = TuiLayoutModel.ForWidth(_window.Frame.Width, _sidebarOpen, _sidebarSettings.Preferences);
         _sidebar.Visible = layout.SidebarVisible;
         _sidebar.Width = layout.SidebarWidth;
-        _sidebar.X = layout.Mode == TuiLayoutMode.Overlay && layout.SidebarVisible
-            ? Pos.Center() : layout.SidebarVisible ? Pos.AnchorEnd(layout.SidebarWidth) : Pos.AnchorEnd(0);
-        _mainColumnInset = layout.SidebarVisible && layout.Mode != TuiLayoutMode.Overlay ? layout.SidebarWidth : 0;
+        _sidebar.X = layout.SidebarVisible ? Pos.AnchorEnd(layout.SidebarWidth) : Pos.AnchorEnd(0);
+        _mainColumnInset = layout.SidebarVisible ? layout.SidebarWidth : 0;
         if (_conversationFrame is not null) _conversationFrame.Width = Dim.Fill(_mainColumnInset);
         if (_composerFrame is not null) _composerFrame.Width = Dim.Fill(_mainColumnInset + 1);
         UpdateComposerHeight();
