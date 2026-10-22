@@ -74,3 +74,26 @@ de Luna ni automatización de Windows Terminal; la skill de Windows prohíbe est
 No se presenta el CI completo como aprobado: en `d92e1f0`, Linux y los instaladores pasaron,
 pero el job Windows terminó por hebras foreground remanentes tras sus nueve regresiones
 aprobadas, antes de ejecutar la suite completa. Es un pendiente independiente de esta reparación.
+
+## Corrección de la superposición del panel estrecho
+
+La captura posterior del usuario mostró el panel centrado encima de chat/composer. La primera
+instalación no incluía `b1b7090`, que estaba en `codex/tui-openrouter-usability` y no en `main`.
+Se integró ese cambio concreto como `8d8c91a`, sin copiar ni fusionar trabajo ajeno sin commit.
+El renderer ahora reserva la columna derecha para cualquier panel visible, incluso cuando la
+preferencia legacy tiene `mode=overlay`. El ancho sigue limitado a `min(ancho/3, 40)`.
+
+Una prueba adicional con borrador largo detectó que reducir la altura de conversación sin
+cambiar su ancho dejaba el último mensaje fuera de la vista. La firma de contenido era idéntica
+y se omitía el seguimiento. Ahora una variación de viewport mantiene el final visible cuando
+el seguimiento está activo, sin recargar texto ni alterar la posición del lector si está inactivo.
+
+Resultado: 14 pruebas aprobadas, sin omisiones, incluyendo arranque con panel visible persistido
+a 64×30, 80×25, 80×40, 89×35, 120×40 y 240×40; modo legacy explícito; F2; maximizar/reducir;
+borrador multilínea; reapertura al final; ocho cambios de modelo; Esc y selección de historial.
+Los bounds de conversación, composer, header y status se comprueban separados del panel.
+La captura RGB de 80×40 se inspeccionó visualmente tras rasterizar las celdas SVG del driver.
+
+Evidencia: `%TEMP%/omni-sidebar-docked-20261022.xml` y
+`%TEMP%/omni-sidebar-docked-frames-20261022/`, incluido `docked-sidebar-80x40.png`.
+Estos frames usan datos de prueba; no se presentan como capturas de la terminal del usuario.

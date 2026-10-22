@@ -1466,7 +1466,14 @@ public sealed partial class TuiApp
         // Polling must not reload identical text: doing so resets selection and history scroll.
         var codeWidth = Math.Max(1, _conversation.Viewport.Width - 1);
         var signature = codeWidth + "\u001d" + string.Join("\u001f", _state.Conversation.Blocks.Select(b => b.Role + "\u001e" + b.ToolName + "\u001e" + b.Text));
-        if (_renderedConversation == signature) return;
+        if (_renderedConversation == signature)
+        {
+            // Growing the composer changes height without changing content or wrap width.
+            // Keep the tail visible without reloading text or resetting a reader's selection.
+            if (_followConversationEnd && _conversation.Viewport.Height > 0
+                && _conversation.Viewport.Bottom < _conversation.Lines) _conversation.MoveEnd();
+            return;
+        }
         _renderedConversation = signature;
         if (_state.Conversation.Blocks.Count == 0) { _conversation.Text = ConversationText(); return; }
         var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
