@@ -20,6 +20,9 @@ public sealed class SessionObservationHub(IEventStore store, IEventCodecRegistry
         public readonly Dictionary<string, ChatActivityEvent> Activity = new();
         public readonly List<ChatActivityEvent> Events = new();
         public SessionContextMeasurement? Context;
+        public long ContextRecoverySequence = -1;
+        public ConversationUsageMeasurement? Consumption;
+        public long ConsumptionSequence = -1;
         public DateTimeOffset ContextSubmittedAt;
         public SessionContextMeasurement? Pending;
         public readonly Dictionary<string, SessionContextMeasurement> ContextByTurn = new(StringComparer.Ordinal);
@@ -275,15 +278,26 @@ public sealed class SessionObservationHub(IEventStore store, IEventCodecRegistry
         {
             var state = State(session);
             Synchronize(session, state);
-            if (state.Context is null && RecoverContext(session) is { } recovered)
+            if (state.Context is null && state.ContextRecoverySequence != state.JournalSequence)
             {
-                state.Context = recovered;
-                state.ContextSubmittedAt = recovered.AsOf;
+                if (RecoverContext(session) is { } recovered)
+                {
+                    state.Context = recovered;
+                    state.ContextSubmittedAt = recovered.AsOf;
+                }
+                // Absence is also a recovered fact at this journal revision.
+                state.ContextRecoverySequence = state.JournalSequence;
             }
-            var consumption = artifacts is null
-                ? new ConversationUsageMeasurement(session.ToString(), new(MetricAvailability.Unknown, null, "artifact-store-unavailable"),
-                    new(MetricAvailability.Unknown, null, null), new(MetricAvailability.Unknown, null, null), state.JournalSequence, 0, 0, DateTimeOffset.UtcNow)
-                : SessionUsageReporter.ReadConversation(store, codecs, artifacts, session);
+            if (state.Consumption is null || state.ConsumptionSequence != state.JournalSequence)
+            {
+                // Usage derives from durable events and immutable artifacts, not elapsed time.
+                // Keep live activity/quota snapshots fresh without replaying all spend every poll.
+                state.Consumption = artifacts is null
+                    ? new ConversationUsageMeasurement(session.ToString(), new(MetricAvailability.Unknown, null, "artifact-store-unavailable"),
+                        new(MetricAvailability.Unknown, null, null), new(MetricAvailability.Unknown, null, null), state.JournalSequence, 0, 0, DateTimeOffset.UtcNow)
+                    : SessionUsageReporter.ReadConversation(store, codecs, artifacts, session);
+                state.ConsumptionSequence = state.JournalSequence;
+            }
             var activitiesByTurn = state.Activity.Values.ToDictionary(item => item.TurnId, StringComparer.Ordinal);
             var laneContexts = state.ContextByTurn.Keys.Concat(state.PendingByTurn.Keys).Distinct(StringComparer.Ordinal)
                 .Where(turn => activitiesByTurn.TryGetValue(turn, out var activity) && activity.LaneId is not null)
@@ -294,7 +308,7 @@ public sealed class SessionObservationHub(IEventStore store, IEventCodecRegistry
                         state.ContextByTurn.GetValueOrDefault(turn), state.PendingByTurn.GetValueOrDefault(turn));
                 }).ToArray();
             return new(session.ToString(), state.JournalSequence, DateTimeOffset.UtcNow,
-                state.Activity.Values.Any(a => a.ObservedInProcess && !Terminal(a.Phase)), state.Context, state.Pending, consumption,
+                state.Activity.Values.Any(a => a.ObservedInProcess && !Terminal(a.Phase)), state.Context, state.Pending, state.Consumption,
                 state.Quotas.Values.ToArray(), state.Events.Where(e => e.Sequence > afterActivitySequence)
                     .OrderBy(e => e.Sequence).ToArray(),
                 state.ActivitySequence, laneContexts);

@@ -96,10 +96,15 @@ public enum QuotaKind { Credits, RateLimitWindow, TokenAllowance }
 |---|---|---|
 | `Stacked` | ancho ≥ 120 columnas | visible a la derecha (32–40 columnas), widgets apilados por prioridad |
 | `Tabbed` / estrecho | 90–119 columnas | visible y estrecho (≈ 26 columnas). Se reduce la metadata secundaria; se muestra el widget de mayor prioridad y los demás son pestañas |
-| `Overlay` | < 90 columnas | oculto; la acción `sidebar.toggle` lo abre como overlay |
+| `Overlay` (nombre de modo conservado por compatibilidad) | < 90 columnas | oculto por defecto; al abrirlo queda anclado a la derecha, reservando su columna |
 
 - **Altura baja:** colapsa primero los widgets de menor prioridad.
 - **Configuración:** los breakpoints viven en `ui.breakpoints` (scope User). El layout se recalcula en cada resize; no se asume un terminal concreto.
+- **Corrección del 2026-10-22, conforme al límite solicitado por el usuario:** ningún modo visible
+  centra el panel encima del chat ni del composer. Se reserva su ancho a la derecha también
+  al recuperar `sidebar.visible=true` en una terminal estrecha o con el modo legacy `overlay`.
+  El ancho nunca supera un tercio de la terminal ni 40 columnas al maximizar; cerrar el panel
+  devuelve el espacio a la conversación. Se conserva la preferencia guardada, sin reiniciarla.
 
 ### 5. Roles semánticos de tema
 

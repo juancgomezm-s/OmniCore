@@ -30,7 +30,8 @@ public sealed record TuiLayoutModel(TuiLayoutMode Mode, bool SidebarVisible, int
         // Past 120 columns there is no need to keep growing the panel on maximize.
         var maxSidebarWidth = Math.Min(Math.Max(0, width) / 3, 40);
         sidebarRequested &= maxSidebarWidth > 0;
-        // Narrow terminals always use overlay to preserve a usable conversation, even under an explicit mode.
+        // Retain the legacy compact/Overlay composition at narrow widths. The renderer
+        // docks every visible sidebar on the right and reserves a conversation column.
         if (width >= preferences.TabbedMinWidth && preferences.Mode != "overlay")
         {
             var mode = preferences.Mode == "tabbed" ? TuiLayoutMode.Tabbed

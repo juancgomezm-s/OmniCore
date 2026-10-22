@@ -40,7 +40,7 @@ public sealed partial class TuiApp
     private string? _renderedConversation;
     private ComposerView? _composer;
     private int _composerRows = 1;
-    private bool _followConversationEnd;
+    private bool _followConversationEnd = true;
     private bool _renderingConversation;
     private FrameView? _composerFrame;
     private Label? _attachmentChips;
@@ -357,6 +357,13 @@ public sealed partial class TuiApp
         else if (code == "Esc" && _preferencesCenterActive) { HandlePreferencesEscape(); key.Handled = true; }
         else if (code == "Esc" && _overlay is not null) { CloseOverlay(); key.Handled = true; }
         else if (code == "Esc" && _commandHelper is not null) { HideCommandHelper(); key.Handled = true; }
+        else if (code == "Esc")
+        {
+            // Esc dismisses/interrupts, never exits the chat via the framework's Quit binding.
+            // Explicit app.exit commands retain their normal shutdown path.
+            if (_turnBusy) _turnCancellation?.Cancel();
+            key.Handled = true;
+        }
     }
 
     private bool HandleOperationalPreferencesEscape()
@@ -1463,7 +1470,14 @@ public sealed partial class TuiApp
         // Polling must not reload identical text: doing so resets selection and history scroll.
         var codeWidth = Math.Max(1, _conversation.Viewport.Width - 1);
         var signature = codeWidth + "\u001d" + string.Join("\u001f", _state.Conversation.Blocks.Select(b => b.Role + "\u001e" + b.ToolName + "\u001e" + b.Text));
-        if (_renderedConversation == signature) return;
+        if (_renderedConversation == signature)
+        {
+            // Growing the composer changes height without changing content or wrap width.
+            // Keep the tail visible without reloading text or resetting a reader's selection.
+            if (_followConversationEnd && _conversation.Viewport.Height > 0
+                && _conversation.Viewport.Bottom < _conversation.Lines) _conversation.MoveEnd();
+            return;
+        }
         _renderedConversation = signature;
         if (_state.Conversation.Blocks.Count == 0) { _conversation.Text = ConversationText(); return; }
         var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;

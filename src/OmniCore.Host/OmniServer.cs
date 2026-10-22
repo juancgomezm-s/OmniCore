@@ -1044,7 +1044,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     public IReadOnlyList<WireEnvelope> SubscribeSince(long fromSequence)
     {
         var result = new List<WireEnvelope>();
-        if (_lastSessionId is not null)
+        if (_lastSessionId is not null && _store.CurrentSequence(_lastSessionId) >= Math.Max(1, fromSequence))
         {
             var journal = _store.ReadFrom(_lastSessionId, 1);
             var events = journal.Where(evt => evt.Sequence >= Math.Max(1, fromSequence)).ToArray();
