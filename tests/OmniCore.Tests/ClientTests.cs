@@ -151,7 +151,42 @@ public sealed class ClientTests
         state = projection.Apply(state, WireEnvelope.Event(Ids.NewV7(), "{" + JsonObj.Field("type", "toolcall.effect_unknown")
             + "," + JsonObj.Field("toolCallId", parent) + "," + JsonObj.Field("effect", "NonIdempotent") + "}"));
         Assert.Single(state.Conversation.Blocks);
-        Assert.Contains("effect_unknown", state.Conversation.Blocks[0].Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("resultado", state.Conversation.Blocks[0].Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("es", "resultado")]
+    [InlineData("en", "result")]
+    [InlineData("fr", "résultat")]
+    [InlineData("it", "risultato")]
+    public void Projection_localizes_unknown_effect_for_core_and_dynamic_parent_tools(string locale,
+        string expectedWord)
+    {
+        foreach (var tool in new[] { "filesystem.patch", "ext.sample.run" })
+        {
+            var projection = new ClientProjection(new Localization(locale));
+            var callId = ToolCallId.New().ToString();
+            var state = projection.Apply(ClientState.Empty(), WireEnvelope.Event(Ids.NewV7(),
+                "{" + JsonObj.Field("type", "toolcall.requested") + ","
+                + JsonObj.Field("toolCallId", callId) + "," + JsonObj.Field("tool", tool) + ","
+                + JsonObj.Field("providerCallId", "provider-call") + ","
+                + JsonObj.Field("category", "Extension") + "}"));
+
+            state = projection.Apply(state, WireEnvelope.Event(Ids.NewV7(),
+                "{" + JsonObj.Field("type", "toolcall.effect_unknown") + ","
+                + JsonObj.Field("toolCallId", callId) + ","
+                + JsonObj.Field("effect", "NonIdempotent") + "}"));
+
+            var block = Assert.Single(state.Conversation.Blocks);
+            Assert.Contains(expectedWord, block.Text, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(tool, block.Text, StringComparison.Ordinal);
+            Assert.Contains("NonIdempotent", block.Text, StringComparison.Ordinal);
+            Assert.DoesNotContain("tool.effect_unknown", block.Text, StringComparison.Ordinal);
+            Assert.DoesNotContain("succeeded", block.Text, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("failed", block.Text, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("NonIdempotent", block.Arguments!["effect"]);
+            Assert.Equal(tool, block.Arguments["tool"]);
+        }
     }
 
     [Fact]

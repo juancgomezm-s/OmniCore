@@ -87,7 +87,9 @@ Aprobación local: **85/85 más 1/1, sin fallos ni omisiones**. Son 86 pruebas;
 los resultados de construcción de Luna alto están solapados y no se suman.
 
 DLL: `C:/Users/juanc/AppData/Local/Temp/omnicore-m9-extension-batch-build/bin/OmniCore.Tests/debug/OmniCore.Tests.dll`.
-SHA-256: `28C98E509F7BB1B28FE83545F5520BAC06F51902FA115885E82DA85EAD46C7AF`.
+SHA-256 del artefacto original validado antes del commit `1faeaab`:
+`28C98E509F7BB1B28FE83545F5520BAC06F51902FA115885E82DA85EAD46C7AF`.
+La corrección de CI siguiente recompiló esa ruta; su nuevo hash se registra aparte.
 
 Desde el worktree aislado:
 
@@ -103,6 +105,31 @@ frescos desde permissions.yaml aislado, clasificación Core y agrupación del
 cliente. Luna bajo revisó resolución bajo lease/fence, fingerprint, revalidación
 por destino y envelope protegido. No editó ni recompiló; usó la DLL final.
 `git diff --check` no encontró errores; sólo avisos de normalización LF/CRLF.
+
+## Corrección detectada por CI
+
+La [primera matriz del PR #4](https://github.com/juancgomezm-s/OmniCore/actions/runs/39734417286)
+detectó en Linux una fuga de la clave `tool.filesystem.patch.effect_unknown`:
+5054 pruebas aprobadas, 35 omitidas y una fallida de 5090. El estado incierto
+usaba por error una clave específica de herramienta que no existía.
+
+Luna alto corrigió la proyección con una clave común traducida en es/en/fr/it.
+Conserva herramienta, argumentos y tipo de efecto, también en extensiones con
+IDs dinámicos y acciones padre, sin convertir incertidumbre en éxito o fallo.
+El build incremental terminó sin errores ni advertencias; aprobaron el E2E
+afectado (1/1) y los focos de proyección y catálogo de locales (31/31), sin omisiones.
+
+Después de finalizar Luna alto, Luna bajo revisó el diff y ejecutó de forma
+independiente el E2E y la teoría de cuatro idiomas: **5/5, sin omisiones ni
+hallazgos**. No repitió la suite global ni los 86 focos del lote anterior.
+
+~~~powershell
+dotnet C:/Users/juanc/AppData/Local/Temp/omnicore-m9-extension-batch-build/bin/OmniCore.Tests/debug/OmniCore.Tests.dll -method '*ClientTests.Projection_localizes_unknown_effect_for_core_and_dynamic_parent_tools' -method '*CliEndToEndTests.Resolve_lists_and_answers_live_effect_recovery_interaction_then_allows_new_run' -parallelMode none
+~~~
+
+SHA-256 de la DLL con la corrección:
+`A1D5713D2B23018511D41F726514986AB9357A3CB8EEE0FEC9B7EA004980B1A3`.
+La aceptación remota exige una nueva matriz completa sobre la revisión corregida.
 
 ## Publicación y límites
 

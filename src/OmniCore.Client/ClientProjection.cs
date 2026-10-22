@@ -359,9 +359,7 @@ public sealed class ClientProjection
             case "toolcall.effect_unknown":
                 if (state.HiddenToolCallIds.Contains(Get(f, "toolCallId")))
                     return WithHiddenToolCalls(state, state.HiddenToolCallIds.Where(id => id != Get(f, "toolCallId")).ToHashSet(StringComparer.Ordinal));
-                return ReplaceTool(state, ToolBlockId(f), "effect_unknown", Get(f, "effect"))
-                    ?? Append(state, Block(evt, ConversationRole.Tool,
-                        _text.Resolve("tool.effect_unknown", "effect", Get(f, "effect"))));
+                return MarkToolEffectUnknown(state, ToolBlockId(f), Get(f, "tool"), Get(f, "effect"), evt);
             case "toolcall.failed":
             case "toolcall.rejected":
             case "toolcall.permission_denied":
@@ -552,6 +550,34 @@ public sealed class ClientProjection
         if (cause is not null) args["cause"] = cause;
         blocks[index] = new ConversationBlock(existing.Id, existing.Role,
             _text.Resolve("tool." + existing.ToolName + "." + phase, args), existing.ToolName, existing.Arguments);
+        return new(state.Header, new ConversationModel(blocks), state.Sidebar, state.Composer, state.StatusLine,
+            state.Overlays, state.Connection, state.HiddenToolCallIds);
+    }
+
+    private ClientState MarkToolEffectUnknown(ClientState state, string blockId, string toolName, string effect,
+        WireEnvelope evt)
+    {
+        var blocks = state.Conversation.Blocks.ToArray();
+        var index = Array.FindLastIndex(blocks, block => block.Id == blockId);
+        var args = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["tool"] = string.IsNullOrWhiteSpace(toolName) ? "tool" : toolName,
+            ["effect"] = string.IsNullOrWhiteSpace(effect) ? "unknown" : effect,
+        };
+        if (index < 0)
+        {
+            var fallbackTool = args["tool"];
+            return Append(state, new ConversationBlock(evt.MessageId, ConversationRole.Tool,
+                _text.Resolve("tool.effect_unknown", args), fallbackTool, args));
+        }
+
+        var existing = blocks[index];
+        if (existing.Arguments is not null)
+            foreach (var pair in existing.Arguments) args[pair.Key] = pair.Value;
+        args["tool"] = string.IsNullOrWhiteSpace(toolName) ? existing.ToolName ?? "tool" : toolName;
+        args["effect"] = string.IsNullOrWhiteSpace(effect) ? "unknown" : effect;
+        blocks[index] = new ConversationBlock(existing.Id, existing.Role,
+            _text.Resolve("tool.effect_unknown", args), existing.ToolName, args);
         return new(state.Header, new ConversationModel(blocks), state.Sidebar, state.Composer, state.StatusLine,
             state.Overlays, state.Connection, state.HiddenToolCallIds);
     }
