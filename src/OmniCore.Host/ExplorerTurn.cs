@@ -639,11 +639,14 @@ public sealed class ExplorerTurn
         finally { gate.Release(); }
     }
 
+    private bool _companionRequested;
     private TurnResult AskCore(string question, string instruction, SessionId sessionId, RunId runId,
         LaneId laneId, string workingStateText, CancellationToken cancellationToken, string? origin,
         TurnInstructionSnapshot? instructionSnapshot, Action<TurnStarted>? turnStarted,
         Func<bool>? resumePreflightPassed)
     {
+        _companionRequested = System.Text.RegularExpressions.Regex.IsMatch(
+            OmniCore.Extensions.CompanionInteractionRules.Prose(question ?? ""), @"\b(mascota|pet|companion)\b");
         try { _selection.Route?.ReasoningCapability.ValidateRequest(_selection.Reasoning); }
         catch (InvalidOperationException)
         {
@@ -659,6 +662,14 @@ public sealed class ExplorerTurn
             evt.RunId == runId && _codecs.Decode(evt) is TurnStarted start
                 && start.TurnId == resumedTurnId && start.LaneId == laneId) : null;
         var originalConfiguration = originalStart is null ? null : (TurnStarted)_codecs.Decode(originalStart);
+        if (originalStart is not null && !_companionRequested)
+        {
+            var originalInput = stream.EventsSince(1).Where(e => e.RunId == runId && e.Sequence < originalStart.Sequence)
+                .Select(_codecs.Decode).OfType<UserInputReceived>().LastOrDefault();
+            if (originalInput is not null) _companionRequested = System.Text.RegularExpressions.Regex.IsMatch(
+                OmniCore.Extensions.CompanionInteractionRules.Prose(CompanionPetService.InputText(originalInput.InputPartsJson)),
+                @"\b(mascota|pet|companion)\b");
+        }
         if (instructionSnapshot is not null)
         {
             instructionSnapshot.Validate();
@@ -4608,6 +4619,9 @@ public sealed class ExplorerTurn
         IReadOnlyList<string>? discoveredToolOrder = null)
     {
         var definitions = _catalog.Definitions();
+        // Easter egg disclosure is on demand even with FullCatalog. Catalog search still sees it.
+        definitions = definitions.Where(tool => tool.Name != "companion.pet"
+            || _companionRequested || discoveredToolIds?.Contains(tool.Name) == true).ToArray();
         if (_selection.ToolMode != ToolMode.Discovered)
             definitions = definitions.Where(tool => tool.Name != "tool.search").ToArray();
         else if (_boundary?.UsesFullToolCatalog() != true)
@@ -4616,6 +4630,7 @@ public sealed class ExplorerTurn
                 { "filesystem.read", "filesystem.list", "filesystem.search", "search.text",
                     "reference.resolve", "tool.search", "user.ask", "artifact.read", "skill.load" };
             visibleIds.UnionWith(_activeSkillToolIds);
+            if (_companionRequested) visibleIds.Add("companion.pet");
             if (discoveredToolIds is not null) visibleIds.UnionWith(discoveredToolIds);
             if (_exposeForcedInitialToolInDiscoveredMode && _forcedInitialToolName is not null)
                 visibleIds.Add(_forcedInitialToolName);
@@ -4709,7 +4724,8 @@ public sealed class ExplorerTurn
         IReadOnlyList<string> DiscoveryPromotion(IReadOnlySet<string>? discoveredToolIds,
             IReadOnlyList<string>? discoveredToolOrder)
         {
-            if (discoveredToolIds is null || discoveredToolIds.Count == 0) return Array.Empty<string>();
+            if (discoveredToolIds is null || discoveredToolIds.Count == 0)
+                return _companionRequested ? new[] { "companion.pet" } : Array.Empty<string>();
             // Keep the newest candidate ahead of older discoveries so the visible cap cannot
             // permanently starve a newly found tool. Reserve the next slot for tool.search
             // when no filesystem.read prerequisite is needed, allowing another search under

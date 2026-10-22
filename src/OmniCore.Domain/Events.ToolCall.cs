@@ -125,6 +125,7 @@ public enum Reversibility
 /// <summary>ToolCallSucceeded: outcome con resultado.</summary>
 public record ToolCallSucceeded(ToolCallId ToolCallId, string ResultJson) : DomainEventPayload
 {
+    public ActivityEvidence? ActivityEvidence { get; init; }
     /// <summary>Exact post-image captured after successful publication. Missing in legacy journals.</summary>
     public ArtifactRef? AfterStateRef { get; init; }
 
@@ -133,7 +134,7 @@ public record ToolCallSucceeded(ToolCallId ToolCallId, string ResultJson) : Doma
 
     public EventType Type() => EventType.Of("toolcall.succeeded");
 
-    public int SchemaVersion() => 3;
+    public int SchemaVersion() => 4;
 }
 
 /// <summary>ToolCallFailed: falló con efecto (posiblemente parcial; ADR-0004 §2).
@@ -141,9 +142,10 @@ public record ToolCallSucceeded(ToolCallId ToolCallId, string ResultJson) : Doma
 public record ToolCallFailed(ToolCallId ToolCallId, string Cause, EffectOutcome EffectOutcome,
     ToolErrorCode? ErrorCode = null) : DomainEventPayload
 {
+    public ActivityEvidence? ActivityEvidence { get; init; }
     public EventType Type() => EventType.Of("toolcall.failed");
 
-    public int SchemaVersion() => 2;
+    public int SchemaVersion() => 3;
 }
 
 /// <summary>ToolCallEffectUnknown: empezó pero su outcome no se persiguió (solo recovery).</summary>

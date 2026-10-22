@@ -122,6 +122,17 @@ public sealed partial class CliApp
         var userAliasApplied = !ReferenceEquals(withUserAlias, args);
         args = HumanCommandAliases.NormalizeCli(withUserAlias);
         var command = args[0];
+        if (command is "pet" or "/pet")
+        {
+            try
+            {
+                var state = CompanionPetPresentation.Execute(Runtime.Connect(CancellationToken.None),
+                    string.Join(" ", args.Skip(1).Where(a => a != "--json")), "headless");
+                Console.WriteLine(CompanionPetProtocol.Encode(state)); return Task.FromResult(0);
+            }
+            catch (Exception error) when (error is ArgumentException or InvalidOperationException)
+            { Console.WriteLine("{\"error\":\"" + JsonObj.Escape(error.Message) + "\"}"); return Task.FromResult(2); }
+        }
         if (command is "new" or "sessions" or "resume-session" or "rename-session" or "compact" or "clear") return RunConversationCommand(args);
         if (command.StartsWith("/", StringComparison.Ordinal)) return RunTypedCommand(args);
         if (command == "sim") return RunSim(args);
@@ -1017,6 +1028,7 @@ public sealed partial class CliApp
 
     private static Task<int> RunTui(string[] args)
     {
+        Runtime.CompanionClientId = "terminal";
         OmniHost.InitializeUserConfigurationExamples();
         var client = Runtime.Connect(CancellationToken.None);
         if (args.Any(a => a == "--sim"))

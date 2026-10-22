@@ -63,8 +63,9 @@ public sealed class HostTools
         if (includeProcessTools)
         {
             var processLauncher = OmniHost.CreateProcessSandboxLauncher(processRuntime ?? SystemProcessRuntime.Instance());
-            catalog = catalog.Add(new ProcessExecTool(processLauncher, boundary, processSandboxStrength));
-            if (includeShellTool) catalog = catalog.Add(new ShellExecTool(processLauncher, boundary, processSandboxStrength));
+            var gitActivity = new OmniCore.Infrastructure.GitWorktreeStore(SystemProcessRuntime.Instance());
+            catalog = catalog.Add(new ProcessExecTool(processLauncher, boundary, processSandboxStrength, gitActivity));
+            if (includeShellTool) catalog = catalog.Add(new ShellExecTool(processLauncher, boundary, processSandboxStrength, gitActivity));
         }
 
         catalog = catalog.Add(new ReferenceResolveTool(boundary));
@@ -128,6 +129,8 @@ public sealed class HostTools
             mediaReadTool: mediaReadTool);
 
     public FakeCatalog Catalog() => _catalog;
+
+    internal void RegisterCompanionTool(CompanionPetTool tool) => _catalog.Add(tool);
 
     /// <summary>Registers a source-namespaced extension tool after consented Host composition.</summary>
     internal void RegisterExtensionTool(ITool tool)

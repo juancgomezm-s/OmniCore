@@ -1,0 +1,40 @@
+  ws │ semilla de prueba · Modelo: Automático · sin turno                         Espacio de trabajo                    
+                                                                                                               Ajustes  
+  ┃  ·  ○                                                                                                               
+  ┃  Run iniciado: semilla de prueba                                              SESIÓN                                
+                                                                                  semilla de prueba                     
+  ┃  ◉  TÚ                                                                        ◆ Modelo: Automático · sin turno      
+  ┃  semilla de prueba                                                            ○ act · en curso                      
+                                                                                                                        
+  ┃  ◉  TÚ                                                                        Más… despliega cada sección           
+  ┃  Revisa los archivos de este proyecto                                                                               
+                                                                                  AGENTES · LANES                     ╷ 
+                                                                                  ▪ Capacidad · activos 0/1 · espera  ┃ 
+                                                                                  0 · lectura                         ┃ 
+                                                                                  ○ Pulso agregado · desconocido ·    ┃ 
+                                                                                  observados activos 0 · espera       ┃ 
+                                                                                  capacidad 0 · join 0 · supervisión 0┃ 
+                                                                                  Más…                                ┃ 
+                                                                                                                      ┃ 
+                                                                                  CONTEXTO                            ┃ 
+                                                                                  ▪ Sin medición todavía              ┃ 
+                                                                                  Más…                                ┃ 
+                                                                                                                      │ 
+                                                                                  CONSUMO                             │ 
+                                                                                  ▪ Tokens sesión: 0                  │ 
+                                                                                  ○ Costo sesión: —                   │ 
+                                                                                  Más…                                ╵ 
+                                                                                                                        
+                                                                                  Mascota · Reposo                      
+                                                                                                                        
+                                                                                     ▄▀█▄▄▄▄█▀▄                         
+                                                                                    ▄██████████▄                        
+                                                                                    ██▀▄▀▀██▄▀██                        
+                                                                                     ▀███▀▀▀██▀                         
+                                                                                     ▄███████████ ▄▄▄                   
+                                                                                     ▀██▀██████▀▀████                   
+   ›                                                                                  ▀▀ ▀▀▀▀▀ ▀▀▀▀▀                    
+                                                                                  Omni · Castor · L1 · 70/100           
+                                                                                  Acariciar           Ocultar           
+  act · Permisos: Libre · Enter enviar · / ayuda · F3 · Ctrl+O archivos · /pa…                                          
+  —                                                                                                                     

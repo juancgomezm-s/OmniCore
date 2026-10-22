@@ -281,6 +281,7 @@ public sealed partial class TuiApp
 
     internal bool AnimateActivity()
     {
+        AnimateCompanion();
         if (!HasActiveModelWork && _activity?.Visible != true && _animationPreview is null) return true;
         if (_animationPreferences.Enabled && !_animationPreferences.ReducedMotion
             && ++_activityTicks >= _animationPreferences.IntervalMilliseconds / 100)
@@ -899,6 +900,8 @@ public sealed partial class TuiApp
         if (input == "/openrouter") { ShowPreferences("accounts_connections", categoryPage: true); _composer.Text = ""; return; }
         if (input == "/login") { ShowAccount(fromPreferences: false); _composer.Text = ""; return; }
         if (input is "/model" or "/models") { ShowModelPicker(refreshCatalog: false); _composer.Text = ""; return; }
+        if (input == "/pet" || input.StartsWith("/pet ", StringComparison.Ordinal))
+        { RunPetAction(input.Length > 4 ? input[5..] : "", true); _composer.Text = ""; return; }
         if (input == "/sidebar") { ToggleSidebar(); _composer.Text = ""; return; }
         if (input.StartsWith("/sidebar ", StringComparison.Ordinal))
         {
@@ -1398,6 +1401,7 @@ public sealed partial class TuiApp
 
     private void RefreshSidebarData()
     {
+        PollCompanion();
         if (DateTimeOffset.UtcNow - _sidebarSettingsPolledAt > TimeSpan.FromSeconds(2))
         {
             var revision = _sidebarSettings.Revision; RefreshSidebarPreferences();
@@ -1597,6 +1601,7 @@ public sealed partial class TuiApp
                 { Text = FitText(row.Text, Math.Max(1, layout.SidebarWidth - 6)) }).ToArray() }) : item.Model)).ToArray();
         _sidebarSession?.Render(pinned);
         _sidebarContent.Render(_sidebarComposition.Body);
+        RenderCompanion();
         if (_sidebarAttention is not null) _sidebarAttention.Text = _sidebarSettings.Diagnostics.Count > 0 ? _localization.Resolve("shell.invalid_settings")
             : _sidebarComposition.AttentionIds.Count > 0 ? "! " + string.Join(" · ", _sidebarComposition.AttentionIds.Select(id => id.Replace("core.", "")))
             : _sidebarComposition.Collapsed > 0 ? _localization.Resolve("shell.details_collapsed_inspect") : "";
@@ -2705,6 +2710,7 @@ public sealed partial class TuiApp
 
     private void CloseOverlay()
     {
+        _petDetail = null;
         if (_overlay is null || _window is null) return;
         CancelExtensionViewRefresh();
         if (_themeBeforePreview is { } originalTheme) { _theme = originalTheme; _themeBeforePreview = null; }

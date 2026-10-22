@@ -77,3 +77,5 @@ Cada ADR registra una decisión que precisa o modifica `docs/spec/OmniCore-v1.md
 | [0058](0058-native-session-skills-memory.md) | Activación de skills y memoria de Session nativas | Construidas, cableadas y validadas localmente; MemoryPromotion sobre Turn abierto pendiente |
 | [0059](0059-native-command-handoff.md) | Handoff durable de comandos humanos | Prompt y recuperación previa al inicio publicados; otras familias pendientes de aceptación |
 | [0060](0060-native-orchestration-workflow-recovery.md) | Orchestrate y recuperación nativa de workflows | Construcción/validación en curso, todavía sin publicación |
+| [0061](0061-plataforma-de-extensiones.md) | Plataforma de extensiones, paquetes aislados y vistas | Implementación incremental |
+| [0062](0062-companion-pet.md) | Mascota local, incubación y presentación portable | Implementada en OmniCore |

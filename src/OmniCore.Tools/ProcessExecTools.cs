@@ -12,12 +12,14 @@ public sealed class ProcessExecTool : ITool, IWeakSandboxConsentPreflightTool
     private readonly ISandboxProcessLauncher _processLauncher;
     private readonly IPathBoundaryValidator _boundary;
     private readonly SandboxStrength _requestedStrength;
+    private readonly IGitActivityReader? _gitActivity;
 
     public ProcessExecTool(ISandboxProcessLauncher processLauncher, IPathBoundaryValidator boundary,
-        SandboxStrength requestedStrength = SandboxStrength.Strong)
+        SandboxStrength requestedStrength = SandboxStrength.Strong, IGitActivityReader? gitActivity = null)
     {
         _processLauncher = processLauncher ?? throw new ArgumentNullException(nameof(processLauncher));
         _boundary = boundary;
+        _gitActivity = gitActivity;
         _requestedStrength = requestedStrength == SandboxStrength.Weak
             ? SandboxStrength.Weak : SandboxStrength.Strong;
         _descriptor = ProcessToolJson.Descriptor("process.exec",
@@ -67,7 +69,7 @@ public sealed class ProcessExecTool : ITool, IWeakSandboxConsentPreflightTool
                 "cwd fuera del workspace o no existe"));
         return ProcessToolJson.RunAsync(_processLauncher, process.Executable, process.Args, cwd,
             context.WorkspaceRoot, timeout, process.NetworkRequired,
-            _requestedStrength, context, cancellationToken);
+            _requestedStrength, context, cancellationToken, _gitActivity);
     }
 }
 
@@ -78,12 +80,14 @@ public sealed class ShellExecTool : ITool
     private readonly ISandboxProcessLauncher _processLauncher;
     private readonly IPathBoundaryValidator _boundary;
     private readonly SandboxStrength _requestedStrength;
+    private readonly IGitActivityReader? _gitActivity;
 
     public ShellExecTool(ISandboxProcessLauncher processLauncher, IPathBoundaryValidator boundary,
-        SandboxStrength requestedStrength = SandboxStrength.Strong)
+        SandboxStrength requestedStrength = SandboxStrength.Strong, IGitActivityReader? gitActivity = null)
     {
         _processLauncher = processLauncher ?? throw new ArgumentNullException(nameof(processLauncher));
         _boundary = boundary;
+        _gitActivity = gitActivity;
         _requestedStrength = requestedStrength == SandboxStrength.Weak
             ? SandboxStrength.Weak : SandboxStrength.Strong;
         _descriptor = ProcessToolJson.Descriptor("shell.exec",
@@ -122,7 +126,7 @@ public sealed class ShellExecTool : ITool
         var (_, args) = ProcessToolJson.ShellInvocation(command);
         return ProcessToolJson.RunAsync(_processLauncher, intent.Intent.Claims.Process!.Executable,
             args, cwd, context.WorkspaceRoot, TimeSpan.FromSeconds(timeout), networkRequired: false,
-            _requestedStrength, context, cancellationToken);
+            _requestedStrength, context, cancellationToken, _gitActivity);
     }
 }
 
@@ -260,11 +264,15 @@ internal static class ProcessToolJson
 
     internal static async Task<ToolResult> RunAsync(ISandboxProcessLauncher launcher, string executable,
         IReadOnlyList<string> args, string cwd, string workspaceRoot, TimeSpan timeout, bool networkRequired,
-        SandboxStrength requestedStrength, ToolExecutionContext context, CancellationToken cancellationToken)
+        SandboxStrength requestedStrength, ToolExecutionContext context, CancellationToken cancellationToken,
+        IGitActivityReader? gitActivity = null)
     {
         var launch = CreateLaunchSpec(requestedStrength, executable, args, cwd, workspaceRoot,
             networkRequired, timeout);
         ISandboxProcessControl? process = null;
+        var activity = ProcessActivityProbe.Start(executable, args, cwd, workspaceRoot);
+        var before = activity.IsCommit && gitActivity is not null
+            ? await gitActivity.ReadActivityAsync(cwd, cancellationToken).ConfigureAwait(false) : null;
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -313,10 +321,13 @@ internal static class ProcessToolJson
             if (output.TimedOut)
                 return new ToolResult("Proceso agotó timeout o fue cancelado. " + combined, combined, null,
                     originalSize, false, EffectOutcome.Unknown, true, ToolErrorCode.ProcessFailure);
+            var after = activity.IsCommit && output.ExitCode == 0 && gitActivity is not null
+                ? await gitActivity.ReadActivityAsync(cwd, cancellationToken).ConfigureAwait(false) : null;
             return new ToolResult("Proceso terminó con código " + output.ExitCode
                 + (truncated ? " (salida truncada)" : ""), combined, null, originalSize, false,
                 output.ExitCode == 0 ? EffectOutcome.Applied : EffectOutcome.Partial, output.ExitCode != 0,
-                output.ExitCode == 0 ? null : ToolErrorCode.ProcessFailure);
+                output.ExitCode == 0 ? null : ToolErrorCode.ProcessFailure)
+                { ActivityEvidence = activity.Finish(output.ExitCode, before, after) };
         }
         catch (WeakSandboxConsentRequiredException) { throw; }
         catch (ExecutableNotFoundException ex) { return ToolResult.Error(ToolErrorCode.ProcessFailure, ex.Message); }

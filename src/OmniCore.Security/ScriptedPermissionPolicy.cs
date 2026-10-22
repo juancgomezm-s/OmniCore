@@ -276,6 +276,7 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
             case "plan.propose":
             case "reference.resolve":
             case "tool.search":
+            case "companion.pet":
                 return intent.Claims.Secrets.Count > 0 ? PermissionResource.SecretPaths
                     : PermissionResource.PlanAndReferenceTools;
             case "fake.write":

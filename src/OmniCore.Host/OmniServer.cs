@@ -835,6 +835,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
         using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
         var commandName = fields.TryGetValue("cmd", out var c) ? c : null;
+        if (commandName == CompanionPetProtocol.Command) return ChangeCompanion(command);
         if (commandName == "extensions.package")
             return ChangeExtensionPackage(command, fields, trustedUserAction, cancellationToken);
         if (commandName == "conversation.alternative")
@@ -2964,6 +2965,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     public SessionQueryResult? Query(string name, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (name == CompanionPetProtocol.Query || name.StartsWith("companion.pet:", StringComparison.Ordinal)
+            || name.StartsWith("companion.pet.events:", StringComparison.Ordinal)) return QueryCompanion(name);
         if (name is "extensions.packages" or "extensions.views" or "extensions.context" or "extensions.context.catalog" || name.StartsWith("extensions.view:", StringComparison.Ordinal)
             || name.StartsWith("extensions.configuration:", StringComparison.Ordinal) || name.StartsWith("extensions.notifications:", StringComparison.Ordinal))
             return QueryExtensionPlatform(name, cancellationToken);
@@ -3488,6 +3491,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                     .Select(definition => (Definition: definition, Catalog: actCatalog, Active: false)));
             foreach (var (definition, owner, active) in rows)
             {
+                if (definition.Name == "companion.pet" && !CompanionService.Status().Discovered) continue;
                 var tool = owner.Find(new ToolId(definition.Name));
                 if (tool is null) continue;
                 var descriptor = tool.Descriptor;

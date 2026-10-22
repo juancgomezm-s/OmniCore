@@ -152,6 +152,9 @@ public sealed class ToolResult
 
     public bool IsError { get; }
 
+    [System.Text.Json.Serialization.JsonIgnore]
+    public ActivityEvidence? ActivityEvidence { get; init; }
+
     /// <summary>Transient exact bytes returned by a filesystem executor, never serialized or model-visible.
     /// The synchronous runtime publishes them under its existing CAS lease before the success event.</summary>
     [System.Text.Json.Serialization.JsonIgnore]

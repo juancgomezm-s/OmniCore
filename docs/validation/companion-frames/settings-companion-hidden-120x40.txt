@@ -1,0 +1,40 @@
+  ws │ semilla de prueba · Modelo: Automático · sin turno                         Espacio de trabajo                    
+                                                                                                               Ajustes  
+  ┃  ·  ○                                                                                                               
+  ┃  Run iniciado: semilla de prueba                                              SESIÓN                                
+                                                                                  semilla de prueba                     
+  ┃  ◉  TÚ                                                                        ◆ Modelo: Automático · sin turno      
+  ┃  semilla de prueba                                                            ○ act · en curso                      
+                                                                                                                        
+                                                                                  Más… despliega cada sección           
+                                                                                                                        
+                                                                                  AGENTES · LANES                       
+                                                                                  ▪ Capacidad · activos 0/1 · espera 0  
+                                                                                  · lectura                             
+                                                                                  ○ Pulso agregado · desconocido ·      
+                                                                                  observados activos 0 · espera         
+                                                                                  capacidad 0 · join 0 · supervisión 0  
+                                                                                  Más…                                  
+                                                                                                                        
+                                                                                  CONTEXTO                              
+                                                                                  ▪ Sin medición todavía                
+                                                                                  Más…                                  
+                                                                                                                        
+                                                                                  CONSUMO                               
+                                                                                  ▪ Tokens sesión: 0                    
+                                                                                  ○ Costo sesión: —                     
+                                                                                  Más…                                  
+                                                                                                                        
+                                                                                  DIAGNÓSTICO                           
+                                                                                  ○ Sin bloqueo de recuperación         
+                                                                                  ○ Run                                 
+                                                                                  01a16461-5384-72e0-afa7-2f6b3380b6ce  
+                                                                                  Más…                                  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+   ›                                                                                                                    
+                                                                                                                        
+                                                                                                                        
+  act · Permisos: Libre · Enter enviar · / ayuda · F3 · Ctrl+O archivos · /pa…                                          
+  —                                                                                                                     

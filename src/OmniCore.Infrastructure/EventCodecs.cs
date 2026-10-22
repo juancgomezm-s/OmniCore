@@ -194,6 +194,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.started"), 3))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.succeeded"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.succeeded"), 2))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.succeeded"), 3))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("lane.created"), 1))
@@ -210,6 +211,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("meta_model.invocation_failed"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.reconciled"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.failed"), 1))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.failed"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.rejected"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("task.created"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("external_lane.usage_recorded"), 1))
@@ -981,10 +983,10 @@ public sealed class Typed
         Of(EventType.Of("toolcall.started"), EventJsonContext.Default.ToolCallStarted, currentVersion: 4);
 
     public static CodecPair ToolCallSucceeded() =>
-        Of(EventType.Of("toolcall.succeeded"), EventJsonContext.Default.ToolCallSucceeded, currentVersion: 3);
+        Of(EventType.Of("toolcall.succeeded"), EventJsonContext.Default.ToolCallSucceeded, currentVersion: 4);
 
     public static CodecPair ToolCallFailed() =>
-        Of(EventType.Of("toolcall.failed"), EventJsonContext.Default.ToolCallFailed, currentVersion: 2);
+        Of(EventType.Of("toolcall.failed"), EventJsonContext.Default.ToolCallFailed, currentVersion: 3);
 
     public static CodecPair ToolCallEffectUnknown() =>
         Of(EventType.Of("toolcall.effect_unknown"), EventJsonContext.Default.ToolCallEffectUnknown);

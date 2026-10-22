@@ -36,6 +36,8 @@ public sealed class OmniCliRuntime : IDisposable
         string BaseUrl, IArtifactStore Artifacts)? _usageContext;
     private bool _workspaceWarningShown;
     private bool _providerDeprecationShown;
+    /// <summary>Composition-owned client preference namespace for companion tool actions.</summary>
+    public string CompanionClientId { get; set; } = "headless";
     internal SandboxStrength ProcessSandboxStrengthForTests { get; set; } = SandboxStrength.Strong;
     internal Func<OmniCore.Abstractions.IProcessRuntime>? ProcessRuntimeFactoryForTests { get; set; }
     internal Func<ISandboxProcessLauncher>? McpSandboxLauncherFactoryForTests { get; set; }
@@ -138,6 +140,7 @@ public sealed class OmniCliRuntime : IDisposable
         try
         {
             next.UiLocale = UiLocale; next.Localize = Localize;
+            next.CompanionClientId = CompanionClientId;
             next.QuestionnaireInput = QuestionnaireInput; next.UseConsoleInput = UseConsoleInput;
             var client = next.Connect(cancellationToken);
             var history = JsonSerializer.Deserialize(client.Query("workspace.panel:" + Uri.EscapeDataString("{\"kind\":\"timeline\"}"), cancellationToken)?.Json ?? "{}",
@@ -2126,6 +2129,7 @@ public sealed class OmniCliRuntime : IDisposable
         finally
         {
             Volatile.Write(ref _turnExecutionActive, 0);
+            _server?.SynchronizeCompanion();
         }
     }
 
@@ -2949,6 +2953,8 @@ public sealed class OmniCliRuntime : IDisposable
                     new SkillManifestLoader(),
                     DiscoverSkills, skillLimits));
             SessionMemoryPolicy? sessionMemoryPolicy = null;
+            if (delegation is null) hostTools.RegisterCompanionTool(new CompanionPetTool(server.CompanionService,
+                server.SynchronizeCompanion, CompanionClientId));
             if (delegation is null)
             {
                 var memoryStore = new SessionMemoryStore(workspaceData);

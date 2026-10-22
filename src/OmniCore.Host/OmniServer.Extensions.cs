@@ -73,6 +73,12 @@ public sealed partial class OmniServer
 
     internal SessionQueryResult QueryExtensionPlatform(string name, CancellationToken token)
     {
+        if (name.StartsWith("extensions.view:", StringComparison.Ordinal))
+        {
+            var builtInRequest = ExtensionProtocol.DecodeRequest(Uri.UnescapeDataString(name[16..]));
+            if (builtInRequest.ExtensionId == "core.companion" && builtInRequest.ViewId == "pet")
+                return new(name, ExtensionProtocol.Encode(CompanionExtensionView()));
+        }
         if (name is "extensions.context" or "extensions.context.catalog") return QueryExtensionContext(name);
         if (name.StartsWith("extensions.notifications:", StringComparison.Ordinal)) return QueryExtensionNotifications(name);
         var manager = new ExtensionPackageManager(_platformPathsFactory());
@@ -99,12 +105,13 @@ public sealed partial class OmniServer
         }
         if (name == "extensions.views")
         {
-            if (_workspaceRoot is null) return new(name, "[]");
-            var views = ProjectExtensionPackageCatalog.Ready(_workspaceRoot!, _platformPathsFactory(),
+            var views = (_workspaceRoot is null ? [] : ProjectExtensionPackageCatalog.Ready(_workspaceRoot!, _platformPathsFactory(),
                 new WorkspaceTrustStore(_platformPathsFactory()).IsTrusted(_workspaceRoot!))
                 .SelectMany(package => (package.Extension.Manifest?.Provides?.Views ?? []).Select(view =>
                     "{" + JsonObj.Field("extensionId", package.Extension.Manifest!.Id!) + "," + JsonObj.Field("viewId", view.Id!)
-                    + "," + JsonObj.Field("kind", view.Kind!) + "}"));
+                    + "," + JsonObj.Field("kind", view.Kind!) + "}"))).ToList();
+            if (CompanionService.Status().Discovered)
+                views.Add("{\"extensionId\":\"core.companion\",\"viewId\":\"pet\",\"kind\":\"indicator\"}");
             return new(name, "[" + string.Join(",", views) + "]");
         }
         if (name.Length > 8192) throw new ArgumentException("extension_request_limit");

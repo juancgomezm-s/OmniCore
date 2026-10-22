@@ -332,6 +332,11 @@ public sealed partial class TuiApp
                 animationsOpen.Accepted += (_, _) => { CloseOverlay(); ShowAnimationSettings(); _preferencesReturnToCategory = true; };
                 Add(sidebarOpen); Add(animationsOpen);
                 y += 2;
+                if (_pet?.Discovered == true)
+                {
+                    AddNamedAction("preferences-companion", CompanionPetPresentation.Word("pet", _locale), y,
+                        () => { CloseOverlay(); ShowPetDetail(); }); y += 2;
+                }
                 AddNamedAction("preferences-theme-open", _localization.Resolve("shell.theme.open"), y, () =>
                 { CloseOverlay(); ShowThemePreferences(); _preferencesReturnToCategory = true; });
                 y += 2;

@@ -1,0 +1,40 @@
+  ws │ semilla de prueba · Modelo: Automático · sin turno                         Espacio de trabajo                    
+                                                                                                               Ajustes  
+  ┃  ·  ○                                                                                                               
+  ┃  Run iniciado: semilla de prueba                                              SESIÓN                                
+                                                                                  semilla de prueba                     
+  ┃  ◉  TÚ                                                                        ◆ Modelo: Automático · sin turno      
+  ┃  semilla de prueba                                                            ○ act · en curso                      
+                                                                                                                        
+  ┃  ◉  TÚ    Mascota                                                                                       n           
+  ┃  Revisa   Mascota · Reposo                                                                                          
+                   ▄        ▄                                                                                         ╷ 
+                  ▄██████████▄                                                                              · espera  ┃ 
+                 ██▀▀▀▀██▀▀▀▀██                                                                                       ┃ 
+                 ███▀█████▀████                                                                             cido ·    ┃ 
+                 ▀█████▀▀█████▀                                                                             era       ┃ 
+                 █▀█▀█▀█▀█▀██▀█                                                                             ervisión 0┃ 
+                  ▀█▀▀▀▀▀▀▀▀█▀                                                                                        ┃ 
+                    ▀▀  ▀▀                                                                                            ┃ 
+              Omni · Búho · L1 · 70/100                                                                               ┃ 
+              Acariciar                                                                                               ┃ 
+                                                                                                                      ┃ 
+                                                                                                                      │ 
+              Omni                      Renombrar                                                                     │ 
+                                                                                                                      │ 
+              Ocultar mascota   /pet reduced                                                                          │ 
+                                                                                                                      ╵ 
+              Bebé · 0 XP · 70/100                                                                                      
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+              Cerrar                                                                                                    
+                                                                                     ███▀█████▀████                     
+                                                                                     ▀█████▀▀█████▀                     
+                                                                                     █▀█▀█▀█▀█▀██▀█                     
+                                                                                      ▀█▀▀▀▀▀▀▀▀█▀                      
+   ›                                                                                    ▀▀  ▀▀                          
+                                                                                  Omni · Búho · L1 · 70/100             
+                                                                                  Acariciar           Ocultar           
+  act · Permisos: Libre · Enter enviar · / ayuda · F3 · Ctrl+O archivos · /pa…                                          
+  —                                                                                                                     

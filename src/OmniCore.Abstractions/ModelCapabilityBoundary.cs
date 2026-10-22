@@ -58,6 +58,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             { "filesystem.search", ModelToolCapability.Search },
             { "search.text", ModelToolCapability.Search },
             { "tool.search", ModelToolCapability.Search },
+            { "companion.pet", ModelToolCapability.PlanProposal },
             { "reference.resolve", ModelToolCapability.ReferenceResolve },
             { "plan.propose", ModelToolCapability.PlanProposal },
             { "mode.propose", ModelToolCapability.PlanProposal },
