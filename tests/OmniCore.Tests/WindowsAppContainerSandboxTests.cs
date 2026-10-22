@@ -647,6 +647,54 @@ public sealed class WindowsAppContainerSandboxTests
     }
 
     [Fact]
+    public async Task AppContainer_waits_for_descendants_to_release_files_before_returning()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("AppContainer integration tests run only on Windows.");
+            return;
+        }
+
+        var capabilities = new WindowsAppContainerCapabilitiesProbe().Probe();
+        if (!capabilities.StrongAvailable)
+        {
+            Assert.Skip("AppContainer is unavailable: " + capabilities.StrongUnavailableReason);
+            return;
+        }
+
+        var workspace = Path.Combine(Path.GetTempPath(), "OmniCoreSandboxJobReleaseTest-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspace);
+        var heldFile = Path.Combine(workspace, "held.txt");
+        var readyFile = Path.Combine(workspace, "ready.txt");
+        var parentPidFile = Path.Combine(workspace, "parent.pid");
+        try
+        {
+            var launch = new SandboxLaunchSpec(SandboxStrength.Strong, HelperExecutable(),
+                ["spawn-file-holder", heldFile, readyFile, parentPidFile], workspace, new Dictionary<string, string>(),
+                [new SandboxAllowedPath(workspace, SandboxPathAccess.Read | SandboxPathAccess.Write)],
+                new SandboxNetworkPolicy(SandboxNetworkMode.Deny, []), TimeSpan.FromSeconds(10));
+            await using var process = await new WindowsAppContainerProcessLauncher()
+                .StartAsync(launch, TestContext.Current.CancellationToken);
+
+            Assert.True(SpinWait.SpinUntil(() => File.Exists(parentPidFile), TimeSpan.FromSeconds(10)), "The child should lock the file and the root should publish its pid before exiting.");
+            var parentPid = int.Parse(await File.ReadAllTextAsync(parentPidFile, TestContext.Current.CancellationToken));
+            Assert.True(WaitUntilExited(parentPid), "The root process should exit while its child still holds the file.");
+            Assert.Equal("locked", await File.ReadAllTextAsync(readyFile, TestContext.Current.CancellationToken));
+            await process.TerminateAsync(TestContext.Current.CancellationToken);
+            await process.DisposeAsync();
+            // TerminateAsync completion means every process in the Job Object has exited.
+            // The child held this file without FILE_SHARE_DELETE, so immediate deletion proves
+            // teardown waited for descendant process handles, not only the root process handle.
+            File.Delete(heldFile);
+            Assert.False(File.Exists(heldFile));
+        }
+        finally
+        {
+            TryDelete(workspace);
+        }
+    }
+
+    [Fact]
     public void AppContainer_profile_name_is_stable_per_workspace_path()
     {
         if (!OperatingSystem.IsWindows())

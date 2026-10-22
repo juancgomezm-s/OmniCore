@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Sockets;
+using System.Text;
 
 if (args.Length == 1 && args[0] == "legacy-stdio")
 {
@@ -33,6 +35,86 @@ if (args.Length == 1 && args[0] == "stream")
     await Console.Out.FlushAsync();
     await Console.Error.WriteAsync(new string('e', 1_100_000));
     return 42;
+}
+
+if (args.Length == 3 && args[0] == "managed-llama-fixture")
+{
+    var port = int.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture);
+    var log = args[2];
+    var key = Environment.GetEnvironmentVariable("LLAMA_API_KEY") ?? "";
+    File.AppendAllText(log, "STARTED " + Environment.ProcessId + Environment.NewLine);
+    // Exercise the host's redirected-output drain before opening the listener. This is
+    // intentionally one long line, large enough to exceed the pipe buffer several times.
+    Console.Write(new string('x', 3_000_000));
+    Console.Out.Flush();
+
+    using var listener = new TcpListener(IPAddress.Loopback, port);
+    listener.Start();
+    while (true)
+    {
+        using var client = listener.AcceptTcpClient();
+        using var stream = client.GetStream();
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
+        var request = reader.ReadLine();
+        if (string.IsNullOrEmpty(request)) continue; // Empty probe closed without HTTP.
+        var authorization = "";
+        var contentLength = 0;
+        string? line;
+        while ((line = reader.ReadLine()) is not null && line.Length != 0)
+        {
+            if (line.StartsWith("Authorization:", StringComparison.OrdinalIgnoreCase))
+                authorization = line[14..].Trim();
+            if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase)
+                && int.TryParse(line[15..].Trim(), out var parsedLength)) contentLength = parsedLength;
+        }
+        if (line is null) continue; // Partial request closed before its header terminator.
+        if (contentLength > 0)
+        {
+            var body = new char[contentLength];
+            var read = 0;
+            while (read < body.Length)
+            {
+                var count = reader.Read(body, read, body.Length - read);
+                if (count == 0) break;
+                read += count;
+            }
+        }
+
+        var verb = request.Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
+        string status;
+        string responseBody;
+        if (!string.Equals(authorization, "Bearer " + key, StringComparison.Ordinal))
+        {
+            File.AppendAllText(log, verb + " auth=bad" + Environment.NewLine);
+            status = "401 Unauthorized";
+            responseBody = "";
+        }
+        else if (verb == "GET")
+        {
+            File.AppendAllText(log, "GET auth=ok" + Environment.NewLine);
+            status = "200 OK";
+            responseBody = "{\"data\":[]}";
+        }
+        else if (verb == "POST")
+        {
+            File.AppendAllText(log, "POST auth=ok" + Environment.NewLine);
+            status = "200 OK";
+            responseBody = "data: {\"choices\":[{\"delta\":{\"content\":\"respuesta-managed\"},\"finish_reason\":null}]}\n\n"
+                + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                + "data: [DONE]\n";
+        }
+        else
+        {
+            status = "404 Not Found";
+            responseBody = "";
+        }
+        var responseBytes = Encoding.UTF8.GetBytes("HTTP/1.1 " + status + "\r\n"
+            + (verb == "POST" && status == "200 OK" ? "Content-Type: text/event-stream\r\n" : "Content-Type: application/json\r\n")
+            + "Content-Length: " + Encoding.UTF8.GetByteCount(responseBody).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + "\r\nConnection: close\r\n\r\n" + responseBody);
+        stream.Write(responseBytes);
+        stream.Flush();
+    }
 }
 
 if (args.Length == 1 && args[0] == "claude-stream-invalid")
@@ -166,6 +248,33 @@ if (args.Length == 2 && args[0] == "spawn")
     }) ?? throw new InvalidOperationException("Failed to start child process.");
     Console.WriteLine(child.Id);
     await child.WaitForExitAsync();
+    return 0;
+}
+
+if (args.Length == 4 && args[0] == "spawn-file-holder")
+{
+    var child = Process.Start(new ProcessStartInfo
+    {
+        FileName = Environment.ProcessPath!,
+        ArgumentList = { "hold-file", args[1], args[2] },
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardOutput = true,
+        RedirectStandardError = true
+    }) ?? throw new InvalidOperationException("Failed to start file-holder child process.");
+    var deadline = DateTimeOffset.UtcNow.AddSeconds(10);
+    while (!File.Exists(args[2]) && !child.HasExited && DateTimeOffset.UtcNow < deadline)
+        await Task.Delay(10);
+    if (!File.Exists(args[2])) return 33;
+    File.WriteAllText(args[3], Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    return 0;
+}
+
+if (args.Length == 3 && args[0] == "hold-file")
+{
+    using var held = new FileStream(args[1], FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+    File.WriteAllText(args[2], "locked");
+    await Task.Delay(TimeSpan.FromMinutes(2));
     return 0;
 }
 

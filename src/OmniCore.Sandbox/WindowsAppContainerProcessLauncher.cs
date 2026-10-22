@@ -526,13 +526,10 @@ internal sealed class AppContainerProcessControl : ISandboxDuplexProcessControl
                 {
                     timedOut = true;
                     RequestGracefulTermination();
-                    if (AppContainerNative.WaitForSingleObject(_process, 250) == AppContainerNative.WaitTimeout
-                        && !AppContainerNative.TerminateJobObject(_job, 1))
-                        throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to terminate the timed-out process tree.");
-                    var terminated = AppContainerNative.WaitForSingleObject(_process, AppContainerNative.Infinite);
-                    if (terminated != AppContainerNative.WaitObject0)
+                    var grace = AppContainerNative.WaitForSingleObject(_process, 250);
+                    if (grace is not (AppContainerNative.WaitObject0 or AppContainerNative.WaitTimeout))
                         throw new Win32Exception(Marshal.GetLastPInvokeError(), "Waiting for the timed-out process failed.");
-                    break;
+                    break; // The shared completion path captures descendant handles before killing the job.
                 }
 
                 var waitMilliseconds = _timeout is { } limit
@@ -544,9 +541,8 @@ internal sealed class AppContainerProcessControl : ISandboxDuplexProcessControl
                     throw new Win32Exception(Marshal.GetLastPInvokeError(), "Waiting for the sandbox process failed.");
             }
         }, CancellationToken.None).ConfigureAwait(false);
-        if (!AppContainerNative.TerminateJobObject(_job, timedOut ? 1u : 0u)
-            && Marshal.GetLastPInvokeError() != AppContainerNative.ErrorProcessNotFound)
-            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to stop remaining descendants after the root process exited.");
+        TerminateAndWaitForJobProcesses(_job, timedOut ? 1u : 0u,
+            "Unable to stop remaining descendants after the root process exited.");
         await Task.WhenAll(_stdoutTask, _stderrTask).WaitAsync(cancellationToken).ConfigureAwait(false);
         if (!AppContainerNative.GetExitCodeProcess(_process, out var exitCode))
             throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to read the process exit code.");
@@ -564,12 +560,13 @@ internal sealed class AppContainerProcessControl : ISandboxDuplexProcessControl
         if (!_finished && !_job.IsInvalid)
         {
             RequestGracefulTermination();
-            if (AppContainerNative.WaitForSingleObject(_process, 250) == AppContainerNative.WaitTimeout
-                && !AppContainerNative.TerminateJobObject(_job, 1)
-                && Marshal.GetLastPInvokeError() != AppContainerNative.ErrorProcessNotFound)
-                throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to terminate the sandbox process tree.");
-            AppContainerNative.WaitForSingleObject(_process, AppContainerNative.Infinite);
-            AppContainerNative.TerminateJobObject(_job, 0);
+            var grace = AppContainerNative.WaitForSingleObject(_process, 250);
+            if (grace is not (AppContainerNative.WaitObject0 or AppContainerNative.WaitTimeout))
+                throw new Win32Exception(Marshal.GetLastPInvokeError(), "Waiting for the sandbox process failed.");
+            TerminateAndWaitForJobProcesses(_job, grace == AppContainerNative.WaitObject0 ? 0u : 1u,
+                grace == AppContainerNative.WaitObject0
+                    ? "Unable to stop remaining descendants after the root process exited."
+                    : "Unable to terminate the sandbox process tree.");
             _finished = true;
         }
         return ValueTask.CompletedTask;
@@ -579,12 +576,13 @@ internal sealed class AppContainerProcessControl : ISandboxDuplexProcessControl
     {
         if (_disposed) return;
 
-        _disposed = true;
         if (!_finished && !_job.IsInvalid)
         {
-            AppContainerNative.TerminateJobObject(_job, 1);
+            TerminateAndWaitForJobProcesses(_job, 1,
+                "Unable to terminate the sandbox process tree during disposal.");
             AppContainerNative.WaitForSingleObject(_process, AppContainerNative.Infinite);
         }
+        _disposed = true;
         try { await Task.WhenAll(_stdoutTask, _stderrTask).ConfigureAwait(false); }
         catch (IOException) { }
         StandardInput.Dispose(); StandardOutput.Dispose(); StandardError.Dispose();
@@ -610,6 +608,78 @@ internal sealed class AppContainerProcessControl : ISandboxDuplexProcessControl
         var processId = AppContainerNative.GetProcessId(_process);
         if (processId != 0)
             AppContainerNative.GenerateConsoleCtrlEvent(AppContainerNative.CtrlBreakEvent, processId);
+    }
+
+    private static Dictionary<uint, SafeProcessHandle> CaptureJobProcessHandles(SafeFileHandle job)
+    {
+        var handles = new Dictionary<uint, SafeProcessHandle>();
+        CaptureJobProcessHandles(job, handles);
+        return handles;
+    }
+
+    private static void CaptureJobProcessHandles(SafeFileHandle job, Dictionary<uint, SafeProcessHandle> handles)
+    {
+        foreach (var processId in AppContainerNative.QueryJobProcessIds(job))
+        {
+            if (handles.ContainsKey(processId)) continue;
+            var process = AppContainerNative.OpenProcess(
+                AppContainerNative.Synchronize | AppContainerNative.ProcessQueryLimitedInformation, false, processId);
+            if (process.IsInvalid)
+            {
+                var error = Marshal.GetLastPInvokeError();
+                process.Dispose();
+                if (error == AppContainerNative.ErrorInvalidParameter) continue; // It exited after the job snapshot.
+                throw new Win32Exception(error, "Unable to open a sandbox descendant for completion tracking.");
+            }
+            if (!AppContainerNative.IsProcessInJob(process, job, out var belongsToJob))
+            {
+                var error = Marshal.GetLastPInvokeError();
+                process.Dispose();
+                throw new Win32Exception(error, "Unable to verify a sandbox descendant's job membership.");
+            }
+            if (belongsToJob) handles.Add(processId, process);
+            else process.Dispose(); // Protect against a PID being reused after the snapshot.
+        }
+    }
+
+    private static void TerminateAndWaitForJobProcesses(SafeFileHandle job, uint exitCode, string failureMessage)
+    {
+        var handles = new Dictionary<uint, SafeProcessHandle>();
+        Exception? failure = null;
+        try { CaptureJobProcessHandles(job, handles); }
+        catch (Exception error) { failure = error; }
+
+        if (!AppContainerNative.TerminateJobObject(job, exitCode)
+            && Marshal.GetLastPInvokeError() != AppContainerNative.ErrorProcessNotFound)
+            failure ??= new Win32Exception(Marshal.GetLastPInvokeError(), failureMessage);
+        try { WaitForJobProcesses(job, handles); }
+        catch (Exception error) { failure = failure is null ? error : new AggregateException(failure, error); }
+        finally { foreach (var process in handles.Values) process.Dispose(); }
+
+        if (failure is not null) throw new IOException(failureMessage, failure);
+    }
+
+    private static void WaitForJobProcesses(SafeFileHandle job, Dictionary<uint, SafeProcessHandle> handles)
+    {
+        var deadline = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
+        {
+            // TerminateJobObject may race a child spawning another process. Re-query until
+            // the job is empty, retaining process handles so each observed process is awaited.
+            CaptureJobProcessHandles(job, handles);
+            var allExited = true;
+            foreach (var process in handles.Values)
+            {
+                var result = AppContainerNative.WaitForSingleObject(process, 0);
+                if (result == AppContainerNative.WaitTimeout) allExited = false;
+                else if (result != AppContainerNative.WaitObject0)
+                    throw new Win32Exception(Marshal.GetLastPInvokeError(), "Waiting for a sandbox descendant to exit failed.");
+            }
+            if (AppContainerNative.QueryJobProcessIds(job).Count == 0 && allExited) return;
+            if (deadline.Elapsed >= TimeSpan.FromSeconds(30))
+                throw new TimeoutException("The sandbox process tree did not exit after termination.");
+            Thread.Sleep(10);
+        }
     }
 
     private static async Task<string> ReadOutputAsync(SafeFileHandle handle)
@@ -638,6 +708,12 @@ internal static partial class AppContainerNative
     internal const uint Infinite = 0xFFFFFFFF;
     internal const uint CtrlBreakEvent = 1;
     internal const int ErrorProcessNotFound = 128;
+    internal const int ErrorInvalidParameter = 87;
+    internal const int ErrorMoreData = 234;
+    internal const uint Synchronize = 0x00100000;
+    private const uint JobObjectBasicProcessIdList = 3;
+    private const uint JobObjectBasicAccountingInformationClass = 1;
+    internal const uint ProcessQueryLimitedInformation = 0x00001000;
     private const uint CreateSuspended = 0x00000004;
     private const uint CreateNewProcessGroup = 0x00000200;
     private const uint CreateUnicodeEnvironment = 0x00000400;
@@ -664,6 +740,18 @@ internal static partial class AppContainerNative
     [StructLayout(LayoutKind.Sequential)]
     private struct ProcessInformation { public IntPtr Process; public IntPtr Thread; public uint ProcessId; public uint ThreadId; }
     [StructLayout(LayoutKind.Sequential)]
+    private struct JobObjectBasicAccountingInformation
+    {
+        public long TotalUserTime;
+        public long TotalKernelTime;
+        public long ThisPeriodTotalUserTime;
+        public long ThisPeriodTotalKernelTime;
+        public uint TotalPageFaultCount;
+        public uint TotalProcesses;
+        public uint ActiveProcesses;
+        public uint TotalTerminatedProcesses;
+    }
+    [StructLayout(LayoutKind.Sequential)]
     private struct SecurityAttributes { public int Length; public IntPtr SecurityDescriptor; public int InheritHandle; }
     [StructLayout(LayoutKind.Sequential)]
     private struct BasicLimitInformation { public long PerProcessUserTimeLimit; public long PerJobUserTimeLimit; public uint LimitFlags; public UIntPtr MinimumWorkingSetSize; public UIntPtr MaximumWorkingSetSize; public uint ActiveProcessLimit; public UIntPtr Affinity; public uint PriorityClass; public uint SchedulingClass; }
@@ -671,6 +759,59 @@ internal static partial class AppContainerNative
     private struct IoCounters { public ulong ReadOperationCount; public ulong WriteOperationCount; public ulong OtherOperationCount; public ulong ReadTransferCount; public ulong WriteTransferCount; public ulong OtherTransferCount; }
     [StructLayout(LayoutKind.Sequential)]
     private struct ExtendedLimitInformation { public BasicLimitInformation BasicLimitInformation; public IoCounters IoInfo; public UIntPtr ProcessMemoryLimit; public UIntPtr JobMemoryLimit; public UIntPtr PeakProcessMemoryUsed; public UIntPtr PeakJobMemoryUsed; }
+
+    internal static List<uint> QueryJobProcessIds(SafeFileHandle job)
+    {
+        if (!QueryInformationJobObject(job, JobObjectBasicAccountingInformationClass,
+            out JobObjectBasicAccountingInformation accounting))
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to query sandbox job accounting.");
+
+        var capacity = checked((int)Math.Max(accounting.ActiveProcesses, 1));
+        const int maximumProcessCount = 65_536;
+        while (capacity <= maximumProcessCount)
+        {
+            var size = checked(sizeof(uint) * 2 + IntPtr.Size * capacity);
+            var buffer = Marshal.AllocHGlobal(size);
+            try
+            {
+                if (QueryInformationJobObject(job, JobObjectBasicProcessIdList, buffer, (uint)size, out _))
+                {
+                    var count = Marshal.ReadInt32(buffer, sizeof(uint));
+                    if (count < 0 || count > capacity)
+                        throw new IOException("The sandbox job returned an invalid process list.");
+                    var processIds = new List<uint>(count);
+                    for (var index = 0; index < count; index++)
+                    {
+                        var raw = Marshal.ReadIntPtr(buffer, sizeof(uint) * 2 + IntPtr.Size * index).ToInt64();
+                        processIds.Add(checked((uint)raw));
+                    }
+                    return processIds;
+                }
+
+                var error = Marshal.GetLastPInvokeError();
+                var assigned = Marshal.ReadInt32(buffer);
+                if (error != ErrorMoreData || assigned <= capacity)
+                    throw new Win32Exception(error, "Unable to query sandbox job processes.");
+                capacity = assigned;
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+        throw new IOException("The sandbox job process list exceeded its configured bound.");
+    }
+
+    private static bool QueryInformationJobObject(SafeFileHandle job, uint informationClass,
+        out JobObjectBasicAccountingInformation accounting)
+    {
+        var pointer = Marshal.AllocHGlobal(Marshal.SizeOf<JobObjectBasicAccountingInformation>());
+        try
+        {
+            var result = QueryInformationJobObject(job, informationClass, pointer,
+                (uint)Marshal.SizeOf<JobObjectBasicAccountingInformation>(), out _);
+            accounting = result ? Marshal.PtrToStructure<JobObjectBasicAccountingInformation>(pointer) : default;
+            return result;
+        }
+        finally { Marshal.FreeHGlobal(pointer); }
+    }
 
     internal static SecurityCapabilitiesBuffer CreateSecurityCapabilities(SecurityIdentifier sid, SidAndAttributes[] capabilities)
     {
@@ -1042,6 +1183,9 @@ internal static partial class AppContainerNative
     private static partial IntPtr CreateJobObject(IntPtr attributes, string? name);
     [LibraryImport("kernel32.dll", EntryPoint = "SetInformationJobObject", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)] private static partial bool SetInformationJobObject(IntPtr job, uint informationClass, IntPtr information, uint length);
+    [LibraryImport("kernel32.dll", EntryPoint = "QueryInformationJobObject", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool QueryInformationJobObject(SafeFileHandle job, uint informationClass, IntPtr information, uint length, out uint returnLength);
     [LibraryImport("kernel32.dll", EntryPoint = "AssignProcessToJobObject", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)] private static partial bool AssignProcessToJobObject(IntPtr job, IntPtr process);
     [LibraryImport("kernel32.dll", EntryPoint = "ResumeThread", SetLastError = true)]
@@ -1062,6 +1206,11 @@ internal static partial class AppContainerNative
     private static partial uint WaitForSingleObjectRaw(IntPtr handle, uint milliseconds);
     [LibraryImport("kernel32.dll", EntryPoint = "WaitForSingleObject", SetLastError = true)]
     internal static partial uint WaitForSingleObject(SafeProcessHandle handle, uint milliseconds);
+    [LibraryImport("kernel32.dll", EntryPoint = "OpenProcess", SetLastError = true)]
+    internal static partial SafeProcessHandle OpenProcess(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint processId);
+    [LibraryImport("kernel32.dll", EntryPoint = "IsProcessInJob", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool IsProcessInJob(SafeProcessHandle process, SafeFileHandle job, [MarshalAs(UnmanagedType.Bool)] out bool result);
     [LibraryImport("kernel32.dll", EntryPoint = "GenerateConsoleCtrlEvent", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)] internal static partial bool GenerateConsoleCtrlEvent(uint eventType, uint processGroupId);
     [LibraryImport("kernel32.dll", EntryPoint = "GetProcessId", SetLastError = true)]

@@ -2204,73 +2204,22 @@ public sealed partial class CliEndToEndTests
         });
     }
 
-    private const string FakeLlamaServer = """
-        param([int]$Port, [string]$Log)
-        $key = $env:LLAMA_API_KEY
-        # Registra el arranque y vuelca salida de sobra: si nadie la drena, el servidor se bloquea aquí.
-        Add-Content -Path $Log -Value "STARTED $PID"
-        [Console]::Out.Write('x' * 3000000)
-        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
-        $listener.Start()
-        while ($true) {
-            $client = $listener.AcceptTcpClient()
-            try {
-                $stream = $client.GetStream()
-                $reader = New-Object System.IO.StreamReader($stream)
-                $request = $reader.ReadLine()
-                # A connection may close before sending HTTP (probe or cancelled client).
-                # EOF is not an empty header line; never spin forever on a null ReadLine.
-                if ([string]::IsNullOrEmpty($request)) { continue }
-                $auth = ''
-                $length = 0
-                while ($null -ne ($line = $reader.ReadLine()) -and $line -ne '') {
-                    if ($line -like 'Authorization:*') { $auth = $line.Substring(14).Trim() }
-                    if ($line -like 'Content-Length:*') { $length = [int]$line.Substring(15).Trim() }
-                }
-                if ($null -eq $line) { continue }
-                if ($length -gt 0) {
-                    $buffer = New-Object char[] $length
-                    $read = 0
-                    while ($read -lt $length) { $read += $reader.Read($buffer, $read, $length - $read) }
-                }
-                $verb = $request.Split(' ')[0]
-                if ($auth -ne "Bearer $key") {
-                    Add-Content -Path $Log -Value "$verb auth=bad"
-                    $head = "HTTP/1.1 401 Unauthorized`r`nContent-Length: 0`r`nConnection: close`r`n`r`n"
-                    $body = ''
-                } elseif ($verb -eq 'GET') {
-                    Add-Content -Path $Log -Value "GET auth=ok"
-                    $body = '{"data":[]}'
-                    $head = "HTTP/1.1 200 OK`r`nContent-Type: application/json`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n"
-                } else {
-                    Add-Content -Path $Log -Value "POST auth=ok"
-                    $body = 'data: {"choices":[{"delta":{"content":"respuesta-managed"},"finish_reason":null}]}' + "`n`n" + 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}' + "`n`n" + 'data: [DONE]' + "`n"
-                    $head = "HTTP/1.1 200 OK`r`nContent-Type: text/event-stream`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n"
-                }
-                $bytes = [System.Text.Encoding]::UTF8.GetBytes($head + $body)
-                $stream.Write($bytes, 0, $bytes.Length)
-                $stream.Flush()
-            } finally { $client.Close() }
-        }
-        """;
-
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task Managed_fixture_accepts_authenticated_readiness_after_an_empty_or_partial_tcp_probe(bool partialRequest)
     {
-        if (!OperatingSystem.IsWindows()) { Assert.Skip("The fixture is a Windows PowerShell server."); return; }
         await InIsolatedCli((workspace, config, _, _) =>
         {
-            var script = Path.Combine(config, "fake-llama-empty-probe.ps1");
             var log = Path.Combine(config, "fake-llama-empty-probe.log");
-            File.WriteAllText(script, FakeLlamaServer);
             var host = new LocalModelHost(SystemProcessRuntime.Instance());
             var probed = false;
             try
             {
-                var spec = new ManagedServerSpec("powershell.exe",
-                    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Port", "{port}", "-Log", log], workspace, 0);
+                var helper = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows()
+                    ? "OmniCore.SandboxTestProcess.exe" : "OmniCore.SandboxTestProcess");
+                var spec = new ManagedServerSpec(helper,
+                    ["managed-llama-fixture", "{port}", log], workspace, 0);
                 var status = host.StartManaged(spec, () =>
                 {
                     var endpoint = "http://127.0.0.1:" + host.ChosenPort() + "/v1";
@@ -2303,12 +2252,11 @@ public sealed partial class CliEndToEndTests
     {
         // ADR-0011 §4: `host: managed` arranca el servidor con puerto efímero y API key generados en
         // runtime, lo reutiliza entre Turns y lo detiene al terminar el runtime.
-        if (!OperatingSystem.IsWindows()) return;
         await InIsolatedCli(async (workspace, config, data, provider) =>
         {
-            var script = Path.Combine(config, "fake-llama.ps1");
             var log = Path.Combine(config, "fake-llama.log");
-            File.WriteAllText(script, FakeLlamaServer);
+            var helper = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows()
+                ? "OmniCore.SandboxTestProcess.exe" : "OmniCore.SandboxTestProcess");
             File.WriteAllText(Path.Combine(config, "providers.yaml"), $$"""
                 providers:
                   scripted:
@@ -2317,8 +2265,8 @@ public sealed partial class CliEndToEndTests
                     host: managed
                     baseUrl: auto
                     managed:
-                      executable: powershell.exe
-                      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", '{{script}}', "-Port", "{port}", "-Log", '{{log}}']
+                      executable: '{{helper}}'
+                      args: ["managed-llama-fixture", "{port}", '{{log}}']
                       readinessTimeoutSeconds: 90
                 """);
             using var runtime = OmniCliRuntime.Create(workspace);
