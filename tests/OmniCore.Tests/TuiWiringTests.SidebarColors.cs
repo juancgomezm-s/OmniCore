@@ -47,7 +47,15 @@ public sealed partial class TuiWiringTests
             fx.Application.LayoutAndDrawComplete += handler;
             try
             {
-                fx.Invoke(() => { sidebar.SetNeedsLayout(); sidebar.SetNeedsDraw(); });
+                // ScrollTo can synchronously draw the new viewport before this capture
+                // subscribes. Invalidate the owning window after subscribing so the
+                // next event is a fresh frame for the current viewport, not an event
+                // that may already have happened or a stale driver buffer.
+                fx.Invoke(() =>
+                {
+                    fx.App.MainWindow!.SetNeedsLayout();
+                    fx.App.MainWindow.SetNeedsDraw();
+                });
                 Assert.True(captured.Wait(TimeSpan.FromSeconds(10)), $"marcador {requiredMarker} del sidebar dibujado");
                 return Assert.IsType<Terminal.Gui.Drawing.Cell[,]>(result);
             }
