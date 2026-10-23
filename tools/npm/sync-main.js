@@ -27,7 +27,12 @@ function syncMain(options = {}) {
 
   const top = git(['rev-parse', '--show-toplevel']);
   if (!ok(top)) return fail('no se pudo identificar el repositorio Git.');
-  if (fs.realpathSync(top.stdout.trim()) !== root) return fail('ejecuta el instalador desde su repositorio.');
+  // Windows can spell the same directory differently (drive case, junctions).
+  // Compare filesystem identity rather than rejecting equivalent path strings.
+  const rootIdentity = fs.statSync(root, { bigint: true });
+  const topIdentity = fs.statSync(top.stdout.trim(), { bigint: true });
+  if (rootIdentity.dev !== topIdentity.dev || rootIdentity.ino !== topIdentity.ino)
+    return fail('ejecuta el instalador desde su repositorio.');
   const branch = git(['symbolic-ref', '--quiet', '--short', 'HEAD']);
   if (!ok(branch) || branch.stdout.trim() !== 'main') return fail('requiere un clon en la rama main.');
   const status = git(['status', '--porcelain=v1', '--untracked-files=normal']);

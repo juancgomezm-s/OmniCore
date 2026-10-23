@@ -58,6 +58,24 @@ test('an upgrade fast-forwards the exact fetched Main and is idempotent', t => {
   assert.equal(fx.git(fx.checkout, 'rev-parse', 'HEAD'), next);
 });
 
+test('a directory alias still identifies the same repository', t => {
+  const fx = fixture(t);
+  const alias = path.join(fx.temp, 'checkout alias');
+  fs.symlinkSync(fx.checkout, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.equal(syncMain({ ...fx.options, root: alias }), 0, fx.messages.join(''));
+  assert.equal(fx.git(fx.checkout, 'rev-parse', 'HEAD'), fx.first);
+});
+
+test('a nested directory is rejected before fetching or modifying the repository', t => {
+  const fx = fixture(t);
+  const nested = path.join(fx.checkout, 'nested');
+  fs.mkdirSync(nested);
+  assert.equal(syncMain({ ...fx.options, root: nested }), 1);
+  assert.ok(fx.messages.some(value => value.includes('desde su repositorio')), fx.messages.join(''));
+  assert.equal(fx.git(fx.checkout, 'rev-parse', 'HEAD'), fx.first);
+  assert.equal(fs.existsSync(path.join(fx.checkout, '.git', 'FETCH_HEAD')), false);
+});
+
 for (const tracked of [true, false]) {
   test(`an upgrade preserves and rejects ${tracked ? 'modified tracked' : 'untracked'} files before fetching`, t => {
     const fx = fixture(t);
