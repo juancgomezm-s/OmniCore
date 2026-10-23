@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Runtime.InteropServices;
 
 if (args.Length == 1 && args[0] == "legacy-stdio")
 {
@@ -170,6 +171,66 @@ if (args.Length == 1 && args[0] == "stdin-echo")
     return 0;
 }
 
+if (args.Length == 1 && args[0] == "terminal-echo")
+{
+    var inputConsole = ConsoleNative.GetConsoleMode(ConsoleNative.GetStdHandle(-10), out _);
+    var outputConsole = ConsoleNative.GetConsoleMode(ConsoleNative.GetStdHandle(-11), out _);
+    int columns;
+    int rows;
+    try { columns = Console.WindowWidth; rows = Console.WindowHeight; }
+    catch (Exception ex) when (ex is IOException or InvalidOperationException)
+    { columns = rows = 0; }
+    if (!inputConsole || !outputConsole || columns < 80 || rows < 24)
+    {
+        Console.Error.WriteLine($"ConPTY probe failed: inputConsole={inputConsole}; outputConsole={outputConsole}; size={columns}x{rows}.");
+        return !inputConsole ? 36 : !outputConsole ? 37 : 38;
+    }
+    var line = Console.ReadLine();
+    if (line is null) return 33;
+    Console.WriteLine("ACK:" + line);
+    await Console.Out.FlushAsync();
+    return 0;
+}
+
+if (args.Length == 2 && args[0] == "persistent-private-writer")
+{
+    Console.InputEncoding = new UTF8Encoding(false);
+    var markerName = args[1];
+    if (string.IsNullOrWhiteSpace(markerName) || Path.GetFileName(markerName) != markerName
+        || markerName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return 34;
+
+    // Split the two-byte UTF-8 character across writes to exercise the host's incremental decoder.
+    var stdout = Console.OpenStandardOutput();
+    var readyPrefix = Encoding.UTF8.GetBytes("READY-");
+    await stdout.WriteAsync(readyPrefix);
+    await stdout.FlushAsync();
+    var multibyte = Encoding.UTF8.GetBytes("ñ");
+    await stdout.WriteAsync(multibyte.AsMemory(0, 1));
+    await stdout.FlushAsync();
+    await Task.Delay(20);
+    await stdout.WriteAsync(multibyte.AsMemory(1, 1));
+    await stdout.WriteAsync(Encoding.UTF8.GetBytes("\n"));
+    await stdout.FlushAsync();
+
+    var line = await Console.In.ReadLineAsync();
+    if (!string.Equals(line, "finish", StringComparison.Ordinal)) return 35;
+    await File.WriteAllTextAsync(markerName, "process-batch-published", new UTF8Encoding(false));
+    await stdout.WriteAsync(Encoding.UTF8.GetBytes("ACK:finish\n"));
+    await stdout.FlushAsync();
+    return 0;
+}
+
+if (args.Length == 2 && args[0] == "private-process-exec")
+{
+    var markerName = args[1];
+    if (string.IsNullOrWhiteSpace(markerName) || Path.GetFileName(markerName) != markerName
+        || markerName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return 39;
+    await File.WriteAllTextAsync(markerName, "process-exec-batch-published", new UTF8Encoding(false));
+    Console.WriteLine("PROCESS-EXEC-COMPLETE");
+    await Console.Out.FlushAsync();
+    return 0;
+}
+
 if (args.Length == 3 && args[0] == "environment-probe")
 {
     Console.WriteLine(Environment.GetEnvironmentVariable(args[1]) ?? "<null>");
@@ -323,3 +384,13 @@ if (args.Length == 1 && args[0] == "sleep")
 }
 
 return 2;
+
+static partial class ConsoleNative
+{
+    [LibraryImport("kernel32.dll", EntryPoint = "GetStdHandle", SetLastError = true)]
+    internal static partial nint GetStdHandle(int standardHandle);
+
+    [LibraryImport("kernel32.dll", EntryPoint = "GetConsoleMode", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetConsoleMode(nint handle, out uint mode);
+}

@@ -53,8 +53,12 @@ public sealed record SandboxLaunchSpec(
 {
     /// <summary>Caller owns the three protocol streams instead of batch capture.</summary>
     public bool Duplex { get; init; }
+    /// <summary>Request a native pseudo-console. A launcher must reject this if it cannot provide one.</summary>
+    public bool Terminal { get; init; }
     /// <summary>Opt out of ambient ALL APPLICATION PACKAGES access on Windows.</summary>
     public bool LessPrivilegedAppContainer { get; init; }
+    /// <summary>Use cmd.exe's native /c quoting rules for a Host-created shell.exec invocation.</summary>
+    public bool WindowsShellCommandLine { get; init; }
 }
 
 /// <summary>Reports which strengths the current Sandbox implementation can provide.</summary>
@@ -178,6 +182,10 @@ public interface IStrongSandboxPreflight
 public sealed class StrongSandboxUnavailableBeforeLaunchException(string reason)
     : NotSupportedException(reason);
 
+/// <summary>A launcher proved that it rejected a request before starting any process.</summary>
+public sealed class ProcessLaunchUnavailableBeforeStartException(string reason)
+    : NotSupportedException(reason);
+
 /// <summary>A Strong launch was attempted and its process-start outcome cannot be proven.</summary>
 public sealed class StrongSandboxLaunchOutcomeUnknownException(string reason, Exception innerException)
     : Exception(reason, innerException);
@@ -198,6 +206,19 @@ public interface ISandboxDuplexProcessControl : ISandboxProcessControl
     Stream StandardInput { get; }
     Stream StandardOutput { get; }
     Stream StandardError { get; }
+}
+
+/// <summary>Long-lived process transport whose output streams are owned by the caller.</summary>
+public interface ISandboxPersistentProcessControl : ISandboxDuplexProcessControl
+{
+    /// <summary>Waits for process termination without consuming stdout/stderr.</summary>
+    ValueTask<int> WaitForExitCodeAsync(CancellationToken cancellationToken);
+    /// <summary>Closes stdin to deliver EOF.</summary>
+    ValueTask CloseInputAsync();
+    /// <summary>Whether this control owns a real terminal, rather than redirected pipes.</summary>
+    bool IsTerminal { get; }
+    /// <summary>Resizes a real terminal. Non-terminal controls reject the operation.</summary>
+    void ResizeTerminal(short columns, short rows);
 }
 
 /// <summary>

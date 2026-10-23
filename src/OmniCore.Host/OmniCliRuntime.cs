@@ -2156,6 +2156,8 @@ public sealed class OmniCliRuntime : IDisposable
         WeakSandboxWorkflowContinuation? weakSandboxContinuation = null,
         bool allowNativeWeakSandboxConsent = false)
     {
+        SessionId? processSessionToStop = null;
+        RunId? processRunToStop = null;
         if (turnBoost is null && turnBoostId is not null)
             throw new ArgumentException("A reasoning boost id requires a boost request.", nameof(turnBoostId));
         if (turnBoost is not null && turnBoostId is null) turnBoostId = Guid.NewGuid();
@@ -2562,6 +2564,8 @@ public sealed class OmniCliRuntime : IDisposable
 
             var sessionId = server.LastSessionId() ?? SessionId.New();
             var runId = server.LastRunId() ?? RunId.New();
+            processSessionToStop = sessionId;
+            processRunToStop = runId;
             var laneId = delegation?.ChildLaneId ?? server.LastLaneId() ?? LaneId.New();
             var promptOrigin = routingResume is not null ? routingResume.Origin
                 : (conversationOnly || actAttachmentInputPersisted)
@@ -2762,6 +2766,9 @@ public sealed class OmniCliRuntime : IDisposable
                 : (Func<ToolCallId, CancellationToken, Task<string?>>)((toolCallId, token) =>
                     server.ReceiveMailboxMessageAsync(sessionId, runId, route,
                         providerDescription?.BillingMode ?? BillingMode.Unknown, toolCallId, token));
+            var processSessionManager = delegation is null && executingAct ? server.ProcessSessions(sessionId, workspaceRoot) : null;
+            if (processSessionManager is not null)
+                await processSessionManager.PrepareScopeAsync(runId.ToString(), laneId.ToString()).ConfigureAwait(false);
             var hostTools = delegation is not null
                 ? workflowStage is not null ? ProcessRuntimeFactoryForTests is { } processRuntimeFactory
                     ? HostTools.WorkflowStageForTests(workflowStage.Definition.Stage, agentProfile!, artifactReadTool,
@@ -2773,7 +2780,7 @@ public sealed class OmniCliRuntime : IDisposable
                 ? OmniHost.CreateActTools(artifactReadTool: artifactReadTool,
                     worktreeIntegrationCoordinator: delegation is null
                         ? OmniHost.CreateWorktreeIntegrationCoordinator(workspaceRoot, paths, artifacts) : null,
-                    mediaReadTool: mediaReadTool)
+                    mediaReadTool: mediaReadTool, processSessionManager: processSessionManager)
                 : OmniHost.CreateExplorerTools(artifactReadTool, mediaReadTool);
             var extensionBoundaries = new List<IToolIntentBoundary>();
             IReadOnlyList<LoadedSkill> loadedProjectSkills = [];
@@ -3494,7 +3501,7 @@ public sealed class OmniCliRuntime : IDisposable
                                     throw new InvalidOperationException("Delegated continuation requires the active ORQ authority.");
                                 var rootTools = OmniHost.CreateActTools(artifactReadTool: artifactReadTool,
                                     worktreeIntegrationCoordinator: OmniHost.CreateWorktreeIntegrationCoordinator(
-                                        workspaceRoot, paths, artifacts));
+                                        workspaceRoot, paths, artifacts), processSessionManager: server.ProcessSessions(sessionId, workspaceRoot));
                                 var rootBoundary = CreateBoundary(effectivePolicy, workspaceRoot, rootTools.Catalog(),
                                     () => server.ReadSessionSecurityPolicy(sessionId));
                                 var rootExecutor = OmniHost.CreateActExecutor(rootTools.Catalog(), workspaceRoot,
@@ -3681,7 +3688,7 @@ public sealed class OmniCliRuntime : IDisposable
                 {
                     var actTools = OmniHost.CreateActTools(artifactReadTool: CreateArtifactReadTool(server, artifacts),
                         worktreeIntegrationCoordinator: OmniHost.CreateWorktreeIntegrationCoordinator(
-                            workspaceRoot, paths, artifacts));
+                            workspaceRoot, paths, artifacts), processSessionManager: server.ProcessSessions(sessionId, workspaceRoot));
                     var actExecutor = OmniHost.CreateActExecutor(actTools.Catalog(), workspaceRoot,
                         boundary, restrictions, runId, audit, interactionResponder, interactive, artifacts,
                         server.ResolveLaneAgentProfile(sessionId, runId, laneId),
@@ -3716,11 +3723,18 @@ public sealed class OmniCliRuntime : IDisposable
                 writeLine(Text(LocalizedText.Of("cli.runtime.act.noResponse")));
             }
 
-            if (result.StopReason is StopReason.Error or StopReason.Cancelled || ExhaustedOutputWithoutAnswer(result)) return 1;
+            if (result.StopReason is StopReason.Error or StopReason.Cancelled || ExhaustedOutputWithoutAnswer(result))
+            {
+                await server.StopProcessesForRunAsync(sessionId, runId).ConfigureAwait(false);
+                return 1;
+            }
             return act && (result.StopReason != StopReason.EndTurn || result.FinalText is null) ? 1 : 0;
         }
         catch (Exception ex)
         {
+            if (processSessionToStop is { } failedSession && processRunToStop is { } failedRun
+                && _server is { } failedServer)
+                await failedServer.StopProcessesForRunAsync(failedSession, failedRun).ConfigureAwait(false);
             writeLine(Text(Localized("cli.runtime.error", ("command", act ? "act" : "ask"),
                 ("message", RedactSensitive(ex.Message ?? "?")), ("type", ex.GetType().Name))));
             if (!act && ex.StackTrace is not null)

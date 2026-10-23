@@ -137,6 +137,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.TurnInterrupted())
             .Plus(Typed.TurnAbandoned())
             .Plus(Typed.ToolCallRequested())
+            .Plus(Typed.ProcessSessionStateRecorded())
             .Plus(Typed.ToolCallPrepared())
             .Plus(Typed.ToolCallRejected())
             .Plus(Typed.PermissionEvaluated())
@@ -535,6 +536,7 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(TurnInterrupted))]
 [JsonSerializable(typeof(TurnAbandoned))]
 [JsonSerializable(typeof(ToolCallRequested))]
+[JsonSerializable(typeof(ProcessSessionStateRecorded))]
 [JsonSerializable(typeof(ToolCallPrepared))]
 [JsonSerializable(typeof(ToolCallRejected))]
 [JsonSerializable(typeof(PermissionEvaluated))]
@@ -954,6 +956,9 @@ public sealed class Typed
     public static CodecPair ToolCallRequested() =>
         Of(EventType.Of("toolcall.requested"), EventJsonContext.Default.ToolCallRequested);
 
+    public static CodecPair ProcessSessionStateRecorded() =>
+        Of(EventType.Of("process.session_state.recorded"), EventJsonContext.Default.ProcessSessionStateRecorded, currentVersion: 2);
+
     public static CodecPair ToolCallPrepared() =>
         Of(EventType.Of("toolcall.prepared"), EventJsonContext.Default.ToolCallPrepared);
 
@@ -983,7 +988,7 @@ public sealed class Typed
         Of(EventType.Of("toolcall.started"), EventJsonContext.Default.ToolCallStarted, currentVersion: 4);
 
     public static CodecPair ToolCallSucceeded() =>
-        Of(EventType.Of("toolcall.succeeded"), EventJsonContext.Default.ToolCallSucceeded, currentVersion: 4);
+        Of(EventType.Of("toolcall.succeeded"), EventJsonContext.Default.ToolCallSucceeded, currentVersion: 5);
 
     public static CodecPair ToolCallFailed() =>
         Of(EventType.Of("toolcall.failed"), EventJsonContext.Default.ToolCallFailed, currentVersion: 3);

@@ -18,6 +18,63 @@ using Task = System.Threading.Tasks.Task;
 
 public sealed class WindowsAppContainerSandboxTests
 {
+    [Fact]
+    public async Task Strong_terminal_uses_ConPTY_for_real_duplex_input_resize_and_output()
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("AppContainer integration tests run only on Windows."); return; }
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763))
+        { Assert.Skip("ConPTY requires Windows 10 version 1809 or newer."); return; }
+        var capabilities = new WindowsAppContainerCapabilitiesProbe().Probe();
+        if (!capabilities.StrongAvailable) { Assert.Skip("AppContainer is unavailable: " + capabilities.StrongUnavailableReason); return; }
+
+        var root = Path.Combine(Path.GetTempPath(), "OmniConPty" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var executable = Path.Combine(AppContext.BaseDirectory, "OmniCore.SandboxTestProcess.exe");
+        Assert.True(File.Exists(executable), "The built Strong test helper must be present beside the test assembly.");
+        ISandboxPersistentProcessControl? process = null;
+        Task<string>? outputTask = null;
+        try
+        {
+            var launch = new SandboxLaunchSpec(SandboxStrength.Strong, executable, ["terminal-echo"], root,
+                new Dictionary<string, string>(),
+                [new SandboxAllowedPath(root, SandboxPathAccess.Read | SandboxPathAccess.Write)],
+                new SandboxNetworkPolicy(SandboxNetworkMode.Deny, []), TimeSpan.FromSeconds(10))
+            { Duplex = true, Terminal = true };
+            process = Assert.IsAssignableFrom<ISandboxPersistentProcessControl>(
+                await new WindowsAppContainerProcessLauncher().StartAsync(launch, TestContext.Current.CancellationToken));
+            outputTask = new StreamReader(process.StandardOutput).ReadToEndAsync(TestContext.Current.CancellationToken);
+            Assert.True(process.IsTerminal);
+            process.ResizeTerminal(100, 32);
+            await process.StandardInput.WriteAsync(System.Text.Encoding.UTF8.GetBytes("terminal-test\r\n"), TestContext.Current.CancellationToken);
+            await process.StandardInput.FlushAsync(TestContext.Current.CancellationToken);
+            var exitCode = await process.WaitForExitCodeAsync(TestContext.Current.CancellationToken);
+            var output = await outputTask.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            await process.CloseInputAsync();
+            await process.DisposeAsync();
+            Assert.Equal(0, exitCode);
+            Assert.Contains("ACK:terminal-test", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            try
+            {
+                if (process is not null) await process.DisposeAsync();
+            }
+            finally
+            {
+                try
+                {
+                    if (outputTask is not null)
+                    {
+                        try { _ = await outputTask.WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None); }
+                        catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException or TimeoutException) { }
+                    }
+                }
+                finally { try { Directory.Delete(root, recursive: true); } catch (IOException) { } }
+            }
+        }
+    }
+
     [Theory]
     [InlineData(PermissionProfile.Balanced, false, PermissionDecision.Ask, false, false, false, false, false)]
     [InlineData(PermissionProfile.Autonomous, true, PermissionDecision.Allow, false, false, false, false, false)]

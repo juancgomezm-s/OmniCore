@@ -183,7 +183,7 @@ public sealed class SessionMemoryPolicy
         {
             switch (payload)
             {
-                case ToolCallRequested request when request.ToolName == "process.exec":
+                case ToolCallRequested request when request.ToolName is "process.exec" or "process.start":
                     requests[request.ToolCallId.ToString()] = request;
                     if (request.ToolCallId.ToString() == currentToolCallId) currentRequest = request;
                     break;

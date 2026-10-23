@@ -2,7 +2,73 @@
 
 Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petición del usuario. Complementa la fuente de verdad [arquitectura §24](../architecture/arquitectura.md#24-roadmap-m1m10-fuente-de-verdad) y el [plan de preferencias e idiomas](preferences-and-localization.md). Define trabajo restante y aceptación; no declara construido lo que sólo tiene contrato o pantalla. La petición comprende traducciones y convenciones regionales de presentación.
 
-## Estado vigente (2026-10-21)
+## Ejecución de cierre M9 (2026-10-22)
+
+El usuario autoriza construir el resto con un solo worker Luna en alto, con
+objetivos amplios y regresiones integrales después del cableado. Base reconocida:
+main `de73da7`, igual al remoto y sin cambios locales al iniciar. La
+[CI de esa base](https://github.com/juancgomezm-s/OmniCore/actions/runs/39899788499)
+terminó aprobada durante la construcción; no acredita el incremento en curso.
+Las condiciones de aceptación no se sustituyen por añadir contratos o pantallas.
+M8 conserva exclusivamente su aceptación manual pendiente; audio/vídeo y M10 no
+se incorporan a este cierre.
+
+La publicación conjunta de extensiones Strong, el automático derivado de los
+permisos User y la historia durable ya están integrados en main. Las referencias
+inferiores a publicación pendiente o CI anterior son checkpoints históricos. La
+evidencia de inferencia local de texto y de rendimiento del 22 de octubre está en
+[su acta](../validation/local-response-performance-20261022.md); no acredita
+comprensión visual ni generación real de imágenes.
+
+| Bloque de construcción | Entrega operativa exigida |
+|---|---|
+| M9-M: procesos e interacción | `process.start/read/send_input/stop` reales, handles opacos ligados a Session/Run/Lane y ownership, salida secuenciada/acotada, entrada/EOF, cancelación del árbol, evidencia durable y recuperación sin relanzar efectos. ConPTY real cuando se solicita terminal Windows. Consumidores Host/tools/cliente y OmniCoder; no basta un catálogo. |
+| Escritores generales | Preparación aislada y publicación conjunta mediante permisos, prelectura, preimagen/historia, límites y recibos existentes. Dos acciones en modo normal y operación continua con permisos User elevados vigentes; sin selector adicional ni otra inferencia para aplicar. La protección no se amplía por cambiar de modelo. |
+| M9-L restante | Operaciones tipadas de plan/lanes/worktrees y las continuaciones de hijos todavía no cubiertas. Reutilizar lo ya aceptado de workflow, modelo, skills, memoria y elecciones raíz; no reconstruir esas entregas. |
+| Medios y procedencia | Completar WebP/VP8L y el recorrido de importación con procedencia y techo conservador. Mantener separadas las pruebas de cableado, clipboard físico, comprensión visual y generación live. |
+| Aceptación transversal | Completar la matriz SEC-CONV-01–13 y los recorridos efectivos de idioma, reconexión y plataformas dentro del alcance vigente. Windows/Linux ya tienen CI; PTY de otros sistemas y sandbox fuerte macOS conservan su diferido ADR-0038. |
+
+El corte M9-M y los escritores generales están construidos y cableados localmente,
+con aprobación focal condicionada del 23 de octubre: 11 casos Core, uno de API
+nativa y tres E2E reales de Electron. [El acta](../validation/m9-process-private-publication-20261023.md)
+distingue los defectos corregidos y las pruebas conjuntas de construcción/revisión.
+ConPTY sigue fallando con ERROR_INVALID_HANDLE 6; la ruta persistente Weak no está
+construida. Linux espera CI del candidato. No hay publicación de este incremento
+ni cierre M9; las consultas pasivas no aplican lotes y se conservan las fronteras
+de permisos/prelectura/historia. El resto de M9-L y sus aceptaciones siguen abiertos.
+
+### Pruebas de integración y regresión del cierre
+
+1. Construir todas las capas de un recorrido antes de compilarlo. Un build fresco
+   serial con salida aislada por corte integrado; en OmniCoder, un build completo
+   inicial resuelve los imports de workspace antes de las pruebas. Un error de
+   compilación se corrige incrementalmente; no desencadena otra suite completa.
+2. Aceptar con procesos OS reales: inicio, salida y cursor, entrada/EOF, terminal,
+   parada del árbol, handles ajenos rechazados y reapertura tras caída sin spawn
+   implícito. El caso de ConPTY debe demostrar API de consola, no sólo texto por
+   pipes. La salida desbordada debe mostrar su límite o gap explícitamente.
+3. Probar el recorrido de escritura con el archivo principal intacto hasta aplicar:
+   prelectura efectiva, PatchOnly, borrado/recreación, presupuesto, conflicto,
+   permisos retirados, Ask/Deny y automático sin diálogo por archivo. Reabrir el
+   journal real y comprobar recibos y cargos sin repetir el efecto.
+4. Cablear y probar el consumidor por ventana Electron real hacia Host real y
+   proceso real, además de un flujo de herramientas del proveedor fixture. El
+   fixture acredita control/continuidad, no inferencia live ni comprensión visual.
+5. Ejecutar una regresión conjunta de fronteras afectadas: admisión y revisión de
+   Session, HMAC/receipts/replay, elecciones y weak consent, workflow, ledger,
+   sandbox y los consumidores TUI afectados. Reutilizar suites existentes; no
+   duplicar aserciones de implementación ni repetir grupos íntegros por cambios
+   exclusivos de fixtures o documentación. Registrar casos únicos y omisiones.
+6. Tras la construcción, Luna en bajo revisa el diff y valida secuencialmente
+   contra los mismos ensamblados frescos. Sólo un fallo o cambio posterior
+   justifica reconstruir/repetir su grupo afectado. Verificar cierre de procesos
+   propios; conservar procesos/perfiles del usuario.
+7. La puerta final es la CI completa del commit candidato de cada repositorio
+   modificado. Integrar/publicar en main sólo tras aprobar y verificar el árbol
+   exacto. Esa CI sustituye repetir localmente toda la suite. No declarar cierre
+   global mientras haya una aceptación pendiente o una capacidad sin cablear.
+
+## Estado vigente previo (2026-10-21)
 
 **Write existente → edición nativa (2026-10-20):** implementado en el pipeline
 compartido de herramientas y validado con fixtures offline. Conserva la solicitud y

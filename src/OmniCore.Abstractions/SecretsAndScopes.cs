@@ -25,6 +25,9 @@ public interface ISecretRedactor
 
     /// <summary>True si el valor completo es un secreto registrado (o una de sus codificaciones).</summary>
     bool IsKnownSecret(string value) => false;
+
+    /// <summary>Longitud del mayor sufijo que aún podría completar un secreto registrado.</summary>
+    int PotentialSecretPrefixSuffixLength(string text) => 0;
 }
 
 /// <summary>

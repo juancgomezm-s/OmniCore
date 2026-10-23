@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="OmniCore.Tests" />
+    <InternalsVisibleTo Include="OmniCore.Host" />
   </ItemGroup>
 
 </Project>

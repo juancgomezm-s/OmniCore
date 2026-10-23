@@ -21,10 +21,12 @@ public sealed class PlatformSandboxProcessLauncher : ISandboxProcessLauncher, IS
     {
         ArgumentNullException.ThrowIfNull(runtime);
         _basicLauncher = new RuntimeSandboxProcessLauncher(runtime);
-        _capabilities = capabilities ?? new WindowsAppContainerCapabilitiesProbe();
+        _capabilities = capabilities ?? (OperatingSystem.IsWindows()
+            ? new WindowsAppContainerCapabilitiesProbe()
+            : new LinuxBubblewrapCapabilitiesProbe());
         _strongLauncher = strongLauncher ?? (OperatingSystem.IsWindows()
             ? new WindowsAppContainerProcessLauncher()
-            : null);
+            : OperatingSystem.IsLinux() ? new LinuxBubblewrapProcessLauncher() : null);
     }
 
     public async ValueTask<ISandboxProcessControl> StartAsync(
@@ -34,7 +36,9 @@ public sealed class PlatformSandboxProcessLauncher : ISandboxProcessLauncher, IS
         ArgumentNullException.ThrowIfNull(launch);
         cancellationToken.ThrowIfCancellationRequested();
         if (launch.RequestedStrength != SandboxStrength.Strong)
-            return await _basicLauncher.StartAsync(launch, cancellationToken).ConfigureAwait(false);
+            return launch.Duplex
+                ? await new SystemProcessDuplexLauncher().StartAsync(launch, cancellationToken).ConfigureAwait(false)
+                : await _basicLauncher.StartAsync(launch, cancellationToken).ConfigureAwait(false);
 
         var preflight = CheckStrongAvailability(launch);
         if (preflight == StrongSandboxPreflightResult.UnavailableBeforeLaunch)

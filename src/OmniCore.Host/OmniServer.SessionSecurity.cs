@@ -155,6 +155,7 @@ public sealed partial class OmniServer
         var journal = _store.ReadFrom(session, 1);
         var startedTools = new HashSet<ToolCallId>();
         var activeChildren = new HashSet<ExecutionId>();
+        var processStates = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var envelope in journal)
         {
             switch (_codecs.Decode(envelope))
@@ -182,9 +183,13 @@ public sealed partial class OmniServer
                 case AgentExecutionFailed childFailed:
                     activeChildren.Remove(childFailed.ExecutionId);
                     break;
+                case ProcessSessionStateRecorded process:
+                    processStates[process.HandleId] = process.State;
+                    break;
             }
         }
-        return startedTools.Count > 0 || activeChildren.Count > 0;
+        return startedTools.Count > 0 || activeChildren.Count > 0
+            || processStates.Values.Any(state => state is "starting" or "running" or "stopping" or "unknown");
     }
 
     internal string CurrentSessionSecurityDefaultJson()

@@ -14,6 +14,8 @@ using OmniCore.Memory;
 using Microsoft.Data.Sqlite;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Collections.Concurrent;
+using Task = System.Threading.Tasks.Task;
 
 /// <summary>
 /// OmniServer: sesión de protocolo in-process que expone el runtime detrás de IOmniClient
@@ -81,6 +83,33 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     private readonly IArtifactStore? _artifacts;
     private readonly IWorkspaceMutationHistoryStore? _mutationHistory;
+    private readonly ConcurrentDictionary<SessionId, PersistentProcessSessionManager> _processSessions = new();
+    private readonly string _hostLeaseGeneration = Guid.NewGuid().ToString("N");
+
+    internal PersistentProcessSessionManager ProcessSessions(SessionId session, string? workspaceRoot = null)
+    {
+        if (_store is SqliteEventStore sqlite && !sqlite.OwnsSessionWriterLease(session))
+            throw new SessionWriterLeaseUnavailableException(session);
+        return _processSessions.GetOrAdd(session, id =>
+        {
+            var effectiveWorkspaceRoot = workspaceRoot ?? VerifiedWorkspaceRoot(session) ?? _workspaceRoot ?? string.Empty;
+            var manager = new PersistentProcessSessionManager(id, _store, _codecs, _hostLeaseGeneration,
+                string.IsNullOrWhiteSpace(effectiveWorkspaceRoot) ? string.Empty : Path.GetFullPath(effectiveWorkspaceRoot), _artifacts,
+                () => _store is not SqliteEventStore ownedStore || ownedStore.OwnsSessionWriterLease(id));
+            var latest = new Dictionary<string, ProcessSessionStateRecorded>(StringComparer.Ordinal);
+            foreach (var envelope in _store.ReadFrom(id, 1))
+                if (_codecs.Decode(envelope) is ProcessSessionStateRecorded evidence)
+                    latest[evidence.HandleId] = evidence;
+            manager.RestoreUnknown(latest);
+            return manager;
+        });
+    }
+
+    internal async Task StopProcessesForRunAsync(SessionId session, RunId run)
+    {
+        if (_processSessions.TryGetValue(session, out var manager))
+            await manager.StopRunAsync(run.ToString(), null).ConfigureAwait(false);
+    }
 
     internal ArtifactRef ImportUserAttachment(byte[] bytes, string fileName)
     {
@@ -356,6 +385,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     internal void ClosePersistentStore()
     {
+        foreach (var sessions in _processSessions.Values)
+            CompleteWorkspaceTask(async () => await sessions.StopAllAsync().ConfigureAwait(false));
+        _processSessions.Clear();
         foreach (var process in _extensionProcesses.Values)
             CompleteWorkspaceTask(async () => await process.DisposeAsync().ConfigureAwait(false));
         _extensionProcesses.Clear();
@@ -382,6 +414,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                         // A recovered Session becomes writable only after its durable ceiling is
                         // present. Keep this migration on lease recovery, never on a read query.
                         if (ReadSessionPointer() != before) continue;
+                        _ = ProcessSessions(target); // Resolve interrupted process effects only after this host owns the Session lease.
                         EnsureSessionSecurityPolicy(target);
                         _lastSessionId = target;
                         _lastRunId = pointer.Run;
@@ -427,6 +460,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                     acquiredExistingLease = store.AcquireSessionWriterLease(existing);
                     lock (_modeAuthorityMutationGate)
                     {
+                        _ = ProcessSessions(existing);
                         EnsureSessionSecurityPolicy(existing);
                         _lastSnapshot = _lastRunId is { } run ? MaterializeFromJournal(existing, run) : null;
                         existingPublished = true;

@@ -32,6 +32,21 @@ public sealed class SecretRedactor : ISecretRedactor
 
     public bool IsKnownSecret(string value) => !string.IsNullOrEmpty(value) && _known.ContainsKey(value);
 
+    public int PotentialSecretPrefixSuffixLength(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return 0;
+        var maximum = 0;
+        foreach (var value in _known.Keys)
+        {
+            var candidate = Math.Min(text.Length, value.Length - 1);
+            if (candidate <= maximum) continue;
+            while (candidate > maximum && !text.AsSpan(text.Length - candidate).SequenceEqual(value.AsSpan(0, candidate)))
+                candidate--;
+            if (candidate > maximum) maximum = candidate;
+        }
+        return maximum;
+    }
+
     /// <summary>Redacta solo valores conocidos; se usa como hook de PiiRedactor para el journal.</summary>
     public string RedactKnownValues(string input)
     {

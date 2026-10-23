@@ -9,6 +9,8 @@ using System.Text.RegularExpressions;
 /// </summary>
 public sealed class PiiRedactor
 {
+    private static readonly string[] StreamingCredentialMarkers =
+        ["authorization", "bearer", "api_key", "apikey", "password", "secret", "session", "token", "sid", "sk-"];
     private static Func<string, string>? _additionalRedactor;
 
     private readonly string[] _patterns = new string[] {
@@ -62,6 +64,59 @@ public sealed class PiiRedactor
 
         return result;
     }
+
+    /// <summary>Retiene sólo el sufijo que aún puede completar un patrón de credencial.</summary>
+    public static int PotentialCredentialSuffixStart(string input)
+    {
+        if (string.IsNullOrEmpty(input)) return input?.Length ?? 0;
+        var searchStart = Math.Max(0, input.Length - 512);
+        var holdStart = input.Length;
+        foreach (var marker in StreamingCredentialMarkers)
+        {
+            var markerStart = Math.Max(searchStart, input.Length - marker.Length);
+            for (var start = markerStart; start < input.Length; start++)
+            {
+                var suffixLength = input.Length - start;
+                if (suffixLength < marker.Length
+                    && marker.AsSpan(0, suffixLength).Equals(input.AsSpan(start), StringComparison.OrdinalIgnoreCase))
+                {
+                    holdStart = Math.Min(holdStart, start);
+                    continue;
+                }
+            }
+
+            var index = input.LastIndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (index < searchStart) continue;
+            var afterMarker = index + marker.Length;
+            var remainder = input.AsSpan(afterMarker);
+            var separator = 0;
+            while (separator < remainder.Length && separator < 8
+                && (char.IsWhiteSpace(remainder[separator]) || remainder[separator] is ':' or '=' or '"' or '\''))
+                separator++;
+            var tokenStart = afterMarker + separator;
+            var isAuthorizationHeader = marker.Equals("authorization", StringComparison.OrdinalIgnoreCase);
+            if (isAuthorizationHeader && tokenStart < input.Length
+                && input.AsSpan(tokenStart).StartsWith("bearer ", StringComparison.OrdinalIgnoreCase))
+            {
+                tokenStart += "bearer ".Length;
+                while (tokenStart < input.Length && char.IsWhiteSpace(input[tokenStart])) tokenStart++;
+            }
+            if (tokenStart == input.Length)
+            {
+                holdStart = Math.Min(holdStart, index);
+            }
+            else
+            {
+                var tokenEnd = tokenStart;
+                while (tokenEnd < input.Length && IsCredentialTokenCharacter(input[tokenEnd])) tokenEnd++;
+                if (tokenEnd == input.Length) holdStart = Math.Min(holdStart, index);
+            }
+        }
+        return holdStart;
+    }
+
+    private static bool IsCredentialTokenCharacter(char value) =>
+        char.IsLetterOrDigit(value) || value is '.' or '_' or '~' or '-';
 }
 
 /// <summary>

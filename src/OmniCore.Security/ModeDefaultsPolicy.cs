@@ -48,6 +48,12 @@ public sealed class ModeDefaultsPolicy
                 : _profile == PermissionProfile.Autonomous ? PermissionDecision.Allow : PermissionDecision.Ask;
         }
 
+        if (resource == PermissionResource.PrivateProcessWorkspace)
+        {
+            return mode == RunMode.Plan ? PermissionDecision.Deny
+                : _profile == PermissionProfile.Autonomous ? PermissionDecision.Allow : PermissionDecision.Ask;
+        }
+
         if (resource == PermissionResource.BuildTestNetwork)
         {
             return mode == RunMode.Plan ? PermissionDecision.Deny : AskUnlessAutonomous();
@@ -85,6 +91,7 @@ public enum PermissionResource
     BuildTestProcess,
     ExternalOrUnknownProcess,
     PrivateExtensionProcess,
+    PrivateProcessWorkspace,
     BuildTestNetwork,
     OtherNetwork,
     Shell,

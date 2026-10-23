@@ -431,11 +431,12 @@ public sealed class OmniHost
     public static HostTools CreateActTools(SandboxStrength processSandboxStrength = SandboxStrength.Strong,
         ArtifactReadTool? artifactReadTool = null,
         IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null,
-        MediaReadTool? mediaReadTool = null) =>
+        MediaReadTool? mediaReadTool = null,
+        PersistentProcessSessionManager? processSessionManager = null) =>
         new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
             includeMutationTools: true, includeProcessTools: true, processSandboxStrength: processSandboxStrength,
             artifactReadTool: artifactReadTool, worktreeIntegrationCoordinator: worktreeIntegrationCoordinator,
-            mediaReadTool: mediaReadTool);
+            mediaReadTool: mediaReadTool, processSessionManager: processSessionManager);
 
     internal static IWorktreeIntegrationCoordinator? CreateWorktreeIntegrationCoordinator(
         string workspaceRoot, IPlatformPaths paths, IArtifactStore artifacts)

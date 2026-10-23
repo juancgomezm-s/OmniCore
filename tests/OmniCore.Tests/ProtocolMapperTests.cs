@@ -274,7 +274,7 @@ public sealed class ProtocolMapperTests
             new ToolCallPrepared(call, "{}"),
             new ToolCallAuthorized(call),
             new ToolCallStarted(call, EffectClass.None, null),
-            new ToolCallSucceeded(call, "{}") { ResultArtifact = image },
+            new ToolCallSucceeded(call, "{\"summary\":\"Read image\"}") { ResultArtifact = image },
         }, DurabilityClass.Standard);
 
         var wire = Assert.Single(new ProtocolMapper(Codecs).Map(store.ReadFrom(session, 1)), item =>
@@ -286,9 +286,34 @@ public sealed class ProtocolMapperTests
         Assert.Equal("sha256", reference["hashAlgorithm"]);
         Assert.Equal("image/png", reference["mediaType"]);
         Assert.Equal("128", reference["size"]);
+        Assert.Equal("Read image", fields["summary"]);
         Assert.DoesNotContain("bytes", fields.Keys);
         Assert.DoesNotContain("path", reference.Keys);
         Assert.DoesNotContain("base64", wire.PayloadJson, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Process_output_is_bounded_and_attributed_to_its_original_tool_call()
+    {
+        var (store, session, _, stream) = Journal();
+        var call = ToolCallId.New();
+        stream.AppendBatch(new DomainEventPayload[]
+        {
+            new ToolCallRequested(call, "provider-call", "process.read", "{}"),
+            new ToolCallPrepared(call, "{}"),
+            new ToolCallAuthorized(call),
+            new ToolCallStarted(call, EffectClass.None, null),
+            new ToolCallSucceeded(call, "{\"summary\":\"Process output read.\"}")
+                { DisplayOutput = new string('x', 20 * 1024) },
+        }, DurabilityClass.Standard);
+
+        var events = store.ReadFrom(session, 1);
+        var succeededEvent = Assert.Single(new ProtocolMapper(Codecs).Map(events, events), item =>
+            JsonObj.Parse(item.PayloadJson)["type"] == "toolcall.succeeded");
+        var fields = JsonObj.Parse(succeededEvent.PayloadJson);
+        Assert.Equal("Process output read.", fields["summary"]);
+        Assert.Equal(16 * 1024, fields["displayOutput"]!.Length);
+        Assert.DoesNotContain("provider-call", succeededEvent.PayloadJson, StringComparison.Ordinal);
     }
 
     [Fact]

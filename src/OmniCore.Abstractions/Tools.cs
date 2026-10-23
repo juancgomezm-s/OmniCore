@@ -67,6 +67,20 @@ public interface IStagedExtensionBatchProducer
 {
     bool IsTrustedPrivateWorkspaceWriter(ToolIntent intent);
 }
+
+/// <summary>Core process control bound by Host to a private, scoped process handle. The claim
+/// describes input/stop authority; it never grants direct checkout writes.</summary>
+public interface IHostScopedPrivateProcessControl
+{
+    bool IsTrustedPrivateProcessControl(ToolIntent intent);
+    bool TryBindProcessControlIntent(ToolIntent intent, ToolExecutionContext execution, out ToolIntent boundIntent);
+}
+
+/// <summary>Core process tool that resolved an executable against its explicit workspace policy in Prepare.</summary>
+public interface IHostResolvedProcessExecutable
+{
+    bool IsHostResolvedProcessExecutable(ToolIntent intent);
+}
 public interface IEffectiveToolAuthorizationIntents
 {
     IReadOnlyList<ToolIntent> ResolveEffectiveAuthorizationIntents(ToolIntent intent,

@@ -126,6 +126,8 @@ public enum Reversibility
 public record ToolCallSucceeded(ToolCallId ToolCallId, string ResultJson) : DomainEventPayload
 {
     public ActivityEvidence? ActivityEvidence { get; init; }
+    /// <summary>Bounded, sanitized terminal text for native client cards. Null for legacy and other tools.</summary>
+    public string? DisplayOutput { get; init; }
     /// <summary>Exact post-image captured after successful publication. Missing in legacy journals.</summary>
     public ArtifactRef? AfterStateRef { get; init; }
 
@@ -134,7 +136,7 @@ public record ToolCallSucceeded(ToolCallId ToolCallId, string ResultJson) : Doma
 
     public EventType Type() => EventType.Of("toolcall.succeeded");
 
-    public int SchemaVersion() => 4;
+    public int SchemaVersion() => 5;
 }
 
 /// <summary>ToolCallFailed: falló con efecto (posiblemente parcial; ADR-0004 §2).

@@ -33,13 +33,24 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
 
     public bool AllowsAutomaticExtensionBatch(ToolIntent intent) =>
         _profile == PermissionProfile.Autonomous && _useModeDefaults && _modeForDefaults == RunMode.Act
-        && intent.ToolId.ToString().StartsWith("ext.", StringComparison.Ordinal)
-        && intent.Claims.Process?.Isolation == ProcessIsolation.PrivateExtensionWorkspace;
+        && ((intent.ToolId.ToString().StartsWith("ext.", StringComparison.Ordinal)
+             && intent.Claims.Process?.Isolation == ProcessIsolation.PrivateExtensionWorkspace)
+            || (intent.ToolId.ToString() is "process.start" or "process.stop"
+                && intent.Claims.Process?.Isolation == ProcessIsolation.PrivateProcessWorkspace)
+            || (intent.ToolId.ToString() is "process.exec" or "shell.exec"
+                && intent.Claims.Process?.Isolation == ProcessIsolation.PrivateProcessWorkspace
+                && intent.Claims.Writes.Count is > 0 and <= 64));
 
     public bool AllowsAutomaticExtensionBatchCurrently(ToolIntent intent)
     {
-        if (intent.ToolId.ToString() is not { } toolId || !toolId.StartsWith("ext.", StringComparison.Ordinal)
-            || intent.Claims.Process?.Isolation != ProcessIsolation.PrivateExtensionWorkspace
+        if (intent.ToolId.ToString() is not { } toolId
+            || !((toolId.StartsWith("ext.", StringComparison.Ordinal)
+                  && intent.Claims.Process?.Isolation == ProcessIsolation.PrivateExtensionWorkspace)
+                || (toolId is "process.start" or "process.stop"
+                    && intent.Claims.Process?.Isolation == ProcessIsolation.PrivateProcessWorkspace)
+                || (toolId is "process.exec" or "shell.exec"
+                    && intent.Claims.Process?.Isolation == ProcessIsolation.PrivateProcessWorkspace
+                    && intent.Claims.Writes.Count is > 0 and <= 64))
             || !_useModeDefaults || _modeForDefaults != RunMode.Act) return false;
         try { return CurrentUserPermissions().Profile == PermissionProfile.Autonomous; }
         catch (Exception) { return false; }
@@ -272,6 +283,10 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
         switch (toolName)
         {
             case "shell.exec":
+                if (intent.Claims.Process is { Isolation: ProcessIsolation.PrivateProcessWorkspace,
+                    NetworkRequired: false } && intent.Claims.Writes.Count is > 0 and <= 64
+                    && intent.Claims.Network.Count == 0 && intent.Claims.Secrets.Count == 0)
+                    return PermissionResource.PrivateProcessWorkspace;
                 return PermissionResource.Shell;
             case "plan.propose":
             case "reference.resolve":
@@ -304,6 +319,19 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
                 && claims.Process.Isolation == ProcessIsolation.PrivateExtensionWorkspace
                 && !claims.Process.NetworkRequired && claims.Network.Count == 0)
                 return PermissionResource.PrivateExtensionProcess;
+            if (intent.ToolId.ToString() == "process.start"
+                && claims.Process.Isolation == ProcessIsolation.PrivateProcessWorkspace
+                && !claims.Process.NetworkRequired && claims.Network.Count == 0)
+                return PermissionResource.PrivateProcessWorkspace;
+            if (intent.ToolId.ToString() is "process.exec" or "shell.exec"
+                && claims.Process.Isolation == ProcessIsolation.PrivateProcessWorkspace
+                && claims.Writes.Count is > 0 and <= 64
+                && !claims.Process.NetworkRequired && claims.Network.Count == 0)
+                return PermissionResource.PrivateProcessWorkspace;
+            if ((intent.ToolId.ToString() is "process.send_input" or "process.stop")
+                && claims.Process.Isolation == ProcessIsolation.PrivateProcessWorkspace
+                && !claims.Process.NetworkRequired && claims.Network.Count == 0)
+                return PermissionResource.PrivateProcessWorkspace;
             var processKind = ClassifyStructuredProcess(claims.Process);
             if (claims.Process.NetworkRequired && processKind is not ("WorkspaceEffect" or "Rerunnable"))
                 return PermissionResource.OtherNetwork;

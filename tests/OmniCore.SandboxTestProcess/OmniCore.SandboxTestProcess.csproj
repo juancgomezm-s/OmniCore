@@ -2,6 +2,7 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>OmniCore.SandboxTestProcess</AssemblyName>
     <RootNamespace>OmniCore.SandboxTestProcess</RootNamespace>
   </PropertyGroup>

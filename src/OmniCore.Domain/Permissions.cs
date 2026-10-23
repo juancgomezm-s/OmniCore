@@ -136,11 +136,13 @@ public enum ProcessIsolation
 {
     None,
     PrivateExtensionWorkspace,
+    PrivateProcessWorkspace,
 }
 
 public record ProcessClaim(string Executable, IReadOnlyList<string> Args, string EffectClass,
     bool NetworkRequired = false, string? WorkingDirectory = null,
-    ProcessIsolation Isolation = ProcessIsolation.None) { }
+    ProcessIsolation Isolation = ProcessIsolation.None, string? OwnerSessionId = null,
+    string? OwnerRunId = null, string? OwnerLaneId = null, string? OwnerLeaseId = null) { }
 
 /// <summary>Reclamación de un recurso de red.</summary>
 public record NetworkClaim(string Host, int? Port) { }

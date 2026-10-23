@@ -327,13 +327,18 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IExtensionBat
             throw new ToolPreflightException(ToolErrorCode.LimitExceeded, "Extension proposal exceeds the safe size limit.");
         var proposal = JsonSerializer.Deserialize(json, ExtensionWriteBatchJsonContext.Default.ExtensionWriteBatchProposal)
             ?? throw new ToolPreflightException(ToolErrorCode.StaleWrite, "Extension proposal is invalid.");
+        var extensionOrigin = proposal.Origin == "extension" && proposal.Isolation == ProcessIsolation.PrivateExtensionWorkspace.ToString();
+        var processOrigin = proposal.Origin == "process" && proposal.Isolation == ProcessIsolation.PrivateProcessWorkspace.ToString()
+            && proposal.ProcessHandleId is { Length: 32 } processHandle && Guid.TryParseExact(processHandle, "N", out _);
         if (proposal.Version != 1 || proposal.ProposalId != proposalId || proposal.ToolId.Length == 0
-            || proposal.Isolation != ProcessIsolation.PrivateExtensionWorkspace.ToString()
+            || !extensionOrigin && !processOrigin
             || !PathEquals(proposal.WorkspaceRoot, context.WorkspaceRoot)
             || string.IsNullOrWhiteSpace(context.MutationRunId) || string.IsNullOrWhiteSpace(context.MutationTurnId)
             || string.IsNullOrWhiteSpace(context.MutationLaneId)
             || proposal.MutationRunId != context.MutationRunId
             || proposal.MutationLaneId != context.MutationLaneId
+            || processOrigin && (!PersistentProcessSessionManager.IsProcessWriterTool(proposal.ToolId)
+                || proposal.ProcessHandleId is null)
             || !Guid.TryParse(proposal.ToolCallId, out _)
             || proposal.Changes is null || proposal.Changes.Count is < 1 or > 64)
             throw new ToolPreflightException(ToolErrorCode.StaleWrite, "Extension proposal identity is invalid.");

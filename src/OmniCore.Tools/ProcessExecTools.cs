@@ -201,7 +201,7 @@ internal static class ProcessToolJson
 
     internal static (string Executable, IReadOnlyList<string> Args) ShellInvocation(string command) =>
         OperatingSystem.IsWindows()
-            ? (Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe"), new[] { "/c", command })
+            ? (Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe"), new[] { "/d", "/s", "/c", command })
             : ("/bin/sh", new[] { "-c", command });
 
     internal static bool IsLexicallyWithin(string path, string root)

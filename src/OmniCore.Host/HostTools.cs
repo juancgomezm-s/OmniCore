@@ -27,10 +27,11 @@ public sealed class HostTools
         SandboxStrength processSandboxStrength = SandboxStrength.Strong, ArtifactReadTool? artifactReadTool = null,
         bool includeControlTools = true, bool includeMailboxReceive = false, bool includeShellTool = true,
         IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null,
-        MediaReadTool? mediaReadTool = null)
+        MediaReadTool? mediaReadTool = null,
+        PersistentProcessSessionManager? processSessionManager = null)
         : this(boundary, planService, includeSimulationTools, includeMutationTools, includeProcessTools,
             processSandboxStrength, artifactReadTool, includeControlTools, includeMailboxReceive, includeShellTool,
-            processRuntime: null, worktreeIntegrationCoordinator, mediaReadTool)
+            processRuntime: null, worktreeIntegrationCoordinator, mediaReadTool, processSessionManager)
     {
     }
 
@@ -39,7 +40,7 @@ public sealed class HostTools
         ArtifactReadTool? artifactReadTool, bool includeControlTools, bool includeMailboxReceive,
         bool includeShellTool, OmniCore.Abstractions.IProcessRuntime? processRuntime,
         IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null,
-        MediaReadTool? mediaReadTool = null)
+        MediaReadTool? mediaReadTool = null, PersistentProcessSessionManager? processSessionManager = null)
     {
         _planPropose = new PlanProposeTool(planService);
         _extensionBatchCoordinator = worktreeIntegrationCoordinator as WorktreeIntegrationHostCoordinator;
@@ -64,8 +65,36 @@ public sealed class HostTools
         {
             var processLauncher = OmniHost.CreateProcessSandboxLauncher(processRuntime ?? SystemProcessRuntime.Instance());
             var gitActivity = new OmniCore.Infrastructure.GitWorktreeStore(SystemProcessRuntime.Instance());
-            catalog = catalog.Add(new ProcessExecTool(processLauncher, boundary, processSandboxStrength, gitActivity));
-            if (includeShellTool) catalog = catalog.Add(new ShellExecTool(processLauncher, boundary, processSandboxStrength, gitActivity));
+            if (processSessionManager is not null)
+            {
+                if (_extensionBatchCoordinator is not null)
+                {
+                    _extensionBatchCoordinator.RegisterExtensionProposalValidator("process.start",
+                        processSessionManager.ValidateCurrentProcessBatchProposal);
+                    _extensionBatchCoordinator.RegisterExtensionProposalValidator("process.exec",
+                        processSessionManager.ValidateCurrentProcessBatchProposal);
+                    _extensionBatchCoordinator.RegisterExtensionProposalValidator("shell.exec",
+                        processSessionManager.ValidateCurrentProcessBatchProposal);
+                }
+                var executableResolver = new SystemExecutableResolver(allowWorkspaceRelativePaths: true);
+                var canPublish = includeMutationTools && _extensionBatchCoordinator is not null;
+                catalog = catalog.Add(new ProcessExecBatchTool("process.exec", processSessionManager,
+                    processLauncher, boundary, executableResolver, canPublish));
+                if (includeShellTool)
+                    catalog = catalog.Add(new ProcessExecBatchTool("shell.exec", processSessionManager,
+                        processLauncher, boundary, executableResolver, canPublish));
+                catalog = catalog.Add(new ProcessStartTool(processSessionManager, processLauncher, processSandboxStrength,
+                        boundary, new SystemExecutableResolver(allowWorkspaceRelativePaths: true)))
+                    .Add(new ProcessReadTool(processSessionManager))
+                    .Add(new ProcessSendInputTool(processSessionManager))
+                    .Add(new ProcessStopTool(processSessionManager));
+            }
+            else
+            {
+                // Legacy non-Host harnesses without a persistent manager retain the bounded one-shot tools.
+                catalog = catalog.Add(new ProcessExecTool(processLauncher, boundary, processSandboxStrength, gitActivity));
+                if (includeShellTool) catalog = catalog.Add(new ShellExecTool(processLauncher, boundary, processSandboxStrength, gitActivity));
+            }
         }
 
         catalog = catalog.Add(new ReferenceResolveTool(boundary));

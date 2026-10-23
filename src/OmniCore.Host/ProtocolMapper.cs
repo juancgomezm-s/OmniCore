@@ -35,12 +35,12 @@ public sealed class ProtocolMapper
         var result = new List<WireEnvelope>();
         foreach (var evt in events)
         {
-            var fields = Fields(_codecs.Decode(evt));
+            var payload = _codecs.Decode(evt);
+            var fields = Fields(payload);
             if (fields is null)
             {
                 continue;
             }
-
             var parts = new List<string>();
             var keys = new HashSet<string>(StringComparer.Ordinal);
             void Add(string key, string? value)
@@ -360,9 +360,21 @@ public sealed class ProtocolMapper
     private static string Mode(RunMode mode) => mode == RunMode.Orchestrate
         ? "orq" : mode.ToString().ToLowerInvariant();
 
-    private static Dictionary<string, string> ToolSucceededFields(ToolCallSucceeded succeeded)
+    private Dictionary<string, string> ToolSucceededFields(ToolCallSucceeded succeeded)
     {
         var fields = new Dictionary<string, string> { ["toolCallId"] = succeeded.ToolCallId.ToString() };
+        try
+        {
+            using var result = System.Text.Json.JsonDocument.Parse(succeeded.ResultJson);
+            if (result.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                && result.RootElement.TryGetProperty("summary", out var summary)
+                && summary.ValueKind == System.Text.Json.JsonValueKind.String
+                && summary.GetString() is { Length: > 0 } text)
+                fields["summary"] = _redaction.Redact(text.Length > 512 ? text[..512] + "…" : text);
+        }
+        catch (System.Text.Json.JsonException) { }
+        if (succeeded.DisplayOutput is { Length: > 0 } output)
+            fields["displayOutput"] = _redaction.Redact(output.Length > 16 * 1024 ? output[..(16 * 1024)] : output);
         // La metadata opcional permite consultar el resultado visual de media.read. No se expone
         // el contenido ni una ruta; la identidad canónica sigue siendo el hash del CAS.
         if (succeeded.ResultArtifact is { } artifact

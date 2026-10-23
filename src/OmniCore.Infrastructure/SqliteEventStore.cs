@@ -677,6 +677,11 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader, IDi
         }
     }
 
+    internal bool OwnsSessionWriterLease(SessionId sessionId)
+    {
+        lock (_connectionSync) return !_closed && _sessionWriterLeases.ContainsKey(sessionId);
+    }
+
     /// <summary>Releases only this store's lease; the permanent lock path is never removed.</summary>
     public void ReleaseSessionWriterLease(SessionId sessionId)
     {

@@ -76,6 +76,10 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             { "worktree.integrate", ModelToolCapability.DeleteFile },
             { "extension.batch.apply", ModelToolCapability.ReplaceFile },
             { "process.exec", ModelToolCapability.GeneralProcess },
+            { "process.start", ModelToolCapability.GeneralProcess },
+            { "process.read", ModelToolCapability.GeneralProcess },
+            { "process.send_input", ModelToolCapability.GeneralProcess },
+            { "process.stop", ModelToolCapability.GeneralProcess },
             { "shell.exec", ModelToolCapability.Shell },
             { "user.ask", ModelToolCapability.PlanProposal },
             { "memory.propose", ModelToolCapability.PlanProposal },
@@ -369,11 +373,26 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
     }
 
     private static bool IsPrivateExtensionStageIntent(ToolIntent intent, string toolName) =>
-        toolName.StartsWith("ext.", StringComparison.Ordinal)
+        (toolName.StartsWith("ext.", StringComparison.Ordinal)
+            && intent.Claims.Process is { Isolation: ProcessIsolation.PrivateExtensionWorkspace,
+                NetworkRequired: false, WorkingDirectory: { Length: > 0 } }
+            && intent.Claims.Writes.Count is > 0 and <= 64
+            || toolName == "process.start"
+            && intent.Claims.Process is { Isolation: ProcessIsolation.PrivateProcessWorkspace,
+                NetworkRequired: false, WorkingDirectory: { Length: > 0 } }
+            && intent.Claims.Writes.Count is > 0 and <= 64
+            || (toolName is "process.exec" or "shell.exec")
+            && intent.Claims.Process is { Isolation: ProcessIsolation.PrivateProcessWorkspace,
+                NetworkRequired: false, WorkingDirectory: { Length: > 0 } }
+            && intent.Claims.Writes.Count is > 0 and <= 64
+            || toolName is "process.send_input" or "process.stop"
+            && intent.Claims.Process is { Isolation: ProcessIsolation.PrivateProcessWorkspace,
+                NetworkRequired: false, OwnerSessionId: { Length: > 0 }, OwnerRunId: { Length: > 0 },
+                OwnerLaneId: { Length: > 0 }, OwnerLeaseId: { Length: > 0 } } control
+            && control.Executable.StartsWith("process.handle:", StringComparison.Ordinal)
+            && intent.Claims.Network.Count == 0 && intent.Claims.Writes.Count == 0)
         && intent.Effect == EffectClass.NonIdempotent
-        && intent.Claims.Process is { Isolation: ProcessIsolation.PrivateExtensionWorkspace,
-            NetworkRequired: false, WorkingDirectory: { Length: > 0 } }
-        && intent.Claims.Network.Count == 0 && intent.Claims.Writes.Count is > 0 and <= 64;
+        && intent.Claims.Network.Count == 0;
 
     private FileMutationPolicy? IntersectedMutationPolicy()
     {

@@ -32,6 +32,18 @@ internal sealed class ExtensionWriteWorkspace : IDisposable
 
     internal string Root => _privateRoot;
 
+    internal static bool IsPathWithinPattern(string pattern, string relativePath)
+    {
+        try { return IsMatch(NormalizePattern(pattern), relativePath.Replace('\\', '/')); }
+        catch (InvalidDataException) { return false; }
+    }
+
+    internal static bool IsValidPattern(string pattern)
+    {
+        try { _ = NormalizePattern(pattern); return true; }
+        catch (InvalidDataException) { return false; }
+    }
+
     internal static ExtensionWriteWorkspace Create(string workspaceRoot, string temporaryRoot, ResourceClaims claims)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspaceRoot);
@@ -41,7 +53,6 @@ internal sealed class ExtensionWriteWorkspace : IDisposable
         var files = TrackedFiles(source);
         var readPatterns = claims.Reads.Select(NormalizePattern).Distinct(Comparer).ToArray();
         var writePatterns = claims.Writes.Select(NormalizePattern).Distinct(Comparer).ToArray();
-        if (writePatterns.Length == 0) throw new InvalidOperationException("Extension writer has no declared write scope.");
         var eligible = files.Where(relative => !new RedactionPolicy().IsSecretPath(relative)
             && (MatchesAny(relative, readPatterns) || MatchesAny(relative, writePatterns))).ToArray();
         if (eligible.Length > MaximumFiles) throw new InvalidOperationException("Extension writer workspace exceeds the file limit.");

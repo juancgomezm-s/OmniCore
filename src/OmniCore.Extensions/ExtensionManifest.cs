@@ -140,8 +140,8 @@ public sealed record ExtensionWorkspaceChange(string RelativePath, string? Befor
 public sealed record ExtensionWriteBatchProposal(int Version, string ProposalId, string WorkspaceRoot,
     string ToolCallId, string ToolId, string ExtensionId, string ExtensionVersion,
     string PackageSha256, string ManifestSha256, string Isolation, string MutationRunId, string MutationTurnId,
-    string MutationLaneId,
-    IReadOnlyList<ExtensionWriteBatchChange> Changes);
+    string MutationLaneId, IReadOnlyList<ExtensionWriteBatchChange> Changes,
+    string Origin = "extension", string? ProcessHandleId = null);
 public sealed record ExtensionWriteBatchChange(string Path, string? BeforeSha256,
     string? AfterSha256, byte[]? AfterBytes);
 

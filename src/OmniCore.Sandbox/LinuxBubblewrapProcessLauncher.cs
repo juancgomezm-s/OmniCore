@@ -4,15 +4,20 @@ namespace OmniCore.Sandbox;
 
 /// <summary>Extension transport in private mount, user, PID and network namespaces.
 /// Missing kernel/bwrap support is a launch failure, never permission to run outside isolation.</summary>
-public sealed class LinuxBubblewrapProcessLauncher : ISandboxProcessLauncher
+public sealed class LinuxBubblewrapProcessLauncher : ISandboxProcessLauncher, IStrongSandboxPreflight
 {
+    public StrongSandboxPreflightResult CheckStrongAvailability(SandboxLaunchSpec launch) =>
+        OperatingSystem.IsLinux() && File.Exists("/usr/bin/bwrap") && launch.Duplex
+            && !launch.Terminal && launch.Network.Mode == SandboxNetworkMode.Deny
+            ? StrongSandboxPreflightResult.Available : StrongSandboxPreflightResult.UnavailableBeforeLaunch;
+
     public ValueTask<ISandboxProcessControl> StartAsync(SandboxLaunchSpec launch, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!OperatingSystem.IsLinux() || !File.Exists("/usr/bin/bwrap"))
             throw new StrongSandboxUnavailableBeforeLaunchException("extension_linux_bubblewrap_required");
-        if (launch.RequestedStrength != SandboxStrength.Strong || !launch.Duplex
-            || launch.Network.Mode != SandboxNetworkMode.Deny || launch.InitialStandardInput is not null || launch.Timeout is not null)
+        if (launch.RequestedStrength != SandboxStrength.Strong || !launch.Duplex || launch.Terminal
+            || launch.Network.Mode != SandboxNetworkMode.Deny || launch.InitialStandardInput is not null)
             throw new NotSupportedException("extension_sandbox_policy_unsupported");
         var start = new ProcessStartInfo("/usr/bin/bwrap")
         {
@@ -41,11 +46,19 @@ public sealed class LinuxBubblewrapProcessLauncher : ISandboxProcessLauncher
         return ValueTask.FromResult<ISandboxProcessControl>(new Control(process));
     }
 
-    private sealed class Control(Process process) : ISandboxDuplexProcessControl
+    private sealed class Control(Process process) : ISandboxPersistentProcessControl
     {
         public Stream StandardInput => process.StandardInput.BaseStream;
         public Stream StandardOutput => process.StandardOutput.BaseStream;
         public Stream StandardError => process.StandardError.BaseStream;
+        public bool IsTerminal => false;
+        public void ResizeTerminal(short columns, short rows) => throw new NotSupportedException("A pseudo-terminal is unavailable on this platform.");
+        public ValueTask CloseInputAsync() { process.StandardInput.Close(); return ValueTask.CompletedTask; }
+        public async ValueTask<int> WaitForExitCodeAsync(CancellationToken cancellationToken)
+        {
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            return process.ExitCode;
+        }
         public async ValueTask<SandboxProcessOutput> WaitForExitAsync(CancellationToken cancellationToken)
         {
             await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
@@ -62,5 +75,15 @@ public sealed class LinuxBubblewrapProcessLauncher : ISandboxProcessLauncher
             await TerminateAsync(CancellationToken.None).ConfigureAwait(false);
             process.Dispose();
         }
+    }
+}
+
+public sealed class LinuxBubblewrapCapabilitiesProbe : ISandboxCapabilitiesProbe
+{
+    public SandboxCapabilities Probe()
+    {
+        var available = OperatingSystem.IsLinux() && File.Exists("/usr/bin/bwrap");
+        return new SandboxCapabilities(available, true, true,
+            available ? null : "Bubblewrap Strong isolation is unavailable on this Linux host.");
     }
 }

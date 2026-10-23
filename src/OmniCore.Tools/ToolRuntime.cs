@@ -248,6 +248,16 @@ public sealed class ToolRuntime
                 execContext.MutationHistory);
             effectiveIntent = FilesystemWriteTool.EffectivePatchAuthorizationIntent(intent);
         }
+        if (tool is IHostScopedPrivateProcessControl processControl
+            && tool.Descriptor.Id.ToString() is "process.send_input" or "process.stop")
+        {
+            if (!processControl.TryBindProcessControlIntent(intent, execContext, out var boundIntent))
+            {
+                RejectBeforeAuthorization("Process handle is not owned by the active Host scope.", ToolErrorCode.PermissionDenied);
+                return new Outcome(false, "process.handle_unavailable", ToolCallState.Rejected, EffectOutcome.None);
+            }
+            intent = boundIntent;
+        }
         IReadOnlyList<ToolIntent> additionalEffectiveIntents = [];
         if (tool is IEffectiveToolAuthorizationIntents batchResolver)
         {
@@ -273,7 +283,11 @@ public sealed class ToolRuntime
 
         // La resolución se realiza entre Prepare (puro) y la evaluación del Permission Engine,
         // para que Security autorice el ejecutable real, nunca el nombre solicitado (ADR-0015).
-        if (intent.Claims.Process is { } processClaim)
+        if (intent.Claims.Process is { } processClaim
+            && !(tool is IHostScopedPrivateProcessControl
+                && tool.Descriptor.Id.ToString() is ("process.send_input" or "process.stop"))
+            && !(tool is IHostResolvedProcessExecutable resolvedExecutable
+                && resolvedExecutable.IsHostResolvedProcessExecutable(intent)))
         {
             if (tool.Descriptor.Source.Kind == SourceKind.Extension)
             {
@@ -799,7 +813,7 @@ public sealed class ToolRuntime
         IDisposable? workspaceWriteLease = null;
         var privateStagedWriter = tool is IStagedExtensionBatchProducer stagedWriter
             && stagedWriter.IsTrustedPrivateWorkspaceWriter(intent)
-            && intent.Claims.Process?.Isolation == ProcessIsolation.PrivateExtensionWorkspace;
+            && intent.Claims.Process?.Isolation is ProcessIsolation.PrivateExtensionWorkspace or ProcessIsolation.PrivateProcessWorkspace;
         try
         {
             if (intent.Effect != EffectClass.None && (intent.Claims.Writes.Count > 0
@@ -973,6 +987,19 @@ public sealed class ToolRuntime
                     _policy.Evaluate(batchIntent), "effective batch operation");
             if (_policy is IAutomaticExtensionBatchAuthority currentAuthority)
             {
+                var hostScopedProcessEffect = tool is IHostScopedPrivateProcessControl processControl
+                    && processControl.IsTrustedPrivateProcessControl(intent)
+                    || tool is IStagedExtensionBatchProducer processWriter
+                    && processWriter.IsTrustedPrivateWorkspaceWriter(intent)
+                    && (intent.ToolId.ToString() is "process.start" or "process.exec" or "shell.exec");
+                if (hostScopedProcessEffect)
+                {
+                    var current = currentAuthority.EvaluateCurrentPermission(intent);
+                    finalPermission = CombinePermissionDecisions(finalPermission,
+                        new PermissionDecisionRecord(current,
+                            [new LayerDecision("current-user-permissions", current, "permissions.yaml")], null),
+                        "current process permission");
+                }
                 if (automaticApply && automaticSourceIntent is not null)
                 {
                     var sourceCurrent = currentAuthority.EvaluateCurrentPermission(automaticSourceIntent);
@@ -1133,7 +1160,9 @@ public sealed class ToolRuntime
         { AfterStateRef = tool is FilesystemWriteTool or FilesystemPatchTool && result.AfterStateBytes is { } bytes
             && reconciliation?.ExpectedPostHash == FileVersion.VersionToken(bytes)
                 ? FilesystemPreimage.CaptureAfter(execContext.Artifacts, bytes) : null,
-            ResultArtifact = result.Artifact, ActivityEvidence = result.ActivityEvidence });
+            ResultArtifact = result.Artifact, ActivityEvidence = result.ActivityEvidence,
+            DisplayOutput = tool.Descriptor.Id.ToString() == "process.read"
+                ? BoundedProcessDisplayOutput(result.Preview) : null });
         // Preview: contenido real de la herramienta (p. ej. el archivo leído) → vuelve al modelo.
         return new Outcome(true, result.Summary, result.Preview, ToolCallState.Succeeded, effect,
             artifact: result.Artifact);
@@ -1143,6 +1172,39 @@ public sealed class ToolRuntime
     {
         private IDisposable? _inner = inner;
         public void Dispose() => Interlocked.Exchange(ref _inner, null)?.Dispose();
+    }
+
+    private static string? BoundedProcessDisplayOutput(string? preview)
+    {
+        if (string.IsNullOrEmpty(preview) || System.Text.Encoding.UTF8.GetByteCount(preview) > 256 * 1024) return null;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(preview);
+            var root = document.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object
+                || !root.TryGetProperty("output", out var chunks) || chunks.ValueKind != System.Text.Json.JsonValueKind.Array)
+                return null;
+            var result = new System.Text.StringBuilder();
+            if (root.TryGetProperty("gap", out var gap) && gap.ValueKind == System.Text.Json.JsonValueKind.True)
+                result.Append("[output gap]\n");
+            foreach (var chunk in chunks.EnumerateArray())
+            {
+                if (chunk.ValueKind != System.Text.Json.JsonValueKind.Object
+                    || !chunk.TryGetProperty("text", out var textValue) || textValue.ValueKind != System.Text.Json.JsonValueKind.String)
+                    continue;
+                var text = textValue.GetString() ?? string.Empty;
+                var stream = chunk.TryGetProperty("stream", out var streamValue)
+                    && streamValue.ValueKind == System.Text.Json.JsonValueKind.String ? streamValue.GetString() : null;
+                if (result.Length > 0 && result[^1] != '\n') result.AppendLine();
+                if (stream is "stdout" or "stderr") result.Append('[').Append(stream).Append("] ");
+                var remaining = 16 * 1024 - result.Length;
+                if (remaining <= 0) break;
+                result.Append(text.AsSpan(0, Math.Min(text.Length, remaining)));
+                if (result.Length >= 16 * 1024) break;
+            }
+            return result.Length == 0 ? null : result.ToString();
+        }
+        catch (System.Text.Json.JsonException) { return null; }
     }
 
     private static string ExtensionPublicationPreview(string? proposalPreview, string status)
@@ -1287,15 +1349,20 @@ public sealed class ToolRuntime
     private static ModelCapabilityDecision EvaluateBoundary(IToolIntentBoundary boundary, ITool tool,
         ToolIntent intent)
     {
-        if (boundary is ModelCapabilityBoundary && tool is IStagedExtensionBatchProducer producer
-            && producer.IsTrustedPrivateWorkspaceWriter(intent)
-            && intent.Claims.Process?.Isolation == ProcessIsolation.PrivateExtensionWorkspace
-            && intent.Claims.Writes.Count > 0)
+        if (boundary is ModelCapabilityBoundary
+            && ((tool is IStagedExtensionBatchProducer producer
+                 && producer.IsTrustedPrivateWorkspaceWriter(intent)
+                 && intent.Claims.Process?.Isolation is ProcessIsolation.PrivateExtensionWorkspace or ProcessIsolation.PrivateProcessWorkspace
+                 && intent.Claims.Writes.Count > 0)
+                || (tool is IHostScopedPrivateProcessControl processControl
+                    && processControl.IsTrustedPrivateProcessControl(intent)
+                    && intent.Claims.Process?.Isolation == ProcessIsolation.PrivateProcessWorkspace)))
         {
             // Process writes land only in the Host-created private copy. The checkout mutations
             // are separately resolved as native filesystem intents by extension.batch.apply.
             var stagedClaims = new ResourceClaims(intent.Claims.Reads, [], intent.Claims.Network,
-                intent.Claims.Process, intent.Claims.Secrets);
+                null,
+                intent.Claims.Secrets);
             var stagedIntent = new ToolIntent(intent.ToolCallId, intent.ToolId, intent.NormalizedArgumentsJson,
                 intent.Effect, stagedClaims, intent.Risk, intent.Reconciliation,
                 intent.EffectiveMutationOperation, intent.RequiresPhysicalCreateCapability,
