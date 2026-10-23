@@ -14,6 +14,14 @@ public sealed partial class TuiApp
     private CompanionLetterView? _petLetter;
     private int _petDraftLength;
     private bool _petTypingPending;
+    private Point? _petRunnerPlacement, _petLetterPlacement;
+    private void PausePetForReading()
+    {
+        _petQuietUntil = DateTimeOffset.UtcNow.AddMilliseconds(300);
+        // A quick trip from the editor to the history and back can happen between ticks.
+        // Cancel the letter chase at the reading gesture rather than waiting for a timer.
+        _petTypingPending = false; _petTyping.Clear();
+    }
     internal bool CompanionTypingActive => _petTyping.Active;
     internal View? CompanionLetter => _petLetter;
     internal View? CompanionRunner => _petRunner;
@@ -105,7 +113,11 @@ public sealed partial class TuiApp
             _petLetter.Width = Terminal.Gui.Text.StringExtensions.GetColumns(_petLetter.Glyph, false);
             _petLetter.Ink = new(noColor ? Terminal.Gui.Drawing.Color.None : _theme.Map(new Terminal.Gui.Drawing.Color(_theme.Accent)),
                 noColor ? Terminal.Gui.Drawing.Color.None : _theme.Map(new Terminal.Gui.Drawing.Color(_theme.Background)));
-            _petLetter.SetNeedsLayout(); _petLetter.SetNeedsDraw();
+            var placement = new Point(PetPlayOrigin.X + PetTypingTargetX,
+                PetPlayOrigin.Y + PetChaseHeight - 1 - (int)(_petPlayground.Frame % 2));
+            if (_petLetterPlacement != placement)
+            { _petLetterPlacement = placement; _petLetter.SetNeedsLayout(); }
+            _petLetter.SetNeedsDraw();
         }
         else _petLetter.Glyph = "";
         var hideVisible = enabled && _overlay is null;
@@ -117,7 +129,9 @@ public sealed partial class TuiApp
         if (outside)
         {
             _petRunner.Render(_pet!, pose, _theme, PetNoColor);
-            _petRunner.SetNeedsLayout();
+            var placement = new Point(PetPlayOrigin.X + pose.X, PetPlayOrigin.Y + pose.Y);
+            if (_petRunnerPlacement != placement)
+            { _petRunnerPlacement = placement; _petRunner.SetNeedsLayout(); }
         }
     }
 }

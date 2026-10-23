@@ -2,6 +2,7 @@ using Terminal.Gui.Drawing;
 using Terminal.Gui.Views;
 using Terminal.Gui.Input;
 using Terminal.Gui.Drivers;
+using Terminal.Gui.ViewBase;
 
 namespace OmniCore.Cli;
 
@@ -20,6 +21,9 @@ internal class StyledTextPresenter : TextView
     private System.Drawing.Point? _mouseDown;
     private bool _dragged;
     private bool _loadingStyled;
+    private readonly Dictionary<Terminal.Gui.Drawing.Attribute, Terminal.Gui.Drawing.Attribute> _paintAttributes = new();
+    private TuiTheme? _paintTheme;
+    private bool _paintDimmed, _paintNoColor;
     internal event Action<string>? LinkActivated;
     // Internal cell metadata; normalize the one-step background marker before drawing.
     private static readonly Color AccentMarker = new("#061823");
@@ -162,12 +166,29 @@ internal class StyledTextPresenter : TextView
             PaintAttribute(attribute);
         else base.OnDrawNormalColor(line, idxCol, idxRow);
     }
+    protected override bool OnDrawingContent(DrawContext? context)
+    {
+        // Environment and palette lookup belong to a frame, not every visible cell.
+        var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
+        if (!ReferenceEquals(_paintTheme, Theme) || _paintDimmed != Dimmed || _paintNoColor != noColor)
+        {
+            _paintAttributes.Clear(); _paintTheme = Theme; _paintDimmed = Dimmed; _paintNoColor = noColor;
+        }
+        return base.OnDrawingContent(context);
+    }
+
     private void PaintAttribute(Terminal.Gui.Drawing.Attribute attribute)
     {
-        var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
-        SetAttribute(Theme.Map(new Terminal.Gui.Drawing.Attribute(noColor ? Color.None : Dimmed ? new Color("#405666") : attribute.Foreground,
-            noColor ? Color.None : attribute.Background == AccentMarker ? new Color("#061822") : attribute.Background,
-            attribute.Style)));
+        if (!_paintAttributes.TryGetValue(attribute, out var paint))
+        {
+            paint = Theme.Map(new Terminal.Gui.Drawing.Attribute(_paintNoColor ? Color.None : Dimmed ? new Color("#405666") : attribute.Foreground,
+                _paintNoColor ? Color.None : attribute.Background == AccentMarker ? new Color("#061822") : attribute.Background,
+                attribute.Style));
+            // Styling has a small palette; keep the cache bounded even for arbitrary loaded cells.
+            if (_paintAttributes.Count >= 256) _paintAttributes.Clear();
+            _paintAttributes[attribute] = paint;
+        }
+        SetAttribute(paint);
     }
 }
 #pragma warning restore CS0618
