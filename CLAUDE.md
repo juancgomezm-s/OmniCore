@@ -15,10 +15,18 @@ este permiso. No reabrir la homologación cerrada ni debilitar la seguridad de S
 pasiva y escritores privados tienen recorridos reales locales. ConPTY Strong pasó con
 resize/ACK exacto después de corregir handles estándar redirigidos; no requiere registro.
 WebP estático se decodifica íntegramente. El [contrato y evidencia](docs/validation/m9-core-process-contract-20261023.md)
-prevalece sobre los checkpoints históricos inferiores. La primera CI bloqueó la publicación;
-Luna bajo aprobó ocho focos corregidos sin recompilar y falta la CI del nuevo candidato. M9 global y M8 manual siguen
-abiertos. Construcción Luna alto y validación Luna bajo se hacen **secuencialmente, un worker
+prevalece sobre los checkpoints históricos inferiores. El bloque se publicó en `main` como
+`f02d3b5`, tras aprobar los cinco jobs de la CI 40014136165. M9 global y M8 manual siguen
+abiertos. Se retoma M9-L, ciclo durable de worktrees, exclusivamente en ZephyrusG14 y
+sin nueva publicación automática. Construcción Luna alto y validación Luna bajo se hacen **secuencialmente, un worker
 activo a la vez**; Core no modifica ni publica OmniCoder.
+
+**M9-L integración nativa de worktrees aceptada localmente (2026-10-23):**
+preview por Lane público, aplicación, permisos, recibos y reapertura están
+cableados; Luna bajo aprobó 12 casos pertinentes sin recompilar, cero fallos y
+omisiones. [Evidencia y límites](docs/validation/m9-worktree-lifecycle-20261023.md).
+Sin CI/publicación nueva. Se retoman los controles de procesos de Lane hijo del
+plan existente; la integración Electron permanece en su coordinación.
 
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 

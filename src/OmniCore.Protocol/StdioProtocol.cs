@@ -105,6 +105,7 @@ public static class StdioProtocol
         "command.extensions.package.user",
         "query.humanActionScope",
         "query.processSessions",
+        "query.worktreePreview",
     ];
 
     public static IReadOnlyList<NativeQueryDescriptor> NativeQueries { get; } =
@@ -116,6 +117,7 @@ public static class StdioProtocol
         new("workflow.recovery", "query.workflowRecovery", "Durable compiled-workflow stage status and explicit continuation eligibility", "trusted-session", "session-read", false),
         new("process.sessions", "query.processSessions", "Passive, bounded process handles owned by the current Session and Run", "trusted-session", "session-read", false),
         new("process.output", "query.processSessions", "Passive, bounded output already retained for an exact owned process handle", "trusted-session", "session-read", false),
+        new("worktree.preview", "query.worktreePreview", "Passive 3-way Git integration proposal for one exact Lane ID in the current Session and Run; returns its apply ownership token", "trusted-session", "session-read", false),
         new("state", "query.state", "Current runtime state", "session", "session-read", true),
         new("sessionIdentity", "query.sessionIdentity", "Current Session and Run identity", "session", "session-read", true),
         new("sessionSecurity", "query.sessionSecurity", "Durable Session security ceiling and revision", "session", "session-read", true),
@@ -167,7 +169,8 @@ public static class StdioProtocol
             || name.StartsWith("extensions.configuration:", StringComparison.Ordinal)
             || name.StartsWith("extensions.notifications:", StringComparison.Ordinal)
             || name.StartsWith("process.sessions:", StringComparison.Ordinal)
-            || name.StartsWith("process.output:", StringComparison.Ordinal);
+            || name.StartsWith("process.output:", StringComparison.Ordinal)
+            || name.StartsWith("worktree.preview:", StringComparison.Ordinal);
 
     public static bool TryGetQuery(string name, out NativeQueryDescriptor descriptor)
     {
@@ -178,7 +181,8 @@ public static class StdioProtocol
             || query.Name == "extensions.configuration" && name.StartsWith("extensions.configuration:", StringComparison.Ordinal)
             || query.Name == "extensions.notifications" && name.StartsWith("extensions.notifications:", StringComparison.Ordinal)
             || query.Name == "process.sessions" && name.StartsWith("process.sessions:", StringComparison.Ordinal)
-            || query.Name == "process.output" && name.StartsWith("process.output:", StringComparison.Ordinal))!;
+            || query.Name == "process.output" && name.StartsWith("process.output:", StringComparison.Ordinal)
+            || query.Name == "worktree.preview" && name.StartsWith("worktree.preview:", StringComparison.Ordinal))!;
         return descriptor is not null;
     }
 
@@ -264,6 +268,8 @@ public static class StdioProtocol
         new("delegation.disposition", "command.delegation.disposition.user", "native-confirmation+hmac+session-run-delegation-result-policy-revision+receipt", "command.result.lookup", "Accept or request rework for one exact returned child result"),
         new("delegation.mailbox.send", "command.delegation.mailbox.send.user", "native-confirmation+hmac+session-run-delegation-policy-revision+receipt", "command.result.lookup", "Send a bounded supervisor message to one exact active child delegation"),
         new("process.control", "command.process.control.user", "native-confirmation+hmac+session-run-policy-revision+tool-receipt", "command.result.lookup", "Run one scoped process read, input/EOF, or stop through the Host tool pipeline"),
+        new("worktree.integrate", "command.invoke.user", "native-confirmation+hmac+session-run-policy-revision+tool-receipt+proposal-cas", "command.result.lookup", "Apply one exact previewed Lane worktree proposal through the existing tool permission and reconciliation pipeline")
+        { WireName = "command.invoke.user", Variant = "canonicalCommandId=core:worktree.integrate; arguments=[toolName,argumentsJson]" },
         new("run.interrupt", "command.run.interrupt.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Interrupt the active Run"),
         new("run.cancel", "command.run.cancel.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Cancel the active Run"),
         new("run.mode.select", "command.run.mode.select.user", "native-confirmation+hmac+session-scope", "command.result.lookup", "Select the active Run mode"),
@@ -287,7 +293,8 @@ public sealed record NativeQueryDescriptor(string Name, string Capability, strin
         || Name == "extensions.configuration" && requestedName.StartsWith("extensions.configuration:", StringComparison.Ordinal)
         || Name == "extensions.notifications" && requestedName.StartsWith("extensions.notifications:", StringComparison.Ordinal)
         || Name == "process.sessions" && requestedName.StartsWith("process.sessions:", StringComparison.Ordinal)
-        || Name == "process.output" && requestedName.StartsWith("process.output:", StringComparison.Ordinal))
+        || Name == "process.output" && requestedName.StartsWith("process.output:", StringComparison.Ordinal)
+        || Name == "worktree.preview" && requestedName.StartsWith("worktree.preview:", StringComparison.Ordinal))
         ? requestedName : WireName;
 }
 

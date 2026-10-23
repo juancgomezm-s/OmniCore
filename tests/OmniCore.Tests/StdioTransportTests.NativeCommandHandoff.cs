@@ -457,6 +457,7 @@ public sealed partial class StdioTransportTests
         private readonly byte[] _key;
         private readonly SemaphoreSlim _providerBodyArrived = new(0);
         private OmniCliRuntime? _runtime;
+        private OmniServer? _server;
         private RecoveryDuplex? _duplex;
         private Task<int>? _hostTask;
         private string? _nonce;
@@ -479,6 +480,7 @@ public sealed partial class StdioTransportTests
         }
 
         public string Workspace { get; }
+        public OmniServer Server => _server ?? throw new InvalidOperationException("The native Host is not connected.");
         public CliEndToEndTests.ScriptedHttpProvider Provider { get; }
         public ConcurrentQueue<string> ProviderBodies { get; }
         public ConcurrentQueue<string> Diagnostics { get; }
@@ -725,6 +727,23 @@ public sealed partial class StdioTransportTests
             return Task.CompletedTask;
         }
 
+        public async Task RestartHostAsync()
+        {
+            _duplex?.CompleteClientInput();
+            if (_hostTask is not null)
+            {
+                var hostResult = await _hostTask.WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+                Assert.Equal(0, hostResult);
+            }
+            _hostTask = null;
+            _duplex?.Dispose();
+            _duplex = null;
+            _runtime?.Dispose();
+            _runtime = null;
+            StartRuntimeAndHost(null);
+            Negotiate();
+        }
+
         private async Task WaitForTurnCompletedAsync(string sessionId)
         {
             var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
@@ -758,6 +777,7 @@ public sealed partial class StdioTransportTests
             runtime.QuestionnaireInput = null;
             runtime.PrepareConversationSessionPolicy();
             var client = runtime.Connect(TestContext.Current.CancellationToken);
+            _server = Assert.IsType<OmniServer>(client);
             var duplex = new RecoveryDuplex();
             _runtime = runtime;
             _duplex = duplex;
@@ -778,7 +798,7 @@ public sealed partial class StdioTransportTests
         {
             var hello = Exchange(WireEnvelope.FromJson("{\"version\":\"1.0\",\"messageType\":\"hello\",\"messageId\":"
                 + JsonSerializer.Serialize("native-command-hello-" + Guid.NewGuid().ToString("N"))
-                + ",\"payload\":{\"supportedVersions\":[\"1.0\"],\"capabilities\":[\"query.commandCatalog\",\"query.commandRecovery\",\"query.processSessions\",\"command.process.control.user\",\"command.invoke.user\",\"command.invoke.continue.user\",\"command.conversation.interaction.choice.respond.user\"]}}"));
+                + ",\"payload\":{\"supportedVersions\":[\"1.0\"],\"capabilities\":[\"query.commandCatalog\",\"query.commandRecovery\",\"query.processSessions\",\"command.process.control.user\",\"command.invoke.user\",\"command.invoke.continue.user\",\"command.conversation.interaction.choice.respond.user\",\"command.run.mode.select.user\"]}}"));
             using var json = JsonDocument.Parse(hello.PayloadJson);
             if (!json.RootElement.TryGetProperty("trustedActionNonce", out var nonce))
             {

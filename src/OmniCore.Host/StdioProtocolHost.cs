@@ -273,7 +273,8 @@ public static class StdioProtocolHost
                         return EncodeAck(conversation.IsRunning
                             ? new CommandAck(command.MessageId, "busy", "conversation_turn_busy",
                                 RuntimeCommandOutcome.Deferred("conversation_turn_busy"))
-                            : new CommandAck(command.MessageId, "error", "conversation_questionnaire_resume_unavailable",
+                            : new CommandAck(command.MessageId, "error", "conversation_questionnaire_resume_unavailable"
+                                + (conversation.ChoiceResumeFailure is { Length: > 0 } choiceFailure ? ":" + choiceFailure : ""),
                                 RuntimeCommandOutcome.Rejected()));
                     }
                 }
@@ -1292,6 +1293,7 @@ public static class StdioProtocolHost
         private PersistedConversationCommand? _deferredConversation;
         private bool _nativeChoiceCapability;
         private bool _nativeWeakSandboxCapability;
+        private string? _choiceResumeFailure;
         private readonly AttachmentUploadManager _uploads = new();
         private sealed record PendingContinuation(OmniServer Server, PersistedConversationCommand Binding,
             string ReceiptCommandId, string ReceiptRequestHash);
@@ -1915,6 +1917,7 @@ public static class StdioProtocolHost
 
         public bool CanResumeChoice(IOmniClient client, TrustedActionScope scope, WireEnvelope command)
         {
+            _choiceResumeFailure = null;
             if (client is not OmniServer server || runner is null || scope.ExpectedSessionId is not { } expectedSession
                 || scope.ExpectedRunId is not { } expectedRun || !_nativeChoiceCapability) return false;
             using var payload = JsonDocument.Parse(command.PayloadJson);
@@ -1959,25 +1962,31 @@ public static class StdioProtocolHost
             if (!targetIsRoot && !targetIsAcceptedChild) return false;
             if (requested.Kind is InteractionKind.Permission or InteractionKind.MemoryPromotion)
             {
-                if (requestedTask is null || requestedLane is null || requestedToolCall is null) return false;
+                if (requestedTask is null || requestedLane is null) return false;
                 if (requested.Kind == InteractionKind.Permission)
                 {
-                    var permission = events.Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
-                        .SingleOrDefault(item => item.Event.RunId == run && item.Event.TaskId == requestedTask
-                            && item.Event.LaneId == requestedLane && item.Event.ToolCallId == requestedToolCall
-                            && item.Event.TurnId == requestEvent.TurnId
-                            && item.Payload is PermissionRequested requestedPermission
-                            && requestedPermission.InteractionId == interaction);
-                    if (permission.Event is null || permission.Event.TurnId != requestEvent.TurnId
-                        || permission.Payload is not PermissionRequested permissionRequested
-                        || events.Any(evt => evt.RunId == run && evt.ToolCallId == permissionRequested.ToolCallId
+                    var permissionEvents = events.Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
+                        .Where(item => item.Event.RunId == run && item.Event.TaskId == requestedTask
+                            && item.Event.LaneId == requestedLane && item.Event.TurnId == requestEvent.TurnId
+                            && item.Payload is PermissionRequested permissionRequest
+                            && permissionRequest.InteractionId == interaction)
+                        .ToArray();
+                    if (permissionEvents.Length != 1
+                        || permissionEvents[0].Payload is not PermissionRequested permissionRequested
+                        || permissionRequested.ToolCallId is not { } permissionToolCall
+                        || permissionEvents[0].Event.ToolCallId is { } permissionEnvelopeToolCall
+                            && permissionEnvelopeToolCall != permissionToolCall
+                        || requestedToolCall is { } interactionToolCall && interactionToolCall != permissionToolCall)
+                        return false;
+                    requestedToolCall = permissionToolCall;
+                    if (events.Any(evt => evt.RunId == run && evt.ToolCallId == permissionToolCall
                             && codecs.Decode(evt) is PermissionGranted or PermissionDenied or ToolCallAuthorized
                                 or ToolCallStarted or ToolCallSucceeded or ToolCallFailed or ToolCallEffectUnknown
                                 or ToolCallReconciled)) return false;
                 }
-                else if (!events.Any(evt => evt.RunId == run && evt.TaskId == requestedTask
+                else if (requestedToolCall is not { } memoryToolCall || !events.Any(evt => evt.RunId == run && evt.TaskId == requestedTask
                     && evt.LaneId == requestedLane && evt.TurnId == requestEvent.TurnId
-                    && evt.ToolCallId == requestedToolCall && codecs.Decode(evt) is ToolCallRequested call
+                    && evt.ToolCallId == memoryToolCall && codecs.Decode(evt) is ToolCallRequested call
                     && call.ToolName == "memory.propose")) return false;
                 var turn = requestEvent.TurnId;
                 if (turn is null || !IsOpenTurn(events, codecs, run, turn)) return false;
@@ -1998,7 +2007,11 @@ public static class StdioProtocolHost
                 lock (_gate) return _task is not { IsCompleted: false };
             }
             var admitted = FindDeferredConversationBinding(server, events, codecs, session, run, turnStart.Sequence);
-            if (admitted is null) return false;
+            if (admitted is null)
+            {
+                _choiceResumeFailure = "choice_deferred_binding_missing";
+                return false;
+            }
             admitted = admitted with
             {
                 NativeChoiceCapability = true,
@@ -2025,6 +2038,8 @@ public static class StdioProtocolHost
                     && string.Equals(_deferredConversation.RequestHash, admitted.RequestHash, StringComparison.Ordinal);
             }
         }
+
+        public string? ChoiceResumeFailure { get { lock (_gate) return _choiceResumeFailure; } }
 
         public bool CanResumeWeakSandboxConsent(IOmniClient client, TrustedActionScope scope, WireEnvelope command)
         {
@@ -2158,8 +2173,72 @@ public static class StdioProtocolHost
                     item.Receipt.RequestHash, sessionId.ToString(), runId.ToString(),
                     item.Receipt.FirstSequence, item.Receipt.LastSequence))
                 .DistinctBy(item => item.CommandId, StringComparer.Ordinal)
+                .ToList();
+
+            // A native tool-only action has no UserInputReceived event by design. Recover its
+            // exact deferred command from the current open Turn's server-authored tool call,
+            // invocation receipt, and protected admission instead of borrowing an older input.
+            var currentTurnCalls = events.Where(evt => evt.RunId == runId
+                    && evt.TaskId == startEvent.TaskId && evt.LaneId == currentTurn.LaneId
+                    && evt.TurnId == currentTurn.TurnId && evt.Sequence > turnStartSequence
+                    && codecs.Decode(evt) is ToolCallRequested)
+                .Select(evt => (Event: evt, Call: (ToolCallRequested)codecs.Decode(evt)))
+                .Where(item => item.Call.ToolName == "worktree.integrate"
+                    && item.Call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal))
                 .ToArray();
-            return candidates.Length == 1 ? candidates[0] : null;
+            foreach (var item in currentTurnCalls)
+            {
+                const string nativePrefix = "native-action-";
+                var providerCallId = item.Call.ProviderCallId;
+                if (!Guid.TryParseExact(providerCallId[nativePrefix.Length..], "D", out var invocationGuid)
+                    || providerCallId != nativePrefix + invocationGuid.ToString("D")) continue;
+                var invocation = new CommandId(invocationGuid);
+                var receipt = store.ReadCommandReceipt(invocation.ToString());
+                if (receipt is not
+                    {
+                        State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                        OutcomeKind: "Accepted",
+                        ExecutionState: "deferred",
+                        ExecutionCode: "input_required",
+                        FirstSequence: not null,
+                        LastSequence: not null,
+                        ExecutionRunId: not null,
+                    }
+                    || !string.Equals(receipt.SessionId, sessionId.ToString(), StringComparison.Ordinal)
+                    || !string.Equals(receipt.ExecutionRunId, runId.ToString(), StringComparison.Ordinal)
+                    || !server.NativeToolInvocationMatches(sessionId, runId, providerCallId,
+                        item.Call.ToolName, item.Call.ArgumentsJson)) continue;
+                var invocationAdmission = events.SingleOrDefault(evt => evt.RunId == runId
+                    && evt.Sequence >= receipt.FirstSequence && evt.Sequence <= receipt.LastSequence
+                    && codecs.Decode(evt) is NativeCommandInvocationAdmitted admission
+                    && admission.InvocationId == invocation && admission.SessionId == sessionId
+                    && admission.RunId == runId && admission.Kind == "nativeTool");
+                var invocationStarted = events.SingleOrDefault(evt => evt.RunId == runId
+                    && evt.Sequence > (invocationAdmission?.Sequence ?? long.MaxValue)
+                    && evt.Sequence < item.Event.Sequence
+                    && codecs.Decode(evt) is NativeCommandInvocationStarted started
+                    && started.InvocationId == invocation && started.Kind == "nativeTool" && started.RunId == runId);
+                if (invocationAdmission is null || invocationStarted is null
+                    || events.Any(evt => evt.RunId == runId && evt.Sequence > invocationStarted.Sequence
+                        && codecs.Decode(evt) is NativeCommandInvocationFinished finished
+                        && finished.InvocationId == invocation)) continue;
+                var permission = events.SingleOrDefault(evt => evt.RunId == runId
+                    && evt.TaskId == startEvent.TaskId && evt.LaneId == currentTurn.LaneId
+                    && evt.TurnId == currentTurn.TurnId && evt.ToolCallId == item.Call.ToolCallId
+                    && codecs.Decode(evt) is PermissionRequested request
+                    && request.ToolCallId == item.Call.ToolCallId);
+                if (permission is null || codecs.Decode(permission) is not PermissionRequested requested
+                    || events.Any(evt => evt.RunId == runId && codecs.Decode(evt) is InteractionResolved resolved
+                        && resolved.InteractionId == requested.InteractionId)
+                    || events.Any(evt => evt.RunId == runId && codecs.Decode(evt) is InteractionExpired expired
+                        && expired.InteractionId == requested.InteractionId)) continue;
+                candidates.Add(new PersistedConversationCommand(receipt.CommandId, receipt.RequestHash,
+                    sessionId.ToString(), runId.ToString(), receipt.FirstSequence, receipt.LastSequence,
+                    NativeInvocationId: invocation.ToString(), NativeCommandKind: "nativeTool",
+                    NativeChoiceCapability: true));
+            }
+            var uniqueCandidates = candidates.DistinctBy(item => item.CommandId, StringComparer.Ordinal).ToArray();
+            return uniqueCandidates.Length == 1 ? uniqueCandidates[0] : null;
         }
 
         private static bool IsOpenTurn(IReadOnlyList<DomainEvent> events, IEventCodecRegistry codecs,
@@ -2372,6 +2451,16 @@ public static class StdioProtocolHost
                     try { code = await runner(pending.Binding, token).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (token.IsCancellationRequested) { code = 130; }
                     catch (Exception) { code = 1; }
+                    if (pending.Binding.NativeCommandKind == "nativeTool"
+                        && pending.Binding.NativeInvocationId is { } nativeInvocation && code != 3)
+                    {
+                        try
+                        {
+                            pending.Server.CompleteNativeWorktreeExecutionReceipt(nativeInvocation,
+                                pending.Binding.RequestHash);
+                        }
+                        catch (Exception) { /* Unproven terminal worktree outcome stays deferred/unknown. */ }
+                    }
                     try
                     {
                         pending.Server.ReceiptStore?.CompleteCommandExecution(pending.ReceiptCommandId,

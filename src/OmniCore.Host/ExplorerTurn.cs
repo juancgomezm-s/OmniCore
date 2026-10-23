@@ -675,6 +675,18 @@ public sealed class ExplorerTurn
             if (outcome.Events.Count != 0) stream.AppendBatch(outcome.Events, DurabilityClass.Standard);
             if (outcome.PendingInteractionId is { } interaction)
             {
+                var pendingEvents = stream.EventsSince(1).Where(item => item.RunId == runId
+                    && item.TaskId == taskId && item.LaneId == laneId && item.TurnId == turnId
+                    && item.ToolCallId == toolCallId).Select(item => (Event: item, Payload: _codecs.Decode(item))).ToArray();
+                if (!pendingEvents.Any(item => item.Payload is InteractionRequested request
+                        && request.InteractionId == interaction && request.Kind == InteractionKind.Permission)
+                    || !pendingEvents.Any(item => item.Payload is PermissionRequested permission
+                        && permission.InteractionId == interaction && permission.ToolCallId == toolCallId))
+                    throw new InvalidDataException("Native tool wait is missing its exact durable Permission binding.");
+                // Native actions bypass AskCore's normal tool loop, so persist the canonical
+                // Run wait transition here before returning the deferred command to stdio.
+                // The Permission request and open Turn already exist in the exact execution scope.
+                EnsureRunAwaitingInput(stream, runId, laneId);
                 return new TurnResult(null, StopReason.InputRequired, 0, new TokenUsage(0, 0, 0, 0, 0),
                     [new ToolUseTrace(toolName, outcome.Succeeded, outcome.Summary, argumentsJson)], null, interaction)
                     { TurnId = turnId };
@@ -784,7 +796,7 @@ public sealed class ExplorerTurn
         }
     }
 
-    internal TurnResult ResumeNativeProcessPermission(InteractionId interaction, string optionId,
+    internal TurnResult ResumeNativeToolPermission(InteractionId interaction, string optionId,
         SessionId sessionId, RunId runId, LaneId laneId, CancellationToken cancellationToken)
     {
         if (_tools is not ScriptedToolExecutor executor
@@ -814,7 +826,7 @@ public sealed class ExplorerTurn
         var prepared = decoded.Where(item => item.Event.TurnId == turnId && item.Event.LaneId == laneId
             && item.Payload is ToolCallPrepared request && request.ToolCallId == toolCallId).ToArray();
         if (calls.Length != 1 || calls[0].Payload is not ToolCallRequested call
-            || call.ToolName is not ("process.read" or "process.send_input" or "process.stop")
+            || call.ToolName is not ("process.read" or "process.send_input" or "process.stop" or "worktree.integrate")
             || !call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal)
             || !Guid.TryParseExact(call.ProviderCallId["native-action-".Length..], "D", out var invocation)
             || call.ProviderCallId != "native-action-" + invocation.ToString("D")

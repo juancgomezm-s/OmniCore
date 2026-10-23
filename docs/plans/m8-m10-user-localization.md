@@ -122,16 +122,19 @@ Los dos recorridos integrales locales de procesos y publicación pasan sin skips
 el [contrato y evidencia](../validation/m9-core-process-contract-20261023.md)
 describe exactamente el transporte, recibos y efectos comprobados. Luna bajo
 repitió ambos casos sin recompilar: 2/2 correctos, sin fallos ni skips, y revisó
-las fronteras de scope, consultas pasivas y EOF. Falta la CI completa del candidato.
-Esta sección prevalece sobre los checkpoints históricos inferiores; todavía no
-acredita publicación ni cierre global de M9.
+las fronteras de scope, consultas pasivas y EOF. El candidato final `f02d3b5` pasó
+los cinco jobs de la [CI completa](https://github.com/juancgomezm-s/OmniCore/actions/runs/40014136165)
+y se publicó en `main`. Esta sección prevalece sobre los checkpoints históricos
+inferiores; la publicación del bloque no acredita cierre global de M9.
 
 ConPTY Strong de Windows pasó después de corregir la duplicación de streams
 redirigidos del padre: captura real por HPCON, entrada dúplex y resize/ACK exacto
 `100x32`, sin registro ni fallback. La primera CI aprobó ambos instaladores npm y
 paquetes Linux, pero falló en ConPTY y cinco regresiones; sus correcciones focales
 ya pasan localmente. Luna bajo repitió ocho focos sobre los mismos binarios:
-8/8 correctos, sin fallos ni omisiones, y sin procesos huérfanos. Falta la nueva CI.
+8/8 correctos, sin fallos ni omisiones, y sin procesos huérfanos. La CI final también
+aprobó ConPTY y las suites completas de Windows/Linux; las dos CI anteriores se
+conservan como diagnóstico histórico en el acta.
 
 Quedan explícitos persistencia Weak,
 controles de Lane hijo, el ciclo durable restante de worktrees, aceptación
@@ -139,6 +142,27 @@ transversal pendiente e integración del consumidor Electron por su coordinació
 La salida terminal conservada es un buffer acotado en memoria: tras recuperación
 se informa gap cuando corresponde. M8 mantiene su aceptación manual pendiente.
 No se modifica ni publica OmniCoder en esta entrega.
+
+**Retoma M9-L (2026-10-23):** continuar el ciclo durable de worktrees ya previsto,
+exclusivamente en ZephyrusG14. Un Luna alto construye y un Luna bajo valida después,
+sin concurrencia entre workers. Cierre del bloque: recorrido real Host/cliente Core
+→ Git en fixtures aisladas, ownership y revisión comprobados, recibos y recuperación
+sin duplicar efectos; consultas sin mutaciones y rechazo de ámbitos ajenos. Registrar
+evidencia y límites del consumidor sin editar OmniCoder. El nuevo bloque permanece
+local para revisión; la autorización del bloque publicado no se extiende a nuevos
+push/merge. Se conservan los demás pendientes, M9 global y M8 manual abiertos.
+
+**Bloque nativo de integración aceptado localmente (2026-10-23):**
+`agents` → `worktree.preview:<laneId>` → `core:worktree.integrate` por
+`command.invoke.user` está construido y cableado al pipeline existente. Preview
+pasivo, Ask/Deny, efecto y recibo, reapertura/deduplicación y rechazos tienen
+evidencia real de Host/stdio y Git. Luna bajo aprobó 6 casos del bloque y 6
+regresiones sin recompilar, sin fallos ni omisiones; [acta y límites](../validation/m9-worktree-lifecycle-20261023.md).
+Es aceptación local del incremento, sin CI ni publicación nueva. La fixture
+siembra el binding canónico: no acredita provisión/delegación end-to-end.
+Cleanup/retention/discard/undo nativos, controles de Lane hijo y los demás
+pendientes mantienen su alcance separado. Se continúa por los controles de
+procesos de Lane hijo ya previstos, sin modificar OmniCoder ni reconstruir el plan.
 
 ## Ejecución de cierre M9 (2026-10-22)
 

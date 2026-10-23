@@ -747,12 +747,21 @@ Los procesos persistentes y controles nativos, la lectura pasiva de salida termi
 publicación privada Strong tienen recorridos integrales locales; ConPTY demuestra captura,
 entrada y resize/ACK exacto sin cambios del registro. WebP estático se decodifica íntegramente.
 El [contrato y acta actuales](../validation/m9-core-process-contract-20261023.md) distinguen
-los efectos comprobados de los buffers efímeros, límites y pendientes. La primera CI aprobó
-instaladores y paquetes Linux pero detectó regresiones; las correcciones locales requieren
-CI nueva antes de publicar; Luna bajo ya aprobó ocho focos sin recompilar. Esta actualización supera los estados
+los efectos comprobados de los buffers efímeros, límites y pendientes. El bloque se publicó
+en `main` como `f02d3b5` después de aprobar los cinco jobs de la
+[CI final](https://github.com/juancgomezm-s/OmniCore/actions/runs/40014136165).
+Se retoma el ciclo durable de worktrees de M9-L en ZephyrusG14, con construcción
+y validación Luna secuenciales, sin nueva publicación automática. Esta actualización supera los estados
 históricos de construcción inferiores, sin cerrar M9 global, M8 manual ni la aceptación del
 consumidor Electron, que corresponde a su coordinación. Persistencia Weak, controles de Lane
 hijo, ciclo durable restante de worktrees y aceptación transversal siguen explícitos.
+
+El bloque local de integración nativa de worktrees ya conecta preview por Lane
+público y aplicación al pipeline existente, con permisos, recibos y reapertura
+comprobados. Luna bajo aprobó 12 casos pertinentes sobre binarios congelados sin
+recompilar; [evidencia](../validation/m9-worktree-lifecycle-20261023.md).
+No acredita CI/publicación nueva ni el ciclo completo de limpieza/provisión. El
+siguiente pendiente de Core son los controles de procesos de Lane hijo ya previstos.
 
 ### P0-OMNI-UNIFICACION
 

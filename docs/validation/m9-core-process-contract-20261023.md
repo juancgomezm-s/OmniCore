@@ -2,6 +2,14 @@
 
 Este documento describe el comportamiento que implementan Host, Stdio y las herramientas Core. No prescribe una interfaz de consumidor.
 
+**Publicación comprobada:** `f02d3b5bea82ced53b2fa7ce6086023fdb80b2df` se integró
+en `main` mediante fast-forward después de aprobar los cinco trabajos de la
+[CI final](https://github.com/juancgomezm-s/OmniCore/actions/runs/40014136165).
+El [PR #9](https://github.com/juancgomezm-s/OmniCore/pull/9) consta integrado en
+ese mismo SHA. Las menciones a CI pendiente inferiores conservan el checkpoint
+anterior a la publicación; no representan el resultado final. Este cierre del
+bloque Core no cierra M9 global, M8 manual ni la integración de OmniCoder.
+
 ## Propiedad y ciclo de vida
 
 Un handle es una capacidad aleatoria de 128 bits; nunca es un PID ni se acepta desde un identificador del sistema operativo. El Host lo liga a Session, Run, Lane raíz y generación de lease del escritor. `process.read`, `process.send_input` y `process.stop` comprueban esa misma identidad en preparación y ejecución. Un handle de otra Session, Run, Lane o lease se rechaza antes del efecto. Los procesos activos, detenidos sin verificar, inciertos, con límite de salida y con una propuesta sin resolver mantienen el Run retenido. Consultar no recupera ni inicia procesos.

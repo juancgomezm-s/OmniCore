@@ -7,6 +7,16 @@ y validado localmente el 2026-10-22. La paridad de procesos generales sigue
 pendiente; publicación y CI de cada incremento se comprueban por separado.
 M9 sigue abierto; M8 espera pruebas manuales.
 
+**Corte M9-L local del 2026-10-23:** la integración nativa de worktrees reutiliza
+`worktree.integrate`; el cliente obtiene ownership y propuesta desde un Lane
+público de su Session. Su Permission tool-only se reanuda mediante
+`RunInteractionResumed`, con admisión/Started/llamada/permiso/resolución de usuario
+correlacionados, sin nueva entrada ni inferencia. Los validadores canónicos y de
+replay conservan los rechazos de scope y procedencia. El recibo deferred original
+sólo pasa a resultado terminal con hash/Session/Run y evidencia durable del efecto;
+el ACK se conserva. [Aceptación local y límites](../validation/m9-worktree-lifecycle-20261023.md):
+12 casos de Luna bajo sin recompilar; no hay CI/publicación de este incremento.
+
 ## Problema
 
 El handoff de ADR-0059 ya ejecuta prompts y recupera admisiones sin inicio, pero

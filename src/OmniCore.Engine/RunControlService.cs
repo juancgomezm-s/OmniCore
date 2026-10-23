@@ -293,7 +293,7 @@ public sealed class RunControlService
 
     /// <summary>Authenticated native choice response for a pending Permission or PlanApproval.</summary>
     public void RespondNativeChoice(SessionId session, InteractionId interaction, RunId expectedRun,
-        string optionId, string commandId)
+        string optionId, string commandId, bool nativeWorktreeToolOnly = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(commandId);
         var events = _store.ReadFrom(session, 1);
@@ -307,7 +307,7 @@ public sealed class RunControlService
         if (request.Kind == InteractionKind.Permission)
             ValidatePendingPermission(events, session, interaction);
         ResolveInteraction(session, interaction, optionId, InteractionCause.User, noClient: false, commandId,
-            nativeChoice: true);
+            nativeChoice: true, nativeWorktreeToolOnly: nativeWorktreeToolOnly);
     }
 
     /// <summary>Resolves one pre-launch Weak sandbox choice for the exact child ToolCall. This is
@@ -375,7 +375,8 @@ public sealed class RunControlService
     }
 
     private void ResolveInteraction(SessionId session, InteractionId interaction, string optionId,
-        InteractionCause cause, bool noClient, string? commandId = null, bool nativeChoice = false)
+        InteractionCause cause, bool noClient, string? commandId = null, bool nativeChoice = false,
+        bool nativeWorktreeToolOnly = false)
     {
         ArgumentException.ThrowIfNullOrEmpty(optionId);
         var events = _store.ReadFrom(session, 1);
@@ -445,6 +446,7 @@ public sealed class RunControlService
             }
         }
         RunId? budgetDeniedRun = null;
+        ExecutionScopeState? nativeWorktreeScope = null;
         if (request.Kind == InteractionKind.BudgetExceeded && optionId == "deny")
         {
             budgetDeniedRun = AddBudgetDenialLifecycle(events, pendingRequest!.Envelope, request, batch);
@@ -501,8 +503,18 @@ public sealed class RunControlService
                 var permission = (PermissionRequested)_codecs.Decode(source);
                 batch.Add(new PermissionDenied(permission.ToolCallId, "Human denied the pending tool call."));
             }
-            batch.Add(new UserInputReceived(permissionRun, InputParts(string.Empty), null,
-                "InteractionResponse(Permission)"));
+            if (nativeWorktreeToolOnly)
+            {
+                if (string.IsNullOrWhiteSpace(commandId))
+                    throw new InvalidOperationException("Resuming a native worktree tool requires its response command identity.");
+                var permission = (PermissionRequested)_codecs.Decode(source);
+                nativeWorktreeScope = new ExecutionScopeState(permissionRun, source.TaskId, source.LaneId,
+                    source.TurnId, permission.ToolCallId, source.ExecutionId);
+                batch.Add(new RunInteractionResumed(permissionRun, interaction, commandId));
+            }
+            else
+                batch.Add(new UserInputReceived(permissionRun, InputParts(string.Empty), null,
+                    "InteractionResponse(Permission)"));
         }
         else if (nativeChoice && request.Kind == InteractionKind.MemoryPromotion
             && pendingRequest?.Envelope.RunId is { } memoryRun
@@ -583,6 +595,11 @@ public sealed class RunControlService
                 ExecutionId: pendingRequest.Envelope.ExecutionId);
             stream.AppendBatch(batch, DurabilityClass.Standard,
                 batch.Select(_ => (ExecutionScopeState?)requestScope).ToArray());
+        }
+        else if (nativeWorktreeScope is { } worktreeScope)
+        {
+            stream.AppendBatch(batch, DurabilityClass.Standard,
+                batch.Select(_ => (ExecutionScopeState?)worktreeScope).ToArray());
         }
         else
         {

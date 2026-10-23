@@ -3113,6 +3113,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         if (name == "process.sessions")
             return new SessionQueryResult(name, _lastSessionId is { } processSession && _lastRunId is { } processRun
                 ? EncodeProcessSessions(processSession, processRun) : "null");
+        if (name.StartsWith("worktree.preview:", StringComparison.Ordinal))
+        {
+            var ownershipId = name["worktree.preview:".Length..];
+            return new SessionQueryResult("worktree.preview", EncodeWorktreePreview(ownershipId, cancellationToken));
+        }
         if (name.StartsWith("process.sessions:", StringComparison.Ordinal))
         {
             var requested = name["process.sessions:".Length..];
@@ -4231,15 +4236,15 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                         if (!trustedUserAction) throw new FormatException("trusted choice response required");
                         var session = RequireSession();
                         var optionId = fields.GetValueOrDefault("optionId") ?? "";
-                        var expectedRun = fields.GetValueOrDefault("expectedRunId");
+                        var expectedRunId = fields.GetValueOrDefault("expectedRunId");
                         var expectedPolicyRevision = fields.GetValueOrDefault("expectedPolicyRevision");
                         outcomeSession = session;
                         outcomeSequenceBefore = _store.CurrentSequence(session);
                         lock (_modeAuthorityMutationGate)
                         {
-                            if (expectedRun is null || !Guid.TryParseExact(expectedRun, "D", out var expectedRunGuid)
-                                || expectedRun != new RunId(expectedRunGuid).ToString()
-                                || control.ActiveRun(session)?.ToString() != expectedRun
+                            if (expectedRunId is null || !Guid.TryParseExact(expectedRunId, "D", out var expectedRunGuid)
+                                || expectedRunId != new RunId(expectedRunGuid).ToString()
+                                || control.ActiveRun(session)?.ToString() != expectedRunId
                                 || !long.TryParse(expectedPolicyRevision,
                                     System.Globalization.NumberStyles.None,
                                     System.Globalization.CultureInfo.InvariantCulture, out var policyRevision)
@@ -4255,8 +4260,13 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                                     optionId, command.MessageId);
                             }
                             else
+                            {
+                                var expectedRun = new RunId(expectedRunGuid);
+                                var nativeWorktreeToolOnly = IsNativeWorktreeToolPermission(session,
+                                    expectedRun, interaction);
                                 control.RespondNativeChoice(session, interaction, new RunId(expectedRunGuid),
-                                    optionId, command.MessageId);
+                                    optionId, command.MessageId, nativeWorktreeToolOnly);
+                            }
                         }
                     }
                     else

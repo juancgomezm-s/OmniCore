@@ -1060,6 +1060,20 @@ public sealed class OmniCliRuntime : IDisposable
                 .Select(item => ((TurnStarted)item.Payload).TurnId).ToHashSet();
             var completed = journal.Where(item => item.Payload is TurnCompleted)
                 .Select(item => ((TurnCompleted)item.Payload).TurnId).ToHashSet();
+            if (admitted.NativeCommandKind == "nativeTool" && continuationTurnId is { } nativeToolTurn
+                && completed.Contains(nativeToolTurn)
+                && admitted.NativeInvocationId is { Length: > 0 } nativeToolInvocation
+                && Guid.TryParseExact(nativeToolInvocation, "D", out var nativeToolGuid))
+            {
+                var invocation = new CommandId(nativeToolGuid);
+                if (server.NativeCommandRequiredEffectSucceeded(invocation))
+                {
+                    server.FinishNativeCommand(invocation, "completed");
+                    return 0;
+                }
+                server.FinishNativeCommand(invocation, "failed");
+                return 1;
+            }
             var turnCompleted = started.Intersect(completed).Any(turnId => (continuationTurnId is null || turnId == continuationTurnId)
                 && journal.Any(item =>
                 item.Payload is AssistantMessageRecorded assistant && assistant.TurnId == turnId
@@ -1400,7 +1414,17 @@ public sealed class OmniCliRuntime : IDisposable
             && evt.RunId == run && evt.Causation is CommandCausation cause && cause.CommandId == command
             && codecs.Decode(evt) is UserInputReceived item
             && RunControlService.IsNativeChoiceResponse(item, requested.Kind));
-        if (resolved is null || input is null
+        var nativeWorktreeResume = requested.Kind == InteractionKind.Permission
+            && expectedToolCall is not null
+            && server.IsNativeWorktreeToolPermission(session, run, interaction, responseCommandText)
+            && events.Any(evt => evt.Sequence >= firstSequence && evt.Sequence <= lastSequence
+                && evt.RunId == run && evt.Causation is CommandCausation cause && cause.CommandId == command
+                && evt.TaskId == requestEvent.TaskId && evt.LaneId == requestEvent.LaneId
+                && evt.TurnId == requestEvent.TurnId && evt.ToolCallId == expectedToolCall
+                && evt.ExecutionId == requestEvent.ExecutionId
+                && codecs.Decode(evt) is RunInteractionResumed resumed
+                && resumed.InteractionId == interaction && resumed.CommandId == responseCommandText);
+        if (resolved is null || input is null && !nativeWorktreeResume
             || codecs.Decode(resolved) is not InteractionResolved response || response.IsQuestionnaire
             || response.Cause != InteractionCause.User || response.OptionId != optionId
             || RunProjection.Replay(session, run, codecs, events).State != RunState.Running)
@@ -1584,7 +1608,7 @@ public sealed class OmniCliRuntime : IDisposable
     internal Task<int> ExecuteNativeToolActionAsync(SessionId session, RunId run, string toolName,
         string argumentsJson, string invocationId, Action<string> diagnostics, CancellationToken token)
     {
-        if (toolName is not ("process.read" or "process.send_input" or "process.stop")
+        if (toolName is not ("process.read" or "process.send_input" or "process.stop" or "worktree.integrate")
             || string.IsNullOrWhiteSpace(argumentsJson) || argumentsJson.Length > 16_384
             || !Guid.TryParseExact(invocationId, "D", out var invocation) || invocationId != invocation.ToString("D"))
             throw new ArgumentException("Native process action is invalid.");
@@ -1592,6 +1616,8 @@ public sealed class OmniCliRuntime : IDisposable
         if (server.LastSessionId() != session || server.LastRunId() != run
             || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(session) != run)
             throw new InvalidOperationException("Native process action scope changed.");
+        if (toolName == "worktree.integrate" && !server.NativeWorktreeIntegrationStillAllowed(session, run, argumentsJson))
+            throw new InvalidOperationException("Native worktree integration scope changed.");
         var act = server.CurrentRunMode() is RunMode.Act or RunMode.Orchestrate;
         return RunTurnAsync("", act, diagnostics, token, conversationOnly: true,
             expectedSession: session, expectedRun: run,
@@ -2361,7 +2387,7 @@ public sealed class OmniCliRuntime : IDisposable
         }
         WriteDiagnostics(workspaceConfig.Diagnostics, writeLine);
         var server = Server(workspaceData);
-        var nativeProcessPermissionContinuation = delegationId is null && IsNativeProcessPermissionContinuation(
+        var nativeProcessPermissionContinuation = delegationId is null && IsNativeToolPermissionContinuation(
             server, expectedSession, expectedRun, persistedContinuation);
         var nativeToolOnly = nativeToolAction is not null || nativeProcessPermissionContinuation;
         if (!server.EnsureWriterOwnershipForCommand())
@@ -3855,11 +3881,12 @@ public sealed class OmniCliRuntime : IDisposable
                             "native-action-", StringComparison.Ordinal)) : default;
                 if (pendingNativeCall.Payload is PermissionRequested
                     && nativeCall.Payload is ToolCallRequested requestedCall
-                    && (requestedCall.ToolName is "process.read" or "process.send_input" or "process.stop")
+                    && (requestedCall.ToolName is "process.read" or "process.send_input" or "process.stop"
+                        or "worktree.integrate")
                     && pendingNativeCall.Event.LaneId == laneId)
                 {
                     var actionExecution = server.ExecuteExplorerTurn(sessionId, runId,
-                        token => turn.ResumeNativeProcessPermission(interactionId, nativeOption,
+                        token => turn.ResumeNativeToolPermission(interactionId, nativeOption,
                             sessionId, runId, laneId, token), cancellationToken,
                         readOnlyLane: !act);
                     if (actionExecution.Failure is { } continuationFailure)
@@ -3874,7 +3901,8 @@ public sealed class OmniCliRuntime : IDisposable
                         writeLine(InputRequiredJson(nextPermission, "Permission"));
                         return 3;
                     }
-                    if (Guid.TryParseExact(requestedCall.ProviderCallId["native-action-".Length..], "D",
+                    if (requestedCall.ToolName != "worktree.integrate"
+                        && Guid.TryParseExact(requestedCall.ProviderCallId["native-action-".Length..], "D",
                             out var nativeInvocationGuid))
                         server.FinishNativeCommand(new CommandId(nativeInvocationGuid),
                             continuationResult.StopReason == StopReason.EndTurn
@@ -5877,7 +5905,7 @@ public sealed class OmniCliRuntime : IDisposable
             throw new InvalidOperationException("A native tool-only action cannot invoke a model provider.");
     }
 
-    private static bool IsNativeProcessPermissionContinuation(OmniServer server, SessionId? expectedSession,
+    private static bool IsNativeToolPermissionContinuation(OmniServer server, SessionId? expectedSession,
         RunId? expectedRun, PersistedConversationCommand? continuation)
     {
         if (expectedSession is not { } session || expectedRun is not { } run
@@ -5912,9 +5940,9 @@ public sealed class OmniCliRuntime : IDisposable
                 && item.Event.TurnId?.ToString() == turnText && item.Event.LaneId?.ToString() == laneText
                 && item.Payload is ToolCallRequested).ToArray();
         if (calls.Length != 1 || calls[0].Payload is not ToolCallRequested call
-            || call.ToolName is not ("process.read" or "process.send_input" or "process.stop")
+            || call.ToolName is not ("process.read" or "process.send_input" or "process.stop" or "worktree.integrate")
             || !call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal)) return false;
-        return server.NativeProcessToolInvocationMatches(session, run, call.ProviderCallId,
+        return server.NativeToolInvocationMatches(session, run, call.ProviderCallId,
             call.ToolName, call.ArgumentsJson);
     }
 }
