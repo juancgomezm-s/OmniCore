@@ -273,16 +273,28 @@ esta distribución npm necesita el **runtime .NET 10** al ejecutarse.
 ### Actualizar la aplicación instalada
 
 Cierra las instancias de OmniCore que usan la instalación que vas a actualizar.
-En un clon limpio de la rama `main`, descarga los cambios y repite el instalador:
+En un clon limpio de la rama `main` del repositorio oficial, puedes descargar e
+instalar la revisión actual de GitHub con un solo paso:
 
 ```powershell
-git pull --ff-only
-.\scripts\install.ps1
+.\scripts\install.ps1 -FromGitHub
 omni.cmd --help
 ```
 
-En Linux, los dos primeros pasos son `git pull --ff-only` y
-`bash scripts/install.sh`; comprueba con `omni --help`. Si elegiste un prefijo,
+En Linux usa `bash scripts/install.sh --from-github` y comprueba con
+`omni --help`. Esta opción comprueba la rama, el remoto oficial y la ausencia de
+cambios locales; descarga Main, avanza únicamente mediante fast-forward y muestra
+el SHA exacto que va a instalar. Si encuentra archivos modificados/sin seguimiento,
+commits locales sin publicar, otra rama, divergencia o un fallo de descarga, se
+detiene antes de instalar. Conserva tu trabajo mediante Git antes de reintentarlo;
+no hace reset, stash ni cambia de rama automáticamente.
+
+Si tu clon todavía no incluye `-FromGitHub` / `--from-github`, descarga primero
+esta mejora con `git pull --ff-only` desde Main. Si ese comando falla, resuelve el
+estado del clon antes de ejecutar el instalador. También puedes seguir usando el
+recorrido manual: `git pull --ff-only` y luego el instalador sin esa opción.
+
+Si elegiste un prefijo,
 reutiliza el mismo al actualizar. El instalador compila y verifica el arranque
 antes de pedir a npm que reemplace el paquete. Si la compilación, comprobación
 o creación del paquete falla, no inicia la sustitución. Propaga cualquier error
@@ -291,8 +303,8 @@ Muestra la ruta del `.tgz` preparado, que se conserva para reinstalarlo con
 `npm install --global --ignore-scripts <ruta-al-tgz>` (y el mismo `--prefix`,
 si corresponde). Este archivo ya contiene la CLI compilada.
 
-Los scripts instalan el contenido del checkout actual; no descargan cambios ni
-modifican cuentas, preferencias, sesiones o workspaces. `main` es el canal de
+Sin la opción de GitHub, los scripts instalan el contenido del checkout actual.
+Ninguna modalidad modifica cuentas, preferencias, sesiones o workspaces. `main` es el canal de
 desarrollo. Para fijar una revisión, usa `git checkout <SHA>` antes de instalar;
 no se presenta como una release estable. El servicio de actualización desde
 GitHub Releases y los comandos `omni update ...` siguen previstos en

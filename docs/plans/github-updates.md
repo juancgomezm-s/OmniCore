@@ -14,6 +14,15 @@ a npm un paquete preparado. Repetirlos actualiza la instalación; Linux usa
 Este recorrido manual
 no implementa el servicio de releases, comprobación ni rollback de M10.
 
+**Revisión del 2026-10-22:** el recorrido manual añade descarga explícita desde
+Main mediante `scripts/install.ps1 -FromGitHub` o
+`bash scripts/install.sh --from-github`. Requiere un clon limpio del repositorio
+oficial en Main; rechaza cambios sin commit, archivos sin seguimiento, commits
+locales sin publicar y divergencias. Fija el SHA descargado, sólo avanza por
+fast-forward y corta antes de instalar si la consulta falla. El instalador sin
+esta opción conserva la instalación del checkout actual. No equivale a un
+actualizador de Releases ni habilita `omni update`; ese alcance sigue en M10.
+
 ## Distribución y canales
 
 Usar GitHub Releases del repositorio `juancgomezm-s/OmniCore` como origen de

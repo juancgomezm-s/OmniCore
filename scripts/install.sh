@@ -9,4 +9,12 @@ for dependency in node dotnet npm; do
     fi
 done
 cd "$repo"
+if [[ "${1:-}" == '--from-github' ]]; then
+    shift
+    if ! command -v git >/dev/null; then
+        echo 'Falta Git en PATH para actualizar desde GitHub.' >&2
+        exit 1
+    fi
+    node tools/npm/sync-main.js
+fi
 exec npm run install:cli -- "$@"

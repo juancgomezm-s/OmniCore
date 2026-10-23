@@ -20,6 +20,6 @@
   "scripts": {
     "prepare": "node tools/npm/prepare.js",
     "install:cli": "node tools/npm/install.js",
-    "test": "node --test tools/npm/launcher.test.js tools/npm/install.test.js"
+    "test": "node --test tools/npm/launcher.test.js tools/npm/install.test.js tools/npm/sync-main.test.js"
   }
 }
