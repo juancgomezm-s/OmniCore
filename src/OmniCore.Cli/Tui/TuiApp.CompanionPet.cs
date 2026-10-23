@@ -13,11 +13,22 @@ public sealed partial class TuiApp
     private bool _petConnected;
     private long _petFrame;
     private int _petTicks;
+    private DateTimeOffset _petPolledAt;
+    private long _petPolledSequence = -1;
+    private string? _petPolledSession;
+    private readonly record struct PetWidgetKey(CompanionPetSnapshot Pet, string Animation, int Frame, bool Textual, string Locale);
+    private PetWidgetKey? _petWidgetKey;
+    private readonly Dictionary<WidgetSize, WidgetModel> _petWidgetModels = new();
+    private DateTimeOffset _petQuietUntil;
     private DateTimeOffset _petLastActive = DateTimeOffset.UtcNow;
     internal CompanionPetSnapshot? CompanionPet => _pet;
     internal long CompanionFrame => _petFrame;
     private void PollCompanion()
     {
+        var now = DateTimeOffset.UtcNow;
+        var interval = _pet?.Preferences.Visible == true ? TimeSpan.FromSeconds(1) : TimeSpan.FromSeconds(3);
+        if (_petPolledSession == _cursorSession && _petPolledSequence == _lastSequence && now - _petPolledAt < interval) return;
+        _petPolledAt = now; _petPolledSequence = _lastSequence; _petPolledSession = _cursorSession;
         try
         {
             var wasVisible = _pet?.Preferences.Visible == true;
@@ -27,7 +38,7 @@ public sealed partial class TuiApp
         }
         catch (Exception error) when (error is System.Text.Json.JsonException or InvalidOperationException or IOException)
         { _petConnected = false; }
-        RenderCompanion();
+        // RenderSidebar presents the result once, after the remaining projections are refreshed.
     }
     private string PetAnimation()
     {
@@ -38,14 +49,20 @@ public sealed partial class TuiApp
     }
     private void AnimateCompanion()
     {
-        UpdatePetTyping();
         if (_pet is null || !_petConnected || !_pet.Preferences.Visible || _pet.Preferences.ReducedMotion || !_animationPreferences.Enabled
             || _animationPreferences.ReducedMotion || CompanionVisual.Effective is "text" or "hidden")
-        { RenderPetPlayground(); return; }
+        {
+            if (_petRunner?.Visible == true || _petLetter?.Visible == true) RenderPetPlayground();
+            return;
+        }
+        UpdatePetTyping();
+        // Give scrolling a short uninterrupted drawing window; typing still triggers its chase.
+        if (DateTimeOffset.UtcNow < _petQuietUntil) return;
         var playing = PetCanPlay();
         if (!playing && _petRunner?.Visible == true) RenderPetPlayground();
         if (!playing && !(_petView?.Visible == true && _sidebar?.Visible == true || _petDetail?.Visible == true)) return;
-        if (++_petTicks < 4) return;
+        // Roaming/chasing keeps its existing cadence. A panel sprite needs fewer updates.
+        if (++_petTicks < (playing ? 4 : 6)) return;
         _petTicks = 0; _petFrame++;
         if (playing)
         {
@@ -84,10 +101,16 @@ public sealed partial class TuiApp
         var poseFrame = CompanionVisualPolicy.SpriteFrame(animation, _petFrame, !moving);
         var tick = visual.Effective == "graphics" ? poseFrame : poseFrame % 2;
         var textual = visual.Effective is "text" or "hidden";
-        var widget = new CompanionPetSidebarWidget(_pet, animation, tick, textual, _locale);
-        WidgetModel Model(WidgetSize size) => textual ? new ListWidgetModel("",
-            [new(CompanionPetPresentation.TextSummary(_pet, animation, _locale), ThemeRole.Primary),
-             new(CompanionPetPresentation.Word("pet_action", _locale), ThemeRole.Info)]) : widget.Build(_state, size);
+        var key = new PetWidgetKey(_pet, animation, tick, textual, _locale);
+        if (_petWidgetKey != key) { _petWidgetKey = key; _petWidgetModels.Clear(); }
+        WidgetModel Model(WidgetSize size)
+        {
+            if (_petWidgetModels.TryGetValue(size, out var cached)) return cached;
+            return _petWidgetModels[size] = textual ? new ListWidgetModel("",
+                [new(CompanionPetPresentation.TextSummary(_pet, animation, _locale), ThemeRole.Primary),
+                 new(CompanionPetPresentation.Word("pet_action", _locale), ThemeRole.Info)])
+                : new CompanionPetSidebarWidget(_pet, animation, tick, textual, _locale).Build(_state, size);
+        }
         _petView.LineOnly = textual;
         if (_petDetail is not null) _petDetail.LineOnly = textual;
         if (visible) _petView.Render(Model(full ? WidgetSize.Normal : WidgetSize.Compact),

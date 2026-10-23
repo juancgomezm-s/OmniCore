@@ -224,6 +224,11 @@ public sealed partial class TuiApp
             _retiredOverlays.Clear();
         }
         application.LayoutAndDrawComplete += AfterDraw;
+        // Service input more frequently; unchanged views still produce no draw. Respect
+        // explicit framework tuning and restore the shared setting when this client exits.
+        var previousLoopRate = Application.MaximumIterationsPerSecond;
+        if (previousLoopRate == Application.DefaultMaximumIterationsPerSecond)
+            _restoreInputLoopRate = () => Application.MaximumIterationsPerSecond = previousLoopRate;
         try { application.Run(window, error =>
         {
             if (HandlePetDrawError(error)) return true;
@@ -231,6 +236,8 @@ public sealed partial class TuiApp
         }); }
         finally
         {
+            Application.MaximumIterationsPerSecond = previousLoopRate;
+            _restoreInputLoopRate = null;
             _petProbeGeneration++; _petAssets.Clear();
             application.LayoutAndDrawComplete -= AfterDraw;
             CancelExtensionViewRefresh();
@@ -294,6 +301,8 @@ public sealed partial class TuiApp
 
     internal bool AnimateActivity()
     {
+        if (_inputBurstUntil is { } until && DateTimeOffset.UtcNow >= until)
+        { _inputBurstUntil = null; _restoreInputLoopRate?.Invoke(); }
         AnimateCompanion();
         if (!HasActiveModelWork && _activity?.Visible != true && _animationPreview is null) return true;
         if (_animationPreferences.Enabled && !_animationPreferences.ReducedMotion
@@ -347,6 +356,7 @@ public sealed partial class TuiApp
     /// <summary>Teclas a nivel de aplicación: F2 sidebar, F3 modelos, Esc responde/overlay.</summary>
     internal void OnApplicationKeyDown(object? sender, Key key)
     {
+        PrioritizeInput();
         // Esc es la tecla Command.Quit POR DEFECTO en Terminal.Gui 2.6 (Application.DefaultKeyBindings):
         // si no se marca Handled tras consumirla, el framework además cierra toda la aplicación
         // (un Esc para cerrar un overlay mataría la TUI entera). F2/F3 igual: consumidas aquí.
@@ -415,11 +425,15 @@ public sealed partial class TuiApp
         _conversation.KeyDown += (_, key) =>
         {
             var code = key.KeyCode & ~(KeyCode.CtrlMask | KeyCode.ShiftMask | KeyCode.AltMask);
+            if (code is KeyCode.Home or KeyCode.End or KeyCode.CursorUp or KeyCode.CursorDown or KeyCode.PageUp or KeyCode.PageDown)
+                PausePetForReading();
             if (code is KeyCode.Home or KeyCode.CursorUp or KeyCode.PageUp) _followConversationEnd = false;
             else if (code == KeyCode.End) _followConversationEnd = true;
         };
         _conversation.MouseEvent += (_, mouse) =>
         {
+            if (mouse.Flags.HasFlag(MouseFlags.WheeledUp) || mouse.Flags.HasFlag(MouseFlags.WheeledDown))
+                PausePetForReading();
             if (mouse.Flags.HasFlag(MouseFlags.WheeledUp)) _followConversationEnd = false;
         };
         _conversation.VerticalScrollBar.MouseEvent += (_, mouse) =>
@@ -427,7 +441,12 @@ public sealed partial class TuiApp
             // A scrollbar gesture is explicit reading/navigation, not a layout notification.
             if (mouse.Flags != MouseFlags.None) _followConversationEnd = false;
         };
-        _conversation.ViewportChanged += (_, _) => RenderConversation();
+        _conversation.ViewportChanged += (_, _) =>
+        {
+            PrioritizeInput();
+            // Scrolling is a location change. Only reflow/compare history on a size change.
+            if (_lastConversationViewportSize != _conversation.Viewport.Size) RenderConversation();
+        };
         ApplyTheme(_conversation);
         conversationFrame.Add(_conversation);
         _sidebar = new FrameView { Id = "omni-panel", X = Pos.AnchorEnd(31), Y = 0, Width = 31, Height = Dim.Fill(), Title = _localization.Resolve("shell.workspace_heading"), BorderStyle = LineStyle.None };

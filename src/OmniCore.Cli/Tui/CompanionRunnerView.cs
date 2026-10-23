@@ -13,6 +13,7 @@ internal sealed class CompanionRunnerView : View
 {
     private sealed record Pixel(Point Position, string Glyph, Terminal.Gui.Drawing.Attribute Attribute);
     private List<Pixel> _pixels = [];
+    private (CompanionPetSnapshot State, CompanionPlayPose Pose, TuiTheme Theme, bool NoColor)? _rendered;
     internal Func<Rectangle>? ClipScreen { get; init; }
     internal IReadOnlyList<Point> PaintedOffsets => _pixels.Select(pixel => pixel.Position).ToArray();
     internal CompanionRunnerView()
@@ -23,6 +24,9 @@ internal sealed class CompanionRunnerView : View
     }
     internal void Render(CompanionPetSnapshot state, CompanionPlayPose pose, TuiTheme theme, bool noColor)
     {
+        var key = (state, pose, theme, noColor);
+        if (_rendered == key) return;
+        _rendered = key;
         var pixels = CompanionSpriteCatalog.RenderMini(state, pose.Animation, pose.Frame, pose.FacingLeft);
         var offset = pose.FacingLeft ? 0 : 2;
         var painted = new List<Pixel>();

@@ -53,7 +53,8 @@ public sealed partial class TuiWiringTests
             Assert.True(runner.ViewportSettings.HasFlag(ViewportSettingsFlags.TransparentMouse));
             var chat = fx.App.Conversation!;
             var chatBounds = new Rectangle(chat.ViewportToScreen(Point.Empty), chat.Viewport.Size);
-            Assert.True(chatBounds.Contains(new Rectangle(runner.ViewportToScreen(Point.Empty), runner.Viewport.Size)));
+            var runnerBounds = new Rectangle(runner.ViewportToScreen(Point.Empty), runner.Viewport.Size);
+            Assert.True(chatBounds.Contains(runnerBounds), $"chat={chatBounds}; runner={runnerBounds}; frame={fx.App.CompanionPlayFrame}; chase={fx.App.CompanionTypingActive}");
             Assert.Equal(chatFrame, chat.SuperView!.Frame);
             Assert.Equal(text, chat.Text); Assert.Equal(selection, chat.SelectedText);
             Assert.Equal(scroll, chat.Viewport.Location);
