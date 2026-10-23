@@ -38,7 +38,9 @@ function fixture(t) {
   git(temp, 'clone', remote, checkout);
   identity(checkout);
   const messages = [];
-  const options = { root: checkout, expectedRemote: remote,
+  // Git versions can normalize a Windows local remote to forward slashes.
+  // Use Git's spelling, just as the production official-remote guard does.
+  const options = { root: checkout, expectedRemote: git(checkout, 'remote', 'get-url', 'origin'),
     stdout: { write: value => messages.push(value) }, stderr: { write: value => messages.push(value) } };
   return { temp, source, checkout, remote, git, commit, first, messages, options };
 }
@@ -47,7 +49,7 @@ test('an upgrade fast-forwards the exact fetched Main and is idempotent', t => {
   const fx = fixture(t);
   const next = fx.commit(fx.source, 'updated from remote');
   fx.git(fx.source, 'push', 'origin', 'main');
-  assert.equal(syncMain(fx.options), 0);
+  assert.equal(syncMain(fx.options), 0, fx.messages.join(''));
   assert.equal(fx.git(fx.checkout, 'rev-parse', 'HEAD'), next);
   assert.equal(fx.git(fx.checkout, 'symbolic-ref', '--short', 'HEAD'), 'main');
   assert.equal(fs.readFileSync(path.join(fx.checkout, 'tracked.txt'), 'utf8'), 'updated from remote');
@@ -74,7 +76,7 @@ test('unpublished commits are preserved even when Main could otherwise remain ah
   assert.equal(syncMain(fx.options), 1);
   assert.equal(fx.git(fx.checkout, 'rev-parse', 'HEAD'), own);
   assert.equal(fs.readFileSync(path.join(fx.checkout, 'tracked.txt'), 'utf8'), 'unpublished work');
-  assert.ok(fx.messages.some(value => value.includes('commits locales')));
+  assert.ok(fx.messages.some(value => value.includes('commits locales')), fx.messages.join(''));
 });
 
 test('another branch is never switched, fetched or merged automatically', t => {
@@ -110,8 +112,9 @@ test('a failed fetch cannot change HEAD or advance to a stale cached revision', 
   const fx = fixture(t);
   const missing = path.join(fx.temp, 'missing-origin.git');
   fx.git(fx.checkout, 'remote', 'set-url', 'origin', missing);
-  assert.equal(syncMain({ ...fx.options, expectedRemote: missing }), 1);
+  const expectedRemote = fx.git(fx.checkout, 'remote', 'get-url', 'origin');
+  assert.equal(syncMain({ ...fx.options, expectedRemote }), 1);
   assert.equal(fx.git(fx.checkout, 'rev-parse', 'HEAD'), fx.first);
   assert.equal(fs.readFileSync(path.join(fx.checkout, 'tracked.txt'), 'utf8'), 'original');
-  assert.ok(fx.messages.some(value => value.includes('no se pudo descargar')));
+  assert.ok(fx.messages.some(value => value.includes('no se pudo descargar')), fx.messages.join(''));
 });
