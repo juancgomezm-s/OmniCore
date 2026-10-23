@@ -108,6 +108,31 @@ CI del SHA exacto y aceptación visual del usuario.
   Electron/Host reales y perfiles aislados; capturas comparables y aceptación del
   usuario para cambios visuales. Un fixture prueba cableado, no proveedor live.
 
+## Corte vigente del núcleo (2026-10-23)
+
+El candidato de Core incorpora por merge las mejoras de rendimiento de TUI de
+`main` `916c392`. Conecta controles nativos de procesos durante el Turn y en el
+mismo Run quiescente, finalización diferida sin inferencias de reparación,
+consulta pasiva de salida después de `RunCompleted` y publicación Strong mediante
+el aplicador conjunto e historial existentes. Corrige también el vaciado saneado
+del último fragmento de salida al EOF y completa la validación integral de WebP
+estático con sus dependencias de distribución.
+
+Los dos recorridos integrales locales de procesos y publicación pasan sin skips;
+el [contrato y evidencia](../validation/m9-core-process-contract-20261023.md)
+describe exactamente el transporte, recibos y efectos comprobados. Luna bajo
+repitió ambos casos sin recompilar: 2/2 correctos, sin fallos ni skips, y revisó
+las fronteras de scope, consultas pasivas y EOF. Falta la CI completa del candidato.
+Esta sección prevalece sobre los checkpoints históricos inferiores; todavía no
+acredita publicación ni cierre global de M9.
+
+Quedan explícitos ConPTY real de Windows (falla local), persistencia Weak,
+controles de Lane hijo, el ciclo durable restante de worktrees, aceptación
+transversal pendiente e integración del consumidor Electron por su coordinación.
+La salida terminal conservada es un buffer acotado en memoria: tras recuperación
+se informa gap cuando corresponde. M8 mantiene su aceptación manual pendiente.
+No se modifica ni publica OmniCoder en esta entrega.
+
 ## Ejecución de cierre M9 (2026-10-22)
 
 **Rectificación de alcance del 23 de octubre:** la construcción descrita abajo

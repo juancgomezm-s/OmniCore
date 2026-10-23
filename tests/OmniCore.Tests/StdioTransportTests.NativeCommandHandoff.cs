@@ -502,7 +502,9 @@ public sealed partial class StdioTransportTests
 
         public static async Task<NativeCommandHandoffFixture> StartAsync(string cutCommandId,
             bool includeStrongExtension = false, Func<int, string, string>? providerResponse = null,
-            bool includeWorkflowAgentProfile = false)
+            bool includeWorkflowAgentProfile = false,
+            Func<int, string, Task<string>>? providerResponseAsync = null,
+            string? permissionsYaml = null)
         {
             var root = Path.Combine(Path.GetTempPath(), "omni-native-command-handoff-" + Guid.NewGuid().ToString("N"));
             var workspace = Path.Combine(root, "workspace");
@@ -518,13 +520,24 @@ public sealed partial class StdioTransportTests
             var provider = new CliEndToEndTests.ScriptedHttpProvider();
             var fixture = new NativeCommandHandoffFixture(root, workspace, oldData, oldConfig,
                 oldDirectory, key, provider);
-            provider.RespondWith((index, body) =>
+            void RecordProviderBody(string body)
             {
                 fixture.ProviderBodies.Enqueue(body);
                 fixture._providerBodyArrived.Release();
-                return providerResponse?.Invoke(index, body)
-                    ?? CliEndToEndTests.ResponsesTextResponse("The local native-command fixture completed this Turn.");
-            });
+            }
+            if (providerResponseAsync is not null)
+                provider.RespondWithAsync(async (index, body) =>
+                {
+                    RecordProviderBody(body);
+                    return await providerResponseAsync(index, body).ConfigureAwait(false);
+                });
+            else
+                provider.RespondWith((index, body) =>
+                {
+                    RecordProviderBody(body);
+                    return providerResponse?.Invoke(index, body)
+                        ?? CliEndToEndTests.ResponsesTextResponse("The local native-command fixture completed this Turn.");
+                });
             try
             {
                 File.WriteAllText(Path.Combine(config, "providers.yaml"), $$"""
@@ -538,9 +551,9 @@ public sealed partial class StdioTransportTests
                     """, new UTF8Encoding(false));
                 File.WriteAllText(Path.Combine(config, "models.yaml"), "models:\n  scripted-model:\n    provider: scripted\n    context: 32768\n    recommendedUsableContext: 24000\n    maxOutput: 512\n    parametersBillions: 100\n", new UTF8Encoding(false));
                 File.WriteAllText(Path.Combine(config, "settings.yaml"), "defaultModel: scripted-model\n", new UTF8Encoding(false));
-                File.WriteAllText(Path.Combine(config, "permissions.yaml"), includeStrongExtension
+                File.WriteAllText(Path.Combine(config, "permissions.yaml"), permissionsYaml ?? (includeStrongExtension
                     ? "profile: balanced\nrules:\n  tool.search: allow\n  ext.fixture.native.mutate: ask\n"
-                    : "profile: balanced\nrules:\n  tool.search: allow\n", new UTF8Encoding(false));
+                    : "profile: balanced\nrules:\n  tool.search: allow\n"), new UTF8Encoding(false));
                 Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", data);
                 Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", config);
                 Environment.CurrentDirectory = workspace;
@@ -724,7 +737,7 @@ public sealed partial class StdioTransportTests
             throw new TimeoutException("The setup conversation Turn did not complete.");
         }
 
-        private async Task WaitForReceiptExecutionAsync(string commandId, string expectedState)
+        public async Task WaitForReceiptExecutionAsync(string commandId, string expectedState)
         {
             var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
             while (DateTimeOffset.UtcNow < deadline)
@@ -765,7 +778,7 @@ public sealed partial class StdioTransportTests
         {
             var hello = Exchange(WireEnvelope.FromJson("{\"version\":\"1.0\",\"messageType\":\"hello\",\"messageId\":"
                 + JsonSerializer.Serialize("native-command-hello-" + Guid.NewGuid().ToString("N"))
-                + ",\"payload\":{\"supportedVersions\":[\"1.0\"],\"capabilities\":[\"query.commandCatalog\",\"query.commandRecovery\",\"command.invoke.user\",\"command.invoke.continue.user\",\"command.conversation.interaction.choice.respond.user\"]}}"));
+                + ",\"payload\":{\"supportedVersions\":[\"1.0\"],\"capabilities\":[\"query.commandCatalog\",\"query.commandRecovery\",\"query.processSessions\",\"command.process.control.user\",\"command.invoke.user\",\"command.invoke.continue.user\",\"command.conversation.interaction.choice.respond.user\"]}}"));
             using var json = JsonDocument.Parse(hello.PayloadJson);
             if (!json.RootElement.TryGetProperty("trustedActionNonce", out var nonce))
             {

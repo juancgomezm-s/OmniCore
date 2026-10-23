@@ -228,6 +228,27 @@ if (args.Length == 2 && args[0] == "persistent-private-writer")
     return 0;
 }
 
+if (args.Length == 1 && args[0] == "persistent-process-control")
+{
+    Console.OutputEncoding = new UTF8Encoding(false);
+    Console.InputEncoding = new UTF8Encoding(false);
+    await Console.Out.WriteLineAsync("READY-ñ");
+    await Console.Out.FlushAsync();
+    var first = await Console.In.ReadLineAsync();
+    if (first is null)
+    {
+        await Console.Out.WriteLineAsync("EOF-FINAL-ñ");
+        await Console.Out.FlushAsync();
+        return 35;
+    }
+    if (!string.Equals(first, "hello", StringComparison.Ordinal)) return 47;
+    await Console.Out.WriteLineAsync("ACK:hello");
+    await Console.Out.FlushAsync();
+    // Stay alive after acknowledging input so the Host can exercise a verifiable stop.
+    _ = await Console.In.ReadLineAsync();
+    return 0;
+}
+
 if (args.Length == 1 && args[0] == "verify-m9-process-marker")
 {
     try
