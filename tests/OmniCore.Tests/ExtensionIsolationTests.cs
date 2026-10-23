@@ -64,6 +64,87 @@ public sealed class ExtensionIsolationTests
     }
 
     [Fact]
+    public async Task Private_runtime_cleanup_waits_for_transient_windows_image_lock_and_does_not_hide_a_persistent_lock()
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("Windows executable image sharing semantics."); return; }
+
+        var root = Path.Combine(Path.GetTempPath(), "omni-extension-cleanup-lock-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var image = Path.Combine(root, "node.exe"); File.WriteAllBytes(image, [0x4d, 0x5a]);
+        var heldImage = new FileStream(image, FileMode.Open, FileAccess.Read, FileShare.None);
+        try
+        {
+            var release = Task.Run(async () =>
+            {
+                await Task.Delay(150, TestContext.Current.CancellationToken);
+                heldImage.Dispose();
+            }, TestContext.Current.CancellationToken);
+            IsolatedExtensionProcess.DeletePrivateRoot(root);
+            await release;
+            Assert.False(Directory.Exists(root));
+
+            Directory.CreateDirectory(root); File.WriteAllBytes(image, [0x4d, 0x5a]);
+            using var persistentLock = new FileStream(image, FileMode.Open, FileAccess.Read, FileShare.None);
+            var error = Assert.Throws<IOException>(() => IsolatedExtensionProcess.DeletePrivateRoot(root));
+            Assert.Equal("extension_runtime_cleanup_lock_timeout", error.Message);
+        }
+        finally
+        {
+            heldImage.Dispose();
+            if (File.Exists(image)) File.Delete(image);
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Failed_process_tree_barrier_preserves_private_root_and_original_failure_even_if_stdin_close_fails()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-extension-failed-dispose-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var marker = Path.Combine(root, "image.fixture"); File.WriteAllText(marker, "retained evidence");
+        var barrierFailure = new IOException("process_tree_barrier_failed");
+        var inputFailure = new InvalidOperationException("stdin_close_failed");
+        var control = new FailingDisposeControl(barrierFailure);
+        var input = new StreamWriter(new ThrowingDisposeStream(inputFailure), Encoding.UTF8, leaveOpen: false);
+        try
+        {
+            var actual = await Assert.ThrowsAsync<IOException>(
+                () => IsolatedExtensionProcess.DisposeControlAndDeleteRootAsync(control, input, root).AsTask());
+            Assert.Same(barrierFailure, actual);
+            Assert.True(control.DisposeAttempted);
+            Assert.True(Directory.Exists(root));
+            Assert.Equal("retained evidence", File.ReadAllText(marker));
+        }
+        finally
+        {
+            input.Dispose();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class FailingDisposeControl(Exception failure) : ISandboxDuplexProcessControl
+    {
+        public bool DisposeAttempted { get; private set; }
+        public Stream StandardInput => Stream.Null;
+        public Stream StandardOutput => Stream.Null;
+        public Stream StandardError => Stream.Null;
+        public ValueTask<SandboxProcessOutput> WaitForExitAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromException<SandboxProcessOutput>(new NotSupportedException());
+        public ValueTask TerminateAsync(CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync() { DisposeAttempted = true; return ValueTask.FromException(failure); }
+    }
+
+    private sealed class ThrowingDisposeStream(Exception failure) : MemoryStream
+    {
+        private int _shouldThrow = 1;
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            if (disposing && Interlocked.Exchange(ref _shouldThrow, 0) == 1) throw failure;
+        }
+    }
+
+    [Fact]
     public async Task Extension_cannot_write_Core_package_or_workspace_read_secrets_or_use_network_even_through_a_child()
     {
         var root = Path.Combine(Path.GetTempPath(), "omni-extension-escape-" + Guid.NewGuid().ToString("N"));

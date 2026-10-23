@@ -123,21 +123,57 @@ public sealed class IsolatedExtensionProcess : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-        try
-        {
-            try { StandardInput.Dispose(); }
-            catch (IOException) { }
-            catch (ObjectDisposedException) { }
-            await _control.DisposeAsync().ConfigureAwait(false);
-        }
-        finally { DeletePrivateRoot(_root); }
+        await DisposeControlAndDeleteRootAsync(_control, StandardInput, _root).ConfigureAwait(false);
     }
 
-    private static void DeletePrivateRoot(string root)
+    internal static async ValueTask DisposeControlAndDeleteRootAsync(
+        ISandboxDuplexProcessControl control, StreamWriter standardInput, string root)
+    {
+        Exception? inputCloseFailure = null;
+        try { standardInput.Dispose(); }
+        catch (IOException) { }
+        catch (ObjectDisposedException) { }
+        catch (Exception error) { inputCloseFailure = error; }
+
+        // This is the process-tree completion barrier. If it fails, keep the private image so
+        // the uncertain process has evidence and preserve that exact failure for the caller.
+        await control.DisposeAsync().ConfigureAwait(false);
+        DeletePrivateRoot(root);
+
+        if (inputCloseFailure is not null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(inputCloseFailure).Throw();
+    }
+
+    internal static void DeletePrivateRoot(string root)
     {
         // A generated leaf only, never a caller's package, workspace or storage root.
-        try { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+        if (!Directory.Exists(root)) return;
+        if (OperatingSystem.IsWindows())
+        {
+            // The sandbox control is disposed before this is called, which is the process-tree
+            // completion barrier. Windows can still briefly retain an executable image section
+            // after the process handle is signaled. Wait only for sharing/lock violations and
+            // surface a persistent lock; never turn a live/orphaned worker into successful cleanup.
+            var deadline = System.Diagnostics.Stopwatch.StartNew();
+            IOException? lastLock = null;
+            while (true)
+            {
+                try { Directory.Delete(root, recursive: true); return; }
+                catch (IOException error) when (IsTransientWindowsFileLock(error))
+                {
+                    lastLock = error;
+                    if (deadline.Elapsed >= TimeSpan.FromSeconds(2))
+                        throw new IOException("extension_runtime_cleanup_lock_timeout", lastLock);
+                    Thread.Sleep(25);
+                }
+            }
+        }
+
+        try { Directory.Delete(root, recursive: true); }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
     }
+
+    private static bool IsTransientWindowsFileLock(IOException error) =>
+        (error.HResult & 0xffff) is 32 or 33; // ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION.
 }
