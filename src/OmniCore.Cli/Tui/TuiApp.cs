@@ -37,7 +37,8 @@ public sealed partial class TuiApp
     private long _lastSequence;
     private Window? _window;
     private ConversationView? _conversation;
-    private string? _renderedConversation;
+    private ConversationBlock[]? _renderedConversation;
+    private int _renderedConversationWidth;
     private ComposerView? _composer;
     private int _composerRows = 1;
     private bool _followConversationEnd = true;
@@ -1508,8 +1509,8 @@ public sealed partial class TuiApp
         {
         // Polling must not reload identical text: doing so resets selection and history scroll.
         var codeWidth = Math.Max(1, _conversation.Viewport.Width - 1);
-        var signature = codeWidth + "\u001d" + string.Join("\u001f", _state.Conversation.Blocks.Select(b => b.Role + "\u001e" + b.ToolName + "\u001e" + b.Text));
-        if (_renderedConversation == signature)
+        if (_renderedConversationWidth == codeWidth
+            && SameConversationContent(_renderedConversation, _state.Conversation.Blocks))
         {
             // A height change (for example, a growing composer) is layout intent and should
             // preserve follow-tail. A location-only change is the native reader scrolling;
@@ -1521,7 +1522,8 @@ public sealed partial class TuiApp
                 && _conversation.Viewport.Bottom < _conversation.Lines) _conversation.MoveEnd();
             return;
         }
-        _renderedConversation = signature;
+        _renderedConversation = _state.Conversation.Blocks.ToArray();
+        _renderedConversationWidth = codeWidth;
         if (_state.Conversation.Blocks.Count == 0) { _conversation.Text = ConversationText(); return; }
         var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
         var scroll = _conversation.VerticalScrollBar;
@@ -1545,6 +1547,24 @@ public sealed partial class TuiApp
         }
         }
         finally { _renderingConversation = false; }
+    }
+
+    // Blocks have immutable rendered fields. Compare those fields without constructing a
+    // second copy of the entire chat on every poll or viewport notification. Keep an array
+    // snapshot so replacement in a caller-owned list cannot make a real change invisible.
+    internal static bool SameConversationContent(IReadOnlyList<ConversationBlock>? rendered,
+        IReadOnlyList<ConversationBlock> current)
+    {
+        if (rendered is null || rendered.Count != current.Count) return false;
+        for (var i = 0; i < current.Count; i++)
+        {
+            var previous = rendered[i];
+            var next = current[i];
+            if (!ReferenceEquals(previous, next)
+                && (previous.Role != next.Role || previous.ToolName != next.ToolName || previous.Text != next.Text))
+                return false;
+        }
+        return true;
     }
 
     private string ConversationText() => _state.Conversation.Blocks.Count == 0

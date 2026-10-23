@@ -350,6 +350,8 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
             Stream = true,
             MaxTokens = request.Model.MaxOutputTokens,
             ReasoningEffort = llamaCppReasoningOff ? "none" : null,
+            ChatTemplateKwargs = llamaCppReasoningOff
+                ? new Dictionary<string, bool> { ["enable_thinking"] = false } : null,
             ToolChoice = request.ToolChoice.Mode switch
             {
                 "none" => JsonSerializer.SerializeToElement("none", OpenAiJsonContext.Default.String),
@@ -560,6 +562,9 @@ internal sealed class ChatRequestDto
 {
     [JsonPropertyName("reasoning_effort")]
     public string? ReasoningEffort { get; set; }
+
+    [JsonPropertyName("chat_template_kwargs")]
+    public Dictionary<string, bool>? ChatTemplateKwargs { get; set; }
     public string Model { get; set; } = "";
     public List<ChatRequestMessage> Messages { get; set; } = [];
     public List<ChatRequestTool>? Tools { get; set; }

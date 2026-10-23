@@ -1814,16 +1814,16 @@ public sealed class OmniCliRuntime : IDisposable
         return request;
     }
 
-    private static ReasoningResolution ResolveReasoningResolution(RunReasoningSelectionState? runSelection,
+    internal static ReasoningResolution ResolveReasoningResolution(RunReasoningSelectionState? runSelection,
         RunModeAuthority? authority, ReasoningCapability capability, ReasoningRequest? turnBoost,
-        Guid? turnBoostId, long? outputLimit, ProviderFamily protocol)
+        Guid? turnBoostId, long? outputLimit, ProviderFamily protocol, string? profile = null)
     {
         if (turnBoost is not null)
         {
             if (turnBoostId is not { } boostId || boostId == Guid.Empty)
                 throw new InvalidOperationException("A Turn reasoning boost requires a durable identity.");
             capability.ValidateRequest(turnBoost);
-            if (!AdapterCanRepresentReasoning(protocol, turnBoost))
+            if (!AdapterCanRepresentReasoning(protocol, turnBoost, profile))
                 throw new InvalidOperationException("The selected reasoning request has no representation in the configured provider adapter.");
             return new ReasoningResolution(turnBoost, turnBoost, ReasoningSelectionSource.TurnBoost,
                 turnBoostId: boostId);
@@ -1837,7 +1837,7 @@ public sealed class OmniCliRuntime : IDisposable
                 if (revision is not > 0)
                     throw new InvalidOperationException("Captured User reasoning preference is missing its durable revision.");
                 capability.ValidateRequest(runSelection.Request);
-                if (!AdapterCanRepresentReasoning(protocol, runSelection.Request))
+                if (!AdapterCanRepresentReasoning(protocol, runSelection.Request, profile))
                     throw new InvalidOperationException("The selected reasoning request has no representation in the configured provider adapter.");
                 return new ReasoningResolution(runSelection.Request, runSelection.Request,
                     ReasoningSelectionSource.UserDefault, userPreferenceRevision: revision);
@@ -1846,7 +1846,7 @@ public sealed class OmniCliRuntime : IDisposable
             if (runSelection.Source != "User" || runSelection.Revision <= 0)
                 throw new InvalidOperationException("Run reasoning preference has invalid provenance.");
             capability.ValidateRequest(runSelection.Request);
-            if (!AdapterCanRepresentReasoning(protocol, runSelection.Request))
+            if (!AdapterCanRepresentReasoning(protocol, runSelection.Request, profile))
                 throw new InvalidOperationException("The selected reasoning request has no representation in the configured provider adapter.");
             return new ReasoningResolution(runSelection.Request, runSelection.Request,
                 ReasoningSelectionSource.RunOverride, runPreferenceRevision: runSelection.Revision);
@@ -1857,7 +1857,7 @@ public sealed class OmniCliRuntime : IDisposable
             if (runSelection.CapturedUserPreferenceRevision is not > 0)
                 throw new InvalidOperationException("Captured User reasoning preference is missing its durable revision.");
             capability.ValidateRequest(runSelection.CapturedUserDefault);
-            if (!AdapterCanRepresentReasoning(protocol, runSelection.CapturedUserDefault))
+            if (!AdapterCanRepresentReasoning(protocol, runSelection.CapturedUserDefault, profile))
                 throw new InvalidOperationException("The selected reasoning request has no representation in the configured provider adapter.");
             return new ReasoningResolution(runSelection.CapturedUserDefault, runSelection.CapturedUserDefault,
                 ReasoningSelectionSource.UserDefault,
@@ -1893,7 +1893,7 @@ public sealed class OmniCliRuntime : IDisposable
             modeAuthorityRevision: authority.Revision, reductions: [ReasoningReduction.Capability]);
     }
 
-    private static bool AdapterCanRepresentReasoning(ProviderFamily protocol, ReasoningRequest? request)
+    private static bool AdapterCanRepresentReasoning(ProviderFamily protocol, ReasoningRequest? request, string? profile)
     {
         if (request is null) return true;
         return protocol switch
@@ -1901,7 +1901,8 @@ public sealed class OmniCliRuntime : IDisposable
             ProviderFamily.OpenAIResponses => request.BudgetTokens is null
                 && request.Kind is "none" or "minimal" or "low" or "medium" or "high" or "xhigh" or "max",
             ProviderFamily.AnthropicMessages => request.Kind == "budget" && request.BudgetTokens is >= 1024,
-            ProviderFamily.OpenAiChatCompatible => false,
+            ProviderFamily.OpenAiChatCompatible => profile == OpenAiChatCompatibleProvider.LlamaCppProfileName
+                && request is { Kind: "off", BudgetTokens: null },
             _ => false,
         };
     }
@@ -2614,7 +2615,7 @@ public sealed class OmniCliRuntime : IDisposable
                 {
                     reasoningResolution = ResolveReasoningResolution(server.CurrentRunReasoningSelection(),
                         server.CurrentModeAuthority(), route.ReasoningCapability, turnBoost, turnBoostId,
-                        selectedMaxOutputTokens, route.Protocol);
+                        selectedMaxOutputTokens, route.Protocol, route.Profile);
                     productReasoning = reasoningResolution.AppliedRequest;
                 }
                 catch (InvalidOperationException)
@@ -3580,7 +3581,7 @@ public sealed class OmniCliRuntime : IDisposable
                 {
                     var nextResolution = ResolveReasoningResolution(server.CurrentRunReasoningSelection(),
                         server.CurrentModeAuthority(), route.ReasoningCapability, null, null, selectedMaxOutputTokens,
-                        route.Protocol);
+                        route.Protocol, route.Profile);
                     route.ReasoningCapability.ValidateRequest(nextResolution.AppliedRequest);
                     return BuildTurn(nextResolution.AppliedRequest, nextResolution,
                         subsequentExecutor, subsequentCatalog);
@@ -3689,7 +3690,7 @@ public sealed class OmniCliRuntime : IDisposable
                         mutationHistory: server.MutationHistoryStore);
                     var approvedResolution = ResolveReasoningResolution(server.CurrentRunReasoningSelection(),
                         server.CurrentModeAuthority(), route.ReasoningCapability, null, null, selectedMaxOutputTokens,
-                        route.Protocol);
+                        route.Protocol, route.Profile);
                     route.ReasoningCapability.ValidateRequest(approvedResolution.AppliedRequest);
                     const string approvedInstruction = "You are executing the approved plan in the same Run. Use available tools safely and report verified results.";
                     var approvedSnapshot = new TurnInstructionSnapshot(false, approvedInstruction);

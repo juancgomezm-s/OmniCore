@@ -36,6 +36,7 @@ public sealed class OpenAiChatCompatibleMediaSerializationTests
         await foreach (var _ in provider.StreamAsync(request, TestContext.Current.CancellationToken)) { }
         using var body = JsonDocument.Parse(handler.Body!);
         Assert.Equal("none", body.RootElement.GetProperty("reasoning_effort").GetString());
+        Assert.False(body.RootElement.GetProperty("chat_template_kwargs").GetProperty("enable_thinking").GetBoolean());
         Assert.Equal(literal, body.RootElement.GetProperty("messages")[0].GetProperty("content").GetString());
     }
 

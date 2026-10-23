@@ -707,6 +707,7 @@ maqueta ni una prueba de inferencia, y no sustituye la aceptación manual en ter
 - [Contratos pre-M6](docs/architecture/pre-m6-record-contracts.md).
 - [Propuestas de modo y autoridad](docs/architecture/mode-proposals.md).
 - [Cierre e integración de menús y preferencias](docs/validation/preferences-main-closure-20261013.md).
+- [Respuesta del modelo local y mediciones de rendimiento](docs/validation/local-response-performance-20261022.md).
 - [Recuperación de los 42 archivos](docs/validation/recovered-worktrees-20261007.md).
 
 Las capturas de la TUI provienen de fixtures locales; las ilustraciones de arquitectura y roadmap son diagramas editables, no capturas de validación. [Fuentes y regeneración](docs/images/README.md).
