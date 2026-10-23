@@ -1,0 +1,40 @@
+  ws │ semilla de prueba · Modelo: Automático · sin turno                                            Ocultar mascota    
+                                                                                                                        
+  ┃  ·  ○                                                                                                            ╷  
+  ┃  Run iniciado: semilla de prueba                                                                                 ┃  
+                                                                                                                     ┃  
+  ┃  ◉  TÚ                                                                                                           ┃  
+  ┃  semilla de prueba                                                                                               ┃  
+                                                                                                                     ┃  
+  ┃  ◉  TÚ                                                                                                           ┃  
+  ┃▄ Men▄aje de historial para leer y seleccionar, línea 1.                                                          ┃  
+  ┃█▀██▀█aj▄▄de historial para leer y seleccionar, línea 2.                                                          ┃  
+  ┃ ▀▀▀▀▀▀▀▀▀de historial para leer y seleccionar, línea 3.                                                          ┃  
+  ┃  Mensaje de historial para leer y seleccionar, línea 4.                                                          ┃  
+  ┃  Mensaje de historial para leer y seleccionar, línea 5.                                                          ┃  
+  ┃  Mensaje de historial para leer y seleccionar, línea 6.                                                          │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 7.                                                          │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 8.                                                          │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 9.                                                          │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 10.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 11.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 12.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 13.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 14.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 15.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 16.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 17.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 18.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 19.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 20.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 21.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 22.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 23.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 24.                                                         ╵  
+                                                                                                                        
+                                                                                                                        
+   › Un borrador que debe permanecer intacto!                                                                           
+                                                                                                                        
+                                                                                                                        
+  act · Permisos: Libre · Enter enviar · ⇧Enter salto · ⇧Tab modo · / ayuda · F2 panel · F3 modelo · F4 ajustes · Ctr…  
+  —                                                                                                                     

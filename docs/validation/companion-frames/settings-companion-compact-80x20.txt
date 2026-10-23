@@ -1,0 +1,20 @@
+  ws │ semilla de prueba · Modelo: Automático · sin turno                       
+                                                                                
+  ┃  ·  ○                                                                       
+  ┃  Run iniciado: semilla de prueba                                            
+                     Mascota                                                    
+  ┃  ◉  TÚ           Mascota · Caricia                                          
+  ┃  semilla de pru  Omni · Huevo · 0/20                                        
+                     Acariciar                                                  
+                                                                                
+                     Omni                      Renombrar                        
+                                                                                
+                     Ocultar mascota   /pet reduced                             
+                                                                                
+                     Cerrar   Salir a jugar                                     
+                                                                                
+   ›                                                                            
+                                                                                
+                                                                                
+  act · Permisos: Libre · Enter enviar · / ayuda · F3 · Ctrl+O archivos · /pa…  
+  —                                                                             

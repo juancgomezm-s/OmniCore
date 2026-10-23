@@ -446,8 +446,8 @@ public sealed partial class TuiApp
             WordWrap = true, EnterKeyAddsLine = true };
         composerFrame.Add(new Label { Id = "omni-heading", X = 2, Y = 1, Text = "›" });
         _completion = new Label { Id = "omni-help", X = 2, Y = Pos.AnchorEnd(3), Width = Dim.Fill(2), Height = 1, Text = "" };
-        _composer.TextChanged += (_, _) => { UpdateComposerHeight(); UpdateAutocomplete(); };
-        _composer.ContentsChanged += (_, _) => { UpdateComposerHeight(); UpdateAutocomplete(); };
+        _composer.TextChanged += (_, _) => { UpdateComposerHeight(); UpdateAutocomplete(); ObservePetTyping(false); };
+        _composer.ContentsChanged += (_, _) => { UpdateComposerHeight(); UpdateAutocomplete(); ObservePetTyping(true); };
         _composer.KeyDown += (_, key) =>
         {
             if (key.KeyCode == (KeyCode.V | KeyCode.CtrlMask)) { PasteClipboard(); key.Handled = true; return; }
@@ -499,7 +499,7 @@ public sealed partial class TuiApp
         if (_conversationFrame is not null) _conversationFrame.Width = Dim.Fill(_mainColumnInset);
         if (_composerFrame is not null) _composerFrame.Width = Dim.Fill(_mainColumnInset + 1);
         UpdateComposerHeight();
-        if (_header is not null) _header.Width = Dim.Fill(_mainColumnInset + 2);
+        if (_header is not null) _header.Width = Dim.Fill(_mainColumnInset + PetHeaderEndPadding);
         if (_completion is not null) _completion.Width = Dim.Fill(_mainColumnInset + 2);
         if (_commandHelper is not null)
         {

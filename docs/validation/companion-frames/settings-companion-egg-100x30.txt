@@ -1,29 +1,29 @@
   ws │ semilla de prueba · Modelo: Automático · sin turno                                           
                                                                                                     
   ┃  ·  ○                                                                                           
-  ┃  Run i  Mascota                                                                                 
-            Mascota · Reposo                                                                        
-  ┃  ◉  TÚ          ▄▄▄▄                                                                            
-  ┃  semil       ▄████████▄                                                                         
-                ▄██▀███████▄                                                                        
-                ███████▀▀███                                                                        
-                ██████▀▀▀███                                                                        
-                ▀██████████▀                                                                        
-                 ▀████████▀                                                                         
-                    ▀▀▀▀                                                                            
-            Omni · Huevo · 0/20                                                                     
-            Acariciar                                                                               
+  ┃  Run iniciado: semilla de prueba                                                                
                                                                                                     
+  ┃  ◉  TÚ                     Mascota                                                              
+  ┃  semilla de prueba         Mascota · Reposo                                                     
+                                      ▄▄▄                                                           
+                                    ▄████▀▄                                                         
+                                   ▄█▀█████▄                                                        
+                                  ▄▀▀█████▀█▄                                                       
+                                  █▀█████████                                                       
+                                  ▀███████▀█▀                                                       
+                                   ▀█████▀█▀                                                        
+                                     ▀▀▀▀▀                                                          
+                               Omni · Huevo · 0/20                                                  
+                               Acariciar                                                            
                                                                                                     
-            Omni                      Renombrar                                                     
+                               Omni                      Renombrar                                  
                                                                                                     
-            Ocultar mascota   /pet reduced                                                          
+                               Ocultar mascota   /pet reduced                                       
                                                                                                     
-            Huevo · 0 XP · 70/100                                                                   
+                               Huevo · 0 XP · 70/100                                                
+                               Cerrar   Salir a jugar                                               
                                                                                                     
-                                                                                                    
-                                                                                                    
-   ›        Cerrar                                                                                  
+   ›                                                                                                
                                                                                                     
                                                                                                     
   act · Permisos: Libre · Enter enviar · ⇧↵ · ⇧Tab modo · / ayuda · F2 · F3 · F4 · Ctrl+O archivo…  

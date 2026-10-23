@@ -18,6 +18,48 @@ desde el detalle también lo cierra y vuelve al chat. `/pet hide` ofrece el mism
 resultado, y la preferencia queda guardada para ese cliente. Para recuperarla,
 usar `/pet show` o **Mostrar mascota** en su detalle de Preferencias → General.
 
+## Escapadas superpuestas a la conversación
+
+Con movimiento habilitado, la mascota sale periódicamente del panel: corre,
+curiosea, zigzaguea entre renglones, salta de una línea a otra, da volteretas,
+se agacha y se lanza, baila con notas musicales y se esconde dejando asomar la
+cabeza. Cambia de altura y sentido en sucesivas salidas. Los signos de duda,
+asteriscos, polvo y notas son adornos temporales del dibujo. En conversaciones
+cortas permanece cerca de los renglones existentes, evitando el espacio vacío de
+debajo. El baile y los saltos juegan en la zona central del texto. Usa un
+sprite pequeño original y opaco que pasa entre líneas y por encima de las letras:
+puede taparlas mientras hace la travesura y reaparecen intactas cuando se mueve.
+No reserva filas ni cambia el tamaño, contenido, selección o desplazamiento del
+chat. El dibujo no admite foco ni eventos de entrada: los clics, enlaces, selección
+y rueda llegan al texto que está debajo. Las celdas del borrador y del cursor
+quedan fuera de su recorrido.
+
+Al escribir, una copia visual fugaz de la última letra salta sobre el borde del
+editor. La mascota corre hacia ella y se agacha para atraparla; nuevas letras
+renuevan el objetivo sin teletransportar al animal. Al dejar de escribir durante
+unos cinco segundos, retoma el paseo. También reacciona al pegado, conservando
+sólo el último grafema, incluidos caracteres de dos columnas. No cambia el
+borrador, la posición del cursor, el foco ni el portapapeles. Borrar no genera
+letras nuevas. El objetivo se descarta al ocultar, volver al panel, abrir menús,
+perder el foco del editor o suspender las animaciones. Es estado visual local:
+no guarda el borrador ni envía texto, eventos o llamadas al modelo.
+
+**Salir a jugar** en el detalle inicia una escapada inmediatamente. Al abrir el
+detalle durante el paseo aparece **Volver al panel**, que suspende las escapadas
+hasta volver a salir. La TUI también acepta `/pet play` y `/pet home`; son controles
+visuales locales, no acciones nuevas de `companion.pet` ni comandos headless.
+
+**Ocultar mascota** permanece en el encabezado, incluso con el panel lateral
+cerrado. Oculta tanto el paseo como la sección lateral, deja ver todo el texto y
+guarda la preferencia del cliente. También funciona `/pet hide`.
+El borrador y el foco del editor permanecen intactos. `/pet show` la recupera.
+
+El paseo se pausa al abrir menús, autocompletar comandos o esperar una interacción.
+Se detiene con movimiento reducido, animaciones deshabilitadas, modo ASCII,
+desconexión o falta de espacio (menos de 24 filas o 48 columnas de conversación).
+En esos casos continúa disponible el detalle habitual. La ruta y el reloj viven
+en Client; la TUI reutiliza su temporizador y nunca persiste ni transmite los pasos.
+
 ## Configuración local
 
 `<DataDirectory>/companion/options.json` admite:

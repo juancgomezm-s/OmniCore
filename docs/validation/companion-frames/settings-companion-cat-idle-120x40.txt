@@ -6,29 +6,29 @@
   ┃  ◉  TÚ                                                                        ◆ Modelo: Automático · sin turno      
   ┃  semilla de prueba                                                            ○ act · en curso                      
                                                                                                                         
-  ┃  ◉  TÚ    Mascota                                                                                       n           
-  ┃  Revisa   Mascota · Reposo                                                                                          
-                 ▄      ▄                                                                                             ╷ 
-                 █▀▄  ▄▀█                                                                                   · espera  ┃ 
-                ▄███▀▀███▄                                                                                            ┃ 
-                ██▀▄███▄▀█▀  ▄▀█▄                                                                           cido ·    ┃ 
-                 ▀█▀█▀███    ██ ▀                                                                           era       ┃ 
-                  ███████▀  ▄██                                                                             ervisión 0┃ 
-                 ██▀███▀▀████▀                                                                                        ┃ 
-                 ▀▀ ▀▀▀▀▀▀                                                                                            ┃ 
-              Omni · Gato · L1 · 70/100                                                                               ┃ 
-              Acariciar                                                                                               ┃ 
-                                                                                                                      ┃ 
-                                                                                                                      │ 
-              Omni                      Renombrar                                                                     │ 
-                                                                                                                      │ 
-              Ocultar mascota   /pet reduced                                                                          │ 
-                                                                                                                      ╵ 
-              Bebé · 0 XP · 70/100                                                                                      
+  ┃  ◉  TÚ                                                                        Más… despliega cada sección           
+  ┃  Revisa los archivos de este proyecto                                                                               
+                                         Mascota                                  AGENTES · LANES                     ╷ 
+                                         Mascota · Reposo                         ▪ Capacidad · activos 0/1 · espera  ┃ 
+                                            ▄      ▄                              0 · lectura                         ┃ 
+                                            █▀▄  ▄▀█                              ○ Pulso agregado · desconocido ·    ┃ 
+                                           ▄███▀▀███▄                             observados activos 0 · espera       ┃ 
+                                           ██▀▄███▄▀█▀  ▄▀█▄                      capacidad 0 · join 0 · supervisión 0┃ 
+                                            ▀█▀█▀███    ██ ▀                      Más…                                ┃ 
+                                             ███████▀  ▄██                                                            ┃ 
+                                            ██▀███▀▀████▀                         CONTEXTO                            ┃ 
+                                            ▀▀ ▀▀▀▀▀▀                             ▪ Sin medición todavía              ┃ 
+                                         Omni · Gato · L1 · 70/100                Más…                                ┃ 
+                                         Acariciar                                                                    │ 
+                                                                                  CONSUMO                             │ 
+                                         Omni                      Renombrar      ▪ Tokens sesión: 0                  │ 
+                                                                                  ○ Costo sesión: —                   │ 
+                                         Ocultar mascota   /pet reduced           Más…                                ╵ 
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-              Cerrar                                                                                                    
+                                         Bebé · 0 XP · 70/100                     Mascota · Reposo                      
+                                         Cerrar   Salir a jugar                      ▄      ▄                           
+                                                                                     █▀▄  ▄▀█                           
+                                                                                    ▄███▀▀███▄                          
                                                                                     ██▀▄███▄▀█▀  ▄▀█▄                   
                                                                                      ▀█▀█▀███    ██ ▀                   
                                                                                       ███████▀  ▄██                     

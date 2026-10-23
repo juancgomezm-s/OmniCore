@@ -112,6 +112,9 @@ public sealed partial class TuiWiringTests
         Assert.True(fx.App.CompanionPet!.Discovered); Assert.Null(fx.App.CompanionPet.Species);
         Assert.Equal("egg", fx.App.CompanionPet.Stage);
         Assert.True(new CompanionPetService(Path.Combine(fx.Root, "host-data")).Status().Discovered);
+        fx.Wait(() => fx.App.Overlay!.Frame.Width < 50 && fx.App.Overlay.Frame.Height <= 20,
+            "pet card fits its contents instead of spanning the terminal");
+        AssertPetControlsFit();
         ExportPreferenceFrame(fx, 100, 30, "companion-egg", "Huevo");
         fx.Invoke(() =>
         {
@@ -121,6 +124,16 @@ public sealed partial class TuiWiringTests
                 Flags = MouseFlags.LeftButtonClicked });
         });
         fx.Wait(() => fx.App.CompanionPet?.Reaction?.AnimationId == "pet", "native mouse pets without a model");
+        ExportPreferenceFrame(fx, 100, 30, "companion-egg-pet", "Caricia");
+        fx.Invoke(() => fx.Application.Driver!.SetScreenSize(80, 20));
+        fx.Wait(() => fx.App.MainWindow!.Frame.Height == 20 && fx.App.Overlay!.Frame.Height < 18,
+            "open card adapts to a shorter terminal");
+        AssertPetControlsFit();
+        ExportPreferenceFrame(fx, 80, 20, "companion-compact", "Huevo");
+        fx.Invoke(() => fx.Application.Driver!.SetScreenSize(100, 30));
+        fx.Wait(() => fx.App.MainWindow!.Frame.Height == 30 && fx.App.Overlay!.Frame.Height == 20,
+            "card restores its picture layout when the terminal grows");
+        AssertPetControlsFit();
         ClickId(fx, "companion-close");
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "preferences opened");
         Assert.Contains(Descendants(fx.App.Overlay!), view => view.Id == "preferences-companion");
@@ -130,5 +143,18 @@ public sealed partial class TuiWiringTests
         Type(fx, "/pet status"); KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is not null, "text detail at very small height");
         Assert.Contains("Huevo", fx.Read(() => OverlayText(fx.App.Overlay!)));
         Assert.DoesNotContain(Descendants(fx.App.Overlay!), view => view.Id == "companion-name");
+
+        void AssertPetControlsFit() => fx.Invoke(() =>
+        {
+            var panel = fx.App.Overlay!;
+            Assert.All(panel.SubViews.Where(view => view.Visible), view =>
+                Assert.True(view.Frame.X >= 0 && view.Frame.Y >= 0 && view.Frame.Right <= panel.Viewport.Width
+                    && view.Frame.Bottom <= panel.Viewport.Height, view.Id + " fits in the pet card"));
+            var buttons = panel.SubViews.OfType<Button>().ToArray();
+            Assert.All(buttons, button => Assert.True(button.Viewport.Height >= 1, button.Id + " can be drawn and clicked"));
+            for (var i = 0; i < buttons.Length; i++)
+                for (var j = i + 1; j < buttons.Length; j++)
+                    Assert.False(buttons[i].Frame.IntersectsWith(buttons[j].Frame), "pet controls do not overlap");
+        });
     }, noColor: false);
 }

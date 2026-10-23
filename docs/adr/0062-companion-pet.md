@@ -54,6 +54,26 @@ renderer genérico declarativo; actualiza únicamente las celdas de su región n
 y no recarga la conversación. A poca altura se presenta el resumen y `/pet` abre
 el detalle. La alternativa ASCII es textual y las animaciones pueden ser estáticas.
 
+Las escapadas son presentación local: `CompanionPetPlayground` calcula una ruta
+acotada con carreras, miradas, zigzags entre renglones, saltos, volteretas,
+agacharse/lanzarse, baile y esconderse. Alterna bandas y sentido entre salidas;
+`CompanionRunnerView` dibuja
+sprites pequeños originales de 12×3 celdas sin foco ni entrada. El sprite es opaco
+y se superpone al texto sin reservar filas ni alterar el área de conversación.
+El compositor nativo repinta las letras al moverse u ocultarse; sólo las celdas
+dibujadas por la silueta o estela cubren texto. Los clics, enlaces y rueda llegan
+al chat subyacente. El recorrido habitual se acota al viewport, excluyendo editor y barras.
+`CompanionTypingChase` permite perseguir una copia efímera del último grafema
+introducido: la TUI observa los cambios nativos sin consumir teclas ni escribir
+en el editor. El objetivo salta sobre su borde superior y el animal lo persigue
+con desplazamiento gradual, sin pintar las celdas del borrador o cursor. Sólo
+se retiene ese grafema, durante un máximo de cinco segundos desde la última
+adición; se descarta al suspender el juego. No se persiste ni transmite texto.
+Se pausa detrás de menús y autocompletado; espacio insuficiente,
+ASCII, desconexión o movimiento reducido lo detienen. Un botón fijo permite ocultar
+la mascota con el sidebar cerrado, desde el encabezado. Salir/volver al panel sólo afecta al reloj local, sin eventos,
+XP, procesos, proveedores ni cambios en el protocolo persistente.
+
 Referencias: [ADR-0030](0030-arquitectura-del-cliente.md),
 [ADR-0032](0032-sidebar-y-widgets.md), [ADR-0061](0061-plataforma-de-extensiones.md),
 [integración y validación](../extensions/companion-pet.md).

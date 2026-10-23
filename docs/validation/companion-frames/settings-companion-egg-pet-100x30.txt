@@ -1,0 +1,30 @@
+  ws │ semilla de prueba · Modelo: Automático · sin turno                                           
+                                                                                                    
+  ┃  ·  ○                                                                                           
+  ┃  Run iniciado: semilla de prueba                                                                
+                                                                                                    
+  ┃  ◉  TÚ                     Mascota                                                              
+  ┃  semilla de prueba         Mascota · Caricia                                                    
+                                      ▄▄▄                                                           
+                                    ▄████▀▄   ▄█▄█▄                                                 
+                                   ▄█▀█████▄  ▀███▀                                                 
+                                  ▄▀▀█████▀█▄   ▀                                                   
+                                  █▀█████████                                                       
+                                  ▀███████▀█▀                                                       
+                                   ▀█████▀█▀                                                        
+                                     ▀▀▀▀▀                                                          
+                               Omni · Huevo · 0/20                                                  
+                               Acariciar                                                            
+                                                                                                    
+                               Omni                      Renombrar                                  
+                                                                                                    
+                               Ocultar mascota   /pet reduced                                       
+                                                                                                    
+                               Huevo · 0 XP · 70/100                                                
+                               Cerrar   Salir a jugar                                               
+                                                                                                    
+   ›                                                                                                
+                                                                                                    
+                                                                                                    
+  act · Permisos: Libre · Enter enviar · ⇧↵ · ⇧Tab modo · / ayuda · F2 · F3 · F4 · Ctrl+O archivo…  
+  —                                                                                                 

@@ -1,4 +1,4 @@
-  ws │ semilla de prueba · Modelo: Automático · sin turno                         Espacio de trabajo                    
+  ws │ semilla de prueba · Modelo: Automático · sin turn     Ocultar mascota      Espacio de trabajo                    
                                                                                                                Ajustes  
   ┃  ·  ○                                                                                                               
   ┃  Run iniciado: semilla de prueba                                              SESIÓN                                

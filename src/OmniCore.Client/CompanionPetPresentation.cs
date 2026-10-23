@@ -33,6 +33,7 @@ public static class CompanionPetPresentation
         (true, "pet") => "Mascota", (true, "pet_action") => "Acariciar",
         (true, "idle") => "Reposo", (true, "working") => "Trabajando", (true, "waiting") => "Esperando",
         (true, "success") => "¡Bien!", (true, "failure") => "Sorpresa", (true, "sleep") => "Durmiendo",
+        (true, "play") => "De paseo",
         (true, "baby") => "Bebé", (true, "young") => "Joven", (true, "adult") => "Adulto", (true, "legendary") => "Legendario",
         (false, "pet_action") => "Pet", _ => char.ToUpperInvariant(id[0]) + id[1..],
     };
