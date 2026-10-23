@@ -2,15 +2,56 @@
 
 Escribir `/pet` descubre un huevo persistente y abre su detalle. No usa un modelo.
 También se puede ejecutar `omni pet` o `omni /pet`; el modo headless siempre
-devuelve JSON y acepta `--json` por compatibilidad.
+devuelve JSON por defecto y acepta `--json`; `--text` solicita una línea de texto.
 
 Acciones: `discover`, `status`, `pet`, `rename <nombre>`, `show`, `hide`.
 Las preferencias del cliente añaden `/pet reduced` y `/pet motion`.
+La vista admite `/pet mode auto|gráfico|unicode|texto|oculto`; `/pet mode` muestra
+el modo solicitado y efectivo y permite volver a detectar con `/pet detect`.
+El modo automático usa Sixel sólo con evidencia del framework, con respaldo
+Unicode/texto. Kitty permanece deshabilitado hasta disponer de una consulta
+segura en su lector. Ver [implementación, capturas y mediciones](../validation/companion-graphics/README.md).
 El nombre acepta 1–24 letras, números, espacios, guiones o guiones bajos.
 Después de descubrirla aparece en Preferencias → General. Su sección compacta
 ocupa una región del panel lateral existente. Acariciar funciona con Enter en su botón y con clic sobre el animal;
 no concede XP ni ánimo y tiene cinco segundos de cooldown. Ocultarla detiene su
 animación en ese cliente y conserva el estado del perfil.
+
+## Invitados ocasionales
+
+Después de nacer la mascota habitual, algunas sesiones reciben al **cangrejo
+inspirado en Claude** o al **robot inspirado en Codex**. Son visitas temporales,
+identificadas como **De visita**. No son especies nuevas del sorteo de incubación:
+la especie, nombre, variante, XP, ánimo y evolución de la mascota habitual siguen
+siendo los mismos. Los invitados comparten sus reacciones, paseos y controles de
+ocultar o movimiento reducido, con sprites gráficos, Unicode y texto de respaldo.
+
+La probabilidad base por sesión es del **5 %**: 2,5 % para cada invitado. Una llamada
+completada a un modelo `claude`/`claude-*` en la conversación principal aumenta la
+probabilidad del cangrejo al **12,5 %**, conservando el 2,5 % del robot (15 % total).
+Con `gpt`/`gpt-*` ocurre lo equivalente para el robot. Los identificadores con
+prefijo, como `anthropic/claude-*` u `openai/gpt-*`, también se reconocen. Si se usan
+ambas familias en la misma sesión, la probabilidad total alcanza el 25 %.
+
+Se reutiliza un único valor de sorteo por perfil y sesión, derivado de sus
+identidades durables. Una sesión ordinaria puede recibir al invitado al completarse
+la primera llamada correspondiente; un invitado presente permanece hasta terminar
+esa sesión. Cambiar de modelo no lo reemplaza por el otro. Más mensajes, llamadas,
+reconexiones, reaperturas del panel o cambios de modo no vuelven a sortearlo.
+Reanudar la misma sesión conserva su visita; otra sesión tiene su propio resultado.
+
+Sólo cuentan pares confirmados `ModelStepStarted`/`ModelStepCompleted` de la lane
+raíz. Seleccionar un modelo sin usarlo, mencionarlo en un mensaje, llamadas sin
+completar y modelos de agentes secundarios no aumentan la probabilidad. La
+proyección guarda como máximo dos marcas de uso de familia por sesión en SQLite;
+no añade eventos al journal, llamadas al modelo ni cambios a la XP o al ánimo.
+Las sesiones sin una identidad durable y el huevo mantienen su aspecto habitual.
+No hay comando `/pet look` ni elección manual de invitado.
+
+El contrato conserva `species` como identidad habitual; `guestId` identifica la
+visita y `appearanceId` su aspecto efectivo durante esa sesión. El estado consultado
+sin sesión continúa devolviendo la mascota habitual. Los contratos antiguos sin
+`guestId` representan una mascota normal.
 
 El botón **Ocultar** está junto a **Acariciar** en el panel. En el detalle aparece
 **Ocultar mascota**. Ambos devuelven al panel todo el espacio reservado; ocultar

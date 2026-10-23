@@ -112,7 +112,7 @@ public sealed partial class TuiWiringTests
         Assert.True(fx.App.CompanionPet!.Discovered); Assert.Null(fx.App.CompanionPet.Species);
         Assert.Equal("egg", fx.App.CompanionPet.Stage);
         Assert.True(new CompanionPetService(Path.Combine(fx.Root, "host-data")).Status().Discovered);
-        fx.Wait(() => fx.App.Overlay!.Frame.Width < 50 && fx.App.Overlay.Frame.Height <= 20,
+        fx.Wait(() => fx.App.Overlay!.Frame.Width < 50 && fx.App.Overlay.Frame.Height <= 22,
             "pet card fits its contents instead of spanning the terminal");
         AssertPetControlsFit();
         ExportPreferenceFrame(fx, 100, 30, "companion-egg", "Huevo");
@@ -131,7 +131,7 @@ public sealed partial class TuiWiringTests
         AssertPetControlsFit();
         ExportPreferenceFrame(fx, 80, 20, "companion-compact", "Huevo");
         fx.Invoke(() => fx.Application.Driver!.SetScreenSize(100, 30));
-        fx.Wait(() => fx.App.MainWindow!.Frame.Height == 30 && fx.App.Overlay!.Frame.Height == 20,
+        fx.Wait(() => fx.App.MainWindow!.Frame.Height == 30 && fx.App.Overlay!.Frame.Height == 22,
             "card restores its picture layout when the terminal grows");
         AssertPetControlsFit();
         ClickId(fx, "companion-close");

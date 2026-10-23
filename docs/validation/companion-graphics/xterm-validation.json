@@ -1,0 +1,17 @@
+{
+  "terminal": "xterm.js",
+  "version": "5.5.0",
+  "addon": "@xterm/addon-image 0.8.0",
+  "browser": "155.0.4283.62",
+  "primaryDAAndCellReplies": [
+    "\u001b[?62;4;9;22c",
+    "\u001b[6;17;8t"
+  ],
+  "frames": 6,
+  "fontSizes": [
+    14,
+    20
+  ],
+  "afterClearStorageMiB": 0,
+  "errors": []
+}

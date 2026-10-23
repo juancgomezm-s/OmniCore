@@ -1,0 +1,40 @@
+  ws │ semilla de prueba · Modelo: Automático · sin turno                         Espacio de trabajo                    
+                                                                                                               Ajustes  
+  ┃  ·  ○                                                                    ╷                                          
+  ┃  Run iniciado: semilla de prueba                                         ┃    SESIÓN                                
+                                                                             ┃    semilla de prueba                     
+  ┃  ◉  TÚ                                                                   ┃    ◆ Modelo: Automático · sin turno      
+  ┃  semilla de prueba                                                       ┃    ○ act · en curso                      
+                                                                             ┃                                          
+  ┃  ◉  TÚ                                                                   ┃    Más… despliega cada sección           
+  ┃  Mensaje de historial para leer y seleccionar, línea 1.                  ┃                                          
+  ┃  Mensaje de historial para leer y seleccionar, línea 2.                  ┃    AGENTES · LANES                     ╷ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 3.                  ┃    ▪ Capacidad · activos 0/1 · espera  ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 4.                  ┃    0 · lectura                         ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 5.                  ┃    ○ Pulso agregado · desconocido ·    ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 6.                  │    observados activos 0 · espera       ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 7.                  │    capacidad 0 · join 0 · supervisión 0┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 8.                  │    Más…                                ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 9.                  │                                        ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 10.                 │    CONTEXTO                            ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 11.                 │    ▪ Sin medición todavía              ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 12.                 │    Más…                                ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 13.                 │                                        │ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 14.                 │    CONSUMO                             │ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 15.                 │    ▪ Tokens sesión: 0                  │ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 16.                 │    ○ Costo sesión: —                   │ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 17.                 │    Más…                                ╵ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 18.                 │                                          
+  ┃  Mensaje de historial para leer y seleccionar, línea 19.                 │    Mascota · Trabajando                  
+  ┃  Mensaje de historial para leer y seleccionar, línea 20.                 │                                          
+  ┃  Mensaje de historial para leer y seleccionar, línea 21.                 │                                          
+  ┃  Mensaje de historial para leer y seleccionar, línea 22.                 │                                          
+  ┃  Mensaje de historial para leer y seleccionar, línea 23.                 │                                          
+  ┃  Mensaje de historial para leer y seleccionar, línea 24.                 ╵                                          
+                                                                                                                        
+                                                                                                                        
+   › Borrador con foco intacto                                                                                          
+                                                                                  Omni · Buey · L1 · 70/100             
+                                                                                  Acariciar           Ocultar           
+  act · Permisos: Libre · Enter enviar · / ayuda · F3 · Ctrl+O archivos · /pa…                                          
+  —                                                                                                                     

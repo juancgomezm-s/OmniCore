@@ -19,6 +19,7 @@ public sealed partial class TuiApp
     internal View? CompanionRunner => _petRunner;
     internal long CompanionPlayFrame => _petPlayground.Frame;
     private bool PetPlaygroundEnabled() => _pet?.Discovered == true && _pet.Preferences.Visible && _petConnected
+        && CompanionVisual.Effective is "unicode" or "graphics"
         && !_petPlayground.AtHome && !_pet.Preferences.ReducedMotion && _animationPreferences.Enabled
         && !_animationPreferences.ReducedMotion && !_animationPreferences.Ascii
         && (_window?.Frame.Height ?? 0) >= 24 && (_window?.Frame.Width ?? 0) - _mainColumnInset >= 48;
@@ -99,7 +100,7 @@ public sealed partial class TuiApp
         _petLetter!.Visible = outside && _petTyping.Active;
         if (_petLetter.Visible)
         {
-            var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
+            var noColor = PetNoColor;
             _petLetter.Glyph = _petTyping.Glyph!;
             _petLetter.Width = Terminal.Gui.Text.StringExtensions.GetColumns(_petLetter.Glyph, false);
             _petLetter.Ink = new(noColor ? Terminal.Gui.Drawing.Color.None : _theme.Map(new Terminal.Gui.Drawing.Color(_theme.Accent)),
@@ -115,7 +116,7 @@ public sealed partial class TuiApp
         }
         if (outside)
         {
-            _petRunner.Render(_pet!, pose, _theme, Environment.GetEnvironmentVariable("NO_COLOR") is not null);
+            _petRunner.Render(_pet!, pose, _theme, PetNoColor);
             _petRunner.SetNeedsLayout();
         }
     }

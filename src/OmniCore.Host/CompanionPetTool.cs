@@ -7,7 +7,7 @@ namespace OmniCore.Host;
 
 /// <summary>Built-in extension contribution, admitted through the ordinary tool pipeline.</summary>
 public sealed class CompanionPetTool(CompanionPetService service, Action? synchronize = null,
-    string clientId = "terminal") : ITool
+    string clientId = "terminal", Func<SessionId?>? currentSession = null) : ITool
 {
     public ToolDescriptor Descriptor { get; } = new(new ToolId("companion.pet"),
         "Discover and care for the virtual pet / mascota: discover, status, pet, rename, show, hide. Cosmetic only; never do work to feed it.",
@@ -35,6 +35,7 @@ public sealed class CompanionPetTool(CompanionPetService service, Action? synchr
         try
         {
             var snapshot = service.Act(action, intent.Intent.ToolCallId.ToString());
+            if (currentSession is not null) snapshot = service.Status(clientId, currentSession());
             return Task.FromResult(ToolResult.Ok("Companion updated.", CompanionPetProtocol.Encode(snapshot), 0, false, EffectOutcome.None));
         }
         catch (Exception error) when (error is ArgumentException or InvalidOperationException)

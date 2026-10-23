@@ -2967,7 +2967,7 @@ public sealed class OmniCliRuntime : IDisposable
                     DiscoverSkills, skillLimits));
             SessionMemoryPolicy? sessionMemoryPolicy = null;
             if (delegation is null) hostTools.RegisterCompanionTool(new CompanionPetTool(server.CompanionService,
-                server.SynchronizeCompanion, CompanionClientId));
+                server.SynchronizeCompanion, CompanionClientId, server.LastSessionId));
             if (delegation is null)
             {
                 var memoryStore = new SessionMemoryStore(workspaceData);

@@ -3159,6 +3159,8 @@ public sealed partial class TuiWiringTests
         var hostPaths = new DefaultPlatformPaths(Path.Combine(fx.Root, "host-data"), Path.Combine(fx.Root, "host-config"));
         fx.Server.ConfigurePlatformPaths(() => hostPaths);
         fx.Server.ConfigureSidebarPaths(hostPaths);
+        // Stable ordinary-pet fixtures; guest tests opt into a controlled lottery explicitly.
+        fx.Server.CompanionService.GuestSelector = (_, _, _) => null;
             fx.Artifacts = OmniHost.CreateArtifactStore(fx.JournalDirectory);
             // Sesión semilla: el primer input crea la sesión y el run en el journal real.
             var ack = fx.Server.Send(WireEnvelope.Command(Ids.NewV7(),
@@ -3261,6 +3263,9 @@ public sealed partial class TuiWiringTests
                     diagnosticsPreferences: diagnosticsPreferences ?? DiagnosticsPreferencesHost.Create(Root, Path.Combine(Root, "prefs-data"), Path.Combine(Root, "prefs-config")));
                 App.SetModelCatalogPreferencesHost(modelCatalogPreferences ?? ModelCatalogPreferencesHost.Create(
                     Path.Combine(Root, "fixture-model-catalog"), Workspace, Path.Combine(Root, "fixture-model-catalog-data")));
+                App.CompanionInteractiveOverride = true; // The controlled DOTNET surface emulates an interactive UTF-8 terminal.
+                App.CompanionUnicodeOverride = true;
+                App.CompanionColorOverride = true;
                 Application = Terminal.Gui.App.Application.Create();
                 var firstFrameDrawn = 0;
                 Application.LayoutAndDrawComplete += (_, _) => Interlocked.Exchange(ref firstFrameDrawn, 1);

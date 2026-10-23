@@ -206,6 +206,10 @@ public sealed partial class TuiApp
     internal int RunWith(IApplication application)
     {
         _application = application;
+        // This framework version emits either ANSI16 or RGB, not indexed ANSI256.
+        // A 256-color endpoint must receive the compatible ANSI16 subset rather than RGB.
+        if (application.Driver?.ColorCapabilities?.Capability == ColorCapabilityLevel.Colors256)
+            application.Driver.Force16Colors = true;
         var window = BuildMainWindow();
         application.AddTimeout(TimeSpan.FromMilliseconds(500), PollOnce);
         application.AddTimeout(TimeSpan.FromMilliseconds(100), AnimateActivity);
@@ -220,9 +224,14 @@ public sealed partial class TuiApp
             _retiredOverlays.Clear();
         }
         application.LayoutAndDrawComplete += AfterDraw;
-        try { application.Run(window); }
+        try { application.Run(window, error =>
+        {
+            if (HandlePetDrawError(error)) return true;
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw(); return false;
+        }); }
         finally
         {
+            _petProbeGeneration++; _petAssets.Clear();
             application.LayoutAndDrawComplete -= AfterDraw;
             CancelExtensionViewRefresh();
             try { _loginCancellation?.Cancel(); } catch (ObjectDisposedException) { }

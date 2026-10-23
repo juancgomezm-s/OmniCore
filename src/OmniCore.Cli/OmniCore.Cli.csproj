@@ -27,6 +27,11 @@
     <PackageReference Include="YamlDotNet" />
     <PackageReference Include="Terminal.Gui" />
     <PackageReference Include="Markdig" />
+    <PackageReference Include="StbImageSharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets/Companions/*.png" />
   </ItemGroup>
 
 </Project>

@@ -1,0 +1,40 @@
+  ws │ semilla de prueba · Modelo: Automático · sin turno                         Espacio de trabajo                    
+                                                                                                               Ajustes  
+  ┃  Mensaje de historial para leer y seleccionar, línea 40.                 ╷                                          
+  ┃  Mensaje de historial para leer y seleccionar, línea 41.                 │    SESIÓN                                
+  ┃  Mensaje de historial para leer y seleccionar, línea 42.                 │    semilla de prueba                     
+  ┃  Mensaje de historial para leer y seleccionar, línea 43.                 │    ◆ Modelo: Automático · sin turno      
+  ┃  Mensaje de historial para leer y seleccionar, línea 44.                 │    ○ act · en curso                      
+  ┃  Mensaje de historial para leer y seleccionar, línea 45.                 │                                          
+  ┃  Mensaje de historial para leer y seleccionar, línea 46.                 │    Más… despliega cada sección           
+  ┃  Mensaje de historial para leer y seleccionar, línea 47.                 │                                          
+  ┃  Mensaje de historial para leer y seleccionar, línea 48.                 │    AGENTES · LANES                     ╷ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 49.                 │    ▪ Capacidad · activos 0/1 · espera  ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 50.                 │    0 · lectura                         ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 51.                 │    ○ Pulso agregado · desconocido ·    ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 52.                 │    observados activos 0 · espera       ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 53.                 │    capacidad 0 · join 0 · supervisión 0┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 54.                 │    Más…                                ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 55.                 │                                        ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 56.                 │    CONTEXTO                            ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 57.                 │    ▪ Sin medición todavía              ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 58.                 │    Más…                                ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 59.                 ┃                                        │ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 60.                 ┃    CONSUMO                             │ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 61.                 ┃    ▪ Tokens sesión: 0                  │ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 62.                 ┃    ○ Costo sesión: —                   │ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 63.                 ┃    Más…                                ╵ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 64.                 ┃                                          
+  ┃  Mensaje de historial para leer y seleccionar, línea 65.                 ┃    Mascota · Caricia                     
+  ┃  Mensaje de historial para leer y seleccionar, línea 66.                 ┃     ▄▄ ▄          ▄ ▄▄                   
+  ┃  Mensaje de historial para leer y seleccionar, línea 67.                 ┃     ▀██▀          ▀█▀█▄                  
+  ┃  Mensaje de historial para leer y seleccionar, línea 68.                 ┃       ▀█▄▄▄▄▄▄▄▄▄▄▀███▀                  
+  ┃  Mensaje de historial para leer y seleccionar, línea 69.                 ┃        ██▀▀████▀▀██ ▀                    
+  ┃  Mensaje de historial para leer y seleccionar, línea 70.                 ╵        █████▀▀█████                      
+                                                                                     ▄█▀██████▀██▀                      
+                                                                                   ▄█▀  ██  ██  ▀█▄                     
+   ›                                                                               ▀▀   ▀▀  ▀▀   ▀▀                     
+                                                                                  Cangrejo de Claude · De visita        
+                                                                                  Acariciar           Ocultar           
+  act · Permisos: Libre · Enter enviar · / ayuda · F3 · Ctrl+O archivos · /pa…                                          
+  —                                                                                                                     

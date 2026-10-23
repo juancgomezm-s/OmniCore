@@ -77,3 +77,24 @@ XP, procesos, proveedores ni cambios en el protocolo persistente.
 Referencias: [ADR-0030](0030-arquitectura-del-cliente.md),
 [ADR-0032](0032-sidebar-y-widgets.md), [ADR-0061](0061-plataforma-de-extensiones.md),
 [integración y validación](../extensions/companion-pet.md).
+
+La selección visual se resuelve en Client mediante `CompanionVisualPolicy` y
+evidencia provista por el renderer. La preferencia portable `renderMode` distingue
+lo solicitado de lo efectivo; los documentos anteriores que no incluyen el campo
+conservan `auto`. Core sólo persiste la preferencia por cliente y no cambia XP ni
+evolución por backend. CLI utiliza ImageView del framework existente para Sixel,
+con atlas embebidos y preparación asíncrona acotada. Los resultados Kitty basados
+en entorno no autorizan gráficos: esta versión carece de una consulta APC segura.
+Un fallo retira el raster y enclava el respaldo hasta una detección explícita.
+No se escriben secuencias gráficas fuera del buffer/ciclo del framework. Véanse
+[alcance, mediciones y limitaciones verificadas](../validation/companion-graphics/README.md).
+
+Los invitados Claude/Codex son apariencias de sesión y no nuevas especies. Una
+proyección adicional de llamadas completadas de la lane raíz conserva dos bits
+por sesión para elevar la probabilidad del invitado correspondiente. El sorteo
+estable usa intervalos disjuntos, de modo que una visita no cambia al usar otra
+familia o al reconectar. `species` y el estado evolutivo siguen siendo los de la
+mascota habitual; `guestId` y `appearanceId` expresan únicamente la visita en el
+snapshot contextual. La consulta sin sesión no incluye invitados. No se emiten
+eventos canónicos ni se usan modelos para decidir visitas. Detalles y probabilidades
+en [Invitados ocasionales](../extensions/companion-pet.md#invitados-ocasionales).

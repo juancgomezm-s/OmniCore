@@ -7,12 +7,12 @@ namespace OmniCore.Protocol;
 public sealed record CompanionPetSnapshot(bool Discovered, long Revision, string? Name, string? Species,
     string AppearanceId, string Variant, int Xp, int Level, int Mood, string Stage,
     int Interactions, int HatchAfter, string RulesVersion, CompanionClientPreferences Preferences,
-    CompanionReaction? Reaction = null);
+    CompanionReaction? Reaction = null, string? GuestId = null);
 
-public sealed record CompanionClientPreferences(bool Visible = true, bool ReducedMotion = false);
+public sealed record CompanionClientPreferences(bool Visible = true, bool ReducedMotion = false, string RenderMode = "auto");
 public sealed record CompanionReaction(string AnimationId, DateTimeOffset Until, int Priority);
 public sealed record CompanionPetAction(string Action, string? Name = null, string ClientId = "terminal",
-    bool? ReducedMotion = null);
+    bool? ReducedMotion = null, string? RenderMode = null);
 public sealed record CompanionPetChanged(long Revision, CompanionPetSnapshot State);
 
 public static class CompanionPetProtocol

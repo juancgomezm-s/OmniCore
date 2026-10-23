@@ -40,7 +40,7 @@ public sealed partial class TuiApp
     {
         UpdatePetTyping();
         if (_pet is null || !_petConnected || !_pet.Preferences.Visible || _pet.Preferences.ReducedMotion || !_animationPreferences.Enabled
-            || _animationPreferences.ReducedMotion)
+            || _animationPreferences.ReducedMotion || CompanionVisual.Effective is "text" or "hidden")
         { RenderPetPlayground(); return; }
         var playing = PetCanPlay();
         if (!playing && _petRunner?.Visible == true) RenderPetPlayground();
@@ -56,6 +56,7 @@ public sealed partial class TuiApp
     }
     private void RenderCompanion()
     {
+        UpdatePetGraphics();
         RenderPetPlayground();
         if (_sidebar is null || _sidebarContent is null) return;
         if (_petView is null)
@@ -66,10 +67,12 @@ public sealed partial class TuiApp
             ApplyTheme(_petView, "#202C3B");
         }
         _petView.DismissText = _locale == "es" ? "Ocultar" : "Hide";
-        var visible = _pet?.Discovered == true && _pet.Preferences.Visible;
+        var visual = CompanionVisual;
+        if (visual.Effective != "graphics") _petAssets.Clear();
+        var visible = _pet?.Discovered == true && visual.Effective != "hidden";
         var outside = _petRunner?.Visible == true;
-        var full = !outside && (_window?.Frame.Height ?? 0) >= 36 && _sidebar.Viewport.Width >= 23;
-        var height = full ? 12 : 4;
+        var full = visual.Effective != "text" && !outside && (_window?.Frame.Height ?? 0) >= 36 && _sidebar.Viewport.Width >= 23;
+        var height = full ? 12 : visual.Effective == "text" ? 3 : 4;
         if (_petView.Visible != visible || _petView.Frame.Height != height)
         {
             _petView.Visible = visible; _petView.Height = height; _petView.Y = Pos.AnchorEnd(height + 1);
@@ -77,19 +80,33 @@ public sealed partial class TuiApp
         }
         if (_pet is null) return;
         var moving = _petConnected && !_pet.Preferences.ReducedMotion && _animationPreferences.Enabled && !_animationPreferences.ReducedMotion;
-        var widget = new CompanionPetSidebarWidget(_pet, outside ? "play" : PetAnimation(), moving ? _petFrame : 1,
-            _animationPreferences.Ascii, _locale);
-        if (visible) _petView.Render(widget.Build(_state, full ? WidgetSize.Normal : WidgetSize.Compact),
-            Environment.GetEnvironmentVariable("NO_COLOR") is not null);
-        if (_petDetail?.Visible == true) _petDetail.Render(widget.Build(_state,
-            (_window?.Frame.Height ?? 0) >= 24 ? WidgetSize.Expanded : WidgetSize.Compact),
-            Environment.GetEnvironmentVariable("NO_COLOR") is not null);
+        var animation = outside ? "play" : PetAnimation();
+        var poseFrame = CompanionVisualPolicy.SpriteFrame(animation, _petFrame, !moving);
+        var tick = visual.Effective == "graphics" ? poseFrame : poseFrame % 2;
+        var textual = visual.Effective is "text" or "hidden";
+        var widget = new CompanionPetSidebarWidget(_pet, animation, tick, textual, _locale);
+        WidgetModel Model(WidgetSize size) => textual ? new ListWidgetModel("",
+            [new(CompanionPetPresentation.TextSummary(_pet, animation, _locale), ThemeRole.Primary),
+             new(CompanionPetPresentation.Word("pet_action", _locale), ThemeRole.Info)]) : widget.Build(_state, size);
+        _petView.LineOnly = textual;
+        if (_petDetail is not null) _petDetail.LineOnly = textual;
+        if (visible) _petView.Render(Model(full ? WidgetSize.Normal : WidgetSize.Compact),
+            PetNoColor);
+        if (_petDetail?.Visible == true) _petDetail.Render(Model(
+            (_window?.Frame.Height ?? 0) >= 26 ? WidgetSize.Expanded : WidgetSize.Compact),
+            PetNoColor);
+        RenderPetImage(_petView, animation, visible && full && _sidebar.Visible && _overlay is null && _commandHelper is null && _activeInteraction is null);
+        if (_petDetail is not null) RenderPetImage(_petDetail, animation, visible && _petDetail.Visible && _overlay?.Id == "companion-detail"
+            && (_window?.Frame.Height ?? 0) >= 26);
     }
     private void RunPetAction(string argument, bool detail)
     {
         try
         {
             var localAction = argument.Trim().ToLowerInvariant();
+            if (localAction is "detect" or "detectar")
+            { ProbePetGraphics(true); RenderCompanion(); ShowPetVisualSettings(); return; }
+            if (localAction is "mode" or "modo") { ShowPetVisualSettings(); return; }
             if (localAction is "play" or "home")
             {
                 if (localAction == "play")
@@ -103,6 +120,8 @@ public sealed partial class TuiApp
             var petHadFocus = _petView?.HasFocus == true || _petRunnerHide?.HasFocus == true;
             _pet = CompanionPetPresentation.Execute(_client, argument); _petConnected = true;
             _petLastActive = DateTimeOffset.UtcNow; RenderCompanion();
+            if (detail && (localAction.StartsWith("mode ", StringComparison.Ordinal) || localAction.StartsWith("modo ", StringComparison.Ordinal)))
+            { ShowPetVisualSettings(); return; }
             if (argument.Trim() == "hide")
             {
                 _petTicks = 0;
@@ -128,13 +147,13 @@ public sealed partial class TuiApp
             if (_overlay is not null) _overlay.Width = Dim.Func(_ => CardWidth());
             return;
         }
-        bool Full() => _window.Frame.Height >= 24;
+        bool Full() => _window.Frame.Height >= 26 && CompanionVisual.Effective is "graphics" or "unicode";
         int ControlsY() => Full() ? 13 : 5;
         var frame = OverlayFrame(CompanionPetPresentation.Word("pet", _locale), 18);
         frame.Id = "companion-detail";
         // This small card follows its contents instead of taking 80% of the terminal.
         frame.Width = Dim.Func(_ => CardWidth());
-        frame.Height = Dim.Func(_ => Full() ? 20 : 11);
+        frame.Height = Dim.Func(_ => Full() ? 22 : 14);
         _petDetail = new PixelWidgetView { Id = "companion-detail-renderer", X = 2, Y = 1,
             Width = Dim.Fill(2), Height = Dim.Func(_ => Full() ? 12 : 4) };
         _petDetail.ActionInvoked += () => RunPetAction("pet", false); frame.Add(_petDetail);
@@ -153,9 +172,9 @@ public sealed partial class TuiApp
         motion.Accepted += (_, _) => { RunPetAction(_pet?.Preferences.ReducedMotion == true ? "motion" : "reduced", false);
             motion.Text = _pet?.Preferences.ReducedMotion == true ? "/pet motion" : "/pet reduced"; };
         frame.Add(name, rename, visibility, motion);
-        frame.Add(new Label { X = 2, Y = Pos.Func(_ => ControlsY() + 4), Width = Dim.Fill(2),
-            Height = Dim.Func(_ => Full() ? 1 : 0),
-            Text = $"{CompanionPetPresentation.Word(_pet.Stage, _locale)} · {_pet.Xp} XP · {_pet.Mood}/100" });
+        var mode = new Button { Id = "companion-mode", X = 2, Y = Pos.Func(_ => ControlsY() + 4), Height = 2,
+            Text = (_locale == "es" ? "Vista: " : "View: ") + _pet.Preferences.RenderMode + "/" + CompanionVisual.Effective };
+        mode.Accepted += (_, _) => ShowPetVisualSettings(); frame.Add(mode);
         var close = new Button { Id = "companion-close", X = 2, Y = Pos.AnchorEnd(2), Height = 2,
             Text = _locale == "es" ? "Cerrar" : "Close" };
         close.Accepted += (_, _) => { _petDetail = null; CloseOverlay(); }; frame.Add(close);

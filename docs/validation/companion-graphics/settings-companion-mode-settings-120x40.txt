@@ -1,0 +1,40 @@
+  ws │ semilla de prueba · Modelo: Automático · sin turno                                                               
+                                                                                                                        
+  ┃  Mensaje de historial para leer y seleccionar, línea 40.                                                         ╷  
+  ┃  Mensaje de historial para leer y seleccionar, línea 41.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 42.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 43.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 44.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 45.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 46.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 47.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 48.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 49.                                                         │  
+  ┃  Mensaje de historial para leer y seleccionar, línea 50.                                                         │  
+  ┃  Mensaje de historial para  Vista de la mascota                                                                  │  
+  ┃  Mensaje de historial para  Solicitado: graphics | Efectivo: unicode                                             │  
+  ┃  Mensaje de historial para  Gráficos no disponibles; usando unicode.                                             │  
+  ┃  Mensaje de historial para                                                                                       │  
+  ┃  Mensaje de historial para                                                                                       │  
+  ┃  Mensaje de historial para  Auto  Gráfico  Unicode  Texto  Oculto                                                │  
+  ┃  Mensaje de historial para                                                                                       │  
+  ┃  Mensaje de historial para                                                                                       │  
+  ┃  Mensaje de historial para  Detectar de nuevo                                                                    ┃  
+  ┃  Mensaje de historial para                                                                                       ┃  
+  ┃  Mensaje de historial para                                                                                       ┃  
+  ┃  Mensaje de historial para  Cerrar                                                                               ┃  
+  ┃  Mensaje de historial para                                                                                       ┃  
+  ┃  Mensaje de historial para                                                                                       ┃  
+  ┃  Mensaje de historial para leer y seleccionar, línea 65.                                                         ┃  
+  ┃  Mensaje de historial para leer y seleccionar, línea 66.                                                         ┃  
+  ┃  Mensaje de historial para leer y seleccionar, línea 67.                                                         ┃  
+  ┃  Mensaje de historial para leer y seleccionar, línea 68.                                                         ┃  
+  ┃  Mensaje de historial para leer y seleccionar, línea 69.                                                         ┃  
+  ┃  Mensaje de historial para leer y seleccionar, línea 70.                                                         ╵  
+                                                                                                                        
+                                                                                                                        
+   ›                                                                                                                    
+                                                                                                                        
+                                                                                                                        
+  act · Permisos: Libre · Enter enviar · ⇧Enter salto · ⇧Tab modo · / ayuda · F2 panel · F3 modelo · F4 ajustes · Ctr…  
+  —                                                                                                                     

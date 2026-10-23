@@ -127,8 +127,15 @@ public sealed partial class CliApp
             try
             {
                 var state = CompanionPetPresentation.Execute(Runtime.Connect(CancellationToken.None),
-                    string.Join(" ", args.Skip(1).Where(a => a != "--json")), "headless");
-                Console.WriteLine(CompanionPetProtocol.Encode(state)); return Task.FromResult(0);
+                    string.Join(" ", args.Skip(1).Where(a => a is not ("--json" or "--text"))), "headless");
+                var visual = new CompanionVisualPolicy().Select(state.Preferences.RenderMode, state.Preferences.Visible,
+                    new(Interactive: false, Unicode: false));
+                var json = CompanionPetProtocol.Encode(state);
+                Console.WriteLine(args.Contains("--text", StringComparer.Ordinal)
+                    ? CompanionPetPresentation.Summary(state).Replace(" · ", " | ") + " | " + state.Stage
+                    : json[..^1] + ",\"visual\":{" + JsonObj.Field("requested", visual.Requested) + ","
+                        + JsonObj.Field("effective", visual.Effective) + ",\"backend\":null," + JsonObj.Field("reason", visual.Reason) + "}}");
+                return Task.FromResult(0);
             }
             catch (Exception error) when (error is ArgumentException or InvalidOperationException)
             { Console.WriteLine("{\"error\":\"" + JsonObj.Escape(error.Message) + "\"}"); return Task.FromResult(2); }

@@ -10,6 +10,16 @@ public static class CompanionSpriteCatalog
     public const string Background = "#202C3B";
     private static readonly IReadOnlyDictionary<string, string[]> Art = new Dictionary<string, string[]>
     {
+        ["claude-crab"] = [
+            "                    ", " BB B          B BB ", " BBBB          BBBB ", "  BB            BB  ",
+            "   BB          BB   ", "    BBBBBBBBBBBB    ", "    BBBBBBBBBBBB    ", "    BBE BBBB EBB    ",
+            "    BBBBBBBBBBBB    ", "    BBBBBNNBBBBB    ", "    BBBBBBBBBBBB    ", "   BB BBBBBB BB     ",
+            "  BB  BB  BB  BB    ", " BB   BB  BB   BB   ", " DD   DD  DD   DD   ", "                    "],
+        ["codex-robot"] = [
+            "         C          ", "         D          ", "     CCCCCCCCCC     ", "    CCCCCCCCCCCC    ",
+            "   DCCDDDDDDDDCCD   ", "   DCCDEDDDDEDCCD   ", "   DCCDEDDDDEDCCD   ", "   DCCDDDDDDDDCCD   ",
+            "    CCCCCCCCCCCC    ", "      CCCNNCCC      ", "    C CCCCCCCC C    ", "    C CCNCCNCC C    ",
+            "    D CCCCCCCC D    ", "      CCC  CCC      ", "      DDD  DDD      ", "                    "],
         ["egg"] = [
             "                    ", "       CCC          ", "      LCCCQ         ", "     LLCCCCQ        ",
             "     LLCCCCQ        ", "    CLCCCCCQQ       ", "    CLCCCCCQQ       ", "   CLCCCCCCCQQ      ",
@@ -48,6 +58,8 @@ public static class CompanionSpriteCatalog
     };
     private static readonly IReadOnlyDictionary<string, string[]> MiniArt = new Dictionary<string, string[]>
     {
+        ["claude-crab"] = [" B B    B B ", " BBBBBBBBBB ", "   BEBBEB   ", "   BBNNBB   ", "  BB BB BB  ", " DD  DD  DD "],
+        ["codex-robot"] = ["     C      ", "  CCCCCCCC  ", "  CDEDD E C ", "   CCCCCC   ", " C CCNNCC C ", "   DD  DD   "],
         ["egg"] = ["            ", "     CC     ", "    LCCQ    ", "   LCCCQQ   ", "   CCCCQQ   ", "    CQQQ    "],
         ["ox"] = ["            ", " C      C   ", "  BBBBBB    ", "  EBBBBE    ", "  CCNNCCBB  ", "   D  D DD  "],
         ["fox"] = ["            ", " B    B     ", " BBBBBB     ", " BEBBEB  CC ", "  CCNBBBBCC ", "   D  D     "],
@@ -61,7 +73,8 @@ public static class CompanionSpriteCatalog
     public static IReadOnlyList<IReadOnlyList<PixelCell>> RenderMini(CompanionPetSnapshot state,
         string animation, long frame, bool facingLeft)
     {
-        var art = MiniArt.GetValueOrDefault(state.Species ?? "egg") ?? MiniArt["egg"];
+        var id = CompanionPetPresentation.VisualId(state);
+        var art = MiniArt.GetValueOrDefault(id) ?? MiniArt["egg"];
         var pixels = new char[6, 12];
         var lift = animation is "hop" or "dash" or "weave" && frame % 2 == 1 ? 1 : 0;
         var rolling = animation == "roll" && frame % 4 is 1 or 2;
@@ -81,11 +94,12 @@ public static class CompanionSpriteCatalog
                 pixel = ' ';
             pixels[y, x] = pixel;
         }
-        return Cells(pixels, Palette(state.Species, state.Variant.StartsWith("cool", StringComparison.Ordinal)), "#061822");
+        return Cells(pixels, Palette(id, state.GuestId is null && state.Variant.StartsWith("cool", StringComparison.Ordinal)), "#061822");
     }
     public static IReadOnlyList<IReadOnlyList<PixelCell>> Render(CompanionPetSnapshot state, string animation, long frame)
     {
-        if (!Art.TryGetValue(state.Species ?? "egg", out var art)) art = Art["egg"];
+        var id = CompanionPetPresentation.VisualId(state);
+        if (!Art.TryGetValue(id, out var art)) art = Art["egg"];
         var pixels = new char[16, 20];
         var phase = (int)(Math.Max(0, frame) % 16);
         var blink = animation == "sleep" || animation == "idle" && phase == 0 || animation == "working" && phase % 4 == 1;
@@ -98,8 +112,8 @@ public static class CompanionSpriteCatalog
             var pixel = source >= 0 && source < 16 && x < art[source].Length ? art[source][x] : ' ';
             if (pixel == 'E' && blink) pixel = 'D';
             if (pixel == 'E' && animation == "pet") pixel = 'C';
-            if (pixel == 'B' && state.Variant.EndsWith("1", StringComparison.Ordinal) && x is 8 or 9 && y is 10 or 11) pixel = 'S';
-            if (pixel == 'B' && state.Variant.EndsWith("2", StringComparison.Ordinal) && (x + y) % 11 == 0) pixel = 'S';
+            if (state.GuestId is null && pixel == 'B' && state.Variant.EndsWith("1", StringComparison.Ordinal) && x is 8 or 9 && y is 10 or 11) pixel = 'S';
+            if (state.GuestId is null && pixel == 'B' && state.Variant.EndsWith("2", StringComparison.Ordinal) && (x + y) % 11 == 0) pixel = 'S';
             pixels[y, x] = pixel;
         }
         // Two clear lobes and a tapered point; float upward without shaking the shell sideways.
@@ -107,8 +121,8 @@ public static class CompanionSpriteCatalog
         if (animation == "sleep") Stamp(pixels, 16, 0, ["CCC", " C ", "CCC"]);
         if (animation == "waiting") Stamp(pixels, 17, 0, ["C", "C", " ", "C"]);
         if (animation == "failure") Stamp(pixels, 17, 0, ["NNN", "  N", " N ", "   ", " N "]);
-        if (state.Stage == "legendary") Stamp(pixels, 6, 0, ["N N N", "NNNNN"]);
-        var palette = Palette(state.Species, state.Variant.StartsWith("cool", StringComparison.Ordinal));
+        if (state.Stage == "legendary" && state.GuestId is null) Stamp(pixels, 6, 0, ["N N N", "NNNNN"]);
+        var palette = Palette(id, state.GuestId is null && state.Variant.StartsWith("cool", StringComparison.Ordinal));
         return Cells(pixels, palette, Background);
     }
     private static IReadOnlyList<IReadOnlyList<PixelCell>> Cells(char[,] pixels, Dictionary<char, string> palette, string background)
@@ -140,10 +154,11 @@ public static class CompanionSpriteCatalog
         {
             "ox" => cool ? "#91634B" : "#A16B41", "fox" => cool ? "#D98742" : "#EF943F",
             "owl" => cool ? "#9C8E7A" : "#B99565", "beaver" => cool ? "#967452" : "#B08654",
-            "cat" => cool ? "#889AAE" : "#C59B72", "capybara" => cool ? "#B7A489" : "#D1B48B", _ => "#D9CBB2",
+            "cat" => cool ? "#889AAE" : "#C59B72", "capybara" => cool ? "#B7A489" : "#D1B48B",
+            "claude-crab" => "#DE886A", "codex-robot" => "#ACBFCA", _ => "#D9CBB2",
         };
-        return new() { ['B'] = body, ['C'] = species is null ? "#F7F1DF" : "#F2E4C8",
-            ['L'] = "#FFFCF1", ['Q'] = "#D5C9AD", ['D'] = "#665043", ['E'] = "#161A20",
+        return new() { ['B'] = body, ['C'] = species == "codex-robot" ? "#DBE7E6" : species == "egg" ? "#F7F1DF" : "#F2E4C8",
+            ['L'] = "#FFFCF1", ['Q'] = "#D5C9AD", ['D'] = species == "codex-robot" ? "#243B49" : "#665043", ['E'] = species == "codex-robot" ? "#A6F3D7" : "#161A20",
             ['N'] = species == "owl" ? "#E6B54E" : "#443B39", ['S'] = "#AD9372", ['H'] = "#EB8F9A" };
     }
 }

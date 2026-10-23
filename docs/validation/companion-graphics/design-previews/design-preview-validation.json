@@ -1,0 +1,9 @@
+{
+  "terminal": "xterm.js 5.5.0",
+  "addon": "@xterm/addon-image 0.8.0",
+  "browser": "155.0.4283.62",
+  "designs": 2,
+  "statesPerDesign": 6,
+  "source": "Replay of actual Terminal.Gui ImageView Sixel output; not a full live OmniCore session",
+  "errors": []
+}

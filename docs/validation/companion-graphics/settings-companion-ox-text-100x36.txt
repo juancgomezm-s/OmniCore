@@ -1,0 +1,36 @@
+  ws │ semilla de prueba · Modelo: Automático · sin turno                   Espacio de trabajo      
+                                                                                           Ajustes  
+  ┃  Mensaje de historial para leer y seleccionar, línea 44.           ╷                            
+  ┃  Mensaje de historial para leer y seleccionar, línea 45.           │    SESIÓN                  
+  ┃  Mensaje de historial para leer y seleccionar, línea 46.           │    semilla de prueba       
+  ┃  Mensaje de historial para leer y seleccionar, línea 47.           │    ◆ Modelo: Automático …  
+  ┃  Mensaje de historial para leer y seleccionar, línea 48.           │    ○ act · en curso        
+  ┃  Mensaje de historial para leer y seleccionar, línea 49.           │                            
+  ┃  Mensaje de historial para leer y seleccionar, línea 50.           │    Más… despliega cada sec 
+  ┃  Mensaje de historial para leer y seleccionar, línea 51.           │                            
+  ┃  Mensaje de historial para leer y seleccionar, línea 52.           │    AGENTES · LANES       ╷ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 53.           │    ▪ Capacidad · activos ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 54.           │    0/1 · espera 0 ·      ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 55.           │    lectura               ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 56.           │    ○ Pulso agregado ·    ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 57.           │    desconocido ·         ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 58.           │    observados activos 0  ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 59.           │    · espera capacidad 0  ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 60.           │    · join 0 ·            ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 61.           │    supervisión 0         ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 62.           ┃    Más…                  ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 63.           ┃                          ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 64.           ┃    CONTEXTO              ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 65.           ┃    ▪ Sin medición todavía┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 66.           ┃    Más…                  ┃ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 67.           ┃                          │ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 68.           ┃    CONSUMO               │ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 69.           ┃    ▪ Tokens sesión: 0    │ 
+  ┃  Mensaje de historial para leer y seleccionar, línea 70.           ╵    ○ Costo sesión: —     │ 
+                                                                            Más…                  │ 
+                                                                                                  ╵ 
+   ›                                                                                                
+                                                                            Omni | Buey | Caricia   
+                                                                            Acariciar   Ocultar     
+  act · Permisos: Libre · Enter enviar · / ayuda · F3 · Ctrl+O archivos…                            
+  —                                                                                                 

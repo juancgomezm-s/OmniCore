@@ -28,12 +28,12 @@ public sealed partial class OmniServer
         if (name.StartsWith("companion.pet.events:", StringComparison.Ordinal))
         {
             var after = long.Parse(name[21..], System.Globalization.CultureInfo.InvariantCulture);
-            var snapshot = CompanionService.Status();
+            var snapshot = CompanionService.Status(session: _lastSessionId);
             return new(name, snapshot.Revision > after
                 ? CompanionPetProtocol.EncodeChange(new(snapshot.Revision, snapshot)) : "null");
         }
         var client = name.StartsWith("companion.pet:", StringComparison.Ordinal) ? name[14..] : "terminal";
-        return new(name, CompanionPetProtocol.Encode(CompanionService.Status(client)));
+        return new(name, CompanionPetProtocol.Encode(CompanionService.Status(client, _lastSessionId)));
     }
     private CommandAck ChangeCompanion(WireEnvelope command)
     {
@@ -51,7 +51,7 @@ public sealed partial class OmniServer
     }
     internal ExtensionView CompanionExtensionView()
     {
-        SynchronizeCompanion(); var state = CompanionService.Status();
+        SynchronizeCompanion(); var state = CompanionService.Status(session: _lastSessionId);
         if (!state.Discovered) throw new InvalidOperationException("companion_not_discovered");
         using var doc = JsonDocument.Parse(CompanionPetProtocol.Encode(state));
         return new("core.companion.pet", "core.companion", "indicator", state.Revision, "ready", [], [],

@@ -30,6 +30,8 @@ public static class CompanionPetPresentation
     {
         (true, "ox") => "Buey", (true, "fox") => "Zorro", (true, "owl") => "Búho", (true, "beaver") => "Castor",
         (true, "cat") => "Gato", (true, "capybara") => "Capibara", (true, "egg") => "Huevo",
+        (true, "claude-crab") => "Cangrejo de Claude", (true, "codex-robot") => "Robot de Codex",
+        (false, "claude-crab") => "Claude crab", (false, "codex-robot") => "Codex robot",
         (true, "pet") => "Mascota", (true, "pet_action") => "Acariciar",
         (true, "idle") => "Reposo", (true, "working") => "Trabajando", (true, "waiting") => "Esperando",
         (true, "success") => "¡Bien!", (true, "failure") => "Sorpresa", (true, "sleep") => "Durmiendo",
@@ -39,9 +41,17 @@ public static class CompanionPetPresentation
     };
     public static string AnimationName(string animation, string locale) => animation == "pet"
         ? locale.StartsWith("es", StringComparison.Ordinal) ? "Caricia" : "Petted" : Word(animation, locale);
-    public static string Summary(CompanionPetSnapshot pet, string locale = "es") => pet.Species is null
+    public static string VisualId(CompanionPetSnapshot pet) => pet.Discovered && pet.Species is not null
+        && pet.GuestId is "claude-crab" or "codex-robot" ? pet.GuestId : pet.Species ?? "egg";
+    public static string Summary(CompanionPetSnapshot pet, string locale = "es") => VisualId(pet) != (pet.Species ?? "egg")
+        ? Word(VisualId(pet), locale) + (locale.StartsWith("es", StringComparison.Ordinal) ? " · De visita" : " · Visiting")
+        : pet.Species is null
         ? $"{pet.Name} · {Word("egg", locale)} · {pet.Interactions}/{pet.HatchAfter}"
         : $"{pet.Name} · {Word(pet.Species, locale)} · L{pet.Level} · {pet.Mood}/100";
+    public static string TextSummary(CompanionPetSnapshot pet, string animation = "idle", string locale = "es") =>
+        VisualId(pet) != (pet.Species ?? "egg")
+            ? $"{Summary(pet, locale)} | {AnimationName(animation, locale)}"
+            : $"{pet.Name} | {Word(pet.Species ?? "egg", locale)} | {AnimationName(animation, locale)}";
     public static string Animation(CompanionPetSnapshot pet, bool working, bool waiting, DateTimeOffset lastActive, DateTimeOffset now)
     {
         if (pet.Reaction is { } reaction && reaction.Until > now) return reaction.AnimationId;
@@ -57,6 +67,8 @@ public static class CompanionPetPresentation
         {
             "reduced" => new CompanionPetAction("preferences", ClientId: clientId, ReducedMotion: true),
             "motion" => new CompanionPetAction("preferences", ClientId: clientId, ReducedMotion: false),
+            "mode" or "modo" => new CompanionPetAction("preferences", ClientId: clientId,
+                RenderMode: CompanionVisualPolicy.Normalize(parts.Length > 1 ? parts[1] : "auto")),
             _ => new CompanionPetAction(action, parts.Length > 1 ? parts[1] : null, clientId),
         };
         var json = CompanionPetProtocol.EncodeAction(request);

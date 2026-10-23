@@ -44,6 +44,8 @@ public sealed class CompanionPetService
     private readonly Func<DateTimeOffset> _clock;
     private readonly object _reactionGate = new();
     private CompanionReaction? _reaction;
+    internal Func<SessionId?, DateTimeOffset, int, string?> GuestSelector { get; set; } =
+        (session, discovered, models) => CompanionGuestPolicy.Select(session, discovered, models);
     public CompanionPetService(string profileDataDirectory, CompanionPetOptions? options = null,
         Func<double>? random = null, Func<DateTimeOffset>? clock = null)
     {
@@ -84,6 +86,7 @@ public sealed class CompanionPetService
             CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS cursors (id TEXT PRIMARY KEY, seq INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS rewards (kind TEXT PRIMARY KEY, day TEXT NOT NULL, count INTEGER NOT NULL, at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS guest_sessions (id TEXT PRIMARY KEY, models INTEGER NOT NULL);
             """;
         cmd.ExecuteNonQuery();
         return db;
@@ -140,12 +143,29 @@ public sealed class CompanionPetService
             state.Xp, level, MoodAt(state, _clock()), stage, state.Interactions, state.HatchAfter, state.RulesVersion,
             state.Clients.GetValueOrDefault(clientId) ?? new(), reaction);
     }
-    public CompanionPetSnapshot Status(string clientId = "terminal")
+    public CompanionPetSnapshot Status(string clientId = "terminal", SessionId? session = null)
     {
         ValidateClient(clientId);
         if (!File.Exists(_file)) return Snapshot(null, clientId);
         using var db = Open(); using var tx = db.BeginTransaction(deferred: true);
-        return Snapshot(Read(db, tx), clientId);
+        var state = Read(db, tx);
+        var snapshot = Snapshot(state, clientId);
+        var guest = state?.Species is not null && session is not null
+            ? GuestSelector(session, state.DiscoveredAt, GuestModels(db, tx, session)) : null;
+        return guest is null ? snapshot : snapshot with { GuestId = guest, AppearanceId = guest + ".v1" };
+    }
+    private static int GuestModels(SqliteConnection db, SqliteTransaction tx, SessionId session)
+    {
+        using var read = Command(db, tx, "SELECT models FROM guest_sessions WHERE id=$p0", session.ToString());
+        return read.ExecuteScalar() is long models ? (int)models : 0;
+    }
+    private static bool RecordGuestModel(SqliteConnection db, SqliteTransaction tx, SessionId session, int family)
+    {
+        using var write = Command(db, tx, """
+            INSERT INTO guest_sessions VALUES($p0,$p1) ON CONFLICT(id) DO UPDATE
+            SET models=models|excluded.models WHERE (models&excluded.models)=0
+            """, session.ToString(), family);
+        return write.ExecuteNonQuery() > 0;
     }
     public CompanionPetSnapshot Act(CompanionPetAction action, string identity)
     {
@@ -153,6 +173,8 @@ public sealed class CompanionPetService
         if (action.Action is not ("discover" or "status" or "pet" or "rename" or "show" or "hide" or "preferences"))
             throw new ArgumentException("Unknown companion action.");
         var name = action.Action == "rename" ? ValidateName(action.Name) : null;
+        if (action.RenderMode is not (null or "auto" or "graphics" or "unicode" or "text" or "hidden"))
+            throw new ArgumentException("Unknown companion rendering mode.");
         if (action.Action == "status") return Status(action.ClientId);
         using var db = Open(); using var tx = db.BeginTransaction(deferred: false);
         var state = Read(db, tx); var now = _clock(); var changed = false;
@@ -173,7 +195,9 @@ public sealed class CompanionPetService
                     state.LastPet = now; changed = petted = true; break;
                 case "show": case "hide": case "preferences":
                     var next = preferences with { Visible = action.Action == "show" || action.Action != "hide" && preferences.Visible,
-                        ReducedMotion = action.ReducedMotion ?? preferences.ReducedMotion };
+                        ReducedMotion = action.ReducedMotion ?? preferences.ReducedMotion,
+                        RenderMode = action.RenderMode ?? (action.Action == "show" && preferences.RenderMode == "hidden" ? "auto" : preferences.RenderMode) };
+                    if (action.RenderMode is { } mode) next = next with { Visible = mode != "hidden" };
                     changed |= next != preferences; state.Clients[action.ClientId] = next; break;
             }
         }
@@ -262,6 +286,18 @@ public sealed class CompanionPetService
                     }
                     changed = true;
                 }
+            }
+            if (state.Species is not null && payload is ModelStepCompleted completed)
+            {
+                history ??= journal.ReadFrom(session, 1);
+                var prior = history.Where(e => e.Sequence < envelope.Sequence).Select(codecs.Decode).ToArray();
+                var start = prior.OfType<ModelStepStarted>().LastOrDefault(s => s.TurnId == completed.TurnId && s.StepIndex == completed.StepIndex);
+                var turn = prior.OfType<TurnStarted>().LastOrDefault(t => t.TurnId == completed.TurnId);
+                var root = prior.OfType<RunCreated>().LastOrDefault(r => r.RunId == envelope.RunId);
+                var family = start is null ? 0 : CompanionGuestPolicy.ModelFamily(start.ModelId);
+                var lane = turn is null ? null : prior.OfType<LaneCreated>().LastOrDefault(l => l.LaneId == turn.LaneId);
+                if (family != 0 && root is not null && lane?.TaskId == root.RootTask)
+                    changed |= RecordGuestModel(db, tx, session, family);
             }
             var callId = payload switch { ToolCallSucceeded s => s.ToolCallId, ToolCallFailed f => f.ToolCallId, _ => (ToolCallId?)null };
             if (callId is { } call)

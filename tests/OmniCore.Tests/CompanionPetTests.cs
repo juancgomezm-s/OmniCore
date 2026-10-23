@@ -14,8 +14,26 @@ using OmniCore.Tools;
 
 namespace OmniCore.Tests;
 
-public sealed class CompanionPetTests
+public sealed partial class CompanionPetTests
 {
+    [Fact]
+    public void Visual_preferences_persist_per_client_without_changing_identity_or_evolution()
+    {
+        using var fx = new Fixture(); fx.Hatch();
+        var original = fx.Pet.Status();
+        foreach (var mode in new[] { "graphics", "unicode", "text", "hidden", "auto" })
+        {
+            var updated = fx.Pet.Act(new("preferences", RenderMode: mode), "mode/" + mode);
+            Assert.Equal(mode, updated.Preferences.RenderMode);
+            Assert.Equal(original.Species, updated.Species); Assert.Equal(original.Xp, updated.Xp);
+            Assert.Equal(original.Interactions, updated.Interactions); Assert.Equal(original.Stage, updated.Stage);
+            Assert.Equal("auto", fx.Pet.Status("omnicoder").Preferences.RenderMode);
+            Assert.Equal(mode, new CompanionPetService(fx.Root).Status().Preferences.RenderMode);
+        }
+        Assert.Throws<ArgumentException>(() => fx.Pet.Act(new("preferences", RenderMode: "invalid"), "bad"));
+        var legacy = CompanionPetProtocol.Decode(CompanionPetProtocol.Encode(original).Replace(",\"renderMode\":\"auto\"", ""));
+        Assert.Equal("auto", legacy!.Preferences.RenderMode);
+    }
     private sealed class Fixture : IDisposable
     {
         internal readonly string Root = Path.Combine(Path.GetTempPath(), "omni-companion-" + Guid.NewGuid().ToString("N"));
