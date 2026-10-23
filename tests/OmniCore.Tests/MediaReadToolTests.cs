@@ -17,6 +17,40 @@ public sealed class MediaReadToolTests
     private static readonly byte[] ValidPng = Convert.FromBase64String(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p1sAAAAASUVORK5CYII=");
 
+    [Theory]
+    [InlineData(WebpImageValidationTests.Lossless)]
+    [InlineData(WebpImageValidationTests.Lossy)]
+    [InlineData(WebpImageValidationTests.Alpha)]
+    public void Webp_path_and_session_hash_use_complete_decode_and_preserve_snapshot_bytes(string encoded)
+    {
+        var root = Temp();
+        try
+        {
+            var bytes = Convert.FromBase64String(encoded);
+            File.WriteAllBytes(Path.Combine(root, "still.webp"), bytes);
+            var artifacts = new FileArtifactStore(Path.Combine(root, "cas"));
+            var pathTool = new MediaReadTool(_ => false, _ => null, new PathBoundaryValidator(), CompleteDecode);
+            var pathResult = Executor(root, artifacts, pathTool).ExecuteToolWithoutJournal(
+                Call("{\"path\":\"still.webp\"}"), false, CancellationToken.None);
+            Assert.True(pathResult.Succeeded, pathResult.Summary);
+            var reference = Assert.IsType<ArtifactRef>(pathResult.Artifact);
+            Assert.Equal("image/webp", reference.MediaType);
+            Assert.Contains("2x3", pathResult.Summary);
+            Assert.Equal(bytes, artifacts.GetBytes(reference.Hash, reference.Size));
+            var hashTool = new MediaReadTool(hash => hash == reference.Hash.Value, _ => reference,
+                new PathBoundaryValidator(), CompleteDecode);
+            var hashResult = Executor(root, artifacts, hashTool).ExecuteToolWithoutJournal(
+                Call("{\"hash\":\"" + reference.Hash.Value + "\"}"), false, CancellationToken.None);
+            Assert.True(hashResult.Succeeded, hashResult.Summary);
+            Assert.Equal(reference.Hash, hashResult.Artifact!.Hash);
+
+            var headerOnlyTool = new MediaReadTool(_ => false, _ => null, new PathBoundaryValidator());
+            Assert.False(Executor(root, artifacts, headerOnlyTool).ExecuteToolWithoutJournal(
+                Call("{\"path\":\"still.webp\"}"), false, CancellationToken.None).Succeeded);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
     [Fact]
     public void Authorized_path_is_bounded_decoded_and_published_as_a_native_image_snapshot()
     {

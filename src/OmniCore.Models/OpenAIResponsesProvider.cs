@@ -660,7 +660,9 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
             var mediaType = bytes.Length >= 8 && bytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 })
                 ? "image/png"
                 : bytes.Length >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff
-                    ? "image/jpeg" : null;
+                    ? "image/jpeg"
+                    : bytes.Length >= 12 && bytes.AsSpan(0, 4).SequenceEqual("RIFF"u8)
+                        && bytes.AsSpan(8, 4).SequenceEqual("WEBP"u8) ? "image/webp" : null;
             if (mediaType is null)
                 throw new ModelProviderException("ImageOutputInvalid", "Responses image output format is not supported or its signature is invalid.");
             return new ImageBlock(mediaType, bytes);

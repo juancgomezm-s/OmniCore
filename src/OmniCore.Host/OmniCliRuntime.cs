@@ -20,6 +20,8 @@ using System.Text.Json;
 /// <summary>Fachada tipada del runtime usada por el CLI; oculta composición y tipos internos.</summary>
 public sealed class OmniCliRuntime : IDisposable
 {
+    internal sealed record NativeToolActionRequest(string ToolName, string ArgumentsJson, string InvocationId);
+
     public sealed record ProjectExtensionConsentResult(bool Granted, string ExtensionId,
         IReadOnlyList<string> Capabilities);
     private readonly string _workspaceRoot;
@@ -740,6 +742,7 @@ public sealed class OmniCliRuntime : IDisposable
         {
             "image/png" => ".png",
             "image/jpeg" => ".jpg",
+            "image/webp" => ".webp",
             _ => throw new InvalidDataException("Generated image format is not supported by the image opener."),
         };
         var path = Path.Combine(Path.GetTempPath(), "omnicore-generated-" + Guid.NewGuid().ToString("N") + extension);
@@ -888,6 +891,8 @@ public sealed class OmniCliRuntime : IDisposable
         var isChoiceContinuation = admitted.ContinuationResponseType == "choice";
         var isQuestionnaireContinuation = admitted.ContinuationInteractionId is not null && !isChoiceContinuation;
         TurnId? continuationTurnId = null;
+        DelegationId? choiceDelegationId = null;
+        NativeChildPermissionContinuation? childPermissionContinuation = null;
         if (server.LastSessionId() != session || server.LastRunId() != run
             || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(session) != run
             || receipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
@@ -919,8 +924,24 @@ public sealed class OmniCliRuntime : IDisposable
                 return 1;
             if (!TryValidateQuestionnaireContinuation(server, session, run,
                 admitted.ContinuationInteractionId!, continuationCommandId, continuationFirst, continuationLast,
-                out continuationTurnId))
+                out continuationTurnId, out var questionnaireTask, out var questionnaireLane,
+                out var questionnaireToolCall))
                 return 1;
+            if (admitted.ContinuationTurnId != continuationTurnId?.ToString()
+                || admitted.ContinuationTaskId != questionnaireTask.ToString()
+                || admitted.ContinuationLaneId != questionnaireLane.ToString()
+                || admitted.ContinuationToolCallId != questionnaireToolCall.ToString()) return 1;
+            var questionnaireEvents = server.AcquireStore().ReadFrom(session, 1).Where(evt => evt.RunId == run).ToArray();
+            var questionnaireProjection = RunProjection.Replay(session, run, server.AcquireCodecs(), questionnaireEvents);
+            var questionnaireRootLane = questionnaireProjection.RootTask is { } questionnaireRootTask
+                ? LaneProjection.Replay(server.AcquireCodecs(), questionnaireEvents).ForTask(questionnaireRootTask)
+                    .FirstOrDefault()?.Id : null;
+            if (questionnaireTask != questionnaireProjection.RootTask || questionnaireLane != questionnaireRootLane)
+            {
+                choiceDelegationId = server.AcceptedDelegationForChild(session, run,
+                    questionnaireTask, questionnaireLane);
+                if (choiceDelegationId is null) return 1;
+            }
         }
         else if (isChoiceContinuation)
         {
@@ -946,9 +967,58 @@ public sealed class OmniCliRuntime : IDisposable
                 diagnostics("native_choice.resume.response_receipt_invalid");
                 return 1;
             }
+            var laneEvents = server.AcquireStore().ReadFrom(session, 1).Where(evt => evt.RunId == run).ToArray();
+            var rootTask = RunProjection.Replay(session, run, server.AcquireCodecs(), laneEvents).RootTask;
+            var rootLane = rootTask is { } task
+                ? LaneProjection.Replay(server.AcquireCodecs(), laneEvents).ForTask(task).FirstOrDefault()?.Id : null;
+            if (rootTask is not { } currentRootTask || rootLane is not { } currentRootLane) return 1;
+            var choiceEvents = laneEvents.Select(evt => (Event: evt, Payload: server.AcquireCodecs().Decode(evt)))
+                .Where(item => item.Payload is InteractionRequested request
+                    && request.InteractionId.ToString() == admitted.ContinuationInteractionId).ToArray();
+            if (choiceEvents.Length != 1 || choiceEvents[0].Payload is not InteractionRequested choiceRequest) return 1;
+            TaskId choiceTask;
+            LaneId choiceLane;
+            ToolCallId? choiceToolCall = null;
+            if (choiceRequest.Kind is InteractionKind.Permission or InteractionKind.MemoryPromotion)
+            {
+                if (admitted.ContinuationTaskId is not { Length: > 0 } taskText
+                    || admitted.ContinuationLaneId is not { Length: > 0 } laneText
+                    || admitted.ContinuationToolCallId is not { Length: > 0 } toolCallText
+                    || !Guid.TryParseExact(taskText, "D", out var taskGuid) || taskText != taskGuid.ToString("D")
+                    || !Guid.TryParseExact(laneText, "D", out var laneGuid) || laneText != laneGuid.ToString("D")
+                    || !Guid.TryParseExact(toolCallText, "D", out var toolCallGuid) || toolCallText != toolCallGuid.ToString("D"))
+                    return 1;
+                choiceTask = new TaskId(taskGuid);
+                choiceLane = new LaneId(laneGuid);
+                choiceToolCall = new ToolCallId(toolCallGuid);
+            }
+            else if (choiceRequest.Kind == InteractionKind.PlanApproval)
+            {
+                // Plan approval is a root-lane interaction and has no ToolCallId. Old native
+                // receipts intentionally leave the three Permission continuation fields null.
+                if (admitted.ContinuationTaskId is not null || admitted.ContinuationLaneId is not null
+                    || admitted.ContinuationToolCallId is not null) return 1;
+                choiceTask = currentRootTask;
+                choiceLane = currentRootLane;
+            }
+            else return 1;
             if (!TryValidateChoiceContinuation(server, session, run, admitted.ContinuationInteractionId!,
-                    optionId, choiceCommandId, choiceFirst, choiceLast, diagnostics, out continuationTurnId))
+                    optionId, choiceCommandId, choiceFirst, choiceLast, choiceTask, choiceLane,
+                    choiceToolCall, diagnostics, out continuationTurnId))
                 return 1;
+            if (choiceRequest.Kind is InteractionKind.Permission or InteractionKind.MemoryPromotion
+                && choiceLane != currentRootLane)
+            {
+                choiceDelegationId = server.AcceptedDelegationForChild(session, run,
+                    choiceTask, choiceLane);
+                if (choiceDelegationId is null || admitted.ContinuationOptionId is not
+                    ("allow_once" or "allow_run" or "allow_workspace" or "deny")) return 1;
+                if (continuationTurnId is not { } childTurn
+                    || !Guid.TryParseExact(admitted.ContinuationInteractionId, "D", out var interactionGuid)) return 1;
+                childPermissionContinuation = new NativeChildPermissionContinuation(choiceTask,
+                    choiceLane, childTurn, choiceToolCall!,
+                    new InteractionId(interactionGuid), admitted.ContinuationOptionId);
+            }
         }
         else if (receipt.ExecutionState is not null)
         {
@@ -961,8 +1031,10 @@ public sealed class OmniCliRuntime : IDisposable
         {
             exitCode = await RunTurnAsync("", runIsAct, diagnostics, cancellationToken, conversationOnly: true,
                 inputAlreadyPersisted: true, expectedSession: session, expectedRun: run,
+                delegationId: choiceDelegationId,
                 persistedContinuation: isChoiceContinuation ? admitted : null,
-                allowDeferredNativePermission: admitted.NativeChoiceCapability).ConfigureAwait(false);
+                allowDeferredNativePermission: admitted.NativeChoiceCapability,
+                nativeChildPermissionContinuation: childPermissionContinuation).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
@@ -1258,6 +1330,12 @@ public sealed class OmniCliRuntime : IDisposable
                     exposeForcedInitialToolInDiscoveredMode: payload.Kind == "forcedExtension",
                     allowDeferredNativePermission: admitted.NativeChoiceCapability).ConfigureAwait(false);
             }
+            else if (payload.Kind == "nativeTool" && payload.Arguments.Length == 2)
+            {
+                exitCode = await ExecuteNativeToolActionAsync(session, run, payload.Arguments[0],
+                    payload.Arguments[1], invocationGuid.ToString("D"), diagnostics, cancellationToken)
+                    .ConfigureAwait(false);
+            }
             else return 1;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { exitCode = 130; }
@@ -1270,7 +1348,8 @@ public sealed class OmniCliRuntime : IDisposable
         if (exitCode == 0)
         {
             var invocation = new CommandId(invocationGuid);
-            if (payload.Kind == "forcedExtension" && !server.NativeCommandRequiredEffectSucceeded(invocation))
+            if (payload.Kind is "forcedExtension" or "nativeTool"
+                && !server.NativeCommandRequiredEffectSucceeded(invocation))
             {
                 server.FinishNativeCommand(invocation, "failed");
                 return 1;
@@ -1286,6 +1365,7 @@ public sealed class OmniCliRuntime : IDisposable
 
     private static bool TryValidateChoiceContinuation(OmniServer server, SessionId session, RunId run,
         string interactionText, string optionId, string responseCommandText, long firstSequence, long lastSequence,
+        TaskId expectedTask, LaneId expectedLane, ToolCallId? expectedToolCall,
         Action<string> diagnostics, out TurnId? permissionTurnId)
     {
         permissionTurnId = null;
@@ -1302,9 +1382,11 @@ public sealed class OmniCliRuntime : IDisposable
         var interaction = new InteractionId(interactionGuid);
         var command = new CommandId(responseGuid);
         var requestEvent = events.SingleOrDefault(evt => evt.RunId == run
+            && evt.TaskId == expectedTask && evt.LaneId == expectedLane
+            && (expectedToolCall is null || evt.ToolCallId == expectedToolCall)
             && codecs.Decode(evt) is InteractionRequested request
             && request.InteractionId == interaction
-            && request.Kind is InteractionKind.Permission or InteractionKind.PlanApproval);
+            && request.Kind is InteractionKind.Permission or InteractionKind.PlanApproval or InteractionKind.MemoryPromotion);
         if (requestEvent is null || codecs.Decode(requestEvent) is not InteractionRequested requested
             || requested.OptionsJson is null || !OptionsContain(requested.OptionsJson, optionId))
         {
@@ -1320,19 +1402,30 @@ public sealed class OmniCliRuntime : IDisposable
             && RunControlService.IsNativeChoiceResponse(item, requested.Kind));
         if (resolved is null || input is null
             || codecs.Decode(resolved) is not InteractionResolved response || response.IsQuestionnaire
-            || response.OptionId != optionId
+            || response.Cause != InteractionCause.User || response.OptionId != optionId
             || RunProjection.Replay(session, run, codecs, events).State != RunState.Running)
         {
             diagnostics("native_choice.resume.response_events_or_run_state_invalid");
             return false;
         }
-        if (requested.Kind == InteractionKind.Permission)
+        if (requested.Kind is InteractionKind.Permission or InteractionKind.MemoryPromotion)
         {
-            var permission = events.SingleOrDefault(evt => evt.RunId == run && evt.TurnId == requestEvent.TurnId
-                && codecs.Decode(evt) is PermissionRequested item && item.InteractionId == interaction);
-            if (permission?.TurnId is not { } turnId || !IsOpenPermissionTurn(events, codecs, run, turnId))
+            if (expectedToolCall is null)
             {
-                diagnostics("native_choice.resume.permission_turn_not_open");
+                diagnostics("native_choice.resume.permission_tool_binding_missing");
+                return false;
+            }
+            var turnId = requestEvent.TurnId;
+            var targetCallExists = requested.Kind == InteractionKind.Permission
+                ? events.Any(evt => evt.RunId == run && evt.TaskId == expectedTask
+                    && evt.LaneId == expectedLane && evt.ToolCallId == expectedToolCall && evt.TurnId == turnId
+                    && codecs.Decode(evt) is PermissionRequested item && item.InteractionId == interaction)
+                : events.Any(evt => evt.RunId == run && evt.TaskId == expectedTask
+                    && evt.LaneId == expectedLane && evt.ToolCallId == expectedToolCall && evt.TurnId == turnId
+                    && codecs.Decode(evt) is ToolCallRequested call && call.ToolName == "memory.propose");
+            if (turnId is null || !targetCallExists || !IsOpenPermissionTurn(events, codecs, run, turnId))
+            {
+                diagnostics("native_choice.resume.target_turn_not_open");
                 return false;
             }
             permissionTurnId = turnId;
@@ -1372,9 +1465,13 @@ public sealed class OmniCliRuntime : IDisposable
 
     private static bool TryValidateQuestionnaireContinuation(OmniServer server, SessionId session, RunId run,
         string interactionText, string responseCommandText, long responseFirstSequence, long responseLastSequence,
-        out TurnId? continuationTurnId)
+        out TurnId? continuationTurnId, out TaskId continuationTaskId, out LaneId continuationLaneId,
+        out ToolCallId continuationToolCallId)
     {
         continuationTurnId = null;
+        continuationTaskId = null!;
+        continuationLaneId = null!;
+        continuationToolCallId = null!;
         if (!Guid.TryParseExact(interactionText, "D", out var interactionGuid)
             || !string.Equals(interactionText, interactionGuid.ToString("D"), StringComparison.Ordinal)
             || !Guid.TryParseExact(responseCommandText, "D", out var responseCommandGuid)
@@ -1387,7 +1484,9 @@ public sealed class OmniCliRuntime : IDisposable
             && codecs.Decode(evt) is InteractionRequested request
             && request.InteractionId == interaction && request.Kind == InteractionKind.Question
             && request.ToolCallJson is { Length: > 0 });
-        if (requestEnvelope is null) return false;
+        if (requestEnvelope is null || requestEnvelope.TurnId is not { } requestedTurn
+            || requestEnvelope.TaskId is not { } requestedTask || requestEnvelope.LaneId is not { } requestedLane
+            || requestEnvelope.ToolCallId is not { } requestedToolCall) return false;
         var resolvedEnvelope = events.FirstOrDefault(evt => evt.Sequence >= responseFirstSequence
             && evt.Sequence <= responseLastSequence && evt.RunId == run
             && codecs.Decode(evt) is InteractionResolved resolved
@@ -1431,12 +1530,17 @@ public sealed class OmniCliRuntime : IDisposable
                     break;
             }
         }
-        if (openTurn is null || requestEnvelope.TurnId != openTurn) return false;
+        if (openTurn is null || requestedTurn != openTurn) return false;
         var correlatedToolCall = events.Any(evt => evt.RunId == run && evt.TurnId == openTurn
+            && evt.TaskId == requestedTask && evt.LaneId == requestedLane && evt.ToolCallId == requestedToolCall
             && codecs.Decode(evt) is ToolCallRequested toolCall
-            && toolCall.ToolName == "user.ask" && toolCall.ToolCallId.ToString() == callId);
+            && toolCall.ToolName == "user.ask" && toolCall.ToolCallId == requestedToolCall
+            && toolCall.ToolCallId.ToString() == callId);
         if (!correlatedToolCall) return false;
         continuationTurnId = openTurn;
+        continuationTaskId = requestedTask;
+        continuationLaneId = requestedLane;
+        continuationToolCallId = requestedToolCall;
         return true;
     }
 
@@ -1455,6 +1559,24 @@ public sealed class OmniCliRuntime : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
         return RunTurnAsync(prompt, true, diagnostics, token, forcedInitialToolName: toolName,
             exposeForcedInitialToolInDiscoveredMode: true);
+    }
+
+    internal Task<int> ExecuteNativeToolActionAsync(SessionId session, RunId run, string toolName,
+        string argumentsJson, string invocationId, Action<string> diagnostics, CancellationToken token)
+    {
+        if (toolName is not ("process.read" or "process.send_input" or "process.stop")
+            || string.IsNullOrWhiteSpace(argumentsJson) || argumentsJson.Length > 16_384
+            || !Guid.TryParseExact(invocationId, "D", out var invocation) || invocationId != invocation.ToString("D"))
+            throw new ArgumentException("Native process action is invalid.");
+        var server = Server();
+        if (server.LastSessionId() != session || server.LastRunId() != run
+            || new RunControlService(server.AcquireStore(), server.AcquireCodecs()).ActiveRun(session) != run)
+            throw new InvalidOperationException("Native process action scope changed.");
+        var act = server.CurrentRunMode() is RunMode.Act or RunMode.Orchestrate;
+        return RunTurnAsync("", act, diagnostics, token, conversationOnly: true,
+            expectedSession: session, expectedRun: run,
+            allowDeferredNativePermission: true,
+            nativeToolAction: new NativeToolActionRequest(toolName, argumentsJson, invocationId));
     }
 
     /// <summary>Runs the compiled Explore → Implement → Verify workflow through normal delegation and tool admission.</summary>
@@ -2106,7 +2228,9 @@ public sealed class OmniCliRuntime : IDisposable
         IReadOnlyList<ArtifactRef>? attachments = null, PersistedConversationCommand? persistedContinuation = null,
         bool allowDeferredNativePermission = false, bool exposeForcedInitialToolInDiscoveredMode = false,
         WeakSandboxWorkflowContinuation? weakSandboxContinuation = null,
-        bool allowNativeWeakSandboxConsent = false)
+        bool allowNativeWeakSandboxConsent = false,
+        NativeChildPermissionContinuation? nativeChildPermissionContinuation = null,
+        NativeToolActionRequest? nativeToolAction = null)
     {
         if (delegationId is { } child)
         {
@@ -2121,7 +2245,8 @@ public sealed class OmniCliRuntime : IDisposable
                     routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName,
                     inputAlreadyPersisted, expectedSession, expectedRun, attachments, persistedContinuation,
                     allowDeferredNativePermission, exposeForcedInitialToolInDiscoveredMode,
-                    weakSandboxContinuation, allowNativeWeakSandboxConsent).ConfigureAwait(false);
+                    weakSandboxContinuation, allowNativeWeakSandboxConsent,
+                    nativeChildPermissionContinuation, nativeToolAction).ConfigureAwait(false);
             }
             finally { _activeDelegations.TryRemove(child, out _); }
         }
@@ -2137,7 +2262,8 @@ public sealed class OmniCliRuntime : IDisposable
                 routingResume, turnBoost, turnBoostId, turnBoostConsumed, delegationId, forcedInitialToolName,
                 inputAlreadyPersisted, expectedSession, expectedRun, attachments, persistedContinuation,
                 allowDeferredNativePermission, exposeForcedInitialToolInDiscoveredMode,
-                weakSandboxContinuation, allowNativeWeakSandboxConsent).ConfigureAwait(false);
+                weakSandboxContinuation, allowNativeWeakSandboxConsent,
+                nativeChildPermissionContinuation, nativeToolAction).ConfigureAwait(false);
         }
         finally
         {
@@ -2154,7 +2280,9 @@ public sealed class OmniCliRuntime : IDisposable
         IReadOnlyList<ArtifactRef>? attachments = null, PersistedConversationCommand? persistedContinuation = null,
         bool allowDeferredNativePermission = false, bool exposeForcedInitialToolInDiscoveredMode = false,
         WeakSandboxWorkflowContinuation? weakSandboxContinuation = null,
-        bool allowNativeWeakSandboxConsent = false)
+        bool allowNativeWeakSandboxConsent = false,
+        NativeChildPermissionContinuation? nativeChildPermissionContinuation = null,
+        NativeToolActionRequest? nativeToolAction = null)
     {
         SessionId? processSessionToStop = null;
         RunId? processRunToStop = null;
@@ -2213,6 +2341,9 @@ public sealed class OmniCliRuntime : IDisposable
         }
         WriteDiagnostics(workspaceConfig.Diagnostics, writeLine);
         var server = Server(workspaceData);
+        var nativeProcessPermissionContinuation = delegationId is null && IsNativeProcessPermissionContinuation(
+            server, expectedSession, expectedRun, persistedContinuation);
+        var nativeToolOnly = nativeToolAction is not null || nativeProcessPermissionContinuation;
         if (!server.EnsureWriterOwnershipForCommand())
         {
             writeLine(Text(LocalizedText.Of(server.SessionSecurityRecoveryBlocked
@@ -2284,7 +2415,7 @@ public sealed class OmniCliRuntime : IDisposable
             }
         }
         var providerDescription = modelDefinition is null ? null : registry.Provider(modelDefinition.ProviderId);
-        if (providerDescription?.Profile == "codex")
+        if (!nativeToolOnly && providerDescription?.Profile == "codex")
         {
             try
             {
@@ -2347,7 +2478,7 @@ public sealed class OmniCliRuntime : IDisposable
             selectedRoute = priorRoute;
         }
         string? key = null;
-        if (providerDescription?.Auth.Kind == AuthKind.ApiKey)
+        if (!nativeToolOnly && providerDescription?.Auth.Kind == AuthKind.ApiKey)
         {
             try
             {
@@ -2373,7 +2504,7 @@ public sealed class OmniCliRuntime : IDisposable
         // La ruta conserva el endpoint lógico (baseUrl); la conexión usa el real (puerto efímero).
         var connectUrl = baseUrl;
         var connectDescriptor = providerDescription;
-        if (providerDescription?.LocalHost is not null)
+        if (!nativeToolOnly && providerDescription?.LocalHost is not null)
         {
             try
             {
@@ -2492,7 +2623,7 @@ public sealed class OmniCliRuntime : IDisposable
                 { writeLine(Text(LocalizedText.Of("cli.runtime.resume.session_changed"))); return 1; }
                 workingState = ReadWorkingState(server, cancellationToken);
             }
-            else if (conversationOnly)
+            else if (conversationOnly && nativeToolAction is null)
             {
                 if (!inputAlreadyPersisted)
                 {
@@ -2567,10 +2698,11 @@ public sealed class OmniCliRuntime : IDisposable
             processSessionToStop = sessionId;
             processRunToStop = runId;
             var laneId = delegation?.ChildLaneId ?? server.LastLaneId() ?? LaneId.New();
-            var promptOrigin = routingResume is not null ? routingResume.Origin
+            var promptOrigin = nativeToolAction is not null ? "NativeAction"
+                : routingResume is not null ? routingResume.Origin
                 : (conversationOnly || actAttachmentInputPersisted)
                     ? "AlreadyPersisted(ConversationInput)" : server.ConsumePromptOrigin();
-            if (delegation is null && _workspaceRoot is not null)
+            if (delegation is null && _workspaceRoot is not null && !nativeToolOnly)
             {
             var followUp = server.QueueFollowUpPromptCommand(sessionId, runId, laneId, prompt, promptOrigin);
             if (followUp.Failure is { } followUpFailure)
@@ -2659,14 +2791,14 @@ public sealed class OmniCliRuntime : IDisposable
                 writeLine(Text(LocalizedText.Of("cli.runtime.route.child_deferred")));
                 return 1;
             }
-            var admittedInput = (conversationOnly || actAttachmentInputPersisted)
+            var admittedInput = (!nativeToolOnly && (conversationOnly || actAttachmentInputPersisted))
                 && routingResume is null && openTurn is null
                 ? server.AcquireStore().ReadFrom(sessionId, 1).LastOrDefault(evt => evt.RunId == runId
                     && server.AcquireCodecs().Decode(evt) is UserInputReceived) : null;
             var routeContinuation = admittedInput is null ? null : new RouteConsentTurn(admittedInput.Sequence,
                 laneId, new TurnInstructionSnapshot(conversationOnly,
                     TurnInstruction(server.CurrentRunMode(), conversationOnly)), reasoningResolution);
-            if (delegation is null && AuthorizeRouteForInvocation(server, sessionId, runId, route,
+            if (delegation is null && !nativeToolOnly && AuthorizeRouteForInvocation(server, sessionId, runId, route,
                     providerDescription?.BillingMode ?? BillingMode.Unknown, writeLine, locale,
                     continuation: routeContinuation) is { } routeCode)
                 return routeCode;
@@ -2677,15 +2809,16 @@ public sealed class OmniCliRuntime : IDisposable
             var hasDailySpendCap = loaded.Settings?.Budget?.Daily is not null;
             var sessionCap = Math.Min(loaded.Settings?.Budget?.Session ?? decimal.MaxValue,
                 routingPolicy.SessionSpendLimit ?? decimal.MaxValue);
-            IModelProvider provider = providerDescription is null
-                ? OmniHost.ConnectLocalChatCompletions(connectUrl, model, secretRef, key ?? "", circuits: _providerCircuits)
-                : OmniHost.ConnectProvider(connectDescriptor!, connectUrl, secretRef, key ?? "",
-                    string.Equals(providerDescription.Profile, "codex", StringComparison.Ordinal)
-                        ? OmniHost.CreateChatGptAuth(paths) : null, _providerCircuits,
-                    claudeOAuth: ClaudeOAuthFor(connectDescriptor, paths),
-                    oauthIdentity: ClaudeOAuthIdentityFor(connectDescriptor, paths));
-            var qualificationData = act ? null : Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
-            var qualification = EmpiricalQualification(modelDefinition, providerDescription,
+            IModelProvider provider = nativeToolOnly ? new NativeActionNoProvider()
+                : providerDescription is null
+                    ? OmniHost.ConnectLocalChatCompletions(connectUrl, model, secretRef, key ?? "", circuits: _providerCircuits)
+                    : OmniHost.ConnectProvider(connectDescriptor!, connectUrl, secretRef, key ?? "",
+                        string.Equals(providerDescription.Profile, "codex", StringComparison.Ordinal)
+                            ? OmniHost.CreateChatGptAuth(paths) : null, _providerCircuits,
+                        claudeOAuth: ClaudeOAuthFor(connectDescriptor, paths),
+                        oauthIdentity: ClaudeOAuthIdentityFor(connectDescriptor, paths));
+            var qualificationData = nativeToolOnly || act ? null : Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
+            var qualification = nativeToolOnly ? null : EmpiricalQualification(modelDefinition, providerDescription,
                 qualificationData, cancellationToken, route.Endpoint);
             var effectiveProfile = new ModelProfileResolver().Resolve(
                 runtimeModel,
@@ -3136,7 +3269,7 @@ public sealed class OmniCliRuntime : IDisposable
 
             var turn = BuildTurn(productReasoning, reasoningResolution);
             Func<bool>? resumePreflightPassed = null;
-            if (persistedContinuation is { ContinuationResponseType: "choice",
+            if (delegationId is null && persistedContinuation is { ContinuationResponseType: "choice",
                     ContinuationOptionId: "allow_once" or "allow_run" or "allow_workspace",
                     ContinuationInteractionId: { } continuationInteraction }
                 && Guid.TryParseExact(continuationInteraction, "D", out var permissionInteractionGuid))
@@ -3276,15 +3409,59 @@ public sealed class OmniCliRuntime : IDisposable
                             work.Profile, receiveMailbox,
                             acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission,
                             mutationHistory: server.MutationHistoryStore,
+                            allowDeferredInteraction: allowDeferredNativePermission
+                                || nativeChildPermissionContinuation is not null,
                             allowDeferredWeakSandboxConsent: allowNativeWeakSandboxConsent
                                 && workflowStage?.Definition.Stage == WorkflowStage.Verify)
                         : OmniHost.CreateExplorerExecutor(childTools.Catalog(), laneRoot, childBoundary,
                             restrictions, work.Run, work.Profile, receiveMailbox, artifacts: artifacts,
                             acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission,
                             mutationHistory: server.MutationHistoryStore,
+                            allowDeferredInteraction: allowDeferredNativePermission
+                                || nativeChildPermissionContinuation is not null,
                             allowDeferredWeakSandboxConsent: allowNativeWeakSandboxConsent
                                 && workflowStage?.Definition.Stage == WorkflowStage.Verify);
-                    var childResumePreflightPassed = resumePreflightPassed;
+                    Func<bool>? childResumePreflightPassed = null;
+                    if (nativeChildPermissionContinuation is { } nativePermission)
+                    {
+                        if (nativePermission.TaskId != work.Delegation.ChildTaskId
+                            || nativePermission.LaneId != work.Delegation.ChildLaneId
+                            || openTurn?.Started.TurnId != nativePermission.TurnId
+                            || childExecutor is not ScriptedToolExecutor nativeResumableExecutor)
+                            throw new InvalidOperationException("The native Permission continuation is not bound to this accepted child Turn.");
+                        childResumePreflightPassed = () =>
+                        {
+                            var scope = ExecutionScope.Current;
+                            if (scope?.RunId != runId || scope.TaskId != nativePermission.TaskId
+                                || scope.LaneId != nativePermission.LaneId || scope.TurnId != nativePermission.TurnId
+                                || server.AcceptedDelegationForChild(work.Session, work.Run,
+                                    nativePermission.TaskId, nativePermission.LaneId) is null)
+                                return false;
+                            var journal = server.AcquireStore().ReadFrom(work.Session, 1);
+                            var scoped = journal.Where(evt => evt.RunId == work.Run
+                                    && evt.TaskId == nativePermission.TaskId && evt.LaneId == nativePermission.LaneId
+                                    && evt.TurnId == nativePermission.TurnId && evt.ToolCallId == nativePermission.ToolCallId)
+                                .Select(evt => (Event: evt, Payload: server.AcquireCodecs().Decode(evt))).ToArray();
+                            var permission = scoped.SingleOrDefault(item => item.Payload is PermissionRequested request
+                                && request.InteractionId == nativePermission.InteractionId);
+                            var resolved = journal.SingleOrDefault(evt => evt.RunId == work.Run
+                                && server.AcquireCodecs().Decode(evt) is InteractionResolved item
+                                && item.InteractionId == nativePermission.InteractionId
+                                && item.Cause == InteractionCause.User && !item.IsQuestionnaire
+                                && item.OptionId == nativePermission.OptionId);
+                            if (permission.Event is null || resolved is null
+                                || !IsOpenPermissionTurn(journal, server.AcquireCodecs(), work.Run, nativePermission.TurnId))
+                                return false;
+                            var outcome = nativeResumableExecutor.ResumeApprovedPermission(
+                                new EventStream(server.AcquireStore(), server.AcquireCodecs(), work.Session),
+                                server.AcquireCodecs(), nativePermission.InteractionId,
+                                nativePermission.OptionId, token);
+                            if (nativePermission.OptionId == "deny")
+                                return outcome.FinalState == ToolCallState.Rejected && outcome.Effect == EffectOutcome.None;
+                            return outcome.Succeeded || outcome.Events.Any(item => item is ToolCallSucceeded
+                                || item is ToolCallFailed { EffectOutcome: not EffectOutcome.Unknown });
+                        };
+                    }
                     if (weakSandboxContinuation is { } weakContinuation)
                     {
                         if (workflowStage?.Definition.Stage != WorkflowStage.Verify
@@ -3381,7 +3558,8 @@ public sealed class OmniCliRuntime : IDisposable
                     return childResult;
                 }
                 var ack = server.ExecuteDelegation(delegationId, ExecuteLane,
-                    cancellationToken, waitForCapacity: true, weakSandboxContinuation: weakSandboxContinuation);
+                    cancellationToken, waitForCapacity: true, weakSandboxContinuation: weakSandboxContinuation,
+                    nativePermissionContinuation: nativeChildPermissionContinuation);
                 if (ack.Status == "ok" && ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted
                     && FindPendingLaneAcceptance(server.AcquireStore(), server.AcquireCodecs(), sessionId, runId,
                         server.ReadCurrentDelegation(delegationId).ChildTaskId,
@@ -3411,6 +3589,41 @@ public sealed class OmniCliRuntime : IDisposable
                 if (ack.Error is not null) writeLine(CommandError(ack.Error, "cli.runtime.workflow.stopped"));
                 if (ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Deferred)
                     writeLine(Text(Localized("cli.runtime.outcome.deferred", ("reason", ExternalDiagnostic(ack.Outcome.Reason)))));
+                if (allowDeferredNativePermission && delegation is not null
+                    && ack.Status == "ok"
+                    && ack.Outcome?.Kind is RuntimeCommandOutcomeKind.Accepted or RuntimeCommandOutcomeKind.NoOp)
+                {
+                    var journal = server.AcquireStore().ReadFrom(sessionId, 1);
+                    var runEvents = journal.Where(evt => evt.RunId == runId).ToArray();
+                    var childEvents = runEvents.Where(evt => evt.TaskId == delegation.ChildTaskId
+                        && evt.LaneId == delegation.ChildLaneId).ToArray();
+                    var codecs = server.AcquireCodecs();
+                    var pendingPermission = FindPendingInteraction(childEvents, codecs, InteractionKind.Permission);
+                    var pendingRequestEvent = pendingPermission is null ? null : childEvents.SingleOrDefault(evt =>
+                        codecs.Decode(evt) is InteractionRequested request
+                        && request.InteractionId == pendingPermission.InteractionId
+                        && request.Kind == InteractionKind.Permission);
+                    var openChildTurn = FindOpenTurnStart(runEvents, codecs, runId, delegation.ChildLaneId);
+                    var runState = RunProjection.Replay(sessionId, runId, codecs, runEvents).State;
+                    var awaitingCallHasNotStarted = pendingRequestEvent?.ToolCallId is { } pendingToolCall
+                        && !childEvents.Any(evt => evt.ToolCallId == pendingToolCall
+                            && evt.Sequence > pendingRequestEvent.Sequence
+                            && codecs.Decode(evt) is ToolCallStarted or ToolCallSucceeded or ToolCallFailed
+                                or ToolCallEffectUnknown or ToolCallReconciled);
+                    if (runState == RunState.AwaitingInput && pendingPermission is not null
+                        && pendingRequestEvent is not null
+                        && pendingRequestEvent.TaskId == delegation.ChildTaskId
+                        && pendingRequestEvent.LaneId == delegation.ChildLaneId
+                        && pendingRequestEvent.TurnId is { } pendingTurn
+                        && pendingTurn == openChildTurn?.TurnId
+                        && awaitingCallHasNotStarted)
+                    {
+                        // Keep the child ToolCall and its exact Turn open for the native
+                        // permission continuation. The accepted delegation is not completed.
+                        writeLine(InputRequiredJson(pendingPermission.InteractionId, "Permission"));
+                        return 3;
+                    }
+                }
                 if (allowNativeWeakSandboxConsent
                     && workflowStage?.Definition.Stage == WorkflowStage.Verify
                     && delegation is not null
@@ -3579,6 +3792,77 @@ public sealed class OmniCliRuntime : IDisposable
                 {
                     writeLine(InputRequiredJson(pendingQuestion.InteractionId, "Question"));
                     return 3;
+                }
+            }
+            if (nativeToolAction is { } directAction)
+            {
+                var actionExecution = server.ExecuteExplorerTurn(sessionId, runId,
+                    _ => turn.ExecuteNativeToolAction(directAction.ToolName, directAction.ArgumentsJson,
+                        directAction.InvocationId, sessionId, runId, laneId, cancellationToken),
+                    cancellationToken, readOnlyLane: !act);
+                if (actionExecution.Failure is { } actionFailure)
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(actionFailure);
+                if (actionExecution.Result is not { } actionResult
+                    || actionExecution.Ack.Status != "ok"
+                    || actionExecution.Ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted)
+                    throw new InvalidOperationException(actionExecution.Ack.Error
+                        ?? "native tool action was rejected");
+                if (actionResult.PendingInteractionId is { } pendingAction)
+                {
+                    writeLine(InputRequiredJson(pendingAction, "Permission"));
+                    return 3;
+                }
+                foreach (var trace in actionResult.ToolCalls) writeLine(FormatToolTrace(trace));
+                if (actionResult.StopReason == StopReason.Cancelled && cancellationToken.IsCancellationRequested) return 130;
+                return actionResult.StopReason == StopReason.EndTurn
+                    && actionResult.ToolCalls.All(item => item.Succeeded) ? 0 : 1;
+            }
+            if (delegationId is null && persistedContinuation is
+                { ContinuationResponseType: "choice", ContinuationInteractionId: { } nativeInteractionText,
+                    ContinuationOptionId: { } nativeOption }
+                && Guid.TryParseExact(nativeInteractionText, "D", out var nativeInteractionGuid))
+            {
+                var nativeStream = new EventStream(server.AcquireStore(), server.AcquireCodecs(), sessionId);
+                var nativeEvents = nativeStream.EventsSince(1).Where(item => item.RunId == runId).ToArray();
+                var nativePayloads = nativeEvents.Select(item => (Event: item, Payload: server.AcquireCodecs().Decode(item)))
+                    .ToArray();
+                var interactionId = new InteractionId(nativeInteractionGuid);
+                var pendingNativeCall = nativePayloads.SingleOrDefault(item => item.Payload is PermissionRequested permission
+                    && permission.InteractionId == interactionId);
+                var nativeCall = pendingNativeCall.Payload is PermissionRequested requested
+                    ? nativePayloads.SingleOrDefault(item => item.Event.ToolCallId == requested.ToolCallId
+                        && item.Payload is ToolCallRequested call && call.ProviderCallId.StartsWith(
+                            "native-action-", StringComparison.Ordinal)) : default;
+                if (pendingNativeCall.Payload is PermissionRequested
+                    && nativeCall.Payload is ToolCallRequested requestedCall
+                    && (requestedCall.ToolName is "process.read" or "process.send_input" or "process.stop")
+                    && pendingNativeCall.Event.LaneId == laneId)
+                {
+                    var actionExecution = server.ExecuteExplorerTurn(sessionId, runId,
+                        token => turn.ResumeNativeProcessPermission(interactionId, nativeOption,
+                            sessionId, runId, laneId, token), cancellationToken,
+                        readOnlyLane: !act);
+                    if (actionExecution.Failure is { } continuationFailure)
+                        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(continuationFailure);
+                    if (actionExecution.Result is not { } continuationResult
+                        || actionExecution.Ack.Status != "ok"
+                        || actionExecution.Ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted)
+                        throw new InvalidOperationException(actionExecution.Ack.Error
+                            ?? "native process permission continuation was rejected");
+                    if (continuationResult.PendingInteractionId is { } nextPermission)
+                    {
+                        writeLine(InputRequiredJson(nextPermission, "Permission"));
+                        return 3;
+                    }
+                    if (Guid.TryParseExact(requestedCall.ProviderCallId["native-action-".Length..], "D",
+                            out var nativeInvocationGuid))
+                        server.FinishNativeCommand(new CommandId(nativeInvocationGuid),
+                            continuationResult.StopReason == StopReason.EndTurn
+                                && continuationResult.ToolCalls.All(item => item.Succeeded) ? "completed" : "failed");
+                    foreach (var trace in continuationResult.ToolCalls) writeLine(FormatToolTrace(trace));
+                    if (continuationResult.StopReason == StopReason.Cancelled && cancellationToken.IsCancellationRequested) return 130;
+                    return continuationResult.StopReason == StopReason.EndTurn
+                        && continuationResult.ToolCalls.All(item => item.Succeeded) ? 0 : 1;
                 }
             }
             ExplorerTurn? BuildSubsequentActTurn(int _, IToolExecutor? subsequentExecutor = null,
@@ -4225,7 +4509,8 @@ public sealed class OmniCliRuntime : IDisposable
                 token => activeTurn.Ask(nextPrompt, instruction, sessionId, runId, laneId, workingState,
                     token, origin, instructionSnapshot, BoostStartObserver(turnBoostId, turnBoostConsumed),
                     attempt == 0 ? resumePreflightPassed : null),
-                cancellationToken, readOnlyLane: false, delegationId: delegationId, waitForCapacity: true);
+                cancellationToken, readOnlyLane: false, delegationId: delegationId, waitForCapacity: true,
+                activeTurn: activeTurn, activeLane: laneId);
             if (askExecution.Failure is { } askFailure)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(askFailure);
             if (askExecution.Result is null
@@ -4518,6 +4803,11 @@ public sealed class OmniCliRuntime : IDisposable
                     writeLine(Text(LocalizedText.Of("completion.gates.none")));
                 return 0;
             }
+
+            // A live process owns the Run after this model Turn ends. Completion is intentionally
+            // deferred until its exact control/publication receipt reaches a terminal state; do
+            // not turn that deferred barrier into synthetic model feedback and extra inference.
+            if (server.IsProcessRunCompletionDeferred(sessionId, runId)) return 0;
 
             var pendingAcceptance = FindPendingInteraction(server.AcquireStore().ReadFrom(sessionId, 1),
                 server.AcquireCodecs(), InteractionKind.AcceptanceConfirmation);
@@ -5558,5 +5848,53 @@ public sealed class OmniCliRuntime : IDisposable
             usableContext.ToString(CultureInfo.InvariantCulture));
         return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes(canonical)));
+    }
+
+    private sealed class NativeActionNoProvider : IModelProvider
+    {
+        public ProviderCapabilities Capabilities { get; } = ProviderCapabilities.Local();
+        public IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("A native tool-only action cannot invoke a model provider.");
+    }
+
+    private static bool IsNativeProcessPermissionContinuation(OmniServer server, SessionId? expectedSession,
+        RunId? expectedRun, PersistedConversationCommand? continuation)
+    {
+        if (expectedSession is not { } session || expectedRun is not { } run
+            || continuation is not { ContinuationResponseType: "choice",
+                ContinuationInteractionId: { } interactionText, ContinuationOptionId: { Length: > 0 },
+                ContinuationTurnId: { } turnText, ContinuationLaneId: { } laneText,
+                ContinuationToolCallId: { } toolText }
+            || !Guid.TryParseExact(interactionText, "D", out var interactionGuid)
+            || interactionText != interactionGuid.ToString("D")
+            || !Guid.TryParseExact(turnText, "D", out var turnGuid) || turnText != turnGuid.ToString("D")
+            || !Guid.TryParseExact(laneText, "D", out var laneGuid) || laneText != laneGuid.ToString("D")
+            || !Guid.TryParseExact(toolText, "D", out var toolGuid) || toolText != toolGuid.ToString("D"))
+            return false;
+        if (server.LastSessionId() != session || server.LastRunId() != run) return false;
+        var codecs = server.AcquireCodecs();
+        var events = server.AcquireStore().ReadFrom(session, 1).Where(item => item.RunId == run).ToArray();
+        var interaction = new InteractionId(interactionGuid);
+        var requests = events.Select(item => (Event: item, Payload: codecs.Decode(item)))
+            .Where(item => item.Payload is InteractionRequested request && request.InteractionId == interaction
+                && item.Event.TurnId?.ToString() == turnText && item.Event.LaneId?.ToString() == laneText)
+            .ToArray();
+        var permissions = events.Select(item => (Event: item, Payload: codecs.Decode(item)))
+            .Where(item => item.Payload is PermissionRequested request && request.InteractionId == interaction
+                && item.Event.TurnId?.ToString() == turnText && item.Event.LaneId?.ToString() == laneText)
+            .ToArray();
+        if (requests.Length != 1 || requests[0].Payload is not InteractionRequested envelope
+            || envelope.Kind != InteractionKind.Permission || permissions.Length != 1
+            || permissions[0].Payload is not PermissionRequested permission || permission.ToolCallId != new ToolCallId(toolGuid))
+            return false;
+        var calls = events.Select(item => (Event: item, Payload: codecs.Decode(item)))
+            .Where(item => item.Event.ToolCallId == permission.ToolCallId
+                && item.Event.TurnId?.ToString() == turnText && item.Event.LaneId?.ToString() == laneText
+                && item.Payload is ToolCallRequested).ToArray();
+        if (calls.Length != 1 || calls[0].Payload is not ToolCallRequested call
+            || call.ToolName is not ("process.read" or "process.send_input" or "process.stop")
+            || !call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal)) return false;
+        return server.NativeProcessToolInvocationMatches(session, run, call.ProviderCallId,
+            call.ToolName, call.ArgumentsJson);
     }
 }

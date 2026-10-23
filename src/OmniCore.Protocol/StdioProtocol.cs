@@ -91,6 +91,10 @@ public static class StdioProtocol
         "command.memory.session.forget.user",
         "command.memory.session.promote.user",
         "command.memory.session.reject.user",
+        "command.delegation.cancel.user",
+        "command.delegation.disposition.user",
+        "command.delegation.mailbox.send.user",
+        "command.process.control.user",
         "command.run.interrupt.user",
         "command.run.cancel.user",
         "command.run.mode.select.user",
@@ -100,6 +104,7 @@ public static class StdioProtocol
         "command.external.memory.consent.user",
         "command.extensions.package.user",
         "query.humanActionScope",
+        "query.processSessions",
     ];
 
     public static IReadOnlyList<NativeQueryDescriptor> NativeQueries { get; } =
@@ -109,6 +114,8 @@ public static class StdioProtocol
         new("command.catalog", "query.commandCatalog", "Current canonical command catalog and invocation compare-and-set scope", "trusted-session", "session-read", false),
         new("command.recovery", "query.commandRecovery", "Bounded status of durable native command invocations", "trusted-session", "session-read", false),
         new("workflow.recovery", "query.workflowRecovery", "Durable compiled-workflow stage status and explicit continuation eligibility", "trusted-session", "session-read", false),
+        new("process.sessions", "query.processSessions", "Passive, bounded process handles owned by the current Session and Run", "trusted-session", "session-read", false),
+        new("process.output", "query.processSessions", "Passive, bounded output already retained for an exact owned process handle", "trusted-session", "session-read", false),
         new("state", "query.state", "Current runtime state", "session", "session-read", true),
         new("sessionIdentity", "query.sessionIdentity", "Current Session and Run identity", "session", "session-read", true),
         new("sessionSecurity", "query.sessionSecurity", "Durable Session security ceiling and revision", "session", "session-read", true),
@@ -158,7 +165,9 @@ public static class StdioProtocol
             || name.StartsWith("workspace.panel:", StringComparison.Ordinal)
             || name.StartsWith("extensions.view:", StringComparison.Ordinal)
             || name.StartsWith("extensions.configuration:", StringComparison.Ordinal)
-            || name.StartsWith("extensions.notifications:", StringComparison.Ordinal);
+            || name.StartsWith("extensions.notifications:", StringComparison.Ordinal)
+            || name.StartsWith("process.sessions:", StringComparison.Ordinal)
+            || name.StartsWith("process.output:", StringComparison.Ordinal);
 
     public static bool TryGetQuery(string name, out NativeQueryDescriptor descriptor)
     {
@@ -167,7 +176,9 @@ public static class StdioProtocol
             || query.Name == "workspace.panel" && name.StartsWith("workspace.panel:", StringComparison.Ordinal)
             || query.Name == "extensions.view" && name.StartsWith("extensions.view:", StringComparison.Ordinal)
             || query.Name == "extensions.configuration" && name.StartsWith("extensions.configuration:", StringComparison.Ordinal)
-            || query.Name == "extensions.notifications" && name.StartsWith("extensions.notifications:", StringComparison.Ordinal))!;
+            || query.Name == "extensions.notifications" && name.StartsWith("extensions.notifications:", StringComparison.Ordinal)
+            || query.Name == "process.sessions" && name.StartsWith("process.sessions:", StringComparison.Ordinal)
+            || query.Name == "process.output" && name.StartsWith("process.output:", StringComparison.Ordinal))!;
         return descriptor is not null;
     }
 
@@ -211,9 +222,10 @@ public static class StdioProtocol
         or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
         or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
         or "run.interrupt" or "run.cancel" or "run.mode.select"
+        or "delegation.cancel" or "delegation.disposition" or "delegation.mailbox.send"
         or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish"
         or "external.memory.consent" or "interaction.respond" or "interaction.continue"
-        or "command.invoke.user" or "command.continue" or "workflow.continue" or "extensions.package";
+        or "command.invoke.user" or "command.continue" or "workflow.continue" or "process.control" or "extensions.package";
 
     public static IReadOnlyList<NativeCommandDescriptor> NativeCommands { get; } =
     [
@@ -229,7 +241,7 @@ public static class StdioProtocol
         new("conversation.alternative", "command.conversation.alternative.user", "native-confirmation+hmac+session-scope+receipt", "command.result.lookup", "Create an isolated worktree and derived Session from an exact recoverable checkpoint"),
         new("interaction.respond", "command.conversation.questionnaire.respond.user", "native-confirmation+hmac+session-run-interaction-scope+policy-revision+receipt+resume", "command.result.lookup", "Answer a pending questionnaire and continue its existing Run")
             { WireName = "interaction.respond", Variant = "questionnaire" },
-        new("interaction.respond.choice", "command.conversation.interaction.choice.respond.user", "native-confirmation+hmac+session-run-interaction-option+policy-revision+receipt+resume", "command.result.lookup", "Choose a server-defined option for a pending Permission or PlanApproval and continue its existing Run")
+        new("interaction.respond.choice", "command.conversation.interaction.choice.respond.user", "native-confirmation+hmac+session-run-interaction-option+policy-revision+receipt+resume", "command.result.lookup", "Choose a server-defined option for a pending Permission, PlanApproval, or Session memory promotion and continue its existing Run")
             { WireName = "interaction.respond", Variant = "choice" },
         new("interaction.respond.weak-sandbox", "command.conversation.weak-sandbox.respond.user", "native-confirmation+hmac+session-run-task-lane-turn-toolcall-invocation+policy-revision+receipt+resume", "command.result.lookup", "Choose once or deny a proven pre-launch Weak sandbox fallback for the exact workflow verifier child call")
             { WireName = "interaction.respond", Variant = "weakSandboxConsent" },
@@ -248,6 +260,10 @@ public static class StdioProtocol
         new("memory.session.forget", "command.memory.session.forget.user", "native-confirmation+hmac+session+memory-revision+receipt", "command.result.lookup", "Forget one exact memory record from the current Session"),
         new("memory.session.promote", "command.memory.session.promote.user", "native-confirmation+hmac+session+memory-candidate+revision+interaction+receipt", "command.result.lookup", "Approve the canonical pending promotion for a Session memory candidate"),
         new("memory.session.reject", "command.memory.session.reject.user", "native-confirmation+hmac+session+memory-candidate+revision+interaction+receipt", "command.result.lookup", "Reject one canonical pending Session memory candidate"),
+        new("delegation.cancel", "command.delegation.cancel.user", "native-confirmation+hmac+session-run-delegation-policy-revision+receipt", "command.result.lookup", "Request cancellation of one exact child delegation in the active Run"),
+        new("delegation.disposition", "command.delegation.disposition.user", "native-confirmation+hmac+session-run-delegation-result-policy-revision+receipt", "command.result.lookup", "Accept or request rework for one exact returned child result"),
+        new("delegation.mailbox.send", "command.delegation.mailbox.send.user", "native-confirmation+hmac+session-run-delegation-policy-revision+receipt", "command.result.lookup", "Send a bounded supervisor message to one exact active child delegation"),
+        new("process.control", "command.process.control.user", "native-confirmation+hmac+session-run-policy-revision+tool-receipt", "command.result.lookup", "Run one scoped process read, input/EOF, or stop through the Host tool pipeline"),
         new("run.interrupt", "command.run.interrupt.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Interrupt the active Run"),
         new("run.cancel", "command.run.cancel.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Cancel the active Run"),
         new("run.mode.select", "command.run.mode.select.user", "native-confirmation+hmac+session-scope", "command.result.lookup", "Select the active Run mode"),
@@ -269,7 +285,9 @@ public sealed record NativeQueryDescriptor(string Name, string Capability, strin
         || Name == "workspace.panel" && requestedName.StartsWith("workspace.panel:", StringComparison.Ordinal)
         || Name == "extensions.view" && requestedName.StartsWith("extensions.view:", StringComparison.Ordinal)
         || Name == "extensions.configuration" && requestedName.StartsWith("extensions.configuration:", StringComparison.Ordinal)
-        || Name == "extensions.notifications" && requestedName.StartsWith("extensions.notifications:", StringComparison.Ordinal))
+        || Name == "extensions.notifications" && requestedName.StartsWith("extensions.notifications:", StringComparison.Ordinal)
+        || Name == "process.sessions" && requestedName.StartsWith("process.sessions:", StringComparison.Ordinal)
+        || Name == "process.output" && requestedName.StartsWith("process.output:", StringComparison.Ordinal))
         ? requestedName : WireName;
 }
 

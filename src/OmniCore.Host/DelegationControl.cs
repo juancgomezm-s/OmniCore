@@ -20,11 +20,33 @@ public sealed partial class OmniServer
             before = _store.CurrentSequence(session);
             using var json = JsonDocument.Parse(command.PayloadJson);
             var input = json.RootElement;
+            long? expectedPolicyRevision = null;
+            if (name is "delegation.cancel" or "delegation.disposition" or "delegation.mailbox.send")
+            {
+                var hasSession = input.TryGetProperty("expectedSessionId", out var expectedSessionNode);
+                var hasRun = input.TryGetProperty("expectedRunId", out var expectedRunNode);
+                var hasRevision = input.TryGetProperty("expectedPolicyRevision", out var expectedRevisionNode);
+                if (hasSession || hasRun || hasRevision)
+                {
+                    if (!hasSession || !hasRun || !hasRevision
+                        || !Guid.TryParseExact(expectedSessionNode.GetString(), "D", out var expectedSession)
+                        || new SessionId(expectedSession) != session
+                        || !Guid.TryParseExact(expectedRunNode.GetString(), "D", out var expectedRun)
+                        || new RunId(expectedRun) != run
+                        || !expectedRevisionNode.TryGetInt64(out var policyRevision)
+                        || policyRevision < 1)
+                        throw new ArgumentException("Delegation control scope is invalid.");
+                    expectedPolicyRevision = policyRevision;
+                }
+            }
             lock (_modeAuthorityMutationGate)
             {
                 token.ThrowIfCancellationRequested();
                 if (_lastSessionId != session || _lastRunId != run)
                     return Ack(RuntimeCommandOutcome.Deferred("RunNotActive"));
+                if (expectedPolicyRevision is { } expectedPolicy
+                    && ReadSessionSecurityPolicy(session)?.PolicyRevision != expectedPolicy)
+                    throw new SessionSecurityRevisionConflictException();
                 var journal = _store.ReadFrom(session, 1);
                 var records = PreM6RecordProjection.Replay(session, _codecs, journal);
                 var own = journal.Where(e => e.RunId == run).ToArray();

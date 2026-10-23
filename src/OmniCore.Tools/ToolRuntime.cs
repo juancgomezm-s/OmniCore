@@ -129,8 +129,8 @@ public sealed class ToolRuntime
         ToolExecutionContext execContext, CancellationToken cancellationToken, InteractionId interaction,
         string optionId, string expectedPreparedArguments, string expectedIntentFingerprint)
     {
-        if (optionId is not ("allow_once" or "allow_run" or "allow_workspace"))
-            throw new InvalidOperationException("Only a server-defined allow choice can resume this Permission.");
+        if (optionId is not ("allow_once" or "allow_run" or "allow_workspace" or "deny"))
+            throw new InvalidOperationException("Only a server-defined Permission choice can resume this call.");
         ArgumentException.ThrowIfNullOrWhiteSpace(expectedPreparedArguments);
         return RunCore(validated, prepContext, execContext, userApprovesAsk: false, cancellationToken,
             GrantLifetime.Once, requestReceipt: null, resumedPermission: interaction,
@@ -449,6 +449,11 @@ public sealed class ToolRuntime
             }
         }
         _emit(new PermissionEvaluated(validated.ToolCallId, decision.Final, LayersToJson(decision), null));
+        if (resumedPermission is not null && resumedPermissionOption == "deny")
+        {
+            _emit(new PermissionDenied(validated.ToolCallId, "Permission denied by the user."));
+            return new Outcome(false, "permission denied by the user", ToolCallState.Rejected, EffectOutcome.None);
+        }
         if (automaticNoPromptRequested
             && (decision.Final != PermissionDecision.Allow || execContext.RequiresSubstitutionAsk))
         {
@@ -1156,7 +1161,11 @@ public sealed class ToolRuntime
                     result.WasExternalized, EffectOutcome.Applied);
             }
         }
-        _emit(new ToolCallSucceeded(call.ToolCallId, "{\"summary\":\"" + Esc(result.Summary) + "\"}")
+        var processReadThrough = tool.Descriptor.Id.ToString() == "process.read"
+            ? ProcessReadThrough(result.Preview) : null;
+        _emit(new ToolCallSucceeded(call.ToolCallId, "{\"summary\":\"" + Esc(result.Summary) + "\""
+            + (processReadThrough is { } delivered ? ",\"displayOutputThrough\":"
+                + delivered.ToString(System.Globalization.CultureInfo.InvariantCulture) : "") + "}")
         { AfterStateRef = tool is FilesystemWriteTool or FilesystemPatchTool && result.AfterStateBytes is { } bytes
             && reconciliation?.ExpectedPostHash == FileVersion.VersionToken(bytes)
                 ? FilesystemPreimage.CaptureAfter(execContext.Artifacts, bytes) : null,
@@ -1203,6 +1212,20 @@ public sealed class ToolRuntime
                 if (result.Length >= 16 * 1024) break;
             }
             return result.Length == 0 ? null : result.ToString();
+        }
+        catch (System.Text.Json.JsonException) { return null; }
+    }
+
+    private static long? ProcessReadThrough(string? preview)
+    {
+        if (string.IsNullOrEmpty(preview) || System.Text.Encoding.UTF8.GetByteCount(preview) > 256 * 1024)
+            return null;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(preview);
+            return document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                && document.RootElement.TryGetProperty("deliveredThrough", out var cursor)
+                && cursor.TryGetInt64(out var value) && value >= 0 ? value : null;
         }
         catch (System.Text.Json.JsonException) { return null; }
     }

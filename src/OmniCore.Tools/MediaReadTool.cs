@@ -130,7 +130,14 @@ public sealed class MediaReadTool : ITool
     {
         try
         {
-            dimensions = _decodeComplete is not null && (mediaType is "image/png" or "image/jpeg")
+            // WebP has multiple bitstreams and optional chunks. Header-only fallback cannot
+            // establish completeness, so it requires the Host's bounded complete decoder.
+            if (mediaType == "image/webp" && _decodeComplete is null)
+            {
+                dimensions = default;
+                return false;
+            }
+            dimensions = _decodeComplete is not null
                 ? _decodeComplete(mediaType, bytes)
                 : ReadDimensions(mediaType, bytes);
             return dimensions.Width > 0 && dimensions.Height > 0
@@ -183,12 +190,9 @@ public sealed class MediaReadTool : ITool
         }
         else if (mediaType == "image/webp")
         {
-            if (data.Length < 30) return false;
-            if (data.Slice(12, 4).SequenceEqual("VP8X"u8))
-            { width = 1 + ReadLittle(data.Slice(24, 3)); height = 1 + ReadLittle(data.Slice(27, 3)); }
-            else if (data.Slice(12, 4).SequenceEqual("VP8 "u8))
-            { width = (uint)(data[26] | data[27] << 8) & 0x3fff; height = (uint)(data[28] | data[29] << 8) & 0x3fff; }
-            else return false;
+            // DetectImageType already checked RIFF/WEBP. Dimensions, chunks and all pixel
+            // data are validated by TryReadImageDimensions through the complete decoder.
+            return data.Length >= 20;
         }
         else if (mediaType == "image/jpeg")
         {
@@ -220,14 +224,6 @@ public sealed class MediaReadTool : ITool
     private static (int Width, int Height) ReadDimensions(string mediaType, ReadOnlySpan<byte> data)
     {
         if (mediaType == "image/png") return (checked((int)ReadBig(data.Slice(16, 4))), checked((int)ReadBig(data.Slice(20, 4))));
-        if (mediaType == "image/webp" && data.Slice(12, 4).SequenceEqual("VP8X"u8))
-            return (checked((int)(1 + ReadLittle(data.Slice(24, 3)))), checked((int)(1 + ReadLittle(data.Slice(27, 3)))));
-        if (mediaType == "image/webp")
-        {
-            var width = (int)(data[26] | data[27] << 8) & 0x3fff;
-            var height = (int)(data[28] | data[29] << 8) & 0x3fff;
-            return (width, height);
-        }
         // JPEG complete decoder is supplied by Host in production; this parser remains a
         // bounded fallback for isolated tool construction and tests.
         var offset = 2;
@@ -245,7 +241,6 @@ public sealed class MediaReadTool : ITool
     }
 
     private static uint ReadBig(ReadOnlySpan<byte> bytes) => (uint)(bytes[0] << 24 | bytes[1] << 16 | bytes[2] << 8 | bytes[3]);
-    private static uint ReadLittle(ReadOnlySpan<byte> bytes) => (uint)(bytes[0] | bytes[1] << 8 | bytes[2] << 16);
 
     private static bool TryArguments(string json, out string? path, out string? hash)
     {

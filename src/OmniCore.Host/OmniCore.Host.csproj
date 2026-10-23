@@ -18,6 +18,7 @@
     <PackageReference Include="YamlDotNet" />
     <PackageReference Include="PdfPig" />
     <PackageReference Include="StbImageSharp" />
+    <PackageReference Include="SkiaSharp" />
   </ItemGroup>
 
   <ItemGroup>

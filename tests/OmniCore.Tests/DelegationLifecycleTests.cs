@@ -542,6 +542,14 @@ public sealed class DelegationLifecycleTests
         var child = Queue(fx);
         var fields = "\"delegationId\":\"" + child.DelegationId + "\",\"content\":\"hola\"";
 
+        var policyRevision = fx.Server.ReadSessionSecurityPolicy(fx.Session)!.PolicyRevision;
+        var stale = fx.Server.SendUserAction(Command("delegation.mailbox.send", fields
+            + ",\"expectedSessionId\":\"" + fx.Session + "\",\"expectedRunId\":\"" + fx.Run
+            + "\",\"expectedPolicyRevision\":" + (policyRevision + 1).ToString(System.Globalization.CultureInfo.InvariantCulture)),
+            CancellationToken.None);
+        Assert.Equal("trusted_action_policy_changed", stale.Error);
+        Assert.Empty(fx.Payloads.OfType<ExecutionMailboxMessageReceived>());
+
         // Encolada: aún no hay ejecución ni buzón a quien escribir.
         var queued = Send(fx, "delegation.mailbox.send", fields);
         Assert.NotEqual(RuntimeCommandOutcomeKind.Accepted, queued.Outcome?.Kind);
@@ -1012,7 +1020,17 @@ public sealed class DelegationLifecycleTests
     private static CommandAck Execute(DelegationAdmissionTests.Fixture fx, Delegation child) => fx.Server.ExecuteDelegation(child.DelegationId,
         (work, token) => fx.Explorer().Ask(work.Objective, "system", work.Session, work.Run, work.Delegation.ChildLaneId, "", token), CancellationToken.None);
     private static WireEnvelope Command(string name, string fields) => WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"" + name + "\"," + fields + "}");
-    private static CommandAck Send(DelegationAdmissionTests.Fixture fx, string name, string fields) => fx.Server.SendUserAction(Command(name, fields), CancellationToken.None);
+    private static CommandAck Send(DelegationAdmissionTests.Fixture fx, string name, string fields)
+    {
+        if (name is "delegation.cancel" or "delegation.disposition" or "delegation.mailbox.send")
+        {
+            var revision = fx.Server.ReadSessionSecurityPolicy(fx.Session)?.PolicyRevision
+                ?? throw new InvalidOperationException("The fixture has no current Session policy.");
+            fields += ",\"expectedSessionId\":\"" + fx.Session + "\",\"expectedRunId\":\"" + fx.Run
+                + "\",\"expectedPolicyRevision\":" + revision.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        return fx.Server.SendUserAction(Command(name, fields), CancellationToken.None);
+    }
     private static CommandAck Disposition(DelegationAdmissionTests.Fixture fx, Delegation child, AgentResultProduced produced, string outcome = "Accepted") =>
         Send(fx, "delegation.disposition", "\"delegationId\":\"" + child.DelegationId + "\",\"resultId\":\"" + produced.ResultRef.Id
             + "\",\"outcome\":\"" + outcome + "\",\"reason\":\"Revisión explícita del usuario\"");

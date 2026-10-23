@@ -11,10 +11,11 @@ using OmniCore.Models;
 /// <summary>Adaptador nativo de la Responses API (perfiles api y codex), con SSE guionado sin red.</summary>
 public sealed class OpenAIResponsesProviderTests
 {
-    [Fact]
-    public async System.Threading.Tasks.Task Explicit_cost_bounded_image_output_is_sent_and_completed_with_original_png_bytes()
+    [Theory]
+    [InlineData("image/png", "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=")]
+    [InlineData("image/webp", WebpImageValidationTests.Lossless)]
+    public async System.Threading.Tasks.Task Explicit_cost_bounded_image_output_is_sent_and_completed_with_original_image_bytes(string mediaType, string encoded)
     {
-        var png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=";
         var stream = """
 event: response.output_item.added
 data: {"type":"response.output_item.added","output_index":0,"item":{"type":"image_generation_call","id":"img_1"}}
@@ -25,7 +26,7 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"image
 event: response.completed
 data: {"type":"response.completed","response":{"status":"completed","model":"gpt-image","usage":{"input_tokens":2,"output_tokens":1}}}
 
-""".Replace("PNGDATA", png, StringComparison.Ordinal);
+""".Replace("PNGDATA", encoded, StringComparison.Ordinal);
         var handler = new QueueHandler(_ => Sse(stream));
         var model = new ModelSelection(new ModelIdValue("gpt-image"), 4096, ToolMode.Direct, null,
             outputModalities: ["text", "image"], imageGenerationMaxCostUsd: 0.08m);
@@ -38,8 +39,8 @@ data: {"type":"response.completed","response":{"status":"completed","model":"gpt
         Assert.Equal("image_generation", body.RootElement.GetProperty("tools")[0].GetProperty("type").GetString());
         var response = Assert.IsType<ResponseCompleted>(events[^1]).Response;
         var image = Assert.IsType<ImageBlock>(Assert.Single(response.Content));
-        Assert.Equal("image/png", image.MediaType);
-        Assert.Equal(Convert.FromBase64String(png), image.Bytes.ToArray());
+        Assert.Equal(mediaType, image.MediaType);
+        Assert.Equal(Convert.FromBase64String(encoded), image.Bytes.ToArray());
         Assert.Equal(0.08m, response.AdditionalCostUpperBoundUsd);
     }
 

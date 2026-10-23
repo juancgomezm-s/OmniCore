@@ -1,5 +1,16 @@
 # OmniCore
 
+**Directiva vigente M9/M10 (2026-10-23):** leer primero
+[M9-M10-UI-OWNERSHIP](docs/plans/m8-m10-user-localization.md#directiva-m9-m10-ui-ownership--un-producto-interfaz-preservada-2026-10-23).
+OmniCore es el núcleo del mismo producto, no una integración administrada por el usuario.
+El agente de Core sólo escribe Core/CLI/TUI; cualquier copia de OmniCoder es sólo
+lectura salvo encargo explícito y acotado de su coordinación/usuario. Terminar M9/M10
+no autoriza cambios de composer, paneles, tema, navegación, controles, pruebas visuales,
+bundles ni un nuevo dashboard. Tampoco autoriza editar su adapter/IPC por cuenta propia.
+Conservar aportes en curso para revisión; no publicarlos reemplazando el workbench
+de OmniCoder. Los checkpoints históricos de trabajo en ambos repositorios no amplían
+este permiso. No reabrir la homologación cerrada ni debilitar la seguridad de Session.
+
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 
 **Checkpoint M9-K/L (2026-10-17):** seguridad durable por Session, lifecycle nativo y respuesta de

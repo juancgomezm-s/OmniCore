@@ -28,10 +28,13 @@
     <PackageReference Include="Terminal.Gui" />
     <PackageReference Include="Markdig" />
     <PackageReference Include="StbImageSharp" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" />
   </ItemGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="Assets/Companions/*.png" />
+    <Content Include="..\..\docs\third-party\SkiaSharp-LICENSE.txt"
+             Link="licenses/SkiaSharp-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

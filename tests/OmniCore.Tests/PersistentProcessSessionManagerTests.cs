@@ -329,6 +329,52 @@ public sealed class PersistentProcessSessionManagerTests
     }
 
     [Fact]
+    public async Task Process_output_flushes_a_held_secret_prefix_as_redacted_at_eof()
+    {
+        var session = SessionId.New(); var run = RunId.New().ToString(); var lane = LaneId.New().ToString();
+        var root = Path.Combine(Path.GetTempPath(), "OmniProcessEofRedaction-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var manager = new PersistentProcessSessionManager(session, new InMemoryEventStore(), EventCodecs.Create(),
+            Guid.NewGuid().ToString("N"), root, null, static () => true);
+        var control = new FakePersistentControl();
+        try
+        {
+            var started = await manager.StartAsync(run, lane, Spec(root, TimeSpan.FromSeconds(30)),
+                new FakePersistentLauncher(control), null, TestContext.Current.CancellationToken);
+            var handle = Assert.IsType<string>(started.Handle);
+            SecretRedactorRegistry.Install(SecretRedactor.Shared);
+            control.Output.WriteChunk(Encoding.UTF8.GetBytes("READY> "));
+            var prompt = await manager.ReadAsync(handle, run, lane, 0, 8,
+                TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+            Assert.Equal("READY> ", string.Concat(prompt.Output.Select(chunk => chunk.Text)));
+
+            var secret = "m9-eof-secret-" + Guid.NewGuid().ToString("N");
+            SecretRedactorRegistry.Register(secret);
+            var withheldPrefix = secret[..(secret.Length / 2)];
+            control.Output.WriteChunk(Encoding.UTF8.GetBytes(withheldPrefix));
+            var beforeEof = await manager.ReadAsync(handle, run, lane, prompt.Last, 8,
+                TimeSpan.FromMilliseconds(100), TestContext.Current.CancellationToken);
+            Assert.Empty(beforeEof.Output);
+            Assert.Equal(prompt.Last, beforeEof.Last);
+
+            control.Output.Complete();
+            var afterEof = await manager.ReadAsync(handle, run, lane, beforeEof.Last, 8,
+                TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+            var flushed = string.Concat(afterEof.Output.Select(chunk => chunk.Text));
+            Assert.Contains(SecretRedactor.Marker, flushed, StringComparison.Ordinal);
+            Assert.DoesNotContain(secret, flushed, StringComparison.Ordinal);
+            Assert.DoesNotContain(withheldPrefix, flushed, StringComparison.Ordinal);
+            Assert.True(afterEof.Last > beforeEof.Last);
+            Assert.False(afterEof.Gap);
+        }
+        finally
+        {
+            await manager.StopAllAsync();
+            CleanupOwnedTree(root);
+        }
+    }
+
+    [Fact]
     public async Task Stopped_process_proposal_survives_host_reopen_without_relaunching_process()
     {
         var root = Path.Combine(Path.GetTempPath(), "OmniProcessProposal-" + Guid.NewGuid().ToString("N"));

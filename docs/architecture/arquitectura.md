@@ -732,6 +732,15 @@ Seatbelt (`sandbox-exec`) o una alternativa. En v1, macOS usa sandbox `Basic` co
 
 ## 24. Roadmap M1–M10 (fuente de verdad)
 
+**Frontera de implementación vigente (2026-10-23):** aplicar
+[M9-M10-UI-OWNERSHIP](../plans/m8-m10-user-localization.md#directiva-m9-m10-ui-ownership--un-producto-interfaz-preservada-2026-10-23).
+M9/M10 completan el núcleo y sus contratos; no autorizan al agente de Core a
+rediseñar ni editar OmniCoder, su composer/paneles o su adapter sin encargo
+específico de la coordinación de ese producto. La interfaz Electron pertenece a
+OmniCoder y conserva la experiencia existente. Las referencias históricas a
+Sidecar, confirmaciones y “terminar adapter” se subordinan a esa directiva;
+Git post-M10 es un diferido de la TUI, no de la GUI ya construida. P0 continúa cerrado.
+
 ### P0-OMNI-UNIFICACION
 
 **Revisión:** 2026-10-14 · **Prioridad:** P0 · **Estado global:** CERRADO / ALCANCE ACEPTADO. **Contribución de OmniCore: CERRADA en Windows**, con el alcance y las diferencias de plataforma del [acta local](../validation/omnicore-homologation-closure-20261014.md).

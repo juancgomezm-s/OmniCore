@@ -303,7 +303,7 @@ public sealed class ProtocolMapperTests
             new ToolCallPrepared(call, "{}"),
             new ToolCallAuthorized(call),
             new ToolCallStarted(call, EffectClass.None, null),
-            new ToolCallSucceeded(call, "{\"summary\":\"Process output read.\"}")
+            new ToolCallSucceeded(call, "{\"summary\":\"Process output read.\",\"displayOutputThrough\":42}")
                 { DisplayOutput = new string('x', 20 * 1024) },
         }, DurabilityClass.Standard);
 
@@ -312,6 +312,7 @@ public sealed class ProtocolMapperTests
             JsonObj.Parse(item.PayloadJson)["type"] == "toolcall.succeeded");
         var fields = JsonObj.Parse(succeededEvent.PayloadJson);
         Assert.Equal("Process output read.", fields["summary"]);
+        Assert.Equal("42", fields["displayOutputThrough"]);
         Assert.Equal(16 * 1024, fields["displayOutput"]!.Length);
         Assert.DoesNotContain("provider-call", succeededEvent.PayloadJson, StringComparison.Ordinal);
     }

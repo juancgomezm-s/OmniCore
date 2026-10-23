@@ -13,6 +13,9 @@ using OmniCore.Extensions;
 using Task = System.Threading.Tasks.Task;
 
 internal sealed record ProcessOutputChunk(long Sequence, string Stream, string Text);
+internal sealed record ProcessSessionSummary(string Handle, string State, string RunId, string LaneId,
+    long LastOutputSequence, int? ExitCode, string? ProposalId, string SourceToolId, bool OutputLost,
+    bool CanRead, bool CanInput, bool CanStop);
 internal sealed class ProcessInputOutcomeUnknownException(string reason, Exception innerException)
     : IOException(reason, innerException);
 
@@ -289,6 +292,62 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
         }
     }
 
+    /// <summary>Read-only live summary; never restores ownership or writes recovery events.</summary>
+    internal IReadOnlyList<ProcessSessionSummary> Snapshot(string run)
+    {
+        var result = new List<ProcessSessionSummary>();
+        foreach (var process in _processes.Values.Where(item => item.Run == run))
+        {
+            lock (process.Gate)
+                result.Add(new(process.Id, process.State, process.Run, process.Lane, process.LastSequence,
+                    process.ExitCode, process.Proposal?.ProposalId, process.SourceTool.ToString(),
+                    process.OutputLostOnRecovery, process.Lease == hostLeaseGeneration,
+                    process.Lease == hostLeaseGeneration && process.State == "running",
+                    process.Lease == hostLeaseGeneration && process.State is "running" or "stopping"));
+        }
+        foreach (var pair in _recovered.Where(item => item.Value.Run == run))
+            result.Add(new(pair.Key, "unknown", pair.Value.Run, pair.Value.Lane, pair.Value.Last,
+                pair.Value.Exit, null, "process.start", pair.Value.Lost, false, false, false));
+        return result.OrderBy(item => item.Handle, StringComparer.Ordinal).ToArray();
+    }
+
+    internal bool HasRootLaneControlCandidate(string run, string lane) =>
+        _processes.Values.Any(process => process.Run == run && process.Lane == lane
+            && process.Lease == hostLeaseGeneration
+            && process.State is "running" or "exited" or "stopped" or "timed_out" or "output_limit");
+
+    internal bool CanControlOwnedProcess(string handle, string run, string lane, string toolName)
+    {
+        if (toolName is not ("process.read" or "process.send_input" or "process.stop")
+            || !ownsHostLease() || !_processes.TryGetValue(handle, out var process)
+            || process.Run != run || process.Lane != lane || process.Lease != hostLeaseGeneration) return false;
+        lock (process.Gate)
+        {
+            return toolName switch
+            {
+                "process.read" => process.State is "running" or "exited" or "stopped" or "cancelled"
+                    or "failed" or "timed_out" or "output_limit" or "unknown",
+                "process.send_input" => process.State == "running" && process.Control is not null,
+                "process.stop" => process.State is "running" or "exited" or "stopped" or "timed_out"
+                    or "output_limit" or "unknown",
+                _ => false,
+            };
+        }
+    }
+
+    /// <summary>Process ownership keeps its Run addressable until every process and retained
+    /// publication has a durable terminal disposition. This is a passive query.</summary>
+    internal bool HasUnresolvedForRun(string run)
+    {
+        foreach (var process in _processes.Values.Where(item => item.Run == run))
+        {
+            lock (process.Gate)
+                if (process.State is "starting" or "running" or "stopping" or "unknown" or "output_limit"
+                    || process.Proposal is not null) return true;
+        }
+        return _recovered.Values.Any(item => item.Run == run);
+    }
+
     /// <summary>
     /// Passive readback only: it cannot publish, stop, input to, or otherwise advance a process.
     /// The returned cursor covers only delivered chunks; reconnects must call this explicitly.
@@ -485,6 +544,34 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
             var patterns = process.WriterClaims.Writes;
             return proposal.Changes is { Count: > 0 and <= 64 }
                 && proposal.Changes.All(change => patterns.Any(pattern => ExtensionWriteWorkspace.IsPathWithinPattern(pattern, change.Path)));
+        }
+    }
+
+    internal bool MarkProcessBatchProposalApplied(ExtensionWriteBatchProposal proposal, string workspaceRoot)
+    {
+        if (proposal.Origin != "process" || proposal.ProcessHandleId is not { } handle
+            || !_processes.TryGetValue(handle, out var process) || !PathEquals(workspaceRoot, process.WorkspaceRoot))
+            return false;
+        lock (process.Gate)
+        {
+            if (process.Lease != hostLeaseGeneration || process.State is not ("exited" or "stopped")
+                || process.Proposal is null || process.ProposalArtifact is null)
+                return false;
+            var completed = JsonSerializer.Serialize(proposal, ExtensionWriteBatchJsonContext.Default.ExtensionWriteBatchProposal);
+            var retained = JsonSerializer.Serialize(process.Proposal, ExtensionWriteBatchJsonContext.Default.ExtensionWriteBatchProposal);
+            if (!string.Equals(completed, retained, StringComparison.Ordinal)) return false;
+
+            // The protected proposal remains retained until the workspace history is durable.
+            // This final barrier removes it from the outstanding-process set only after the
+            // publisher has verified all postimages and committed the mutation history.
+            var priorProposal = process.Proposal;
+            var priorArtifact = process.ProposalArtifact;
+            process.Proposal = null;
+            process.ProposalArtifact = null;
+            if (Record(process, null, process.State)) return true;
+            process.Proposal = priorProposal;
+            process.ProposalArtifact = priorArtifact;
+            return false;
         }
     }
 
@@ -820,13 +907,22 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
             combined = SecretRedactorRegistry.Current?.Redact(combined) ?? new PiiRedactor().Redact(combined);
             if (endOfStream)
             {
+                if (SecretRedactorRegistry.Current is { } secrets)
+                {
+                    var secretPrefixLength = secrets.PotentialSecretPrefixSuffixLength(combined);
+                    if (secretPrefixLength > 0)
+                        combined = combined[..^secretPrefixLength] + OmniCore.Security.SecretRedactor.Marker;
+                }
+                var credentialSuffixStart = PiiRedactor.PotentialCredentialSuffixStart(combined);
+                if (credentialSuffixStart < combined.Length)
+                    combined = combined[..credentialSuffixStart] + OmniCore.Security.SecretRedactor.Marker;
                 _pending.Clear();
                 return SafeOutput(combined);
             }
 
             var holdStart = combined.Length;
-            if (SecretRedactorRegistry.Current is { } secrets)
-                holdStart = Math.Min(holdStart, combined.Length - secrets.PotentialSecretPrefixSuffixLength(combined));
+            if (SecretRedactorRegistry.Current is { } streamSecrets)
+                holdStart = Math.Min(holdStart, combined.Length - streamSecrets.PotentialSecretPrefixSuffixLength(combined));
             holdStart = Math.Min(holdStart, PiiRedactor.PotentialCredentialSuffixStart(combined));
             holdStart = Math.Min(holdStart, IncompleteTerminalSequenceStart(combined));
             if (holdStart <= 0) return string.Empty;
@@ -904,7 +1000,12 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
                 decoder.Convert(buffer, 0, count, chars, 0, chars.Length, count == 0,
                     out var bytesUsed, out var charsUsed, out _);
                 if (bytesUsed != count) throw new InvalidDataException("process.output.decoder_overflow");
-                if (count == 0 && charsUsed == 0) break;
+                if (count == 0 && charsUsed == 0)
+                {
+                    EnqueueSanitizedOutput(process, streamName,
+                        sanitizer.Append(string.Empty, endOfStream: true), emit);
+                    break;
+                }
                 var text = new string(chars, 0, charsUsed);
                 var exceedsLimit = false;
                 lock (process.Gate)

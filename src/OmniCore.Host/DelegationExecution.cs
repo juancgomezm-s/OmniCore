@@ -8,6 +8,9 @@ using OmniCore.Protocol;
 
 namespace OmniCore.Host;
 
+internal sealed record NativeChildPermissionContinuation(TaskId TaskId, LaneId LaneId, TurnId TurnId,
+    ToolCallId ToolCallId, InteractionId InteractionId, string OptionId);
+
 internal sealed record DelegationWork(SessionId Session, RunId Run, Delegation Delegation,
     ExecutionScopeState Scope, AgentProfile Profile, string Objective, TaskBudget Budget,
     WorktreeIdentity? Worktree, TaskPacket? TaskPacket, string EffectiveRoot, string WorkingState);
@@ -165,7 +168,8 @@ public sealed partial class OmniServer
     /// still passes Explorer's routing, profile and hierarchical budget guards.</summary>
     internal CommandAck ExecuteDelegation(DelegationId id,
         Func<DelegationWork, CancellationToken, ExplorerTurn.TurnResult> execute, CancellationToken token,
-        bool waitForCapacity = false, WeakSandboxWorkflowContinuation? weakSandboxContinuation = null)
+        bool waitForCapacity = false, WeakSandboxWorkflowContinuation? weakSandboxContinuation = null,
+        NativeChildPermissionContinuation? nativePermissionContinuation = null)
     {
         var session = _lastSessionId ?? throw new InvalidOperationException("No Session.");
         var run = _lastRunId ?? throw new InvalidOperationException("No Run.");
@@ -463,9 +467,14 @@ public sealed partial class OmniServer
                 var canResumeWeakSandboxCall = weakSandboxContinuation is { } weak
                     && history.Phase == PreM6RecordPhase.Accepted
                     && TryMatchOpenWeakSandboxCall(session, run, delegation, own, weak);
+                var canResumeNativePermission = nativePermissionContinuation is { } nativePermission
+                    && history.Phase == PreM6RecordPhase.Accepted
+                    && nativePermission.TaskId == delegation.ChildTaskId
+                    && nativePermission.LaneId == delegation.ChildLaneId
+                    && TryMatchOpenNativePermissionCall(run, delegation, own, nativePermission);
                 if (HasOpenModelStep(own, supervisor.LaneId) || HasOpenToolCall(own, supervisor.LaneId)
-                    || childHasOpenModelStep && !canResumeBoundExternal && !canResumeWeakSandboxCall
-                    || HasOpenToolCall(own, delegation.ChildLaneId) && !canResumeWeakSandboxCall)
+                    || childHasOpenModelStep && !canResumeBoundExternal && !canResumeWeakSandboxCall && !canResumeNativePermission
+                    || HasOpenToolCall(own, delegation.ChildLaneId) && !canResumeWeakSandboxCall && !canResumeNativePermission)
                     return Ack(RuntimeCommandOutcome.Deferred("ExecutionBoundaryRequired"));
                 if (history.Phase == PreM6RecordPhase.Created)
                 {
@@ -655,6 +664,48 @@ public sealed partial class OmniServer
         }
         finally { taskPacketPublicationLease?.Dispose(); capacity?.Dispose(); }
         CommandAck Ack(RuntimeCommandOutcome outcome) => CommandOutcomeAck(messageId, "ok", null, outcome, session, before, commandId);
+    }
+
+    private bool TryMatchOpenNativePermissionCall(RunId run, Delegation delegation,
+        IReadOnlyList<DomainEvent> own, NativeChildPermissionContinuation continuation)
+    {
+        if (continuation.OptionId is not ("allow_once" or "allow_run" or "allow_workspace" or "deny")) return false;
+        var matching = own.Where(evt => evt.RunId == run && evt.TaskId == delegation.ChildTaskId
+                && evt.LaneId == delegation.ChildLaneId && evt.TurnId == continuation.TurnId
+                && evt.ToolCallId == continuation.ToolCallId)
+            .Select(evt => (Event: evt, Payload: _codecs.Decode(evt))).ToArray();
+        var started = matching.SingleOrDefault(item => item.Payload is TurnStarted);
+        var permission = matching.SingleOrDefault(item => item.Payload is InteractionRequested request
+            && request.InteractionId == continuation.InteractionId);
+        var call = matching.SingleOrDefault(item => item.Payload is ToolCallRequested);
+        var prepared = matching.SingleOrDefault(item => item.Payload is ToolCallPrepared);
+        var resolution = own.Where(evt => evt.RunId == run && evt.TaskId == delegation.ChildTaskId
+                && evt.LaneId == delegation.ChildLaneId)
+            .Select(evt => (Event: evt, Payload: _codecs.Decode(evt)))
+            .SingleOrDefault(item => item.Payload is InteractionResolved resolved
+                && resolved.InteractionId == continuation.InteractionId);
+        return started.Event is not null && permission.Event is not null
+            && permission.Payload is InteractionRequested requested && requested.Kind == InteractionKind.Permission
+            && call.Event is not null && call.Payload is ToolCallRequested
+            && prepared.Event is not null && prepared.Payload is ToolCallPrepared
+            && resolution.Event is not null && resolution.Payload is InteractionResolved resolvedChoice
+            && !resolvedChoice.IsQuestionnaire && resolvedChoice.Cause == InteractionCause.User
+            && resolvedChoice.OptionId == continuation.OptionId
+            && started.Event.Sequence < call.Event.Sequence && call.Event.Sequence < prepared.Event.Sequence
+            && prepared.Event.Sequence < permission.Event.Sequence
+            && IsTurnOpenForLane(own, run, continuation.TurnId, delegation.ChildLaneId)
+            && !own.Any(evt => evt.RunId == run && evt.ToolCallId == continuation.ToolCallId
+                && evt.Sequence > permission.Event.Sequence
+                && _codecs.Decode(evt) is ToolCallStarted or ToolCallSucceeded or ToolCallFailed
+                    or ToolCallEffectUnknown or ToolCallReconciled);
+    }
+
+    private bool IsTurnOpenForLane(IReadOnlyList<DomainEvent> events, RunId run, TurnId turn, LaneId lane)
+    {
+        var turns = events.Where(evt => evt.RunId == run && evt.LaneId == lane && evt.TurnId == turn)
+            .Select(evt => _codecs.Decode(evt)).ToArray();
+        return turns.OfType<TurnStarted>().Count() == 1
+            && turns.All(payload => payload is not TurnCompleted and not TurnAbandoned and not TurnInterrupted);
     }
 
     private bool TryMatchOpenWeakSandboxCall(SessionId session, RunId run, Delegation delegation,

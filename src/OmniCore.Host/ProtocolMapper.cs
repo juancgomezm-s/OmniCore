@@ -371,6 +371,10 @@ public sealed class ProtocolMapper
                 && summary.ValueKind == System.Text.Json.JsonValueKind.String
                 && summary.GetString() is { Length: > 0 } text)
                 fields["summary"] = _redaction.Redact(text.Length > 512 ? text[..512] + "…" : text);
+            if (result.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                && result.RootElement.TryGetProperty("displayOutputThrough", out var delivered)
+                && delivered.TryGetInt64(out var sequence) && sequence >= 0)
+                fields["displayOutputThrough"] = sequence.ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
         catch (System.Text.Json.JsonException) { }
         if (succeeded.DisplayOutput is { Length: > 0 } output)

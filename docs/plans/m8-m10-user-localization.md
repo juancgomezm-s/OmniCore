@@ -2,7 +2,119 @@
 
 Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petición del usuario. Complementa la fuente de verdad [arquitectura §24](../architecture/arquitectura.md#24-roadmap-m1m10-fuente-de-verdad) y el [plan de preferencias e idiomas](preferences-and-localization.md). Define trabajo restante y aceptación; no declara construido lo que sólo tiene contrato o pantalla. La petición comprende traducciones y convenciones regionales de presentación.
 
+## Directiva M9-M10-UI-OWNERSHIP — un producto, interfaz preservada (2026-10-23)
+
+**Petición vigente del usuario.** OmniCore es el núcleo de OmniCoder, no un servicio
+externo que el usuario deba conectar o administrar. La terminal es otra superficie
+del mismo producto. Terminar M9/M10 autoriza completar capacidades, no sustituir la
+experiencia Electron ya construida. Esta directiva prevalece sobre las menciones
+históricas de Sidecar, confirmaciones de conexión y “terminar el adapter”; no reabre
+el P0 de homologación aceptado ni declara cerrada una capacidad pendiente.
+
+### Responsabilidad y límite de escritura
+
+- **Equipo/agente de Core:** dominio, runtime, seguridad, persistencia, protocolo,
+  read models, contratos de capacidades y su CLI/TUI. Entrega contratos semánticos
+  versionados, errores, ejemplos y pruebas; no prescribe widgets ni layout Electron.
+- **Coordinación de OmniCoder:** composer, chat, agrupación proyectos/sesiones,
+  navegación, panel derecho, preferencias, modelos/esfuerzo, tema y accesibilidad;
+  también decide la integración Main/preload/adapter/renderer y su aceptación.
+- **Por defecto, cualquier checkout/clon/worktree de OmniCoder es sólo lectura
+  para el agente de Core.** No editar renderer, CSS, componentes, pruebas visuales,
+  planes de UI, bundles, launcher ni instaladores; tampoco editar bridge/IPC para
+  introducir una superficie por cuenta propia. Una excepción requiere encargo
+  explícito y acotado del usuario/coordinación de OmniCoder, con archivos y pruebas.
+  La orden general “cerrar M9/M10” no es esa excepción.
+- Los cambios de consumidor ya construidos se conservan para revisión, pero no
+  autorizan continuar ni publicar su GUI. Entregar el diff de contratos/adaptador
+  por separado de las decisiones visuales. No copiar el renderer o `out/` de una
+  copia antigua encima del trabajo de OmniCoder, ni resolver conflictos eligiendo
+  toda una rama. El proyecto C#/WPF queda fuera de alcance.
+- Antes de integrar, contrastar base, cambios locales y plan de ambas copias. Se
+  detectó el clon `m9-completion/OmniCoder` basado en `2c31071` (18 de octubre):
+  no contiene la recuperación local del workbench del 20/21 en
+  `C:/Users/juanc/Documents/JayCoder`. Su build/E2E no acredita conservar esa GUI.
+  `f3ad392` y su trabajo posterior no deben sustituirla por el mero hecho de ser
+  más recientes. No hacer merge, commit o push como parte de esta revisión documental.
+
+### Experiencia obligatoria, sin una segunda capa de producto
+
+1. Inicio/recuperación del motor internos. No añadir Conectar/Desconectar Core,
+   “habilitar controles humanos”, protocolos, reservas, IDs o formularios de
+   transporte al composer/panel normal. Diagnóstico técnico sólo bajo demanda;
+   errores reales se explican con recuperación de la conversación, nunca éxito falso.
+2. Conservar el composer y sus accesos a modelo, esfuerzo compatible, modo y
+   permisos; autocompletado de comandos anclado al escribir, sin ejecutar al navegar.
+   Modelo sin niveles muestra predeterminado no ajustable; los niveles efectivos
+   proceden del contrato/proveedor, no de una escala genérica inventada.
+3. Conservar actividad/herramientas, plan y obreros con progreso real; Contexto
+   resume composición. No reemplazar esas superficies por volcado de JSON,
+   listas de capabilities o controles duplicados de Session/Run/Lane.
+4. La política y sandbox efectivos pertenecen a la conversación y se heredan con
+   su identidad/revisión entre clientes. Firmar origen humano no implica pedir
+   permiso otra vez. No hay grant global de conexión adicional ni confirmación
+   por cada efecto ya autorizado. Se mantienen Deny, Ask efectivo, consentimiento
+   de gasto/ruta, cambios de alcance y preguntas reales del usuario; no se elevan
+   permisos para dar fluidez. Modo y seguridad siguen siendo conceptos distintos.
+5. Controles manuales de procesos/hijos son intervenciones opcionales, no un paso
+   obligatorio entre el orquestador y sus herramientas. Sus datos se integran en
+   Terminal/Obreros por OmniCoder. Revisar/aplicar resultados sigue la política y
+   responsabilidad del orquestador acordadas; no imponer revisión humana global.
+6. `!comando` requiere contrato humano Host, cwd/sandbox/política de Session,
+   recibos, salida, cancelación y recuperación. Tener `process.start` o
+   `shell.exec` para tools no prueba ese recorrido. No reemplazarlo por prompt
+   al LLM ni por spawn directo de Electron.
+7. Preservar el Git existente y su revisión/diff ampliable. El “Git post-M10” se
+   refiere al frame de la **TUI**; no difiere, elimina ni redefine las capacidades
+   y pendientes propios de OmniCoder.
+
+### Resto de M9/M10: separar entrega del núcleo y consumidor
+
+| Bloque | Entrega de Core / estado de aceptación | Integración de OmniCoder, de su coordinación |
+|---|---|---|
+| M9-M procesos y escritores | Contratos, ownership, procesos/salida terminal, publicación autorizada y pruebas reales. El candidato del worktree tiene avances; ConPTY, persistencia Weak y aceptación integral/plataformas conservan sus límites documentados. | Consumir desde Terminal/Obreros existentes; no añadir una consola administrativa permanente. Probar salida final tras RunCompleted, lectura sin efectos y cancelación propia. |
+| M9-L plan/lanes/worktrees | Continuaciones, controles tipados, checkpoints/alternativas y estado durable con fencing. Contrato construido no equivale a recorrido aceptado. | Reutilizar plan/obreros/historial y navegación ya construidos; conservar la sesión original, borrador e índice. No reconstruir paneles para “demostrar” cada comando. |
+| M9 seguridad, modelos y configuración | SEC-CONV-01–13, identidad/revisión, permisos y capacidades reales; especificar administración segura de proveedores y niveles de esfuerzo si aún faltan. | Misma política de conversación, modelo efectivo y esfuerzo compatible; configuración sin secretos en renderer ni catálogo Pi como sustituto. |
+| M9 medios/idiomas/plataformas | WebP y demás medios según evidencia; distinguir fixtures de aceptación live/manual; negociación y errores explícitos. | Adaptar contenido y textos dentro del diseño existente, con geometría/contraste verificados. Localizar no autoriza reordenar la GUI. |
+| M10 memoria, búsqueda y undo | Scopes, procedencia, promoción/olvido/Ask, session.search y compensación con cambios ajenos; contratos/recibos persistentes. | Acciones en las superficies existentes; resumen de contexto no se convierte en gestor completo. Undo no cambia el archivo hasta la acción autorizada. |
+| M10 teclado, LSP y patch | Acciones canónicas y capacidades; CLI/TUI conserva sus bindings, diagnósticos, preview/recovery. | OmniCoder decide atajos y componentes reutilizables; una ClientAction no impone una nueva ventana ni otra paleta. |
+| M10 evaluación y actualización | Calibración, regresiones, límites, Releases/manifest/hash/rollback. Instalación desde Main no equivale al updater de Releases. | Aceptación propia y rutas de distribución de OmniCoder, sin sobrescribir portables de otro proyecto. |
+
+La tabla es reparto de responsabilidades y aceptación pendiente, no nueva
+certificación del candidato. M9 no se cierra por tres E2E ni M10 por modificar este
+plan. Cada entrega distingue contrato, backend, consumidor integrado, prueba local,
+CI del SHA exacto y aceptación visual del usuario.
+
+### Pruebas de no regresión antes de integrar el consumidor
+
+- **UX-01 Baseline:** inventario y comparación de composer/paneles frente al
+  workbench de OmniCoder vigente, incluidas sus correcciones locales; ningún
+  reemplazo total de archivos para resolver la divergencia.
+- **UX-02 Composer:** 600/1000/maximizada, claro/oscuro; borrador, foco, envío,
+  modo/permisos/modelo y esfuerzo compatible conservados, sin formularios técnicos
+  permanentes. Cambiar selección no envía inferencia.
+- **UX-03 Comandos:** escribir/filtrar/elegir con teclado completa sin ejecutar;
+  ejecutar invoca una identidad real. `!` no llega al LLM; su prueba de ejecución
+  permanece pendiente hasta disponer del contrato humano.
+- **UX-04 Paneles:** actividad y salida reales, tareas/obreros, accesos existentes,
+  resumen de contexto, árbol Git/diff ampliable y navegación entre proyectos;
+  abrir paneles no inicia efectos, cambia permisos ni pierde el hilo.
+- **UX-05 Seguridad:** misma Session/revisión/política al reconectar y cambiar de
+  superficie; Allow no produce una confirmación duplicada, Ask efectivo se atiende
+  una vez en el flujo canónico, Deny no ejecuta. Separar pruebas de permiso y gasto.
+- **UX-06 Continuidad:** estado terminal y gaps explícitos sin reactivar Run,
+  reenvío ni nueva inferencia; resultados tardíos de otra Session no contaminan UI.
+- **UX-07 Entrega:** diffs revisados por coordinación de OmniCoder, pruebas con
+  Electron/Host reales y perfiles aislados; capturas comparables y aceptación del
+  usuario para cambios visuales. Un fixture prueba cableado, no proveedor live.
+
 ## Ejecución de cierre M9 (2026-10-22)
+
+**Rectificación de alcance del 23 de octubre:** la construcción descrita abajo
+se conserva como checkpoint técnico, no como autorización vigente para seguir
+editando/publicando OmniCoder. Aplicar M9-M10-UI-OWNERSHIP: entregar contratos y
+diff de consumidor a su coordinación; cualquier trabajo nuevo en ese repo requiere
+encargo explícito acotado. Sus formularios antiguos no son el baseline de la GUI.
 
 El usuario autoriza construir el resto con un solo worker Luna en alto, con
 objetivos amplios y regresiones integrales después del cableado. Base reconocida:
@@ -37,6 +149,85 @@ construida. Linux espera CI del candidato. No hay publicación de este increment
 ni cierre M9; las consultas pasivas no aplican lotes y se conservan las fronteras
 de permisos/prelectura/historia. El resto de M9-L y sus aceptaciones siguen abiertos.
 
+**Corte siguiente compilado, aceptación integral en curso (2026-10-23):**
+el idioma efectivo y los controles de lanes tienen cambios locales en OmniCoder;
+la continuación de Permission de hijos se está conectando al Turn y executor
+originales. Los controles manuales de procesos y el ciclo nativo de worktrees
+siguen en construcción. Core compila sin errores ni advertencias y OmniCoder
+completó los seis workspaces. La revisión estática detectó y corrigió en el código
+nuevo una exigencia de ToolCallId que habría bloqueado PlanApproval raíz; ese
+recorrido pasó sus cuatro casos tras reparar la ruta de la CLI en la fixture.
+Cinco focos de procesos/proyección y TUI legacy también pasaron. La lista visible
+de procesos no sustituye la aceptación pendiente de sus controles humanos.
+
+La aceptación integral mantiene detenida la publicación. El recorrido de memoria
+Session detectó un cierre de conexión al recibir una aprobación MemoryPromotion
+sin Run activo. El adaptador de OmniCoder exigía scope de Run antes de distinguir
+esa interacción de Session; su rechazo hacía cerrar stdin y el Host salía con
+código 0, sin stderr. Luna bajo identificó el mecanismo en código sin repetir el
+E2E; Luna alto corrigió la ruta Session y conservó el motivo de fallo sanitizado.
+El build afectado y dos focos unitarios pasaron. El caso completo de ventana real
+ahora pasa: promoción, resolución exacta, conexión viva, consumo y retirada,
+proyecciones de skills/plan/lanes, checkpoint y apertura de su alternativa con la
+Session exacta de Core. Main registra sólo la raíz y Session del recibo confiable
+antes de conectar. El ciclo durable restante de worktrees sigue abierto. Los logs
+iniciales conservan el tipo/seq 11 y los recibos, pero no el payload completo del
+evento: el journal que se informó preservado ya no estaba disponible.
+
+Los controles nativos requirieron corregir el recorrido completo durante y después
+del Turn: admisión del handle exacto, guardas de procesos propios, scheduling sin
+turno de modelo, resultado durable y cierre normal. El diferido de Run activaba
+erróneamente el bucle genérico de reparación de ActLoop y añadía solicitudes al
+proveedor; ahora se distingue la barrera de procesos para cerrar el Turn sin
+inyectar entrada sintética. Un recibo completado tampoco depende de que la UI siga
+considerando operacional el Run. La revisión independiente de Luna bajo confirmó
+en el journal preservado cinco controles aceptados, tres solicitudes previstas al
+proveedor fixture, una sola entrada humana y RunCompleted en secuencia 102.
+
+El último fallo integral está aislado: al cerrar el Run, la consulta de procesos y
+la UI eliminan la lista terminal; por ello no se muestra finalizado ni existe vía
+pública de recuperar los últimos chunks. Se está conectando un snapshot pasivo
+acotado de ese mismo Run, sin reabrirlo ni habilitar entrada/parada tras terminal.
+Si los bytes no están disponibles se requiere gap explícito. El helper original
+sale con código 35 al recibir EOF en lugar de finish; eso no es un crash, y el
+journal sólo prueba READY previo. La nueva aceptación debe emitir bytes finales
+reales y mostrarlos después de RunCompleted; no basta retirar el matcher. Luna
+bajo no recompiló ni repitió el fallo, comprobó que journal/workspace existen y
+obtuvo NO_ORPHANS. La siguiente construcción vuelve a Luna alto como único worker.
+El escritor Strong ya publica un archivo real; su verificador declarado exige el
+consentimiento Weak del flujo existente. La aceptación local completa, su revisión
+independiente y la CI del candidato de ambos repositorios siguen siendo la puerta
+de publicación.
+
+WebP está conectado localmente a intake/materialización, media.read y salida
+generada, incluidos productores, CAS y consumidores TUI/OmniCoder. Se usa
+[SkiaSharp 4.153.1](https://www.nuget.org/packages/SkiaSharp/4.153.1), con assets
+nativos de Linux de la misma versión en los ejecutables; la licencia se conserva
+en docs/third-party y se incluye en la distribución. Antes de decodificar se
+comprueban tamaño RIFF, límites de chunks/padding y dimensiones; la aceptación
+exige decodificación completa de píxeles, sin aceptar un resultado parcial. Se
+cubren imágenes estáticas VP8/VP8L/VP8X con alfa y se rechaza animación
+explícitamente. PNG/JPEG conservan su implementación vigente. El foco de contenido
+pasó 19/19 sin omisiones y el smoke contra la CLI/Host reales aceptó VP8L válido
+y rechazó píxeles truncados, sin inferencia. El primer foco detectó una guardia
+incorrecta que exigía FrameCount=1: el codec estático devuelve cero; se corrigió
+sin retirar el rechazo explícito de animación ni el requisito de decodificación
+completa. Log final: `omnicore-m9-webp-focus-fixed-20261023.log`; evidencia stdio:
+`omnicore-m9-webp-stdio-zjin8o23`, ambos en TEMP. Dos E2E de Electron probaron PNG
+y WebP hasta CAS, guardado y reapertura sin proveedor. La carga desde paquetes
+npm/Linux/AOT queda pendiente de CI. Esto no acredita inferencia visual ni
+generación live.
+
+Para el fallo conocido de ConPTY se prepara una comparación en el runner
+desechable de Windows: ejecutar únicamente el caso real de terminal; si falla,
+guardar la opción Console/LowBoxConsoleEnabled original, habilitarla y repetir
+ese caso. La suite amplia sólo continúa si el caso pasa, y un paso always restaura
+el valor y tipo originales o su ausencia. Los logs se conservan como artefactos.
+La hipótesis sigue sin demostrar hasta ejecutar esa CI; no se omite la aserción
+de consola ni se sustituye por pipes. El script rechaza una ejecución fuera del
+runner de CI. La configuración de Windows de este equipo no se ha cambiado y su
+prueba local conserva la autorización pendiente.
+
 ### Pruebas de integración y regresión del cierre
 
 1. Construir todas las capas de un recorrido antes de compilarlo. Un build fresco
@@ -51,9 +242,11 @@ de permisos/prelectura/historia. El resto de M9-L y sus aceptaciones siguen abie
    prelectura efectiva, PatchOnly, borrado/recreación, presupuesto, conflicto,
    permisos retirados, Ask/Deny y automático sin diálogo por archivo. Reabrir el
    journal real y comprobar recibos y cargos sin repetir el efecto.
-4. Cablear y probar el consumidor por ventana Electron real hacia Host real y
-   proceso real, además de un flujo de herramientas del proveedor fixture. El
-   fixture acredita control/continuidad, no inferencia live ni comprensión visual.
+4. La coordinación de OmniCoder integra y prueba su consumidor por ventana
+   Electron real hacia Host y proceso reales, conservando su workbench. Core
+   entrega contratos/fixtures y prueba su lado; no edita ni publica esa GUI sin
+   encargo acotado. El fixture acredita control/continuidad, no inferencia live,
+   comprensión visual ni aceptación del diseño.
 5. Ejecutar una regresión conjunta de fronteras afectadas: admisión y revisión de
    Session, HMAC/receipts/replay, elecciones y weak consent, workflow, ledger,
    sandbox y los consumidores TUI afectados. Reutilizar suites existentes; no
@@ -621,10 +814,10 @@ exactly-once general y OR5 autenticado M8 sigue pendiente.
 | Resto de M9 tras M9-B | Construcción | Presentación y aceptación |
 |---|---|---|
 | Transporte y negociación | **Construido en M9-A/B/H:** Host real stdio 1.0, framing UTF-8 capado a 1 MiB, `hello`/capabilities, queries/read models, replay paginado y stream durable opcional con ventana ACK acotada, pausa de lectura, reanudación y señal de gap (ADR-0054). | Focales multiproceso cubren negociación/legacy, replay→live, ventanas, query con ACK retenido, Unicode, frame grande/oversized, stop/rebind y gaps. Windows local; Linux/macOS y otros filesystems siguen pendientes. |
-| Lease y supervisión | **Construido en M9-B:** lock OS no expirable por Session, adquisición antes de mutación y reclaim tras muerte; sin heartbeat por reloj. M9-C agrega supervisor de proceso y reserva de workspace antes de spawn; esa reserva de producto no es el lease Core. | Pruebas de dos procesos/reclaim y lifecycle de child verificadas en Windows local. La UI muestra reserva y desconexión/fallo; falta aceptación de otros OS/filesystems y ownership coordinado con otros productos externos. |
+| Lease y supervisión | **Construido en M9-B:** lock OS no expirable por Session, adquisición antes de mutación y reclaim tras muerte; sin heartbeat por reloj. M9-C agrega supervisor de proceso y reserva de workspace antes de spawn; esa reserva de producto no es el lease Core. | Pruebas de dos procesos/reclaim y lifecycle de child verificadas en Windows local. La reserva es interna; OmniCoder presenta un fallo recuperable de conversación, no un panel de conexión. Diagnóstico técnico bajo demanda. Falta aceptación de otros OS/filesystems y ownership coordinado con otros clientes. |
 | Reconexión e historial | **Construido en M9-B/H:** receipt hash-bound, `command.result` sin resend, `Unknown` no ejecutable, cursor/high-water SQL acotados, gaps/tombstones y nueva suscripción desde cursor durable después de restablecer conexión. No es exactly-once general ni reconexión automática. Procedencia Native/Imported pendiente. | Los tests de transporte existentes cubren cursores, reanudación y muerte de Host; el caso focal M9-H valida stop/rebind al mismo Host. No se atribuye a ese focal la reconexión automática. Gap/purga se muestran como historial incompleto. |
 | Clientes y preferencias | **Core:** CLI in-process/stdio multi-target net8/net10, capabilities y goldens. **M9-C integrado:** consumer TypeScript, Host hijo y Sidecar. **M9-E integrado:** composer OmniCoder conectado a inferencia Core real y recuperación de historial vía journal/replay. `ui.locale` conserva su esquema actual. | Host real Windows y UI; E2E fixture HTTP determina el wiring. Smoke Ollama local qwen08 + reapertura pasó en perfil aislado; otros providers/configuraciones permanecen por validar. Multi-OS/cuatro idiomas y paridad completa siguen abiertos. |
-| Origen humano, conversación y resultado (U-C12) | **M9-D integrado + M9-E integrado:** Electron main confirma acciones y firma proof efímero; Core valida conexión/workspace/Session/Run/revisión y ejecuta una única entrada persistida con el pipeline real. Generic `session.input` sigue igual. ACK Accepted es admisión; `conversation.result` reconcilia sin reenvío. | E2E GUI→Host→fixture HTTP prueba respuesta real, replay, modo e interrupción/cancelación; focal Core prueba admisión separada del resultado y cancelación serializada con queries. El fixture no acredita proveedor local ni aceptación humana. Trust boundary: mismo principal OS. Ver ADR-0050/0051 y actas M9-D/E. |
+| Origen humano, conversación y resultado (U-C12) | **M9-D/E integrado, ajustado por M9-K:** Electron main autentica el origen y firma proof efímero; eso no exige otra confirmación para cada acción autorizada. Core valida workspace/Session/Run/revisión y su política vigente, ejecutando una única entrada persistida. Mantener Ask/consentimientos efectivos sin grant global de conexión. Generic `session.input` sigue igual. ACK Accepted es admisión; `conversation.result` reconcilia sin reenvío. | E2E GUI→Host→fixture HTTP prueba respuesta real, replay, modo e interrupción/cancelación; focal Core prueba admisión separada del resultado y cancelación serializada con queries. El fixture no acredita proveedor local ni aceptación humana. Trust boundary: mismo principal OS. Ver ADR-0050/0051, actas M9-D/E y corrección M9-K. |
 
 #### M9-H: entrega durable continua con backpressure (2026-10-15)
 
@@ -759,13 +952,17 @@ durable al pipeline antes de anunciarlo como comando nativo funcional.
 | Memoria multiscoped | Stores Project/Workspace/Global, afinidad/confianza, evidencia entre sesiones, promoción, expiración/reemplazo/olvido y auditoría. Reusar pipeline Session M8; Global siempre Ask. | Vistas y acciones por alcance en cuatro idiomas; explicar qué se conserva, dónde y por qué. Idioma UI se guarda en `ui.locale`, no se infiere/promueve a Global Memory. Recuerdos originales, privados y aislados; solicitudes de olvido y Ask equivalentes en cada idioma. |
 | Keybindings y palette | KeyBindingService, `keybindings.yaml`, `When`/Priority/Source, conflictos y protección de interrupt/cancel; palette sobre ClientAction/Command existentes. | Títulos, ayuda, fuente, disponibilidad y búsqueda es/en/fr/it. Binding apunta a ID canónico, no texto traducido; cambiar idioma conserva reasignación. Probar colisiones/mnemónicos y etiquetas largas; acciones de cancelación no quedan sin acceso. |
 | Búsqueda y diagnósticos | `session.search`, resultados/procedencia y completar proyecciones de Execution/supervisión/capacidad/ValidationDebt. Bases de `/agents` ya existen. | Buscar sin reescribir contenido ni ampliar visibilidad; snippet original con estados locales. Diferenciar reclamación de evidencia, deuda de validación y verificación real. Vacíos/errores y navegación accesibles en cuatro idiomas. |
-| Producto undo y adapter | `/undo` completo sobre compensación/diff/preview/gates M7; terminar adapter OmniCoder sobre M9, sin duplicar transporte. | Alias/menú/palette llega a misma operación autorizada. Preview con efectos/conflictos/consecuencias, confirmación y resultado en cuatro idiomas. Conservar rutas/IDs y cambios posteriores ajenos; idioma no provoca apply ni modifica un diff. |
+| Producto undo y contrato de consumidor | **Core:** `/undo` completo sobre compensación/diff/preview/gates M7 y contrato nativo compatible. **Coordinación OmniCoder:** terminar su adapter sobre ese contrato, sin duplicar transporte ni reemplazar su GUI; requiere entrega separada y autorización acotada. | Alias/menú/palette existente llega a la misma operación autorizada. Preview con efectos/conflictos/consecuencias, confirmación efectiva y resultado en cuatro idiomas. Conservar rutas/IDs y cambios posteriores ajenos; idioma no provoca apply ni modifica un diff. |
 | Evaluación y cierre | Suite full, calibración, regresión y comparación con Pi; documentar límites de plataformas/proveedores y criterios spec §96. | Informes y ayudas propios localizados, métricas numéricas invariantes y consumo estimado/medido/desconocido explícito. Fixtures deterministas verifican UI; pruebas lingüísticas de modelos, si se realizan, se reportan aparte y no se deducen de traducir catálogos. |
 | Actualizaciones GitHub — nuevo | Releases versionadas stable/preview, assets preparados, manifest/procedencia/digests, check/apply/rollback y recuperación según [plan del canal](github-updates.md). Reusar negociación/versiones M9 y gestor de instalación; no convertir main en release estable. | Consulta manual por defecto, compatibilidad y confirmación antes de aplicar, datos de usuario preservados y estados es/en/fr/it. Verificar instalación real, download alterado, crash/rollback y versión en uso; todavía no hay updater construido. |
 
 **Salida M10:** v1 funcional con memoria completa, acciones/teclado/búsqueda/undo y evaluación, navegación/diagnósticos LSP, parche de varias operaciones con preview/recovery y canal de actualizaciones GitHub recuperable; cierre de los recorridos nuevos y existentes es/en/fr/it. P6/P7 cubren la suma del producto: una aceptación previa del centro de preferencias no cubre automáticamente estas superficies futuras. No reabrir funciones cerradas de M6/M7 para reconstruir sus bases.
 
 ## Trabajo de TUI después de M10
+
+**Límite de producto:** este diferido sólo corresponde a la TUI. No autoriza quitar,
+aplazar o sustituir el Git ya construido en OmniCoder Electron ni su plan de
+paridad nativa. La coordinación de OmniCoder conserva esa interfaz y sus criterios.
 
 El frame completo de revisión y operaciones Git queda asignado después de M10 por decisión del usuario del 2026-10-13. [Post M10 Git Review](post-m10-tui-git-review.md) define diff lado a lado/unificado, selección por archivo/bloque/línea, preparar/quitar del índice/descartar, pull/merge y recuperación. No se añade a los criterios de cierre de M8–M10 ni se atribuye al visor histórico TUI-P2.
 

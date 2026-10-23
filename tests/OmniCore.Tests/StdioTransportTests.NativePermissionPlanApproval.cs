@@ -790,7 +790,9 @@ public sealed partial class StdioTransportTests
 
         private void StartHost(bool requestNativeChoices = true)
         {
-            var cli = Path.Combine(FindRepositoryRoot(), "src", "OmniCore.Cli", "bin", "Debug", "net10.0", "omni.dll");
+            // Resolve the sibling CLI published by the same build as this test assembly. This
+            // also keeps --artifacts-path builds isolated from shared src/bin outputs.
+            var cli = Path.Combine(AppContext.BaseDirectory, "omni.dll");
             Host = StartRawHost(cli, Workspace, Convert.ToHexString(Key));
             _stderrCapture = Host.StandardError.ReadToEndAsync();
             var requested = requestNativeChoices

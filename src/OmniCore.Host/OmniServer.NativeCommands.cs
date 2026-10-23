@@ -11,6 +11,119 @@ using System.Text.Json;
 
 public sealed partial class OmniServer
 {
+    private const string NativeProcessControlCommandId = "core:process.control";
+    private static readonly string NativeProcessControlFingerprint = Convert.ToHexString(
+        SHA256.HashData(Encoding.UTF8.GetBytes("omnicore-native-process-control-v1")));
+
+    private string EncodeProcessSessions(SessionId session, RunId run)
+    {
+        if (_lastSessionId != session || _lastRunId != run) return "null";
+        const int processJournalWindow = 4096;
+        var highWater = _store.CurrentSequence(session);
+        var fromSequence = Math.Max(1, highWater - processJournalWindow + 1);
+        var truncated = fromSequence > 1;
+        var events = _store.ReadFrom(session, fromSequence).Where(evt => evt.RunId == run).ToArray();
+        var projection = RunProjection.Replay(session, run, _codecs, events);
+        var activeRun = new RunControlService(_store, _codecs).ActiveRun(session);
+        var active = activeRun == run && projection.State is (RunState.Running or RunState.AwaitingInput
+            or RunState.Validating);
+        var terminal = activeRun is null && projection.State is (RunState.Completed or RunState.CompletedWithIssues
+            or RunState.Failed or RunState.Cancelled);
+        // This endpoint can inspect only the server's exact current Run, while it is active
+        // or after a durable terminal event. It never resumes that Run or acquires a manager.
+        if (!active && !terminal) return "null";
+        var rootLane = projection.RootTask is { } rootTask
+            ? LaneProjection.Replay(_codecs, events).ForTask(rootTask).FirstOrDefault()?.Id : null;
+        var summaries = _processSessions.TryGetValue(session, out var manager)
+            ? manager.Snapshot(run.ToString())
+            : events.Select(evt => (evt.Sequence, Payload: _codecs.Decode(evt)))
+                .Where(item => item.Payload is ProcessSessionStateRecorded)
+                .GroupBy(item => ((ProcessSessionStateRecorded)item.Payload).HandleId, StringComparer.Ordinal)
+                .Select(group => group.OrderBy(item => item.Sequence).Last().Payload)
+                .OfType<ProcessSessionStateRecorded>()
+                .Where(item => item.RunId == run.ToString())
+                .Select(item => new ProcessSessionSummary(item.HandleId,
+                    item.State is "starting" or "running" or "stopping" ? "unknown" : item.State,
+                    item.RunId, item.LaneId, item.LastOutputSequence, item.ExitCode, item.ProposalId,
+                    item.SourceToolId ?? "process.start", item.LastOutputSequence > 0,
+                    false, false, false)).ToArray();
+        var rows = summaries.Take(32).Select(item => "{" + string.Join(",", new[]
+        {
+            JsonObj.Field("handle", item.Handle), JsonObj.Field("state", item.State),
+            JsonObj.Field("runId", item.RunId), JsonObj.Field("laneId", item.LaneId),
+            JsonObj.Field("sourceTool", item.SourceToolId),
+            "\"lastOutputSequence\":" + item.LastOutputSequence.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            item.ExitCode is { } exit ? "\"exitCode\":" + exit.ToString(System.Globalization.CultureInfo.InvariantCulture) : "\"exitCode\":null",
+            item.ProposalId is { } proposal ? JsonObj.Field("proposalId", proposal) : "\"proposalId\":null",
+            JsonObj.FieldBool("outputGap", item.OutputLost),
+            JsonObj.FieldBool("rootLane", rootLane is not null && item.LaneId == rootLane.Value.ToString()),
+            JsonObj.FieldBool("canRead", active && item.CanRead && rootLane is not null && item.LaneId == rootLane.Value.ToString()),
+            JsonObj.FieldBool("canInput", active && item.CanInput && rootLane is not null && item.LaneId == rootLane.Value.ToString()),
+            JsonObj.FieldBool("canStop", active && item.CanStop && rootLane is not null && item.LaneId == rootLane.Value.ToString()),
+        }) + "}");
+        return "{" + JsonObj.Field("sessionId", session.ToString()) + "," + JsonObj.Field("runId", run.ToString())
+            + ",\"sequence\":" + highWater.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + ",\"truncated\":" + (truncated ? "true" : "false")
+            + ",\"processes\":[" + string.Join(",", rows) + "]}";
+    }
+
+    private string EncodeProcessOutput(SessionId session, RunId run, string handle, long after)
+    {
+        if (_lastSessionId != session || _lastRunId != run || after < 0
+            || new RunControlService(_store, _codecs).ActiveRun(session) is { } active && active != run)
+            return "null";
+        const int processJournalWindow = 4096;
+        var highWaterSequence = _store.CurrentSequence(session);
+        var events = _store.ReadFrom(session, Math.Max(1, highWaterSequence - processJournalWindow + 1))
+            .Where(evt => evt.RunId == run).ToArray();
+        var projection = RunProjection.Replay(session, run, _codecs, events);
+        if (new RunControlService(_store, _codecs).ActiveRun(session) is null
+            && projection.State is not (RunState.Completed or RunState.CompletedWithIssues or RunState.Failed or RunState.Cancelled))
+            return "null";
+        var rootTask = projection.RootTask;
+        var rootLane = rootTask is { } task
+            ? LaneProjection.Replay(_codecs, events).ForTask(task).FirstOrDefault()?.Id.ToString() : null;
+        var lane = events.Select(evt => _codecs.Decode(evt)).OfType<ProcessSessionStateRecorded>()
+            .LastOrDefault(item => item.HandleId == handle && item.RunId == run.ToString())?.LaneId;
+        if (lane is null || rootLane is null || lane != rootLane) return "null";
+        IReadOnlyList<ProcessOutputChunk> chunks = Array.Empty<ProcessOutputChunk>();
+        var last = after;
+        var highWater = 0L;
+        var gap = true;
+        var state = "unknown";
+        int? exitCode = null;
+        if (_processSessions.TryGetValue(session, out var manager))
+        {
+            try
+            {
+                chunks = manager.Read(handle, run.ToString(), lane, after, 32,
+                    out last, out highWater, out gap, out state, out exitCode);
+            }
+            catch (KeyNotFoundException) { }
+        }
+        if (highWater == 0)
+        {
+            var latest = events.Select(evt => _codecs.Decode(evt)).OfType<ProcessSessionStateRecorded>()
+                .LastOrDefault(item => item.HandleId == handle && item.RunId == run.ToString());
+            if (latest is null || after > latest.LastOutputSequence) return "null";
+            highWater = latest.LastOutputSequence;
+            last = after;
+            if (state == "unknown")
+                state = latest.State is "starting" or "running" or "stopping" ? "unknown" : latest.State;
+            exitCode = latest.ExitCode;
+            gap = gap || after < highWater || latest.State is ("starting" or "running" or "stopping" or "unknown");
+        }
+        var encoded = string.Join(",", chunks.Select(chunk => "{" + JsonObj.Field("stream", chunk.Stream)
+            + "," + JsonObj.Field("text", chunk.Text) + ",\"sequence\":"
+            + chunk.Sequence.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}"));
+        return "{" + JsonObj.Field("sessionId", session.ToString()) + "," + JsonObj.Field("runId", run.ToString())
+            + "," + JsonObj.Field("handle", handle) + "," + JsonObj.Field("state", state)
+            + ",\"chunks\":[" + encoded + "],\"lastDelivered\":" + last.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + ",\"highWater\":" + highWater.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + ",\"gap\":" + (gap ? "true" : "false")
+            + ",\"exitCode\":" + (exitCode is { } code ? code.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null") + "}";
+    }
+
     internal sealed record NativeCommandPayload(string CanonicalCommandId, string Kind, string[] Arguments,
         string? Prompt, string? Origin, string? ForcedToolName, string? WorkflowId, string? WorkflowVersion);
 
@@ -42,9 +155,10 @@ public sealed partial class OmniServer
 
         if (_lastSessionId != new SessionId(sessionGuid))
             return NativeCommandRejected(command.MessageId, "command.session_changed");
-        if (commandName == "command.invoke.user")
+        if (commandName is "command.invoke.user" or "process.control")
             return AdmitNativeCommand(command, root, expectedRun, expectedMode, expectedPolicy, expectedSelection,
-                expectedRouting, expectedCatalog, expectedSource, protectedStore, cancellationToken);
+                expectedRouting, expectedCatalog, expectedSource, protectedStore, cancellationToken,
+                nativeProcessControl: commandName == "process.control");
 
         if (!WireString(root, "invocationId", out var invocationText)
             || !Guid.TryParseExact(invocationText, "D", out var invocationGuid)
@@ -413,7 +527,7 @@ public sealed partial class OmniServer
     private CommandAck AdmitNativeCommand(WireEnvelope command, JsonElement root, RunId? expectedRun,
         long? expectedMode, long expectedPolicy, int expectedSelection, long? expectedRouting,
         string expectedCatalog, string expectedSource, IProtectedArtifactStore protectedStore,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool nativeProcessControl = false)
     {
         if (!Guid.TryParse(command.MessageId, out var commandGuid)
             || !WireString(root, "canonicalCommandId", out var canonicalId)
@@ -431,6 +545,11 @@ public sealed partial class OmniServer
             if (argumentChars > 65_536) return NativeCommandRejected(command.MessageId, "command.payload_too_large");
             arguments.Add(value);
         }
+        if (nativeProcessControl && (canonicalId != NativeProcessControlCommandId || expectedRun is null
+            || expectedSource != NativeProcessControlFingerprint || arguments.Count != 2
+            || arguments[0] is not ("process.read" or "process.send_input" or "process.stop")
+            || !IsJsonObject(arguments[1])))
+            return NativeCommandRejected(command.MessageId, "process.control.invalid_request");
         var session = _lastSessionId;
         if (session is null || session.Value.ToString() != WireStringValue(root, "expectedSessionId"))
             return NativeCommandRejected(command.MessageId, "command.session_changed");
@@ -442,7 +561,10 @@ public sealed partial class OmniServer
             {
                 if (_lastSessionId != session || !EnsureWriterOwnershipForCommand()
                     || !NativeCommandScopeMatches(session, expectedRun, expectedMode, expectedPolicy,
-                        expectedSelection, expectedRouting, expectedCatalog))
+                        expectedSelection, expectedRouting, expectedCatalog,
+                        allowActiveProcessControl: nativeProcessControl,
+                        processControlToolName: nativeProcessControl ? arguments[0] : null,
+                        processControlArgumentsJson: nativeProcessControl ? arguments[1] : null))
                     return NativeCommandRejected(command.MessageId, "command.scope_changed");
                 var context = expectedRun is null
                     ? new CommandContext(session, null, ReadModePreference().Mode, _workspaceRoot, false,
@@ -451,31 +573,50 @@ public sealed partial class OmniServer
                 var nativeSnapshot = CurrentNativeCommandCatalog();
                 if (!FixedHashEquals(expectedCatalog, nativeSnapshot.CatalogRevision))
                     return NativeCommandRejected(command.MessageId, "command.catalog_changed");
-                var nativeEntry = nativeSnapshot.Commands.SingleOrDefault(entry =>
-                    entry.CanonicalCommandId == canonicalId);
-                if (nativeEntry is not { Enabled: true }
-                    || !FixedHashEquals(expectedSource, nativeEntry.SourceFingerprint))
-                    return NativeCommandRejected(command.MessageId, nativeEntry?.DisabledReason ?? "command.source_changed");
-                var snapshot = _commandService.Catalog(context);
-                var catalogEntry = snapshot.Commands.SingleOrDefault(entry => entry.Id == canonicalId);
-                var handler = _commandService.ResolveCanonical(canonicalId);
-                var fingerprint = CommandService.Fingerprint(handler.Descriptor);
-                if (catalogEntry is null || !catalogEntry.Enabled || !FixedHashEquals(expectedSource, fingerprint))
-                    return NativeCommandRejected(command.MessageId, "command.source_changed");
-
-                var outcome = _commandService.InvokeAsync(new CommandInvocation(canonicalId, arguments, "NativeCommand"),
-                    context, cancellationToken).AsTask().GetAwaiter().GetResult();
-                var payload = outcome switch
+                NativeCommandPayload payload;
+                string fingerprint;
+                if (nativeProcessControl)
                 {
-                    PromptCommandRequested prompt when prompt.Text.Length <= 65_536
-                        => new NativeCommandPayload(canonicalId,
-                            prompt.ForcedToolName is null ? "prompt" : "forcedExtension", arguments.ToArray(),
-                            prompt.Text, prompt.Origin, prompt.ForcedToolName, null, null),
-                    WorkflowRequested workflow when workflow.Arguments.Sum(value => (long)value.Length) <= 65_536
-                        => new NativeCommandPayload(canonicalId, "compiledWorkflow", arguments.ToArray(), null, null,
-                            null, workflow.Workflow.Id, workflow.Workflow.Version),
-                    _ => throw new InvalidOperationException("command.unsupported_outcome"),
-                };
+                    if (canonicalId != NativeProcessControlCommandId || expectedRun is null
+                        || expectedSource != NativeProcessControlFingerprint || arguments.Count != 2
+                        || arguments[0] is not ("process.read" or "process.send_input" or "process.stop")
+                        || arguments[1].Length > 16_384 || !IsJsonObject(arguments[1]))
+                        return NativeCommandRejected(command.MessageId, "process.control.invalid_request");
+                    fingerprint = NativeProcessControlFingerprint;
+                    payload = new NativeCommandPayload(canonicalId, "nativeTool", arguments.ToArray(),
+                        null, null, null, null, null);
+                    if (!CanExecuteNativeProcessControl(session, expectedRun,
+                            arguments[0], arguments[1]))
+                        return NativeCommandRejected(command.MessageId, "process.control.scope_changed");
+                }
+                else
+                {
+                    var nativeEntry = nativeSnapshot.Commands.SingleOrDefault(entry =>
+                        entry.CanonicalCommandId == canonicalId);
+                    if (nativeEntry is not { Enabled: true }
+                        || !FixedHashEquals(expectedSource, nativeEntry.SourceFingerprint))
+                        return NativeCommandRejected(command.MessageId, nativeEntry?.DisabledReason ?? "command.source_changed");
+                    var snapshot = _commandService.Catalog(context);
+                    var catalogEntry = snapshot.Commands.SingleOrDefault(entry => entry.Id == canonicalId);
+                    var handler = _commandService.ResolveCanonical(canonicalId);
+                    fingerprint = CommandService.Fingerprint(handler.Descriptor);
+                    if (catalogEntry is null || !catalogEntry.Enabled || !FixedHashEquals(expectedSource, fingerprint))
+                        return NativeCommandRejected(command.MessageId, "command.source_changed");
+
+                    var outcome = _commandService.InvokeAsync(new CommandInvocation(canonicalId, arguments, "NativeCommand"),
+                        context, cancellationToken).AsTask().GetAwaiter().GetResult();
+                    payload = outcome switch
+                    {
+                        PromptCommandRequested prompt when prompt.Text.Length <= 65_536
+                            => new NativeCommandPayload(canonicalId,
+                                prompt.ForcedToolName is null ? "prompt" : "forcedExtension", arguments.ToArray(),
+                                prompt.Text, prompt.Origin, prompt.ForcedToolName, null, null),
+                        WorkflowRequested workflow when workflow.Arguments.Sum(value => (long)value.Length) <= 65_536
+                            => new NativeCommandPayload(canonicalId, "compiledWorkflow", arguments.ToArray(), null, null,
+                                null, workflow.Workflow.Id, workflow.Workflow.Version),
+                        _ => throw new InvalidOperationException("command.unsupported_outcome"),
+                    };
+                }
                 var serialized = EncodeNativeCommandPayload(payload);
                 if (Encoding.UTF8.GetByteCount(serialized) > 92_000)
                     return NativeCommandRejected(command.MessageId, "command.payload_too_large");
@@ -579,7 +720,9 @@ public sealed partial class OmniServer
     }
 
     private bool NativeCommandScopeMatches(SessionId session, RunId? expectedRun, long? expectedMode,
-        long expectedPolicy, int expectedSelection, long? expectedRouting, string expectedCatalog)
+        long expectedPolicy, int expectedSelection, long? expectedRouting, string expectedCatalog,
+        bool allowActiveProcessControl = false, string? processControlToolName = null,
+        string? processControlArgumentsJson = null)
     {
         if (_lastSessionId != session || !EnsureWriterOwnershipForCommand()
             || new RunControlService(_store, _codecs).ActiveRun(session) != expectedRun
@@ -587,7 +730,11 @@ public sealed partial class OmniServer
             return false;
         if (expectedRun is { } activeRun)
         {
-            if (!NativeCommandRunIsQuiescent(session, activeRun)) return false;
+            if (allowActiveProcessControl
+                ? processControlToolName is null || processControlArgumentsJson is null
+                    || !CanExecuteNativeProcessControlDuringTurn(session, activeRun,
+                        processControlToolName, processControlArgumentsJson)
+                : !NativeCommandRunIsQuiescent(session, activeRun)) return false;
         }
         else
         {
@@ -609,6 +756,12 @@ public sealed partial class OmniServer
         new(commandId, "error", reason, RuntimeCommandOutcome.Rejected());
 
     private static bool NativeCommandIsSha256(string value) => value.Length == 64 && value.All(Uri.IsHexDigit);
+
+    private static bool IsJsonObject(string json)
+    {
+        try { using var parsed = JsonDocument.Parse(json); return parsed.RootElement.ValueKind == JsonValueKind.Object; }
+        catch (JsonException) { return false; }
+    }
 
     private static bool TryNativeNullableId(JsonElement root, string name, out RunId? run)
     {
@@ -681,6 +834,12 @@ public sealed partial class OmniServer
         payload = null!;
         if (!TryReadNativeCommandPayload(invocation, out var admitted, out var payloadJson)
             || !TryDecodeNativeCommandPayload(payloadJson, out var decoded)) return false;
+        var isProcessControl = decoded.Kind == "nativeTool";
+        if (isProcessControl && (admitted.CanonicalCommandId != NativeProcessControlCommandId
+            || !FixedHashEquals(admitted.SourceFingerprint, NativeProcessControlFingerprint)
+            || decoded.Arguments.Length != 2
+            || decoded.Arguments[0] is not ("process.read" or "process.send_input" or "process.stop")
+            || decoded.Arguments[1].Length > 16_384 || !IsJsonObject(decoded.Arguments[1]))) return false;
         lock (_modeAuthorityMutationGate)
         {
             var session = admitted.SessionId;
@@ -689,7 +848,10 @@ public sealed partial class OmniServer
                 || !EnsureWriterOwnershipForCommand()
                 || !NativeCommandScopeMatches(session, expectedRun, admitted.ExpectedModeRevision,
                     admitted.ExpectedPolicyRevision, admitted.ExpectedSelectionRevision,
-                    admitted.ExpectedRoutingPolicyRevision, admitted.CatalogRevision)) return false;
+                    admitted.ExpectedRoutingPolicyRevision, admitted.CatalogRevision,
+                    allowActiveProcessControl: isProcessControl,
+                    processControlToolName: isProcessControl ? decoded.Arguments[0] : null,
+                    processControlArgumentsJson: isProcessControl ? decoded.Arguments[1] : null)) return false;
             var history = _store.ReadFrom(session, 1);
             if (history.Any(evt => _codecs.Decode(evt) is NativeCommandInvocationStarted started
                     && started.InvocationId == invocation)
@@ -701,11 +863,22 @@ public sealed partial class OmniServer
                 || receipt.ExecutionState is not null
                     && !(explicitRecovery && receipt.ExecutionState == "cancelled")) return false;
 
-            var liveCatalog = CurrentNativeCommandCatalog();
-            var liveDescriptor = liveCatalog.Commands.SingleOrDefault(item =>
-                item.CanonicalCommandId == admitted.CanonicalCommandId);
-            if (liveDescriptor is not { Enabled: true }
-                || !FixedHashEquals(liveDescriptor.SourceFingerprint, admitted.SourceFingerprint)) return false;
+            if (decoded.Kind == "nativeTool")
+            {
+                if (admitted.CanonicalCommandId != NativeProcessControlCommandId
+                    || !FixedHashEquals(admitted.SourceFingerprint, NativeProcessControlFingerprint)
+                    || decoded.Arguments.Length != 2
+                    || decoded.Arguments[0] is not ("process.read" or "process.send_input" or "process.stop")
+                    || decoded.Arguments[1].Length > 16_384 || !IsJsonObject(decoded.Arguments[1])) return false;
+            }
+            else
+            {
+                var liveCatalog = CurrentNativeCommandCatalog();
+                var liveDescriptor = liveCatalog.Commands.SingleOrDefault(item =>
+                    item.CanonicalCommandId == admitted.CanonicalCommandId);
+                if (liveDescriptor is not { Enabled: true }
+                    || !FixedHashEquals(liveDescriptor.SourceFingerprint, admitted.SourceFingerprint)) return false;
+            }
 
             WorkflowRequested? workflowToSet = null;
             PromptExpanded? promptToSet = null;
@@ -724,7 +897,7 @@ public sealed partial class OmniServer
                     || decoded.Kind == "prompt" && decoded.ForcedToolName is not null) return false;
                 promptToSet = new PromptExpanded(prompt, decoded.Origin ?? "NativeCommand");
             }
-            else return false;
+            else if (decoded.Kind != "nativeTool") return false;
 
             if (decoded.CanonicalCommandId != admitted.CanonicalCommandId || decoded.Kind != admitted.Kind)
                 return false;
@@ -764,6 +937,19 @@ public sealed partial class OmniServer
         if (!TryReadNativeCommandPayload(invocation, out var admission, out var payloadJson)
             || !TryDecodeNativeCommandPayload(payloadJson, out var payload)) return false;
         if (admission.Kind is "prompt" or "compiledWorkflow") return admission.Kind == payload.Kind;
+        if (admission.Kind == "nativeTool")
+        {
+            if (payload.Kind != "nativeTool" || payload.Arguments.Length != 2
+                || admission.RunId is not { } nativeRun) return false;
+            var events = _store.ReadFrom(admission.SessionId, 1).Where(item => item.RunId == nativeRun).ToArray();
+            var toolName = payload.Arguments[0];
+            var providerCallId = "native-action-" + invocation;
+            var requestedEvent = events.FirstOrDefault(item => _codecs.Decode(item) is ToolCallRequested call
+                && call.ProviderCallId == providerCallId && call.ToolName == toolName);
+            return requestedEvent is not null && _codecs.Decode(requestedEvent) is ToolCallRequested requestedCall
+                && events.Any(item => item.Sequence > requestedEvent.Sequence && item.ToolCallId == requestedCall.ToolCallId
+                    && _codecs.Decode(item) is ToolCallSucceeded);
+        }
         if (admission.Kind != "forcedExtension" || admission.RunId is not { } run
             || payload.Kind != "forcedExtension" || payload.ForcedToolName is not { Length: > 0 } forcedToolName)
             return false;
@@ -812,6 +998,29 @@ public sealed partial class OmniServer
         return requested.Overlaps(succeeded);
     }
 
+    internal bool NativeProcessToolInvocationMatches(SessionId session, RunId run, string providerCallId,
+        string toolName, string argumentsJson)
+    {
+        const string prefix = "native-action-";
+        if (!providerCallId.StartsWith(prefix, StringComparison.Ordinal)
+            || !Guid.TryParseExact(providerCallId[prefix.Length..], "D", out var invocationGuid)
+            || providerCallId != prefix + invocationGuid.ToString("D")) return false;
+        var invocation = new CommandId(invocationGuid);
+        if (!TryReadNativeCommandPayload(invocation, out var admission, out var payloadJson)
+            || admission.InvocationId != invocation || admission.SessionId != session || admission.RunId != run
+            || admission.CanonicalCommandId != NativeProcessControlCommandId || admission.Kind != "nativeTool"
+            || !FixedHashEquals(admission.SourceFingerprint, NativeProcessControlFingerprint)
+            || !TryDecodeNativeCommandPayload(payloadJson, out var payload)
+            || payload.CanonicalCommandId != NativeProcessControlCommandId || payload.Kind != "nativeTool"
+            || payload.Arguments.Length != 2 || payload.Arguments[0] != toolName
+            || !string.Equals(payload.Arguments[1], argumentsJson, StringComparison.Ordinal)) return false;
+        var events = _store.ReadFrom(session, 1);
+        return events.Any(item => _codecs.Decode(item) is NativeCommandInvocationStarted started
+                && started.InvocationId == invocation && started.Kind == "nativeTool" && started.RunId == run)
+            && !events.Any(item => _codecs.Decode(item) is NativeCommandInvocationFinished finished
+                && finished.InvocationId == invocation);
+    }
+
     private string EncodeNativeCommandRecovery()
     {
         if (_lastSessionId is not { } session)
@@ -842,6 +1051,11 @@ public sealed partial class OmniServer
         {
             var admission = value.Event;
             var receipt = receipts?.ReadCommandReceipt(id.ToString());
+            var processControlCompleted = admission.CanonicalCommandId == NativeProcessControlCommandId
+                && receipt is { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                    OutcomeKind: "Accepted", ExecutionState: "completed",
+                    ExecutionCode: "native_tool_completed" } completedReceipt
+                && string.Equals(completedReceipt.ExecutionRunId, admission.RunId?.ToString(), StringComparison.Ordinal);
             string state;
             string? reason;
             if (finished.TryGetValue(id, out var completion))
@@ -849,8 +1063,16 @@ public sealed partial class OmniServer
                 state = completion.OutcomeCode == "completed" ? "completed" : "blocked";
                 reason = completion.OutcomeCode == "completed" ? null : "invocation_pipeline_incomplete";
             }
+            else if (processControlCompleted)
+            {
+                // The tool-only control path intentionally has no model-command Started/Finished
+                // pair. Its exact terminal execution receipt is the durable completion proof.
+                state = "completed";
+                reason = null;
+            }
             else if (started.Contains(id))
             {
+                // Without its exact terminal receipt an ordinary started invocation is uncertain.
                 state = "blocked";
                 reason = "execution_started_or_uncertain";
             }
@@ -1028,6 +1250,18 @@ public sealed partial class OmniServer
     private static void AppendRevisionPart(StringBuilder target, string value) =>
         target.Append(value.Length.ToString(System.Globalization.CultureInfo.InvariantCulture))
             .Append(':').Append(value).Append('\n');
+
+    internal bool NativeCommandRunIsQuiescentForProcessAction(SessionId session, RunId run) =>
+        NativeCommandRunIsQuiescent(session, run);
+
+    private bool NativeProcessControlRunIsQuiescent(SessionId session, RunId run, LaneId lane,
+        PersistentProcessSessionManager manager)
+    {
+        var history = _store.ReadFrom(session, 1);
+        if (IsSessionTurnInFlight(history, run)
+            || HasSessionSecurityInFlightAuthorityExceptProcesses(session, run, lane, manager)) return false;
+        return RunProjection.Replay(session, run, _codecs, EventsForRun(history, run)).State == RunState.Running;
+    }
 
     private bool NativeCommandRunIsQuiescent(SessionId session, RunId run)
     {

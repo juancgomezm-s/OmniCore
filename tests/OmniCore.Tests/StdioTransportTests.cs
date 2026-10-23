@@ -1320,6 +1320,12 @@ public sealed partial class StdioTransportTests
         Assert.Equal("command.conversation.interaction.choice.respond.user", choice.Capability);
         Assert.Equal("native-confirmation+hmac+session-run-interaction-option+policy-revision+receipt+resume",
             choice.Authority);
+        Assert.Equal("command.delegation.cancel.user", Assert.Single(StdioProtocol.NativeCommands,
+            command => command.Name == "delegation.cancel").Capability);
+        Assert.Equal("command.delegation.disposition.user", Assert.Single(StdioProtocol.NativeCommands,
+            command => command.Name == "delegation.disposition").Capability);
+        Assert.Equal("command.delegation.mailbox.send.user", Assert.Single(StdioProtocol.NativeCommands,
+            command => command.Name == "delegation.mailbox.send").Capability);
     }
 
     [Fact]

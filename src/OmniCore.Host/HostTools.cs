@@ -71,10 +71,16 @@ public sealed class HostTools
                 {
                     _extensionBatchCoordinator.RegisterExtensionProposalValidator("process.start",
                         processSessionManager.ValidateCurrentProcessBatchProposal);
+                    _extensionBatchCoordinator.RegisterProcessProposalApplied("process.start",
+                        processSessionManager.MarkProcessBatchProposalApplied);
                     _extensionBatchCoordinator.RegisterExtensionProposalValidator("process.exec",
                         processSessionManager.ValidateCurrentProcessBatchProposal);
+                    _extensionBatchCoordinator.RegisterProcessProposalApplied("process.exec",
+                        processSessionManager.MarkProcessBatchProposalApplied);
                     _extensionBatchCoordinator.RegisterExtensionProposalValidator("shell.exec",
                         processSessionManager.ValidateCurrentProcessBatchProposal);
+                    _extensionBatchCoordinator.RegisterProcessProposalApplied("shell.exec",
+                        processSessionManager.MarkProcessBatchProposalApplied);
                 }
                 var executableResolver = new SystemExecutableResolver(allowWorkspaceRelativePaths: true);
                 var canPublish = includeMutationTools && _extensionBatchCoordinator is not null;

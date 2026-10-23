@@ -13,10 +13,15 @@ internal static class GeneratedImageValidator
     internal static ValidatedGeneratedImage Decode(string mediaType, byte[] bytes)
     {
         ArgumentNullException.ThrowIfNull(bytes);
-        if (mediaType is not ("image/png" or "image/jpeg"))
+        if (mediaType is not ("image/png" or "image/jpeg" or "image/webp"))
             throw new InvalidDataException("Generated image format is not supported for complete validation.");
         if (bytes.Length is 0 or > MaximumImageBytes)
             throw new InvalidDataException("Generated image is empty or exceeds the byte limit.");
+        if (mediaType == "image/webp")
+        {
+            var webp = WebpImageValidator.Decode(bytes);
+            return new ValidatedGeneratedImage(mediaType, bytes, webp.Width, webp.Height);
+        }
         var signatureMatches = mediaType == "image/png"
             ? bytes.Length >= 8 && bytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 })
             : bytes.Length >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8 && bytes[2] == 0xff;

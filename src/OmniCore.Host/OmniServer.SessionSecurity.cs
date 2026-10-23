@@ -192,6 +192,57 @@ public sealed partial class OmniServer
             || processStates.Values.Any(state => state is "starting" or "running" or "stopping" or "unknown");
     }
 
+    // A native process control is allowed to act on the one already-owned running root-lane
+    // handle it names. Other in-flight effects, child work, and uncertain process states still
+    // block it; this does not relax the general Session security revision fence.
+    private bool HasSessionSecurityInFlightAuthorityExceptProcesses(SessionId session, RunId run,
+        LaneId lane, PersistentProcessSessionManager manager)
+    {
+        var journal = _store.ReadFrom(session, 1);
+        var startedTools = new HashSet<ToolCallId>();
+        var activeChildren = new HashSet<ExecutionId>();
+        var processStates = new Dictionary<string, ProcessSessionStateRecorded>(StringComparer.Ordinal);
+        foreach (var envelope in journal)
+        {
+            switch (_codecs.Decode(envelope))
+            {
+                case ToolCallStarted started:
+                    startedTools.Add(started.ToolCallId);
+                    break;
+                case ToolCallSucceeded succeeded:
+                    startedTools.Remove(succeeded.ToolCallId);
+                    break;
+                case ToolCallFailed failed:
+                    if (failed.EffectOutcome != EffectOutcome.Unknown)
+                        startedTools.Remove(failed.ToolCallId);
+                    break;
+                case ToolCallReconciled reconciled when reconciled.Outcome is ReconciliationOutcome.Applied
+                    or ReconciliationOutcome.NotApplied:
+                    startedTools.Remove(reconciled.ToolCallId);
+                    break;
+                case AgentExecutionStarted childStarted when childStarted.ParentExecutionId is not null:
+                    activeChildren.Add(childStarted.ExecutionId);
+                    break;
+                case AgentExecutionCompleted completed:
+                    activeChildren.Remove(completed.ExecutionId);
+                    break;
+                case AgentExecutionFailed childFailed:
+                    activeChildren.Remove(childFailed.ExecutionId);
+                    break;
+                case ProcessSessionStateRecorded process:
+                    processStates[process.HandleId] = process;
+                    break;
+            }
+        }
+
+        if (startedTools.Count > 0 || activeChildren.Count > 0) return true;
+        return processStates.Values.Any(process =>
+            process.State is "starting" or "running" or "stopping" or "unknown"
+            && !(process.State == "running" && process.RunId == run.ToString()
+                && process.LaneId == lane.ToString()
+                && manager.CanControlOwnedProcess(process.HandleId, run.ToString(), lane.ToString(), "process.read")));
+    }
+
     internal string CurrentSessionSecurityDefaultJson()
     {
         var snapshot = new SessionSecurityDefaultConfiguration(_platformPathsFactory()).Read();

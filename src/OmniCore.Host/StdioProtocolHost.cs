@@ -218,6 +218,8 @@ public static class StdioProtocolHost
                     or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
                     or "external.memory.consent" or "interaction.respond" or "interaction.continue"
                     or "command.invoke.user" or "command.continue" or "workflow.continue"
+                    or "process.control"
+                    or "delegation.cancel" or "delegation.disposition" or "delegation.mailbox.send"
                     or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish" or "extensions.package";
                 TrustedActionScope? trustedScope = null;
                 if (root.TryGetProperty("actionProof", out var proofElement))
@@ -231,13 +233,15 @@ public static class StdioProtocolHost
                 if (trustedOnly && trustedScope is null)
                     return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_user_action_required",
                         RuntimeCommandOutcome.Rejected()));
-                if (commandName is "command.invoke.user" or "command.continue" or "workflow.continue")
+                if (commandName is "command.invoke.user" or "command.continue" or "workflow.continue" or "process.control")
                 {
                     var priorNativeCommand = FindReceiptResult(client, command);
                     if (priorNativeCommand is not null) return EncodeAck(priorNativeCommand);
                     if (commandName == "workflow.continue"
                         ? !conversation.CanAcceptWorkflowContinuation(client, command)
-                        : !conversation.CanAcceptNativeCommand)
+                        : commandName == "process.control"
+                            ? !conversation.CanAcceptNativeProcessControl(client, command)
+                            : !conversation.CanAcceptNativeCommand)
                         return EncodeAck(new CommandAck(command.MessageId, "busy", "conversation_turn_busy",
                             RuntimeCommandOutcome.Deferred("conversation_turn_busy")));
                 }
@@ -294,7 +298,9 @@ public static class StdioProtocolHost
                     or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
                     or "run.interrupt" or "run.cancel" or "run.mode.select" or "external.memory.consent" or "interaction.respond" or "interaction.continue"
                     or "command.invoke.user" or "command.continue" or "workflow.continue" or "attachment.upload.begin"
-                    or "attachment.upload.chunk" or "attachment.upload.finish" or "extensions.package"))
+                    or "process.control"
+                    or "attachment.upload.chunk" or "attachment.upload.finish" or "extensions.package"
+                    or "delegation.cancel" or "delegation.disposition" or "delegation.mailbox.send"))
                     return EncodeAck(new CommandAck(command.MessageId, "error", "trusted_action_not_supported",
                         RuntimeCommandOutcome.Rejected()));
                 if (commandName.StartsWith("attachment.upload.", StringComparison.Ordinal))
@@ -323,7 +329,8 @@ public static class StdioProtocolHost
                     // pinned Session/Run and verified pre-cancel revision authorize this one write.
                     trustedScope = trustedScope with { CheckRevision = false };
                 }
-                else if (conversation.IsRunning && commandName != "session.security.set")
+                else if (conversation.IsRunning && commandName is not ("process.control" or "session.security.set")
+                    && commandName is not ("delegation.cancel" or "delegation.disposition" or "delegation.mailbox.send"))
                 {
                     var duplicate = FindReceiptResult(client, command);
                     if (duplicate is not null) return EncodeAck(duplicate);
@@ -351,7 +358,7 @@ public static class StdioProtocolHost
                 else if (commandName == "interaction.continue" && newlyExecuted
                     && ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted)
                     ack = conversation.ResumeRecoveredChoice(client, command, trustedScope!, ack);
-                else if (commandName is "command.invoke.user" or "command.continue" && newlyExecuted
+                else if ((commandName is "command.invoke.user" or "command.continue" or "process.control") && newlyExecuted
                     && ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted)
                     conversation.ScheduleNativeCommand(client, command, ack);
                 else if (commandName == "workflow.continue" && newlyExecuted
@@ -582,7 +589,9 @@ public static class StdioProtocolHost
             or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
             or "external.memory.consent" or "interaction.respond" or "interaction.continue"
             or "command.invoke.user" or "command.continue" or "workflow.continue"
-            or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish" or "extensions.package")) return false;
+            or "process.control"
+            or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish" or "extensions.package"
+            or "delegation.cancel" or "delegation.disposition" or "delegation.mailbox.send")) return false;
         if (commandName.StartsWith("attachment.upload.", StringComparison.Ordinal))
         {
             // Upload proofs pin the currently active Session/Run too: attachments after the
@@ -614,7 +623,7 @@ public static class StdioProtocolHost
             scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null, false, false, null);
             return true;
         }
-        if (commandName is "command.invoke.user" or "command.continue" or "workflow.continue")
+        if (commandName is "command.invoke.user" or "command.continue" or "workflow.continue" or "process.control")
         {
             bool ExactCommandProperties(params string[] expected) => properties.Length == expected.Length
                 && properties.Distinct(StringComparer.Ordinal).Count() == properties.Length
@@ -632,7 +641,7 @@ public static class StdioProtocolHost
                 && (node.ValueKind == JsonValueKind.Null
                     || node.ValueKind == JsonValueKind.Number && node.TryGetInt64(out var value) && value > 0);
 
-            var expectedCommandProperties = commandName == "command.invoke.user"
+            var expectedCommandProperties = commandName is "command.invoke.user" or "process.control"
                 ? new[] { "cmd", "canonicalCommandId", "arguments", "expectedSessionId", "expectedRunId",
                     "expectedModeRevision", "expectedPolicyRevision", "expectedSelectionRevision",
                     "expectedRoutingPolicyRevision", "catalogRevision", "sourceFingerprint" }
@@ -668,10 +677,9 @@ public static class StdioProtocolHost
                 || !IsSha256(commandCatalogRevision)
                 || !RequiredString("sourceFingerprint", 64, out var commandSourceFingerprint)
                 || !IsSha256(commandSourceFingerprint)) return false;
-
-            if (commandName == "command.invoke.user")
+            if (commandName is "command.invoke.user" or "process.control")
             {
-                if (!RequiredString("canonicalCommandId", 256, out _)
+                if (!RequiredString("canonicalCommandId", 256, out var canonicalCommandId)
                     || !payload.RootElement.TryGetProperty("arguments", out var commandArguments)
                     || commandArguments.ValueKind != JsonValueKind.Array || commandArguments.GetArrayLength() > 32)
                     return false;
@@ -683,6 +691,16 @@ public static class StdioProtocolHost
                     totalArgumentLength += text.Length;
                     if (totalArgumentLength > 65_536) return false;
                 }
+                if (commandName == "process.control"
+                    && (canonicalCommandId != "core:process.control" || commandArguments.GetArrayLength() != 2
+                        || commandArguments[0].ValueKind != JsonValueKind.String
+                        || commandArguments[0].GetString() is not ("process.read" or "process.send_input" or "process.stop")
+                        || commandArguments[1].ValueKind != JsonValueKind.String
+                        || commandArguments[1].GetString() is not { Length: > 0 and <= 16_384 } processJson
+                        || !IsJsonObject(processJson)
+                        || !string.Equals(commandSourceFingerprint,
+                            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("omnicore-native-process-control-v1"))),
+                            StringComparison.Ordinal))) return false;
             }
             else if (!RequiredString("invocationId", 36, out var invocationId)
                 || !Guid.TryParseExact(invocationId, "D", out var invocationGuid)
@@ -786,6 +804,47 @@ public static class StdioProtocolHost
                 return false;
             scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
                 CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
+            return true;
+        }
+        if (commandName is "delegation.cancel" or "delegation.disposition" or "delegation.mailbox.send")
+        {
+            bool CanonicalGuid(string name) => payload.RootElement.TryGetProperty(name, out var value)
+                && value.ValueKind == JsonValueKind.String
+                && Guid.TryParseExact(value.GetString(), "D", out var parsed)
+                && value.GetString() == parsed.ToString("D");
+            var expectedCount = commandName == "delegation.cancel" ? 5 : commandName == "delegation.disposition" ? 8 : 6;
+            if (expectedSession.Value is null || expectedRun.Value is null
+                || properties.Length != expectedCount || properties.Distinct(StringComparer.Ordinal).Count() != properties.Length
+                || properties.Except(commandName == "delegation.cancel"
+                    ? ["cmd", "expectedSessionId", "expectedRunId", "expectedPolicyRevision", "delegationId"]
+                    : commandName == "delegation.disposition"
+                        ? ["cmd", "expectedSessionId", "expectedRunId", "expectedPolicyRevision", "delegationId", "resultId", "outcome", "reason"]
+                        : ["cmd", "expectedSessionId", "expectedRunId", "expectedPolicyRevision", "delegationId", "content"],
+                    StringComparer.Ordinal).Any()
+                || !payload.RootElement.TryGetProperty("expectedSessionId", out var sessionNode)
+                || sessionNode.ValueKind != JsonValueKind.String || sessionNode.GetString() != expectedSession.Value
+                || !payload.RootElement.TryGetProperty("expectedRunId", out var runNode)
+                || runNode.ValueKind != JsonValueKind.String || runNode.GetString() != expectedRun.Value
+                || !payload.RootElement.TryGetProperty("expectedPolicyRevision", out var policyNode)
+                || policyNode.ValueKind != JsonValueKind.Number || !policyNode.TryGetInt64(out var policyRevision)
+                || policyRevision < 1 || !CanonicalGuid("delegationId")) return false;
+            if (commandName == "delegation.mailbox.send"
+                && (!payload.RootElement.TryGetProperty("content", out var contentNode)
+                    || contentNode.ValueKind != JsonValueKind.String
+                    || contentNode.GetString() is not { Length: > 0 and <= 4096 } content
+                    || content.Contains('\0'))) return false;
+            if (commandName == "delegation.disposition"
+                && (!CanonicalGuid("resultId")
+                    || !payload.RootElement.TryGetProperty("outcome", out var outcomeNode)
+                    || outcomeNode.ValueKind != JsonValueKind.String
+                    || outcomeNode.GetString() is not ("Accepted" or "ReworkRequested")
+                    || !payload.RootElement.TryGetProperty("reason", out var reasonNode)
+                    || reasonNode.ValueKind != JsonValueKind.String
+                    || reasonNode.GetString() is not { Length: > 0 and <= 4096 } reason
+                    || string.IsNullOrWhiteSpace(reason))) return false;
+            scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
+                CheckRevision: false, RequirePlanRun: false, RequestedMode: null,
+                ExpectedPolicyRevision: policyRevision);
             return true;
         }
         if (commandName is "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
@@ -1126,7 +1185,7 @@ public static class StdioProtocolHost
 
     private sealed record TrustedActionScope(string? ExpectedSessionId, string? ExpectedRunId, string WorkspaceHash,
         long? ExpectedRevision, bool CheckRevision, bool RequirePlanRun, string? RequestedMode,
-        bool RequireCurrentAct = false);
+        bool RequireCurrentAct = false, long? ExpectedPolicyRevision = null);
 
     private static CommandAck DispatchCommand(IOmniClient client, WireEnvelope command, TrustedActionScope? trustedScope,
         out bool executed, string? executionPayloadJson = null)
@@ -1163,6 +1222,16 @@ public static class StdioProtocolHost
             trustedScope.CheckRevision, trustedScope.RequirePlanRun))
         {
             var rejected = new CommandAck(command.MessageId, "error", "trusted_action_scope_changed",
+                RuntimeCommandOutcome.Rejected());
+            store.CompleteCommandReceipt(command.MessageId, hash, rejected.Status, rejected.Outcome?.Kind.ToString(),
+                rejected.Error, rejected.FirstSeq, rejected.LastSeq, scope, server.LastSessionId()?.ToString());
+            return rejected;
+        }
+        var currentSession = server.LastSessionId();
+        if (trustedScope?.ExpectedPolicyRevision is { } expectedPolicy
+            && (currentSession is null || server.ReadSessionSecurityPolicy(currentSession)?.PolicyRevision != expectedPolicy))
+        {
+            var rejected = new CommandAck(command.MessageId, "error", "trusted_action_policy_changed",
                 RuntimeCommandOutcome.Rejected());
             store.CompleteCommandReceipt(command.MessageId, hash, rejected.Status, rejected.Outcome?.Kind.ToString(),
                 rejected.Error, rejected.FirstSeq, rejected.LastSeq, scope, server.LastSessionId()?.ToString());
@@ -1212,6 +1281,12 @@ public static class StdioProtocolHost
         private readonly object _gate = new();
         private CancellationTokenSource? _cancellation;
         private Task<int>? _task;
+        private sealed record PendingNativeProcessControl(OmniServer Server, string CommandId,
+            string RequestHash, string SessionId, string RunId, string ToolName, string ArgumentsJson,
+            PersistedConversationCommand Binding, Task<int>? PriorTask);
+        private PendingNativeProcessControl? _pendingNativeProcessControl;
+        private Task<int>? _nativeProcessControlTask;
+        private string? _nativeProcessControlCommandId;
         private PendingContinuation? _pendingContinuation;
         private string? _commandId;
         private PersistedConversationCommand? _deferredConversation;
@@ -1235,7 +1310,35 @@ public static class StdioProtocolHost
         public bool CanAcceptNativeCommand
         {
             get { lock (_gate) return _pendingContinuation is null && _task is not { IsCompleted: false }
-                && _deferredConversation is null; }
+                && _deferredConversation is null && _pendingNativeProcessControl is null
+                && _nativeProcessControlTask is not { IsCompleted: false }; }
+        }
+
+        public bool CanAcceptNativeProcessControl(IOmniClient client, WireEnvelope command)
+        {
+            if (client is not OmniServer server) return false;
+            try
+            {
+                using var document = JsonDocument.Parse(command.PayloadJson);
+                var root = document.RootElement;
+                if (!root.TryGetProperty("expectedSessionId", out var sessionNode) || sessionNode.ValueKind != JsonValueKind.String
+                    || !Guid.TryParseExact(sessionNode.GetString(), "D", out var sessionGuid)
+                    || !root.TryGetProperty("expectedRunId", out var runNode) || runNode.ValueKind != JsonValueKind.String
+                    || !Guid.TryParseExact(runNode.GetString(), "D", out var runGuid)
+                    || !root.TryGetProperty("arguments", out var actionArgs) || actionArgs.ValueKind != JsonValueKind.Array
+                    || actionArgs.GetArrayLength() != 2 || actionArgs[0].ValueKind != JsonValueKind.String
+                    || actionArgs[1].ValueKind != JsonValueKind.String) return false;
+                lock (_gate)
+                {
+                    if (_pendingContinuation is not null || _deferredConversation is not null
+                        || _pendingNativeProcessControl is not null
+                        || _nativeProcessControlTask is { IsCompleted: false }) return false;
+                }
+                return server.CanExecuteNativeProcessControl(new SessionId(sessionGuid), new RunId(runGuid),
+                    actionArgs[0].GetString()!, actionArgs[1].GetString()!);
+            }
+            catch (Exception failure) when (failure is JsonException or ArgumentException or FormatException)
+            { return false; }
         }
 
         public bool CanAcceptWorkflowContinuation(IOmniClient client, WireEnvelope command)
@@ -1249,8 +1352,10 @@ public static class StdioProtocolHost
             return server.NativeWorkflowContinuationIsAllowed(new CommandId(invocationGuid), out _, out _, out _);
         }
 
-        public bool IsRunning { get { lock (_gate) return _pendingContinuation is not null || _task is { IsCompleted: false }; } }
-        public bool IsRunningFor(string commandId) { lock (_gate) return _commandId == commandId && _task is { IsCompleted: false }; }
+        public bool IsRunning { get { lock (_gate) return _pendingContinuation is not null || _task is { IsCompleted: false }
+            || _pendingNativeProcessControl is not null || _nativeProcessControlTask is { IsCompleted: false }; } }
+        public bool IsRunningFor(string commandId) { lock (_gate) return _commandId == commandId && _task is { IsCompleted: false }
+            || _nativeProcessControlCommandId == commandId && _nativeProcessControlTask is { IsCompleted: false }; }
         public (CommandAck Ack, ArtifactRef? Reference) Upload(WireEnvelope command, OmniServer server, string commandName) =>
             _uploads.Dispatch(server, command, commandName);
 
@@ -1502,10 +1607,17 @@ public static class StdioProtocolHost
                     case InteractionResolved resolved when pending.Remove(resolved.InteractionId, out var requestedEvent):
                     {
                         var request = (InteractionRequested)codecs.Decode(requestedEvent);
-                        if (request.OptionsJson is null || requestedEvent.LaneId != rootLane
-                            || resolved.IsQuestionnaire
+                        var targetLane = requestedEvent.LaneId;
+                        var targetTask = requestedEvent.TaskId;
+                        var targetToolCall = requestedEvent.ToolCallId;
+                        var nativeLaneAllowed = targetLane == rootLane && targetTask == projection.RootTask
+                            || request.Kind == InteractionKind.Permission && targetLane is { } childLane
+                                && targetTask is { } childTask && server.AcceptedDelegationForChild(sessionId,
+                                    run, childTask, childLane) is not null;
+                        if (request.OptionsJson is null || !nativeLaneAllowed
+                            || resolved.IsQuestionnaire || resolved.Cause != InteractionCause.User
                             || request.Kind == InteractionKind.Permission
-                                && resolved.OptionId is not ("allow_once" or "allow_run" or "allow_workspace")
+                                && resolved.OptionId is not ("allow_once" or "allow_run" or "allow_workspace" or "deny")
                             || request.Kind == InteractionKind.PlanApproval
                                 && resolved.OptionId is not ("approve_execute" or "continue_planning")) break;
                         var commandCause = evt.Causation as CommandCausation;
@@ -1529,11 +1641,11 @@ public static class StdioProtocolHost
                             sourceTurnId = FindAcceptedPlanProposalTurn(events, codecs, run, requestedEvent, rootLane);
                         if (sourceTurnId is null) break;
                         var sourceTurnStart = events.FirstOrDefault(item => item.RunId == run
-                            && item.TurnId == sourceTurnId && item.LaneId == rootLane
+                            && item.TurnId == sourceTurnId && item.LaneId == targetLane
                             && codecs.Decode(item) is TurnStarted);
                         if (sourceTurnStart is null) break;
                         var previousTurnTerminal = events.Where(item => item.RunId == run
-                                && item.Sequence < sourceTurnStart.Sequence && item.LaneId == rootLane)
+                                && item.Sequence < sourceTurnStart.Sequence && item.LaneId == targetLane)
                             .Where(item => codecs.Decode(item) is TurnCompleted or TurnAbandoned or TurnInterrupted)
                             .Select(item => item.Sequence).DefaultIfEmpty(0).Max();
                         var sourceInput = events.Where(item => item.RunId == run
@@ -1551,6 +1663,7 @@ public static class StdioProtocolHost
                         if (request.Kind == InteractionKind.Permission)
                         {
                             if (requestedEvent.TurnId is not { } permissionTurn
+                                || targetTask is null || targetLane is null || targetToolCall is null
                                 || !IsOpenTurn(events, codecs, run, permissionTurn)) break;
                             turnId = permissionTurn.ToString();
                         }
@@ -1561,7 +1674,11 @@ public static class StdioProtocolHost
                             ContinuationRequestHash: responseReceipt.RequestHash,
                             ContinuationFirstSequence: responseFirst, ContinuationLastSequence: responseLast,
                             ContinuationResponseType: "choice", ContinuationOptionId: resolved.OptionId,
-                            ContinuationTurnId: turnId, NativeChoiceCapability: true, ExplicitChoiceRecovery: true);
+                            ContinuationTurnId: turnId,
+                            ContinuationTaskId: request.Kind == InteractionKind.Permission ? targetTask?.ToString() : null,
+                            ContinuationLaneId: request.Kind == InteractionKind.Permission ? targetLane?.ToString() : null,
+                            ContinuationToolCallId: request.Kind == InteractionKind.Permission ? targetToolCall?.ToString() : null,
+                            NativeChoiceCapability: true, ExplicitChoiceRecovery: true);
                         var chosenOption = resolved.OptionId;
                         choices.Add(new ChoiceRecovery(binding, request.InteractionId.ToString(), run.ToString(),
                             policy.PolicyRevision, request.Kind.ToString(), chosenOption));
@@ -1752,15 +1869,38 @@ public static class StdioProtocolHost
 
             var requested = (InteractionRequested)codecs.Decode(requestEnvelope);
             if (!TryGetQuestionnaireToolCallId(requested.ToolCallJson, out var requestedToolCallId)
+                || requestEnvelope.ToolCallId is not { } requestToolCallId
+                || requestToolCallId.ToString() != requestedToolCallId
+                || requestEnvelope.TaskId is not { } requestTaskId
+                || requestEnvelope.LaneId is not { } requestLaneId
                 || !events.Any(evt => evt.RunId == runId && evt.TurnId == turnId
+                    && evt.TaskId == requestTaskId && evt.LaneId == requestLaneId
+                    && evt.ToolCallId == requestToolCallId
                     && codecs.Decode(evt) is ToolCallRequested toolCall && toolCall.ToolName == "user.ask"
-                    && toolCall.ToolCallId.ToString() == requestedToolCallId)) return false;
+                    && toolCall.ToolCallId == requestToolCallId)) return false;
+
+            var runEvents = events.Where(evt => evt.RunId == runId).ToArray();
+            var projection = RunProjection.Replay(sessionId, runId, codecs, runEvents);
+            var rootLane = projection.RootTask is { } rootTask
+                ? LaneProjection.Replay(codecs, runEvents).ForTask(rootTask).FirstOrDefault()?.Id : null;
+            if (rootLane is null || requestLaneId != rootLane
+                && server.AcceptedDelegationForChild(sessionId, runId, requestTaskId, requestLaneId) is null)
+                return false;
 
             var turnStart = events.FirstOrDefault(evt => evt.RunId == runId && evt.TurnId == turnId
                 && codecs.Decode(evt) is TurnStarted);
             if (turnStart is null || !IsOpenTurn(events, codecs, runId, turnId)) return false;
             var admitted = FindDeferredConversationBinding(server, events, codecs, sessionId, runId, turnStart.Sequence);
             if (admitted is null) return false;
+            // Bind the answer to the exact child turn and user.ask call. The runner may resume
+            // an accepted child delegation, but it must never infer that target from the UI.
+            admitted = admitted with
+            {
+                ContinuationTurnId = turnId.ToString(),
+                ContinuationTaskId = requestTaskId.ToString(),
+                ContinuationLaneId = requestLaneId.ToString(),
+                ContinuationToolCallId = requestToolCallId.ToString(),
+            };
             lock (_gate)
             {
                 if (_task is { IsCompleted: false }) return false;
@@ -1796,7 +1936,7 @@ public static class StdioProtocolHost
             var requestEvent = events.SingleOrDefault(evt => evt.RunId == run
                 && codecs.Decode(evt) is InteractionRequested request
                 && request.InteractionId == interaction
-                && request.Kind is InteractionKind.Permission or InteractionKind.PlanApproval);
+                    && request.Kind is InteractionKind.Permission or InteractionKind.PlanApproval or InteractionKind.MemoryPromotion);
             if (requestEvent is null || codecs.Decode(requestEvent) is not InteractionRequested requested
                 || !Options(requested.OptionsJson).Contains(optionElement.GetString()!, StringComparer.Ordinal)
                 || events.Any(evt => codecs.Decode(evt) is InteractionResolved resolved
@@ -1807,19 +1947,37 @@ public static class StdioProtocolHost
             var projection = RunProjection.Replay(session, run, codecs, events);
             var rootLane = projection.RootTask is { } rootTask
                 ? LaneProjection.Replay(codecs, events).ForTask(rootTask).FirstOrDefault()?.Id : null;
-            if (rootLane is null || requestEvent.LaneId != rootLane) return false;
-            if (requested.Kind == InteractionKind.Permission)
+            if (rootLane is null) return false;
+            var requestedTask = requestEvent.TaskId;
+            var requestedLane = requestEvent.LaneId;
+            var requestedToolCall = requestEvent.ToolCallId;
+            var targetIsRoot = requestedLane == rootLane && requestedTask == projection.RootTask;
+            var targetIsAcceptedChild = requested.Kind is InteractionKind.Permission or InteractionKind.MemoryPromotion
+                && requestedTask is { } childTask && requestedLane is { } childLane
+                && server.AcceptedDelegationForChild(session, run, childTask, childLane) is not null;
+            if (!targetIsRoot && !targetIsAcceptedChild) return false;
+            if (requested.Kind is InteractionKind.Permission or InteractionKind.MemoryPromotion)
             {
-                var permission = events.Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
-                    .SingleOrDefault(item => item.Event.RunId == run
-                        && item.Payload is PermissionRequested requestedPermission
-                        && requestedPermission.InteractionId == interaction);
-                if (permission.Event is null || permission.Event.TurnId != requestEvent.TurnId
-                    || permission.Payload is not PermissionRequested permissionRequested
-                    || events.Any(evt => evt.RunId == run && evt.ToolCallId == permissionRequested.ToolCallId
-                        && codecs.Decode(evt) is PermissionGranted or PermissionDenied or ToolCallAuthorized
-                            or ToolCallStarted or ToolCallSucceeded or ToolCallFailed or ToolCallEffectUnknown
-                            or ToolCallReconciled)) return false;
+                if (requestedTask is null || requestedLane is null || requestedToolCall is null) return false;
+                if (requested.Kind == InteractionKind.Permission)
+                {
+                    var permission = events.Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
+                        .SingleOrDefault(item => item.Event.RunId == run && item.Event.TaskId == requestedTask
+                            && item.Event.LaneId == requestedLane && item.Event.ToolCallId == requestedToolCall
+                            && item.Event.TurnId == requestEvent.TurnId
+                            && item.Payload is PermissionRequested requestedPermission
+                            && requestedPermission.InteractionId == interaction);
+                    if (permission.Event is null || permission.Event.TurnId != requestEvent.TurnId
+                        || permission.Payload is not PermissionRequested permissionRequested
+                        || events.Any(evt => evt.RunId == run && evt.ToolCallId == permissionRequested.ToolCallId
+                            && codecs.Decode(evt) is PermissionGranted or PermissionDenied or ToolCallAuthorized
+                                or ToolCallStarted or ToolCallSucceeded or ToolCallFailed or ToolCallEffectUnknown
+                                or ToolCallReconciled)) return false;
+                }
+                else if (!events.Any(evt => evt.RunId == run && evt.TaskId == requestedTask
+                    && evt.LaneId == requestedLane && evt.TurnId == requestEvent.TurnId
+                    && evt.ToolCallId == requestedToolCall && codecs.Decode(evt) is ToolCallRequested call
+                    && call.ToolName == "memory.propose")) return false;
                 var turn = requestEvent.TurnId;
                 if (turn is null || !IsOpenTurn(events, codecs, run, turn)) return false;
             }
@@ -1843,8 +2001,11 @@ public static class StdioProtocolHost
             admitted = admitted with
             {
                 NativeChoiceCapability = true,
-                ContinuationTurnId = requested.Kind == InteractionKind.Permission
+                ContinuationTurnId = requested.Kind is InteractionKind.Permission or InteractionKind.MemoryPromotion
                     ? requestEvent.TurnId?.ToString() : null,
+                ContinuationTaskId = requested.Kind is InteractionKind.Permission or InteractionKind.MemoryPromotion ? requestedTask?.ToString() : null,
+                ContinuationLaneId = requested.Kind is InteractionKind.Permission or InteractionKind.MemoryPromotion ? requestedLane?.ToString() : null,
+                ContinuationToolCallId = requested.Kind is InteractionKind.Permission or InteractionKind.MemoryPromotion ? requestedToolCall?.ToString() : null,
             };
             lock (_gate)
             {
@@ -2021,6 +2182,7 @@ public static class StdioProtocolHost
             return started;
         }
 
+
         private static bool TryGetQuestionnaireToolCallId(string? toolCallJson, out string toolCallId)
         {
             toolCallId = string.Empty;
@@ -2069,6 +2231,7 @@ public static class StdioProtocolHost
                     ContinuationRequestHash = requestHash,
                     ContinuationFirstSequence = first,
                     ContinuationLastSequence = last,
+                    ContinuationTurnId = deferred.ContinuationTurnId,
                 };
                 _cancellation?.Dispose();
                 _cancellation = new CancellationTokenSource();
@@ -2186,6 +2349,14 @@ public static class StdioProtocolHost
             PendingContinuation? pending;
             lock (_gate)
             {
+                if (_pendingNativeProcessControl is { } processControl
+                    && processControl.CommandId == acknowledgedReceiptCommandId)
+                {
+                    _pendingNativeProcessControl = null;
+                    _nativeProcessControlCommandId = processControl.CommandId;
+                    _nativeProcessControlTask = Task.Run(() => RunNativeProcessControl(processControl));
+                    return;
+                }
                 pending = _pendingContinuation;
                 if (pending is null || pending.ReceiptCommandId != acknowledgedReceiptCommandId
                     || runner is null || _task is { IsCompleted: false }) return;
@@ -2222,10 +2393,58 @@ public static class StdioProtocolHost
             }
         }
 
+        private async Task<int> RunNativeProcessControl(PendingNativeProcessControl pending)
+        {
+            var code = 5;
+            var state = "unknown";
+            var detail = "effect_outcome_unknown";
+            var usedPostTurnRunner = false;
+            try
+            {
+                var session = new SessionId(Guid.Parse(pending.SessionId));
+                var run = new RunId(Guid.Parse(pending.RunId));
+                code = 6;
+                if (pending.Server.CanExecuteNativeProcessControl(session, run,
+                        pending.ToolName, pending.ArgumentsJson))
+                    code = pending.Server.ExecuteNativeProcessControlDuringTurn(session, run,
+                        pending.ToolName, pending.ArgumentsJson, pending.CommandId, CancellationToken.None);
+                if (code == 6)
+                {
+                    if (pending.PriorTask is not null) await pending.PriorTask.ConfigureAwait(false);
+                    usedPostTurnRunner = true;
+                    code = runner is null ? 1 : await runner(pending.Binding, CancellationToken.None).ConfigureAwait(false);
+                }
+                state = code == 0 ? "completed" : code == 3 ? "deferred" : "failed";
+                detail = code == 0 ? "native_tool_completed" : code == 3 ? "input_required" : "native_tool_failed";
+            }
+            catch (Exception)
+            {
+                // An exception after native admission cannot prove that the tool had no effect.
+                code = 5;
+            }
+            try
+            {
+                pending.Server.ReceiptStore?.CompleteCommandExecution(pending.CommandId, pending.RequestHash,
+                    state, detail, pending.SessionId, pending.RunId);
+            }
+            catch (Exception) { /* Keep the command admitted; callers reconcile its durable events. */ }
+            if (usedPostTurnRunner && code == 0)
+            {
+                try
+                {
+                    pending.Server.ResumeDeferredProcessRunCompletion(
+                        new SessionId(Guid.Parse(pending.SessionId)), new RunId(Guid.Parse(pending.RunId)));
+                }
+                catch (Exception) { /* The process receipt is terminal; run completion remains safely pending. */ }
+            }
+            return code;
+        }
+
         public string? PendingCommandForAcknowledgement(string commandId)
         {
             lock (_gate)
-                return _pendingContinuation?.ReceiptCommandId == commandId ? commandId : null;
+                return _pendingContinuation?.ReceiptCommandId == commandId || _pendingNativeProcessControl?.CommandId == commandId
+                    ? commandId : null;
         }
 
         public bool ScheduleNativeCommand(IOmniClient client, WireEnvelope command, CommandAck acknowledgement)
@@ -2245,7 +2464,7 @@ public static class StdioProtocolHost
 
             string invocationText;
             var commandName = ReadCommandName(command.PayloadJson);
-            if (commandName == "command.invoke.user") invocationText = command.MessageId;
+            if (commandName is "command.invoke.user" or "process.control") invocationText = command.MessageId;
             else if (commandName != "command.continue") return false;
             else
             {
@@ -2273,6 +2492,28 @@ public static class StdioProtocolHost
                 NativeWeakSandboxCapability: _nativeWeakSandboxCapability);
             lock (_gate)
             {
+                if (commandName == "process.control")
+                {
+                    if (_pendingContinuation is not null || _deferredConversation is not null
+                        || _pendingNativeProcessControl is not null
+                        || _nativeProcessControlTask is { IsCompleted: false })
+                        return false;
+                    try
+                    {
+                        using var payload = JsonDocument.Parse(command.PayloadJson);
+                        var args = payload.RootElement.GetProperty("arguments");
+                        if (args.ValueKind != JsonValueKind.Array || args.GetArrayLength() != 2
+                            || args[0].ValueKind != JsonValueKind.String || args[1].ValueKind != JsonValueKind.String
+                            || !server.CanExecuteNativeProcessControl(new SessionId(Guid.Parse(receiptSession)), activeRun,
+                                args[0].GetString()!, args[1].GetString()!)) return false;
+                        _pendingNativeProcessControl = new PendingNativeProcessControl(server, command.MessageId, hash,
+                            receiptSession, activeRun.ToString(), args[0].GetString()!, args[1].GetString()!, binding,
+                            _task is { IsCompleted: false } ? _task : null);
+                    }
+                    catch (Exception failure) when (failure is JsonException or InvalidOperationException or KeyNotFoundException)
+                    { return false; }
+                    return true;
+                }
                 if (_pendingContinuation is not null || _task is { IsCompleted: false } || _deferredConversation is not null)
                     return false;
                 _pendingContinuation = new PendingContinuation(server, binding, command.MessageId, hash);
@@ -2442,7 +2683,8 @@ public static class StdioProtocolHost
                 "query.hookCatalog", "query.skillCatalog", "query.sessionMemory", "query.modePreferences",
                 "query.reasoningPreferences", "query.workspaceStatus", "query.turnContext", "query.openRouterStatus", "query.uiPreferences",
                 "query.sessionSecurity", "query.sessionSecurityDefault", "query.conversations",
-                "query.commandOutcome", "query.commandCatalog", "query.commandRecovery", "query.workflowRecovery"],
+                "query.commandOutcome", "query.commandCatalog", "query.commandRecovery", "query.workflowRecovery",
+                "query.processSessions"],
                 StringComparer.Ordinal);
             supported = supported.Where(capability => !hostOnlyQueries.Contains(capability));
         }
@@ -2515,6 +2757,12 @@ public static class StdioProtocolHost
                 ? value.GetString() ?? "" : "";
         }
         catch (JsonException) { return ""; }
+    }
+
+    private static bool IsJsonObject(string json)
+    {
+        try { using var document = JsonDocument.Parse(json); return document.RootElement.ValueKind == JsonValueKind.Object; }
+        catch (JsonException) { return false; }
     }
 
     private static string Quote(string value) => "\"" + JsonObj.Escape(value) + "\"";

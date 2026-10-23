@@ -27,7 +27,7 @@ public sealed record NativeCommandInvocationAdmitted(
             || RunId is { Value: var run } && run == Guid.Empty
             || string.IsNullOrWhiteSpace(CanonicalCommandId) || CanonicalCommandId.Length > 256
             || !CanonicalCommandId.Contains(':', StringComparison.Ordinal)
-            || Kind is not ("prompt" or "forcedExtension" or "compiledWorkflow")
+            || Kind is not ("prompt" or "forcedExtension" or "compiledWorkflow" or "nativeTool")
             || !IsSha256(CatalogRevision) || !IsSha256(SourceFingerprint)
             || ExpectedPolicyRevision < 1 || ExpectedModeRevision is < 1
             || ExpectedSelectionRevision < 0 || ExpectedRoutingPolicyRevision is < 0
@@ -47,7 +47,7 @@ public sealed record NativeCommandInvocationStarted(CommandId InvocationId, stri
 
     public void Validate()
     {
-        if (InvocationId.Value == Guid.Empty || Kind is not ("prompt" or "forcedExtension" or "compiledWorkflow")
+        if (InvocationId.Value == Guid.Empty || Kind is not ("prompt" or "forcedExtension" or "compiledWorkflow" or "nativeTool")
             || RunId is { Value: var run } && run == Guid.Empty)
             throw new InvalidDataException("Native command execution start is invalid.");
     }

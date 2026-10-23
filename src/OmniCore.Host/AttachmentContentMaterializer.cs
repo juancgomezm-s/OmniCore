@@ -114,6 +114,11 @@ internal static class AttachmentContentMaterializer
 
     private static ContentBlock ValidateImage(ArtifactRef reference, byte[] bytes)
     {
+        if (reference.MediaType == "image/webp")
+        {
+            _ = WebpImageValidator.Decode(bytes);
+            return new ImageBlock(reference.MediaType, bytes);
+        }
         ValidateImageHeader(reference.MediaType, bytes);
         return new ImageBlock(reference.MediaType, bytes);
     }
@@ -122,7 +127,8 @@ internal static class AttachmentContentMaterializer
     {
         if (bytes.Length is 0 or > MaximumBytes || DetectMediaType(bytes) != mediaType || !IsSupportedIntake(mediaType))
             throw new InvalidDataException("Attachment content is invalid or unsupported.");
-        if (mediaType.StartsWith("image/", StringComparison.Ordinal)) ValidateImageHeader(mediaType, bytes);
+        if (mediaType == "image/webp") _ = WebpImageValidator.Decode(bytes);
+        else if (mediaType.StartsWith("image/", StringComparison.Ordinal)) ValidateImageHeader(mediaType, bytes);
     }
 
     private static void ValidateImageHeader(string mediaType, ReadOnlySpan<byte> bytes)
@@ -132,15 +138,6 @@ internal static class AttachmentContentMaterializer
         {
             if (bytes.Length < 24 || !bytes[..8].SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 })) throw new InvalidDataException("PNG signature is invalid.");
             width = ReadBigEndian(bytes.Slice(16, 4)); height = ReadBigEndian(bytes.Slice(20, 4));
-        }
-        else if (mediaType == "image/webp")
-        {
-            if (bytes.Length < 30 || !bytes[..4].SequenceEqual("RIFF"u8) || !bytes.Slice(8, 4).SequenceEqual("WEBP"u8)) throw new InvalidDataException("WebP signature is invalid.");
-            if (bytes.Slice(12, 4).SequenceEqual("VP8X"u8))
-            { width = 1u + ReadLittleEndian(bytes.Slice(24, 3)); height = 1u + ReadLittleEndian(bytes.Slice(27, 3)); }
-            else if (bytes.Slice(12, 4).SequenceEqual("VP8 "u8) && bytes.Length >= 30)
-            { width = (uint)(bytes[26] | (bytes[27] << 8)) & 0x3fff; height = (uint)(bytes[28] | (bytes[29] << 8)) & 0x3fff; }
-            else throw new InvalidDataException("Unsupported WebP chunk layout.");
         }
         else if (mediaType == "image/jpeg")
         {
@@ -227,5 +224,4 @@ internal static class AttachmentContentMaterializer
 
     private static string SafeName(ArtifactRef reference) => string.IsNullOrWhiteSpace(reference.FileName) ? "attachment" : Path.GetFileName(reference.FileName);
     private static uint ReadBigEndian(ReadOnlySpan<byte> bytes) => (uint)(bytes[0] << 24 | bytes[1] << 16 | bytes[2] << 8 | bytes[3]);
-    private static uint ReadLittleEndian(ReadOnlySpan<byte> bytes) => (uint)(bytes[0] | bytes[1] << 8 | bytes[2] << 16);
 }

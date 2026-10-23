@@ -213,11 +213,30 @@ if (args.Length == 2 && args[0] == "persistent-private-writer")
     await stdout.FlushAsync();
 
     var line = await Console.In.ReadLineAsync();
+    if (line is null)
+    {
+        // EOF is a real control action. Emit a final UTF-8 frame after it so the Host's
+        // passive terminal read can prove that buffered output remains visible after Run close.
+        await stdout.WriteAsync(Encoding.UTF8.GetBytes("EOF-FINAL-ñ\n"));
+        await stdout.FlushAsync();
+        return 35;
+    }
     if (!string.Equals(line, "finish", StringComparison.Ordinal)) return 35;
     await File.WriteAllTextAsync(markerName, "process-batch-published", new UTF8Encoding(false));
     await stdout.WriteAsync(Encoding.UTF8.GetBytes("ACK:finish\n"));
     await stdout.FlushAsync();
     return 0;
+}
+
+if (args.Length == 1 && args[0] == "verify-m9-process-marker")
+{
+    try
+    {
+        var marker = await File.ReadAllTextAsync("m9-process-marker.txt");
+        return string.Equals(marker, "process-batch-published", StringComparison.Ordinal) ? 0 : 43;
+    }
+    catch (IOException) { return 44; }
+    catch (UnauthorizedAccessException) { return 45; }
 }
 
 if (args.Length == 2 && args[0] == "private-process-exec")

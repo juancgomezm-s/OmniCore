@@ -10,6 +10,23 @@ using Xunit;
 public sealed class OpenRouterImageGenerationProviderTests
 {
     [Fact]
+    public async System.Threading.Tasks.Task Images_profile_preserves_still_webp_for_the_complete_Host_decoder()
+    {
+        var bytes = Convert.FromBase64String(WebpImageValidationTests.Lossless);
+        var handler = new CaptureHandler(_ => JsonResponse("{\"data\":[{\"b64_json\":\""
+            + Convert.ToBase64String(bytes) + "\",\"media_type\":\"image/webp\"}]}"));
+        var completed = await Consume(Provider(handler), Request());
+        var image = Assert.IsType<ImageBlock>(Assert.Single(completed.Content));
+        Assert.Equal("image/webp", image.MediaType);
+        Assert.Equal(bytes, image.Bytes.ToArray());
+        var validated = OmniCore.Host.GeneratedImageValidator.Decode(image.MediaType, image.Bytes.ToArray());
+        Assert.Equal(2, validated.Width);
+        Assert.Equal(3, validated.Height);
+        Assert.Equal(TokenUsageFields.None, completed.ReportedUsageFields);
+        Assert.Equal(0.25m, completed.AdditionalCostUpperBoundUsd);
+    }
+
+    [Fact]
     public async System.Threading.Tasks.Task Images_profile_posts_dedicated_bounded_request_and_returns_bytes_without_fabricated_usage()
     {
         var image = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p1sAAAAASUVORK5CYII=");

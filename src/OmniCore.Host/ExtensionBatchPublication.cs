@@ -109,6 +109,7 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IExtensionBat
 {
     private readonly ConcurrentDictionary<string, ExtensionPreparedBatch> _preparedExtensions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, Func<ExtensionWriteBatchProposal, string, bool>> _extensionValidators = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Func<ExtensionWriteBatchProposal, string, bool>> _processProposalApplied = new(StringComparer.Ordinal);
 
     public void RegisterExtensionProposalValidator(string toolId,
         Func<ExtensionWriteBatchProposal, string, bool> validator)
@@ -116,6 +117,14 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IExtensionBat
         if (string.IsNullOrWhiteSpace(toolId) || !_extensionValidators.TryAdd(toolId,
                 validator ?? throw new ArgumentNullException(nameof(validator))))
             throw new InvalidOperationException("Extension proposal validator registration is invalid or duplicated.");
+    }
+
+    public void RegisterProcessProposalApplied(string toolId,
+        Func<ExtensionWriteBatchProposal, string, bool> complete)
+    {
+        if (!PersistentProcessSessionManager.IsProcessWriterTool(toolId)
+            || !_processProposalApplied.TryAdd(toolId, complete ?? throw new ArgumentNullException(nameof(complete))))
+            throw new InvalidOperationException("Process proposal completion registration is invalid or duplicated.");
     }
 
     public IReadOnlyList<ToolIntent> ResolveAuthorizedIntents(ToolIntent intent, ToolExecutionContext context,
@@ -261,6 +270,10 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IExtensionBat
         if (!_preparedExtensions.TryRemove(authorized.Intent.ToolCallId.ToString(), out var batch))
             return ToolResult.Error(ToolErrorCode.ToolFailure, "Prepared extension batch is unavailable.");
         var workspace = Path.GetFullPath(context.WorkspaceRoot);
+        var processOrigin = batch.Proposal.Origin == "process";
+        if (processOrigin && !_processProposalApplied.ContainsKey(batch.Proposal.ToolId))
+            return ToolResult.Error(ToolErrorCode.PermissionDenied,
+                "The process proposal owner is unavailable; no files were published.");
         foreach (var file in batch.Files)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -299,6 +312,10 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IExtensionBat
                 }
             }
             CompleteExtensionHistory(context, authorized.Intent, batch.Files, cancellationToken);
+            if (processOrigin && (!_processProposalApplied.TryGetValue(batch.Proposal.ToolId, out var complete)
+                || !complete(batch.Proposal, workspace)))
+                return new ToolResult("Process batch applied, but its lifecycle receipt requires reconciliation.",
+                    null, null, batch.Files.Count, false, EffectOutcome.Unknown, true, ToolErrorCode.UnknownEffect);
             return new ToolResult("Extension batch applied.", null, null, batch.Files.Count, false, EffectOutcome.Applied);
         }
         catch (OperationCanceledException) { throw; }

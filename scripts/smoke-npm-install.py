@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
+from smoke_webp import smoke_webp
 
 
 def main():
@@ -58,6 +60,7 @@ def main():
         outcome = json.loads(output.splitlines()[-1])
         assert outcome["type"] == "RunOutcome" and outcome["outcome"] == "Completed", outcome
     run(f"verify-{suffix}", ["verify-journal", "--json"])
+    smoke_webp(command, Path(tempfile.mkdtemp(prefix=f"webp-{suffix}-", dir=evidence)))
     if not args.after_update:
         files = [evidence / "config/settings-sentinel.txt", evidence / "workspace/user-file.txt"]
         files.extend((evidence / "data").rglob("journal.db"))

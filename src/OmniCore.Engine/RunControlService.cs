@@ -19,6 +19,7 @@ public sealed class RunControlService
             // Older native choice journals used the generic PlanApproval origin. They persist one
             // empty input part; legacy UI responses persist the selected label.
             || input.Origin == "InteractionResponse(PlanApproval)" && input.InputPartsJson == "[\"\"]",
+        InteractionKind.MemoryPromotion => input.Origin == "InteractionResponse(MemoryPromotion.NativeChoice)",
         _ => false,
     };
     private readonly IEventStore _store;
@@ -301,7 +302,7 @@ public sealed class RunControlService
         if (pending.Length != 1 || pending[0].Envelope.RunId != expectedRun)
             throw new InteractionNotPendingException(interaction);
         var request = pending[0].Request;
-        if (request?.Kind is not (InteractionKind.Permission or InteractionKind.PlanApproval))
+        if (request?.Kind is not (InteractionKind.Permission or InteractionKind.PlanApproval or InteractionKind.MemoryPromotion))
             throw new InvalidInteractionOptionException(interaction, optionId);
         if (request.Kind == InteractionKind.Permission)
             ValidatePendingPermission(events, session, interaction);
@@ -502,6 +503,19 @@ public sealed class RunControlService
             }
             batch.Add(new UserInputReceived(permissionRun, InputParts(string.Empty), null,
                 "InteractionResponse(Permission)"));
+        }
+        else if (nativeChoice && request.Kind == InteractionKind.MemoryPromotion
+            && pendingRequest?.Envelope.RunId is { } memoryRun
+            && RunProjection.Replay(session, memoryRun, _codecs, events).State == RunState.AwaitingInput)
+        {
+            var projection = RunProjection.Replay(session, memoryRun, _codecs, events);
+            var sourceLane = pendingRequest.Envelope.LaneId;
+            if (sourceLane is null || projection.RootTask is null
+                || PendingInteractionEnvelopes(events).Any(pending => pending.Envelope.RunId == memoryRun
+                    && pending.Envelope.LaneId == sourceLane && pending.Request.InteractionId != interaction))
+                throw new InteractionNotPendingException(interaction);
+            batch.Add(new UserInputReceived(memoryRun, InputParts(string.Empty), null,
+                "InteractionResponse(MemoryPromotion.NativeChoice)"));
         }
         else if (request.Kind == InteractionKind.AcceptanceConfirmation && ActiveRun(session) is { } acceptanceRun)
         {

@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 import sqlite3
 import subprocess
+from smoke_webp import smoke_webp
 
 
 def main():
@@ -65,6 +66,7 @@ def main():
             count, = db.execute("SELECT count(*) FROM events").fetchone()
         run("verify", ["verify-journal", "--json"])
         results.append({"scenario": scenario, "events": count, "verified": True})
+    results.append({"scenario": "webp-native-decoder", "uploads": smoke_webp([str(executable)], evidence / "webp", env), "verified": True})
     (evidence / "summary.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(results))
 

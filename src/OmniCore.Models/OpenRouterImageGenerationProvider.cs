@@ -93,6 +93,7 @@ public sealed class OpenRouterImageGenerationProvider : IModelProvider, IModelRe
         {
             "image/png" => "image/png",
             "image/jpeg" => "image/jpeg",
+            "image/webp" => "image/webp",
             _ => throw new ModelProviderException("ImageMediaTypeUnsupported", "OpenRouter returned an unsupported image media type."),
         };
         var image = new ImageBlock(mediaType, bytes);

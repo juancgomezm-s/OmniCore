@@ -15,6 +15,7 @@ using Microsoft.Data.Sqlite;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Collections.Concurrent;
+using System.Text.Json;
 using Task = System.Threading.Tasks.Task;
 
 /// <summary>
@@ -84,6 +85,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     private readonly IArtifactStore? _artifacts;
     private readonly IWorkspaceMutationHistoryStore? _mutationHistory;
     private readonly ConcurrentDictionary<SessionId, PersistentProcessSessionManager> _processSessions = new();
+    private readonly ConcurrentDictionary<(SessionId Session, RunId Run, LaneId Lane), ExplorerTurn> _activeExplorerTurns = new();
+    private readonly ConcurrentDictionary<(SessionId Session, RunId Run),
+        Func<(bool? Completed, CommandAck Ack, Exception? Failure)>> _deferredProcessRunCompletions = new();
     private readonly string _hostLeaseGeneration = Guid.NewGuid().ToString("N");
 
     internal PersistentProcessSessionManager ProcessSessions(SessionId session, string? workspaceRoot = null)
@@ -105,11 +109,102 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         });
     }
 
+    internal bool CanExecuteNativeProcessControlDuringTurn(SessionId session, RunId run,
+        string toolName, string argumentsJson) =>
+        CanExecuteNativeProcessControl(session, run, toolName, argumentsJson);
+
+    internal bool CanExecuteNativeProcessControl(SessionId session, RunId run, string toolName, string argumentsJson)
+    {
+        if (!TryGetNativeProcessRootLane(session, run, out var lane)
+            || !_processSessions.TryGetValue(session, out var manager)) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(argumentsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("handle", out var handleNode)
+                || handleNode.ValueKind != JsonValueKind.String || handleNode.GetString() is not { Length: > 0 } handle)
+                return false;
+            if (!manager.CanControlOwnedProcess(handle, run.ToString(), lane.ToString(), toolName)) return false;
+            if (_activeExplorerTurns.ContainsKey((session, run, lane))) return true;
+            return NativeProcessControlRunIsQuiescent(session, run, lane, manager)
+                && new RunControlService(_store, _codecs).UnreconciledEffects(session).Count == 0;
+        }
+        catch (JsonException) { return false; }
+    }
+
+    private bool TryGetNativeProcessRootLane(SessionId session, RunId run, out LaneId lane)
+    {
+        lane = default!;
+        if (_lastSessionId != session || _lastRunId != run
+            || new RunControlService(_store, _codecs).ActiveRun(session) != run) return false;
+        var own = EventsForRun(_store.ReadFrom(session, 1), run);
+        var projection = RunProjection.Replay(session, run, _codecs, own);
+        if (projection.State != RunState.Running || projection.RootTask is not { } rootTask || HasPendingInteraction(own))
+            return false;
+        var rootLanes = LaneProjection.Replay(_codecs, own).ForTask(rootTask)
+            .Where(item => item.State == LaneState.Running).ToArray();
+        if (rootLanes.Length != 1) return false;
+        lane = rootLanes[0].Id;
+        return true;
+    }
+
+    internal int ExecuteNativeProcessControlDuringTurn(SessionId session, RunId run, string toolName,
+        string argumentsJson, string invocationId, CancellationToken cancellationToken)
+    {
+        if (_lastSessionId != session || _lastRunId != run
+            || new RunControlService(_store, _codecs).ActiveRun(session) != run)
+            return 6;
+        var own = EventsForRun(_store.ReadFrom(session, 1), run);
+        var projection = RunProjection.Replay(session, run, _codecs, own);
+        if (projection.State != RunState.Running || projection.RootTask is not { } rootTask) return 6;
+        var lanes = LaneProjection.Replay(_codecs, own).ForTask(rootTask)
+            .Where(lane => lane.State == LaneState.Running).ToArray();
+        if (lanes.Length != 1 || !_activeExplorerTurns.TryGetValue((session, run, lanes[0].Id), out var turn)) return 6;
+        var result = turn.ExecuteNativeToolAction(toolName, argumentsJson, invocationId, session, run,
+            lanes[0].Id, cancellationToken, allowOpenTurn: true);
+        if (result.FailureDiagnostic == "native_process_turn_closed_before_effect") return 6;
+        if (result.PendingInteractionId is not null) return 3;
+        return result.StopReason == StopReason.EndTurn && result.ToolCalls.All(item => item.Succeeded) ? 0 : 1;
+    }
+
+    internal DelegationId? AcceptedDelegationForChild(SessionId session, RunId run, TaskId task, LaneId lane)
+    {
+        if (_lastSessionId != session || _lastRunId != run
+            || new RunControlService(_store, _codecs).ActiveRun(session) != run) return null;
+        var journal = _store.ReadFrom(session, 1);
+        var own = journal.Where(evt => evt.RunId == run).ToArray();
+        if (RunProjection.Replay(session, run, _codecs, own).State is not (RunState.Running or RunState.AwaitingInput)
+            || LaneProjection.Replay(_codecs, own).StateOf(lane) != LaneState.Running) return null;
+        var records = PreM6RecordProjection.Replay(session, _codecs, journal);
+        var matches = records.Records.Values
+            .Where(history => history.Phase == PreM6RecordPhase.Accepted)
+            .SelectMany(history => history.Facts.OfType<DelegationCreated>())
+            .Select(evt => evt.Delegation)
+            .Where(delegation => delegation.ChildTaskId == task && delegation.ChildLaneId == lane)
+            .ToArray();
+        return matches.Length == 1 ? matches[0].DelegationId : null;
+    }
+
     internal async Task StopProcessesForRunAsync(SessionId session, RunId run)
     {
         if (_processSessions.TryGetValue(session, out var manager))
             await manager.StopRunAsync(run.ToString(), null).ConfigureAwait(false);
     }
+
+    internal void ResumeDeferredProcessRunCompletion(SessionId session, RunId run)
+    {
+        if (_lastSessionId != session || _lastRunId != run
+            || new RunControlService(_store, _codecs).ActiveRun(session) != run
+            || _processSessions.TryGetValue(session, out var manager)
+                && manager.HasUnresolvedForRun(run.ToString())) return;
+        if (_deferredProcessRunCompletions.TryRemove((session, run), out var resume))
+            _ = resume();
+    }
+
+    internal bool IsProcessRunCompletionDeferred(SessionId session, RunId run) =>
+        _deferredProcessRunCompletions.ContainsKey((session, run))
+        && _processSessions.TryGetValue(session, out var manager)
+        && manager.HasUnresolvedForRun(run.ToString());
 
     internal ArtifactRef ImportUserAttachment(byte[] bytes, string fileName)
     {
@@ -121,7 +216,6 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         if (safeName.Length is < 1 or > 180 || safeName.Any(char.IsControl))
             throw new InvalidDataException("Attachment filename is invalid.");
         var mediaType = AttachmentContentMaterializer.DetectMediaType(bytes);
-        AttachmentContentMaterializer.ValidateAttachmentBytes(mediaType, bytes);
         AttachmentContentMaterializer.ValidateBeforePublication(bytes, safeName);
         var original = binary.PutBytes(bytes, mediaType, ArtifactKind.Other, Sensitivity.Sensitive) with { FileName = safeName };
         if (_artifacts is null) return original;
@@ -874,7 +968,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             return ChangeExtensionPackage(command, fields, trustedUserAction, cancellationToken);
         if (commandName == "conversation.alternative")
             return CreateWorkspaceAlternative(command, fields, trustedUserAction, cancellationToken);
-        if (commandName is "command.invoke.user" or "command.continue" or "workflow.continue")
+        if (commandName is "command.invoke.user" or "command.continue" or "workflow.continue" or "process.control")
             return trustedUserAction ? HandleNativeCommandAction(command, commandName, cancellationToken)
                 : new CommandAck(command.MessageId, "error", "trusted_user_action_required", RuntimeCommandOutcome.Rejected());
         if (commandName is "conversation.new" or "conversation.resume" or "conversation.rename" or "conversation.compact")
@@ -2598,7 +2692,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     }
 
     private void ApplyMemoryPromotionDecision(SessionId session, InteractionRequested request, string optionId,
-        string commandId, RunControlService control)
+        string commandId, RunControlService control, bool resolveInteraction = true)
     {
         if (request.Kind != InteractionKind.MemoryPromotion)
             throw new InvalidDataException("sessionPreferences.error.memory_approval_invalid");
@@ -2628,7 +2722,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             throw new InvalidDataException("sessionPreferences.error.memory_approval_invalid");
         if (optionId == "promote") policy.Promote(identity.CandidateId, identity.ConflictMemoryId);
         else policy.Reject(identity.CandidateId);
-        control.Respond(session, request.InteractionId, optionId, commandId);
+        if (resolveInteraction) control.Respond(session, request.InteractionId, optionId, commandId);
     }
 
     private CommandAck ChangeSessionMemory(WireEnvelope command, string commandName,
@@ -3016,6 +3110,30 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             return new SessionQueryResult(name, EncodeNativeCommandRecovery());
         if (name == "workflow.recovery")
             return new SessionQueryResult(name, EncodeNativeWorkflowRecovery());
+        if (name == "process.sessions")
+            return new SessionQueryResult(name, _lastSessionId is { } processSession && _lastRunId is { } processRun
+                ? EncodeProcessSessions(processSession, processRun) : "null");
+        if (name.StartsWith("process.sessions:", StringComparison.Ordinal))
+        {
+            var requested = name["process.sessions:".Length..];
+            if (Guid.TryParseExact(requested, "D", out var runGuid) && requested == runGuid.ToString("D")
+                && _lastSessionId is { } processSession && _lastRunId == new RunId(runGuid))
+                return new SessionQueryResult("process.sessions", EncodeProcessSessions(processSession, new RunId(runGuid)));
+            return new SessionQueryResult("process.sessions", "null");
+        }
+        if (name.StartsWith("process.output:", StringComparison.Ordinal))
+        {
+            var parts = name.Split(':');
+            if (parts.Length == 4 && Guid.TryParseExact(parts[1], "D", out var runGuid)
+                && parts[1] == runGuid.ToString("D") && parts[2].Length == 32
+                && parts[2].All(Uri.IsHexDigit)
+                && long.TryParse(parts[3], System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out var after) && after >= 0
+                && _lastSessionId is { } processSession && _lastRunId == new RunId(runGuid))
+                return new SessionQueryResult("process.output", EncodeProcessOutput(processSession,
+                    new RunId(runGuid), parts[2], after));
+            return new SessionQueryResult("process.output", "null");
+        }
         if (name == "conversations") return new(name, ConversationJson.Encode(Conversations()));
         if (name == OpenRouterProtocol.StatusQuery)
         {
@@ -4128,8 +4246,17 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                                 || policyRevision < 1
                                 || ReadSessionSecurityPolicy(session)?.PolicyRevision != policyRevision)
                                 throw new SessionSecurityRevisionConflictException();
-                            control.RespondNativeChoice(session, interaction, new RunId(expectedRunGuid),
-                                optionId, command.MessageId);
+                            var memoryPromotion = FindPendingMemoryPromotion(session, interaction);
+                            if (memoryPromotion is not null)
+                            {
+                                ApplyMemoryPromotionDecision(session, memoryPromotion, optionId,
+                                    command.MessageId, control, resolveInteraction: false);
+                                control.RespondNativeChoice(session, interaction, new RunId(expectedRunGuid),
+                                    optionId, command.MessageId);
+                            }
+                            else
+                                control.RespondNativeChoice(session, interaction, new RunId(expectedRunGuid),
+                                    optionId, command.MessageId);
                         }
                     }
                     else
@@ -4373,7 +4500,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         InternalCommandResult? PolicyTransition) ExecuteExplorerTurn(SessionId sessionId,
         RunId runId, Func<CancellationToken, ExplorerTurn.TurnResult> execute,
         CancellationToken cancellationToken, bool readOnlyLane = false, DelegationId? delegationId = null,
-        bool waitForCapacity = false)
+        bool waitForCapacity = false, ExplorerTurn? activeTurn = null, LaneId? activeLane = null)
     {
         ArgumentNullException.ThrowIfNull(execute);
         var ambientCommand = CausationScope.Current as CommandCausation;
@@ -4413,7 +4540,18 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 ? CausationScope.Begin(new CommandCausation(commandId)) : null;
             using var agentInvocation = HostAgentInvocation.Begin(_store, sessionId, runId);
             callbackInvoked = true;
-            var result = execute(cancellationToken);
+            var registered = activeTurn is not null && activeLane is { } lane
+                && _activeExplorerTurns.TryAdd((sessionId, runId, lane), activeTurn);
+            if (activeTurn is not null && !registered)
+                return (null, new CommandAck(messageId, "busy", "active_turn_registration_conflict",
+                    RuntimeCommandOutcome.Deferred("active_turn_registration_conflict")), null, null);
+            ExplorerTurn.TurnResult result;
+            try { result = execute(cancellationToken); }
+            finally
+            {
+                if (registered && activeLane is { } registeredLane)
+                    _activeExplorerTurns.TryRemove((sessionId, runId, registeredLane), out _);
+            }
             ReconcileTerminatedSupervisors(sessionId, runId);
             var policyTransition = result.StopReason == StopReason.EndTurn
                 ? EvaluateCompletedTurnModePolicy(sessionId, runId, result.TurnId, sequenceBefore.Value, commandId, cancellationToken) : null;
@@ -4764,6 +4902,16 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             using var execution = ExecutionScope.Begin(new ExecutionScopeState(runId, run.RootTask, rootLane,
                 sourceTurn, ExecutionId: sourceTurn is null ? null : sourceTurnEvent?.ExecutionId));
             var stream = new EventStream(_store, _codecs, sessionId);
+            if (_processSessions.TryGetValue(sessionId, out var processManager)
+                && processManager.HasUnresolvedForRun(runId.ToString()))
+            {
+                _deferredProcessRunCompletions[(sessionId, runId)] = () =>
+                    CheckRunCompletionAndGate(sessionId, runId, runExternalGates, mutationLedger, lifecycleDispatch);
+                var deferredAck = CommandOutcomeAck(commandMessageId, "ok", null,
+                    RuntimeCommandOutcome.Accepted(), sessionId, sequenceBefore.Value, commandId);
+                return (false, deferredAck, null);
+            }
+            _deferredProcessRunCompletions.TryRemove((sessionId, runId), out _);
             var completed = new RunCoupon(run, tasks, plan).CheckCompletionAndGate(new PlanService(),
                 new ProgressReconciler(), _store, _codecs, sessionId, stream,
                 runExternalGates is null ? null : () => runExternalGates(stream), mutationLedger,
