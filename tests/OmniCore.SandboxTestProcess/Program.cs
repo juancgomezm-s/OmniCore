@@ -173,6 +173,10 @@ if (args.Length == 1 && args[0] == "stdin-echo")
 
 if (args.Length == 1 && args[0] == "terminal-echo")
 {
+    Console.WriteLine("READY");
+    await Console.Out.FlushAsync();
+    var line = Console.ReadLine();
+    if (line is null) return 33;
     var inputConsole = ConsoleNative.GetConsoleMode(ConsoleNative.GetStdHandle(-10), out _);
     var outputConsole = ConsoleNative.GetConsoleMode(ConsoleNative.GetStdHandle(-11), out _);
     int columns;
@@ -180,14 +184,12 @@ if (args.Length == 1 && args[0] == "terminal-echo")
     try { columns = Console.WindowWidth; rows = Console.WindowHeight; }
     catch (Exception ex) when (ex is IOException or InvalidOperationException)
     { columns = rows = 0; }
-    if (!inputConsole || !outputConsole || columns < 80 || rows < 24)
+    if (!inputConsole || !outputConsole || columns != 100 || rows != 32)
     {
         Console.Error.WriteLine($"ConPTY probe failed: inputConsole={inputConsole}; outputConsole={outputConsole}; size={columns}x{rows}.");
         return !inputConsole ? 36 : !outputConsole ? 37 : 38;
     }
-    var line = Console.ReadLine();
-    if (line is null) return 33;
-    Console.WriteLine("ACK:" + line);
+    Console.WriteLine($"ACK:{line};size={columns}x{rows}");
     await Console.Out.FlushAsync();
     return 0;
 }

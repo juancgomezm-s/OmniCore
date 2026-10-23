@@ -126,7 +126,14 @@ las fronteras de scope, consultas pasivas y EOF. Falta la CI completa del candid
 Esta sección prevalece sobre los checkpoints históricos inferiores; todavía no
 acredita publicación ni cierre global de M9.
 
-Quedan explícitos ConPTY real de Windows (falla local), persistencia Weak,
+ConPTY Strong de Windows pasó después de corregir la duplicación de streams
+redirigidos del padre: captura real por HPCON, entrada dúplex y resize/ACK exacto
+`100x32`, sin registro ni fallback. La primera CI aprobó ambos instaladores npm y
+paquetes Linux, pero falló en ConPTY y cinco regresiones; sus correcciones focales
+ya pasan localmente. Luna bajo repitió ocho focos sobre los mismos binarios:
+8/8 correctos, sin fallos ni omisiones, y sin procesos huérfanos. Falta la nueva CI.
+
+Quedan explícitos persistencia Weak,
 controles de Lane hijo, el ciclo durable restante de worktrees, aceptación
 transversal pendiente e integración del consumidor Electron por su coordinación.
 La salida terminal conservada es un buffer acotado en memoria: tras recuperación

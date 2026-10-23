@@ -1486,7 +1486,11 @@ public sealed class OmniCliRuntime : IDisposable
             && request.ToolCallJson is { Length: > 0 });
         if (requestEnvelope is null || requestEnvelope.TurnId is not { } requestedTurn
             || requestEnvelope.TaskId is not { } requestedTask || requestEnvelope.LaneId is not { } requestedLane
-            || requestEnvelope.ToolCallId is not { } requestedToolCall) return false;
+            || codecs.Decode(requestEnvelope) is not InteractionRequested requestedQuestion
+            || !TryReadQuestionnaireToolCallId(requestedQuestion.ToolCallJson, out var requestedToolCallText)
+            || !Guid.TryParseExact(requestedToolCallText, "D", out var requestedToolCallGuid)
+            || requestedToolCallText != requestedToolCallGuid.ToString("D")) return false;
+        var requestedToolCall = new ToolCallId(requestedToolCallGuid);
         var resolvedEnvelope = events.FirstOrDefault(evt => evt.Sequence >= responseFirstSequence
             && evt.Sequence <= responseLastSequence && evt.RunId == run
             && codecs.Decode(evt) is InteractionResolved resolved
@@ -1542,6 +1546,22 @@ public sealed class OmniCliRuntime : IDisposable
         continuationLaneId = requestedLane;
         continuationToolCallId = requestedToolCall;
         return true;
+    }
+
+    private static bool TryReadQuestionnaireToolCallId(string? toolCallJson, out string toolCallId)
+    {
+        toolCallId = "";
+        if (string.IsNullOrWhiteSpace(toolCallJson)) return false;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(toolCallJson);
+            if (!document.RootElement.TryGetProperty("toolCallId", out var id)
+                || id.ValueKind != System.Text.Json.JsonValueKind.String
+                || id.GetString() is not { Length: > 0 } value) return false;
+            toolCallId = value;
+            return true;
+        }
+        catch (System.Text.Json.JsonException) { return false; }
     }
 
     public Task<int> DelegationAsync(string delegationId, Action<string> diagnostics, CancellationToken token) =>

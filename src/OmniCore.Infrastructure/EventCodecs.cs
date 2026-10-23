@@ -196,6 +196,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.succeeded"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.succeeded"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.succeeded"), 3))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("toolcall.succeeded"), 4))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("turn.started"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("lane.created"), 1))

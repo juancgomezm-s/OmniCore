@@ -11,6 +11,15 @@ Conservar aportes en curso para revisión; no publicarlos reemplazando el workbe
 de OmniCoder. Los checkpoints históricos de trabajo en ambos repositorios no amplían
 este permiso. No reabrir la homologación cerrada ni debilitar la seguridad de Session.
 
+**Corte Core vigente (2026-10-23):** procesos persistentes, controles nativos, lectura terminal
+pasiva y escritores privados tienen recorridos reales locales. ConPTY Strong pasó con
+resize/ACK exacto después de corregir handles estándar redirigidos; no requiere registro.
+WebP estático se decodifica íntegramente. El [contrato y evidencia](docs/validation/m9-core-process-contract-20261023.md)
+prevalece sobre los checkpoints históricos inferiores. La primera CI bloqueó la publicación;
+Luna bajo aprobó ocho focos corregidos sin recompilar y falta la CI del nuevo candidato. M9 global y M8 manual siguen
+abiertos. Construcción Luna alto y validación Luna bajo se hacen **secuencialmente, un worker
+activo a la vez**; Core no modifica ni publica OmniCoder.
+
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 
 **Checkpoint M9-K/L (2026-10-17):** seguridad durable por Session, lifecycle nativo y respuesta de

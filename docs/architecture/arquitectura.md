@@ -741,6 +741,19 @@ OmniCoder y conserva la experiencia existente. Las referencias históricas a
 Sidecar, confirmaciones y “terminar adapter” se subordinan a esa directiva;
 Git post-M10 es un diferido de la TUI, no de la GUI ya construida. P0 continúa cerrado.
 
+### Corte del núcleo M9 — 2026-10-23
+
+Los procesos persistentes y controles nativos, la lectura pasiva de salida terminal y la
+publicación privada Strong tienen recorridos integrales locales; ConPTY demuestra captura,
+entrada y resize/ACK exacto sin cambios del registro. WebP estático se decodifica íntegramente.
+El [contrato y acta actuales](../validation/m9-core-process-contract-20261023.md) distinguen
+los efectos comprobados de los buffers efímeros, límites y pendientes. La primera CI aprobó
+instaladores y paquetes Linux pero detectó regresiones; las correcciones locales requieren
+CI nueva antes de publicar; Luna bajo ya aprobó ocho focos sin recompilar. Esta actualización supera los estados
+históricos de construcción inferiores, sin cerrar M9 global, M8 manual ni la aceptación del
+consumidor Electron, que corresponde a su coordinación. Persistencia Weak, controles de Lane
+hijo, ciclo durable restante de worktrees y aceptación transversal siguen explícitos.
+
 ### P0-OMNI-UNIFICACION
 
 **Revisión:** 2026-10-14 · **Prioridad:** P0 · **Estado global:** CERRADO / ALCANCE ACEPTADO. **Contribución de OmniCore: CERRADA en Windows**, con el alcance y las diferencias de plataforma del [acta local](../validation/omnicore-homologation-closure-20261014.md).

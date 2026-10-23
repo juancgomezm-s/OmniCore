@@ -3,6 +3,7 @@ namespace OmniCore.Tests;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Text.RegularExpressions;
 using OmniCore.Abstractions;
 using OmniCore.Context;
 using OmniCore.Domain;
@@ -35,6 +36,14 @@ public sealed class WindowsAppContainerSandboxTests
         Task<string>? outputTask = null;
         try
         {
+            var commandShell = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+            var nativeCommand = await HostPseudoConsoleDiagnostic.RunAsync(commandShell, root,
+                TestContext.Current.CancellationToken, systemEcho: true);
+            Assert.Equal(0, nativeCommand.ExitCode);
+            Assert.Contains("READY", nativeCommand.Output, StringComparison.Ordinal);
+            var ordinary = await HostPseudoConsoleDiagnostic.RunAsync(executable, root, TestContext.Current.CancellationToken);
+            Assert.Equal(0, ordinary.ExitCode);
+            Assert.Contains("ACK:terminal-test;size=100x32", ordinary.Output, StringComparison.Ordinal);
             var launch = new SandboxLaunchSpec(SandboxStrength.Strong, executable, ["terminal-echo"], root,
                 new Dictionary<string, string>(),
                 [new SandboxAllowedPath(root, SandboxPathAccess.Read | SandboxPathAccess.Write)],
@@ -42,17 +51,23 @@ public sealed class WindowsAppContainerSandboxTests
             { Duplex = true, Terminal = true };
             process = Assert.IsAssignableFrom<ISandboxPersistentProcessControl>(
                 await new WindowsAppContainerProcessLauncher().StartAsync(launch, TestContext.Current.CancellationToken));
-            outputTask = new StreamReader(process.StandardOutput).ReadToEndAsync(TestContext.Current.CancellationToken);
+            var reader = new StreamReader(process.StandardOutput);
             Assert.True(process.IsTerminal);
+            var ready = await reader.ReadLineAsync(TestContext.Current.CancellationToken)
+                .AsTask().WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            var readyText = ready is null ? null : Regex.Replace(ready, @"\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))", "").Trim();
+            Assert.Equal("READY", readyText);
+            outputTask = reader.ReadToEndAsync(TestContext.Current.CancellationToken);
             process.ResizeTerminal(100, 32);
             await process.StandardInput.WriteAsync(System.Text.Encoding.UTF8.GetBytes("terminal-test\r\n"), TestContext.Current.CancellationToken);
             await process.StandardInput.FlushAsync(TestContext.Current.CancellationToken);
-            var exitCode = await process.WaitForExitCodeAsync(TestContext.Current.CancellationToken);
+            var exitCode = await process.WaitForExitCodeAsync(TestContext.Current.CancellationToken).AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
             var output = await outputTask.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
             await process.CloseInputAsync();
             await process.DisposeAsync();
             Assert.Equal(0, exitCode);
-            Assert.Contains("ACK:terminal-test", output, StringComparison.Ordinal);
+            Assert.Contains("ACK:terminal-test;size=100x32", output, StringComparison.Ordinal);
         }
         finally
         {

@@ -58,7 +58,8 @@ public sealed partial class StdioTransportTests
             Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", config);
             Environment.CurrentDirectory = workspace;
 
-            var cli = Path.Combine(FindRepositoryRoot(), "src", "OmniCore.Cli", "bin", "Debug", "net10.0", "omni.dll");
+            var cli = Path.Combine(AppContext.BaseDirectory, "omni.dll");
+            Assert.True(File.Exists(cli), "The fresh CLI must be co-located with the test assembly.");
             host = StartRawHost(cli, workspace, Convert.ToHexString(key));
             var hello = RawExchange(host, WireEnvelope.FromJson(
                 "{\"version\":\"1.0\",\"messageType\":\"hello\",\"messageId\":\"questionnaire-hello\",\"payload\":{\"supportedVersions\":[\"1.0\"]}}"));
@@ -95,7 +96,8 @@ public sealed partial class StdioTransportTests
                 + "\"],\"text\":null,\"otherText\":null}],\"cancelled\":false}");
             var proof = TrustedActionEnvelope(answer, key, nonce, workspace, scope.SessionId, scope.RunId);
             var responseAck = Ack(RawExchange(host, proof));
-            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, responseAck.Outcome?.Kind);
+            Assert.True(responseAck.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted,
+                $"questionnaire response was {responseAck.Status}/{responseAck.Outcome?.Kind}: {responseAck.Error ?? responseAck.Outcome?.Reason ?? "no diagnostic"}");
             await provider.WaitForRequestAsync(2, TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
 
@@ -187,7 +189,8 @@ public sealed partial class StdioTransportTests
             Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", config);
             Environment.CurrentDirectory = workspace;
 
-            var cli = Path.Combine(FindRepositoryRoot(), "src", "OmniCore.Cli", "bin", "Debug", "net10.0", "omni.dll");
+            var cli = Path.Combine(AppContext.BaseDirectory, "omni.dll");
+            Assert.True(File.Exists(cli), "The fresh CLI must be co-located with the test assembly.");
             host = StartRawHost(cli, workspace, Convert.ToHexString(key));
             var firstHello = RawExchange(host, WireEnvelope.FromJson(
                 "{\"version\":\"1.0\",\"messageType\":\"hello\",\"messageId\":\"questionnaire-restart-hello-1\",\"payload\":{\"supportedVersions\":[\"1.0\"]}}"));

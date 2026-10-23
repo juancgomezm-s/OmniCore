@@ -75,9 +75,6 @@ jobs:
       - name: Restore Windows NUL permissions and temp settings
         if: always() && runner.os == 'Windows' && env.OMNICORE_CI_NUL_PREPARED == 'true'
         run: ./scripts/prepare-windows-ci.ps1 -Action Restore
-      - name: Restore the original Windows CI console prerequisite
-        if: always() && runner.os == 'Windows'
-        run: ./scripts/probe-windows-conpty-ci.ps1 -Action Restore
       - name: Preserve the real ConPTY prerequisite evidence
         if: always() && runner.os == 'Windows'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

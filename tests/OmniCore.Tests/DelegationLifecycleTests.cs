@@ -547,7 +547,7 @@ public sealed class DelegationLifecycleTests
             + ",\"expectedSessionId\":\"" + fx.Session + "\",\"expectedRunId\":\"" + fx.Run
             + "\",\"expectedPolicyRevision\":" + (policyRevision + 1).ToString(System.Globalization.CultureInfo.InvariantCulture)),
             CancellationToken.None);
-        Assert.Equal("trusted_action_policy_changed", stale.Error);
+        Assert.Equal("session_security.stale_revision", stale.Error);
         Assert.Empty(fx.Payloads.OfType<ExecutionMailboxMessageReceived>());
 
         // Encolada: aún no hay ejecución ni buzón a quien escribir.

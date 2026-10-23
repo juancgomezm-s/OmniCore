@@ -1141,11 +1141,11 @@ internal static partial class AppContainerNative
         {
             if (!InitializeProcThreadAttributeList(attributes, attributeCount, 0, ref startupSize))
                 throw new Win32Exception(Marshal.GetLastPInvokeError());
-            if (!UpdateProcThreadAttribute(attributes, 0, ProcThreadAttributeSecurityCapabilities,
+            if (!UpdateProcThreadAttribute(attributes, 0, (nuint)ProcThreadAttributeSecurityCapabilities,
                 securityCapabilities.Pointer, (nuint)Marshal.SizeOf<SecurityCapabilities>(), IntPtr.Zero, IntPtr.Zero))
                 throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to set AppContainer security capabilities.");
             Marshal.WriteInt32(policy, 1); // PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT
-            if (lessPrivileged && !UpdateProcThreadAttribute(attributes, 0, ProcThreadAttributeAllApplicationPackagesPolicy,
+            if (lessPrivileged && !UpdateProcThreadAttribute(attributes, 0, (nuint)ProcThreadAttributeAllApplicationPackagesPolicy,
                 policy, sizeof(int), IntPtr.Zero, IntPtr.Zero))
                 throw new Win32Exception(Marshal.GetLastPInvokeError(), "LPAC is required; no AppContainer downgrade is permitted.");
             var pipeAttributes = new SecurityAttributes { Length = Marshal.SizeOf<SecurityAttributes>(), InheritHandle = terminal ? 0 : 1 };
@@ -1160,8 +1160,6 @@ internal static partial class AppContainerNative
                 if (pseudoResult < 0) Marshal.ThrowExceptionForHR(pseudoResult);
                 pseudoConsole = new SafePseudoConsoleHandle(pseudoConsoleRaw);
                 pseudoConsoleRaw = IntPtr.Zero;
-                CloseHandle(pseudoInputRead); pseudoInputRead = IntPtr.Zero;
-                CloseHandle(pseudoOutputWrite); pseudoOutputWrite = IntPtr.Zero;
             }
             else
             {
@@ -1175,7 +1173,6 @@ internal static partial class AppContainerNative
                 stderrRead = new SafeFileHandle(stderrReadRaw, true);
                 if (!SetHandleInformation(stderrReadRaw, HandleFlagInherit, 0))
                     throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to protect stderr pipe.");
-                // STARTF_USESTDHANDLES requires valid handles even without an input payload.
                 if (!CreatePipe(out stdinRead, out stdinWrite, ref pipeAttributes, 0))
                     throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to create stdin pipe.");
                 if (stdinWrite != IntPtr.Zero && !SetHandleInformation(stdinWrite, HandleFlagInherit, 0))
@@ -1186,7 +1183,7 @@ internal static partial class AppContainerNative
             {
                 if (terminal)
                 {
-                    if (!UpdateProcThreadAttribute(attributes, 0, ProcThreadAttributePseudoConsole,
+                    if (!UpdateProcThreadAttribute(attributes, 0, (nuint)ProcThreadAttributePseudoConsole,
                         pseudoConsole!.DangerousGetHandle(), (nuint)IntPtr.Size, IntPtr.Zero, IntPtr.Zero))
                         throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to attach the Windows pseudo-console.");
                 }
@@ -1195,14 +1192,14 @@ internal static partial class AppContainerNative
                     Marshal.WriteIntPtr(handleList, 0, stdoutWrite);
                     Marshal.WriteIntPtr(handleList, IntPtr.Size, stderrWrite);
                     Marshal.WriteIntPtr(handleList, IntPtr.Size * 2, stdinRead);
-                    if (!UpdateProcThreadAttribute(attributes, 0, ProcThreadAttributeHandleList, handleList,
+                    if (!UpdateProcThreadAttribute(attributes, 0, (nuint)ProcThreadAttributeHandleList, handleList,
                         (nuint)(IntPtr.Size * 3), IntPtr.Zero, IntPtr.Zero))
                         throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to restrict inherited handles.");
                 }
                 var startup = new StartupInfoEx
                 {
                     StartupInfo = terminal
-                        ? new StartupInfo { Cb = (uint)Marshal.SizeOf<StartupInfoEx>() }
+                        ? new StartupInfo { Cb = (uint)Marshal.SizeOf<StartupInfoEx>(), Flags = StartfUseStdHandles }
                         : new StartupInfo { Cb = (uint)Marshal.SizeOf<StartupInfoEx>(), Flags = StartfUseStdHandles,
                             StdInput = stdinRead, StdOutput = stdoutWrite, StdError = stderrWrite },
                     AttributeList = attributes
@@ -1222,6 +1219,8 @@ internal static partial class AppContainerNative
                         throw new Win32Exception(error, $"CreateProcessW failed for AppContainer (Win32 error {error}).");
                     }
                     processHandle = info.Process; threadHandle = info.Thread; processCreated = true;
+                    if (pseudoInputRead != IntPtr.Zero) { CloseHandle(pseudoInputRead); pseudoInputRead = IntPtr.Zero; }
+                    if (pseudoOutputWrite != IntPtr.Zero) { CloseHandle(pseudoOutputWrite); pseudoOutputWrite = IntPtr.Zero; }
                 }
                 finally { Marshal.FreeHGlobal(startupPointer); Marshal.FreeHGlobal(environmentPointer); Marshal.FreeHGlobal(mutableCommand); }
             }
@@ -1324,7 +1323,7 @@ internal static partial class AppContainerNative
     [LibraryImport("kernel32.dll", EntryPoint = "InitializeProcThreadAttributeList", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)] private static partial bool InitializeProcThreadAttributeList(IntPtr list, int count, uint flags, ref nuint size);
     [LibraryImport("kernel32.dll", EntryPoint = "UpdateProcThreadAttribute", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)] private static partial bool UpdateProcThreadAttribute(IntPtr list, uint flags, uint attribute, IntPtr value, nuint size, IntPtr previous, IntPtr returnedSize);
+    [return: MarshalAs(UnmanagedType.Bool)] private static partial bool UpdateProcThreadAttribute(IntPtr list, uint flags, nuint attribute, IntPtr value, nuint size, IntPtr previous, IntPtr returnedSize);
     [LibraryImport("kernel32.dll", EntryPoint = "DeleteProcThreadAttributeList")]
     private static partial void DeleteProcThreadAttributeList(IntPtr list);
     [LibraryImport("kernel32.dll", EntryPoint = "CreatePseudoConsole", SetLastError = true)]

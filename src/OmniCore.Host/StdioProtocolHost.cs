@@ -1869,11 +1869,12 @@ public static class StdioProtocolHost
 
             var requested = (InteractionRequested)codecs.Decode(requestEnvelope);
             if (!TryGetQuestionnaireToolCallId(requested.ToolCallJson, out var requestedToolCallId)
-                || requestEnvelope.ToolCallId is not { } requestToolCallId
-                || requestToolCallId.ToString() != requestedToolCallId
                 || requestEnvelope.TaskId is not { } requestTaskId
                 || requestEnvelope.LaneId is not { } requestLaneId
-                || !events.Any(evt => evt.RunId == runId && evt.TurnId == turnId
+                || !Guid.TryParseExact(requestedToolCallId, "D", out var callGuid)
+                || requestedToolCallId != callGuid.ToString("D")) return false;
+            var requestToolCallId = new ToolCallId(callGuid);
+            if (!events.Any(evt => evt.RunId == runId && evt.TurnId == turnId
                     && evt.TaskId == requestTaskId && evt.LaneId == requestLaneId
                     && evt.ToolCallId == requestToolCallId
                     && codecs.Decode(evt) is ToolCallRequested toolCall && toolCall.ToolName == "user.ask"

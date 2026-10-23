@@ -64,6 +64,16 @@ Esta evidencia usa respuestas HTTP fixture y efectos de sistema operativo reales
 
 - La lectura de salida es un buffer efímero acotado; no se afirma que el journal almacene stdout/stderr completo.
 - El control de este recorrido acepta únicamente el Lane raíz. El control humano de procesos de Lane hijo queda pendiente.
-- La prueba local Windows de ConPTY sigue pendiente: el foco real arrancó el helper, pero éste observó `GetConsoleMode` falso para entrada y salida, tamaño `0x0` y devolvió código 36. No se convierte una pipe en terminal ni se cambia la configuración del usuario para forzar la prueba.
+- ConPTY Windows pasó localmente con AppContainer Strong real, entrada y salida por HPCON, resize y ACK `100x32`. Falta la CI del candidato corregido para acreditar la plataforma remota; no se exige ni cambia configuración del registro.
 - Weak no se anuncia como ejecución persistente con árbol de procesos garantizado. La creación persistente sigue requiriendo el backend Strong.
 - Este contrato Core no acredita la conexión del consumidor Electron ni cierra M9 global o el trabajo M8 manual.
+
+## Correcciones después de la primera CI
+
+La [CI de `3fe1ac8`](https://github.com/juancgomezm-s/OmniCore/actions/runs/40000580091) aprobó instalación y actualización npm en Windows/Linux y distribución Linux single-file/AOT. Detectó cinco fallos en la suite Linux y bloqueó Windows en ConPTY; no autorizó publicar ese SHA en main.
+
+La causa comprobada de ConPTY era la duplicación de los streams redirigidos del padre al hijo aun con `bInheritHandles=false`. El launcher usa ahora `STARTF_USESTDHANDLES` con los tres campos estándar nulos para que Windows los conecte a HPCON. Es el caso descrito por los [mantenedores de Microsoft Terminal](https://github.com/microsoft/terminal/discussions/15814) y el patrón del [launcher productivo de Windows Terminal](https://github.com/microsoft/terminal/blob/main/src/cascadia/TerminalConnection/ConptyConnection.cpp). La prueba captura primero un comando nativo y el helper sin AppContainer, y después el helper Strong, con entrada y ACK del resize exacto. También se alinearon el ciclo de vida de los extremos de pipes hasta completar `CreateProcess` y el tipo ABI `DWORD_PTR`/`nuint` del atributo. La hipótesis anterior del registro no resolvió el fallo y se retiró de la CI; ningún perfil local fue alterado.
+
+Los demás focos corregidos pasan: upcaster `toolcall.succeeded` v4→v5 para journals anteriores; etiquetas nuevas de herramientas; rechazo canónico de mailbox por revisión de seguridad obsoleta; y respuesta de cuestionario normal y tras reinicio. La continuación de cuestionarios deriva el ToolCallId canónico del payload durable y lo contrasta con `ToolCallRequested` en el mismo Run/Turn/Task/Lane, sin exigirlo en un envelope de interacción que no lo lleva. Los fixtures arrancan la CLI fresca junto a Tests; el `source/bin` antiguo explicaba un falso fallo local posterior a la corrección, no los fallos de la primera CI, que sí compiló su CLI.
+
+El build serial terminó con cero advertencias y errores; Tests final tiene SHA-256 `401A0C373D5FC76302700E781290BA414FEA6954450F279D5F0BBF049A7088E2`. Luna bajo validó ese mismo binario y sus dependencias sin recompilar: **8/8, cero fallos y cero omisiones**, incluidos ConPTY, ambos cuestionarios, los tres focos restantes de CI y ambos recorridos integrales de procesos/publicación. La revisión mantuvo las fronteras Session/Run/Lane y pasó el control de procesos huérfanos. La nueva CI completa sigue siendo un requisito separado antes de publicar en main.
