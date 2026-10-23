@@ -8,17 +8,18 @@ ruta de producción de la TUI, con SQLite, CAS, credenciales y proveedor reales.
 No se automatizó Windows Terminal ni se sustituyó el proveedor por un fixture.
 
 El modelo `local-qwen / qwen38-27b-abl-v9-best-q4kxl` respondió literalmente
-«Prueba de conversación correcta.» en dos turnos consecutivos. Finalizaron con
+«Prueba de conversación correcta.» en tres turnos consecutivos. Finalizaron con
 `EndTurn`, código 0 y ninguna interacción `BudgetExceeded` pendiente:
 
 | Prueba | Tiempo de ejecución | Resultado |
 | --- | ---: | --- |
 | Conversación original, sin forzar razonamiento | 9,48 s | Respuesta real |
 | Misma conversación, YAML original restaurado | 5,39 s | Respuesta real |
+| Instalación global actualizada, misma conversación | 4,94 s | Respuesta real |
 
 La segunda medición incluye la autorización real de la ruta local exacta al
-restaurar la configuración. El último paso y la respuesta quedaron registrados
-en las secuencias 138–142. El proveedor no reportó usage: no se presenta el cero
+restaurar la configuración. La confirmación de la instalación global quedó
+registrada en las secuencias 143–149. El proveedor no reportó usage: no se presenta el cero
 del resumen legacy como una medición de tokens ni de coste.
 
 Se compararon por SHA-256 los 101 eventos que existían antes de las pruebas:
@@ -105,13 +106,21 @@ El runtime sin renderer arrancó en aproximadamente 0,8–1,5 s; su working set 
 de una TUI completa. Se conservaron las mejoras ya integradas en Main para no
 releer journals y consumo en reposo, autocomplete y redibujado de píxeles.
 
+También se dejó abierta la TUI completa en Windows Terminal, con la conversación
+original. En una muestra posterior al calentamiento de 15,04 s consumió 1,25 %
+de un núcleo (0,078 % de la capacidad total de CPU del equipo), con working set
+112,6 MiB y memoria privada 40,1 MiB. La primera muestra, todavía cerca del arranque,
+consumió 11,45 % de un núcleo; no se usa esa transición como estado estable.
+Son dos muestras locales, no un límite garantizado para todas las cargas.
+
 ## Pruebas y reproducción
 
 226 casos únicos aprobados, sin omisiones, combinando las suites de razonamiento,
 serialización compatible, plazos de generación, observabilidad, presupuesto
 obsoleto, journal canónico, Markdown, protocolo y las regresiones de TUI de scroll,
 resize, composer, sidebar y rendimiento. Las pruebas de TUI usan el renderer real
-con datos controlados; las dos inferencias locales anteriores usan el modelo real.
+con datos controlados; las tres inferencias locales anteriores usan el modelo real.
+También pasaron las 16 pruebas del launcher e instalador npm.
 
 La compilación Release y la publicación pasan sin advertencias. Se actualizaron
 también los binarios Debug usados explícitamente por las pruebas stdio: dos casos
@@ -137,6 +146,22 @@ Evidencia local en `C:\Users\juanc\.codex\omnicore-linux-20261014\`:
 `budget-live-probe-20261022/local-original-config-confirmation.log`.
 Las pruebas no acreditan una ejecución nueva completa del CI ni Linux. No se
 encendió WSL para esta revisión.
+
+## Instalación entregada
+
+Actualizada mediante `npm run install:cli` desde el worktree aislado, sin incluir
+los cambios ajenos sin commit del checkout principal. Versión instalada:
+`0.1.0+f72f3f86ab72f520a3c6768c7660fb189667e424`. Las 55 DLL del paquete global
+coinciden por SHA-256 con las publicadas. La prueba de respuesta de 4,94 s se
+ejecutó con esas DLL instaladas; después se retiró el helper de diagnóstico y se
+abrió `omni` normalmente en una ventana con toda la TUI.
+
+El paquete anterior se conserva en
+`C:\Users\juanc\.codex\omnicore-linux-20261014\installed-before-performance-20261022\omnicore-cli-0.1.0.tgz`.
+Evidencia adicional: `performance-install-20261022.log`,
+`performance-installer-tests-20261022.log`, `performance-full-tui-steady-20261022.json`
+y `budget-live-probe-20261022/installed-local-confirmation.log` en el mismo directorio
+de evidencias. MTP y n-gramas automáticos permanecen desactivados en el servidor.
 
 ## Decisión sobre Rust y alcance de la medición
 
