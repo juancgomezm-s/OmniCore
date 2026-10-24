@@ -2,6 +2,7 @@ using OmniCore.Abstractions;
 using OmniCore.Client;
 using OmniCore.Host;
 using OmniCore.Protocol;
+using ConversationTranscriptImport = OmniCore.Domain.ConversationTranscriptImport;
 
 namespace OmniCore.Cli;
 
@@ -141,6 +142,7 @@ public sealed partial class CliApp
             { Console.WriteLine("{\"error\":\"" + JsonObj.Escape(error.Message) + "\"}"); return Task.FromResult(2); }
         }
         if (command is "new" or "sessions" or "resume-session" or "rename-session" or "compact" or "clear") return RunConversationCommand(args);
+        if (command == "conversation") return RunConversationCommand(new[] { "conversation" }.Concat(args.Skip(1)).ToArray());
         if (command.StartsWith("/", StringComparison.Ordinal)) return RunTypedCommand(args);
         if (command == "sim") return RunSim(args);
         if (command == "stdio") return RunStdioClientAsync(args);
@@ -990,6 +992,34 @@ public sealed partial class CliApp
             foreach (var row in rows) Console.WriteLine((row.Current ? "* " : "  ") + row.Id + "  "
                 + row.UpdatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm") + "  " + row.Title);
             return Task.FromResult(0);
+        }
+        if (args is ["conversation", "import", var sourcePath])
+        {
+            if (client is not ITrustedUserActionClient importClient)
+            { Console.WriteLine(Loc().Resolve("conversation.trusted_required")); return Task.FromResult(1); }
+            try
+            {
+                var fullPath = Path.GetFullPath(sourcePath);
+                using var input = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                if (input.Length is <= 0 or > ConversationTranscriptImport.MaximumSourceBytes)
+                    throw new InvalidDataException("Transcript file size is outside the allowed limit.");
+                var bytes = new byte[checked((int)input.Length)];
+                input.ReadExactly(bytes);
+                var document = ConversationTranscriptImport.Parse(bytes);
+                var base64 = Convert.ToBase64String(bytes);
+                var payload = "{" + JsonObj.Field("cmd", "conversation.import") + ","
+                    + JsonObj.Field("documentBase64", base64) + "}";
+                ConversationTranscriptImport.ValidateCommandPayloadSize(payload);
+                var importAck = importClient.SendUserAction(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+                if (importAck.Status != "ok")
+                { Console.WriteLine(Loc().ResolveWire(importAck.Error ?? "conversation.failed")); return Task.FromResult(1); }
+                Console.WriteLine("{" + JsonObj.Field("origin", "Imported") + "," + JsonObj.Field("sourceSha256", document.Sha256)
+                    + "," + JsonObj.Field("session", client.Query("sessionIdentity", CancellationToken.None)?.Json ?? "null") + "}");
+                return Task.FromResult(0);
+            }
+            catch (Exception error) when (error is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException
+                or System.Text.Json.JsonException or NotSupportedException)
+            { Console.WriteLine(Loc().ResolveWire("conversation.import.invalid")); return Task.FromResult(2); }
         }
         if (args is not (["new"] or ["compact"] or ["resume-session", _] or ["rename-session", ..]))
         { Console.WriteLine(Loc().Resolve("shell.conversation.arguments")); return Task.FromResult(2); }

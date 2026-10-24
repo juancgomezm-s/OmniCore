@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Engine;
@@ -21,8 +23,14 @@ public sealed partial class OmniServer
             if (_workspaceRoot is { } root && created.WorkspaceId != WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(root)).ToString()) continue;
             var history = _store.ReadFrom(created.SessionId, 1);
             var first = history.Select(_codecs.Decode).OfType<UserInputReceived>().FirstOrDefault();
+            var imported = history.Select(_codecs.Decode).OfType<ConversationTranscriptImported>().FirstOrDefault();
             var explicitTitle = history.Select(_codecs.Decode).OfType<SessionTitleChanged>().LastOrDefault();
-            var title = explicitTitle?.Title ?? (first is null ? "" : InputTitle(first.InputPartsJson));
+            var importedUserTitle = imported?.Messages.FirstOrDefault(message => message.Role == "user")?.Text;
+            var importedTitle = imported?.Title;
+            var fallbackTitle = importedUserTitle is null
+                ? first is null ? "" : InputTitle(first.InputPartsJson)
+                : new string(importedUserTitle.Where(character => !char.IsControl(character)).Take(100).ToArray());
+            var title = explicitTitle?.Title ?? (string.IsNullOrWhiteSpace(importedTitle) ? fallbackTitle : importedTitle);
             rows.Add(new(created.SessionId.ToString(), title, history.LastOrDefault()?.Timestamp ?? created.CreatedAt,
                 created.SessionId == _lastSessionId, history.LastOrDefault()?.Sequence ?? 0));
         }
@@ -42,19 +50,21 @@ public sealed partial class OmniServer
     }
 
     private CommandAck HandleConversationCommand(WireEnvelope command, Dictionary<string, string> fields,
-        string name, bool trustedUserAction, CancellationToken token)
+        string name, bool trustedUserAction, CancellationToken token, bool workspaceReceiptReserved = false)
     {
         if (!trustedUserAction) return new(command.MessageId, "error", "conversation.trusted_required", RuntimeCommandOutcome.Rejected());
         lock (_modeAuthorityMutationGate)
         {
             var previous = (_lastSessionId, _lastRunId);
             SessionId? attempted = null;
+            SessionId target;
+            RunId? run = null;
             long sequenceBefore = 0;
             var acquiredTargetLease = false;
             try
             {
                 token.ThrowIfCancellationRequested();
-                if (_lastSessionId is { } activeSession)
+                if ((name != "conversation.import" || workspaceReceiptReserved) && _lastSessionId is { } activeSession)
                 {
                     var events = _store.ReadFrom(activeSession, 1).Select(_codecs.Decode).ToArray();
                     var closed = events.Select(payload => payload switch { TurnCompleted completed => completed.TurnId,
@@ -68,6 +78,105 @@ public sealed partial class OmniServer
                     sequenceBefore = attempted is null ? 0 : _store.CurrentSequence(attempted);
                     if (attempted is { } active) EnsureSessionSecurityPolicy(active);
                     return CompactConversation(command, token);
+                }
+                if (name == "conversation.import")
+                {
+                    if (!trustedUserAction)
+                        return new(command.MessageId, "error", "conversation.trusted_required", RuntimeCommandOutcome.Rejected());
+                    var requestHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
+                    if (_store is not SqliteEventStore importReceiptStore)
+                        return new(command.MessageId, "error", "conversation.import.storage_unavailable", RuntimeCommandOutcome.Rejected());
+                    if (!workspaceReceiptReserved)
+                    {
+                        var priorReceipt = importReceiptStore.ReadCommandReceipt(command.MessageId,
+                            importReceiptStore.CommandReceiptScope);
+                        if (priorReceipt is not null)
+                        {
+                            if (!string.Equals(priorReceipt.RequestHash, requestHash, StringComparison.Ordinal))
+                                return new(command.MessageId, "error", "command_id_conflict", RuntimeCommandOutcome.Rejected());
+                            if (priorReceipt.State == CommandReceiptState.Completed)
+                                return CommandAckFromReceipt(priorReceipt);
+                            return new(command.MessageId, "unknown", "command_result_unknown",
+                                RuntimeCommandOutcome.Deferred("command_result_unknown"));
+                        }
+                    }
+                    ConversationTranscriptImport.ValidateCommandPayloadSize(command.PayloadJson);
+                    using var payload = JsonDocument.Parse(command.PayloadJson);
+                    var names = payload.RootElement.EnumerateObject().Select(property => property.Name).ToArray();
+                    if (names.Length != 2 || names.Distinct(StringComparer.Ordinal).Count() != 2
+                        || !names.Contains("cmd", StringComparer.Ordinal) || !names.Contains("documentBase64", StringComparer.Ordinal)
+                        || !payload.RootElement.TryGetProperty("cmd", out var cmd) || cmd.GetString() != "conversation.import"
+                        || !payload.RootElement.TryGetProperty("documentBase64", out var base64Node)
+                        || base64Node.ValueKind != JsonValueKind.String || base64Node.GetString() is not { } base64)
+                        return new(command.MessageId, "error", "conversation.import.invalid", RuntimeCommandOutcome.Rejected());
+                    var sourceBytes = ConversationTranscriptImport.DecodeBase64Document(base64);
+                    var document = ConversationTranscriptImport.Parse(sourceBytes);
+                    var commandId = new CommandId(Guid.Parse(command.MessageId)).ToString();
+                    if (!workspaceReceiptReserved)
+                    {
+                        if (_lastSessionId is { } activeImportSession)
+                        {
+                            var events = _store.ReadFrom(activeImportSession, 1).Select(_codecs.Decode).ToArray();
+                            var closed = events.Select(payload => payload switch { TurnCompleted completed => completed.TurnId,
+                                TurnAbandoned abandoned => abandoned.TurnId, _ => null }).Where(turn => turn is not null).ToHashSet();
+                            if (events.OfType<TurnStarted>().Any(turn => !closed.Contains(turn.TurnId)))
+                                return new(command.MessageId, "busy", "shell.conversation.busy",
+                                    RuntimeCommandOutcome.Deferred("active_turn"));
+                        }
+                        var reservation = importReceiptStore.ReserveCommandReceipt(command.MessageId, requestHash,
+                            importReceiptStore.CommandReceiptScope, _lastSessionId?.ToString());
+                        if (reservation.State == CommandReceiptState.IdConflict)
+                            return new(command.MessageId, "error", "command_id_conflict", RuntimeCommandOutcome.Rejected());
+                        if (reservation.State == CommandReceiptState.Completed)
+                            return CommandAckFromReceipt(reservation.Receipt);
+                        if (reservation.State == CommandReceiptState.Unknown)
+                            return new(command.MessageId, "unknown", "command_result_unknown",
+                                RuntimeCommandOutcome.Deferred("command_result_unknown"));
+                        // Reserved means this Host won the workspace-global SQL transaction and
+                        // is the sole process allowed to create the Session for this command.
+                    }
+                    target = SessionId.New();
+                    var workspace = _workspaceRoot ?? Directory.GetCurrentDirectory();
+                    var workspaceId = WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(workspace)).ToString();
+                    var creation = new List<DomainEventPayload>
+                    {
+                        new SessionCreated(target, workspaceId, workspace, ProfileId.New(), DateTimeOffset.UtcNow),
+                        SessionSecurityPolicySet.FromPreset(target, 1, ModelPolicyCategory.ObserveOnly,
+                            SessionSecurityProvenance.Imported, SessionSecurityPolicySource.ImportReview, DateTimeOffset.UtcNow),
+                        new SessionRoutingPolicySet(target, _newSessionRoutingPolicy),
+                        new ConversationTranscriptImported(ConversationTranscriptImport.FormatId, 1, document.Sha256,
+                            commandId, requestHash, document.Title, document.Messages),
+                    };
+                    if (_workspaceRoot is { Length: > 0 })
+                    {
+                        var physicalRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspace);
+                        creation.Add(new WorkspaceRootEstablished(target, physicalRoot, DateTimeOffset.UtcNow,
+                            WorkspaceRootIdentity.Establish(physicalRoot)));
+                    }
+                    token.ThrowIfCancellationRequested();
+                    attempted = target;
+                    sequenceBefore = 0;
+                    acquiredTargetLease = importReceiptStore.AcquireSessionWriterLease(target);
+                    new EventStream(_store, _codecs, target).AppendBatch(creation, DurabilityClass.Barrier);
+                    attempted = target;
+                    if (!acquiredTargetLease && _store is SqliteEventStore selectedStore)
+                        acquiredTargetLease = selectedStore.AcquireSessionWriterLease(target);
+                    EnsureSessionSecurityPolicy(target);
+                    if (_lastSessionId != target) InvalidateExtensionContextScope();
+                    _lastSessionId = target; _lastRunId = run; _lastSnapshot = null; _lastWorkingStateText = "";
+                    _writerOwnershipUnavailable = false;
+                    _recoveryProblem = null;
+                    SaveLastSession();
+                    var importAck = CommandOutcomeAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
+                        target, sequenceBefore, new CommandId(Guid.Parse(command.MessageId)));
+                    if (!workspaceReceiptReserved)
+                        importReceiptStore.CompleteCommandReceipt(command.MessageId, requestHash, importAck.Status,
+                            importAck.Outcome?.Kind.ToString(), importAck.Outcome?.Reason, importAck.FirstSeq,
+                            importAck.LastSeq, importReceiptStore.CommandReceiptScope, target.ToString());
+                    if (_store is SqliteEventStore oldStore && previous._lastSessionId is { } oldSession && oldSession != target)
+                        oldStore.ReleaseSessionWriterLease(oldSession);
+                    acquiredTargetLease = false;
+                    return importAck;
                 }
                 if (name == "conversation.rename")
                 {
@@ -102,8 +211,6 @@ public sealed partial class OmniServer
                     return CommandOutcomeAck(command.MessageId, "ok", null, RuntimeCommandOutcome.Accepted(),
                         active, sequenceBefore, new CommandId(Guid.Parse(command.MessageId)));
                 }
-                SessionId target;
-                RunId? run = null;
                 if (name == "conversation.new") target = SessionId.New();
                 else
                 {
@@ -140,7 +247,8 @@ public sealed partial class OmniServer
             }
             catch (SessionWriterLeaseUnavailableException)
             { return new(command.MessageId, "busy", "session_writer_owned", RuntimeCommandOutcome.Deferred("session_writer_owned")); }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException
+                or ArgumentException or System.Text.Json.JsonException)
             {
                 (_lastSessionId, _lastRunId) = previous;
                 if (attempted is { } failed)
@@ -151,8 +259,8 @@ public sealed partial class OmniServer
             {
                 // A failed selection must not retain a newly acquired destination lease.
                 // Pre-existing leases (including the previous Session) remain owned.
-                if (acquiredTargetLease && attempted is { } target && _store is SqliteEventStore owned)
-                    owned.ReleaseSessionWriterLease(target);
+                if (acquiredTargetLease && attempted is { } failedTarget && _store is SqliteEventStore owned)
+                    owned.ReleaseSessionWriterLease(failedTarget);
             }
         }
     }

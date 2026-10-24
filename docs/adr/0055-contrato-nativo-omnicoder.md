@@ -160,3 +160,22 @@ de autorizar el conjunto exacto. Ask conserva el ToolCall/Turn de la acción act
 La poda usa una transacción Git con OIDs esperados y sin desreferenciar symrefs.
 Luna bajo aprobó 13 casos sin recompilar; [acta](../validation/m9-worktree-retention-20261024.md).
 La entrega sigue local, sin CI/publicación ni cambios del consumidor OmniCoder.
+
+### Importación neutral de conversación (2026-10-24)
+
+`conversation.import`, anunciada por `command.conversation.import.user`, es una
+acción humana con HMAC, scope de conexión/workspace, hash exacto y recibo durable.
+Su único campo de documento es `documentBase64`, con un transcript canónico v1
+validado por Core. El documento no elige SessionId, origen, permisos ni política.
+Core crea Imported/ObserveOnly/ImportReview y almacena texto user/assistant sin
+ejecutar hooks, herramientas o inferencia. Un input posterior conserva admisión
+revisionada y usa ese texto como historial pasivo.
+
+La CLI directa también reclama el recibo SQL del workspace antes de crear.
+Completed devuelve el ACK original antes de las guardas de turno/selección y
+Unknown no redespacha. El marcador de reserva previa es exclusivamente interno
+al dispatch que ya ganó la reserva; no es una capability ni un campo aceptado del
+cliente. [Formato, 16 casos independientes y límites](../validation/m9-native-import-20261024.md).
+La aceptación local no acredita dos procesos OS, ejecutable CLI separado,
+formatos propietarios, medios o integración Electron. OmniCoder se conserva en
+solo lectura; sin nueva CI/publicación ni cierre global de M9/M8.

@@ -234,6 +234,28 @@ PTY de otras plataformas mantiene el diferido ADR-0038. No hubo nueva CI,
 publicación ni cambios de OmniCoder. Native/Imported, SEC-CONV y las demás
 aceptaciones transversales siguen pendientes; M9 global y M8 manual abiertos.
 
+**Native/Imported: importador neutral aceptado localmente (2026-10-24):**
+`omni conversation import <archivo>` y la acción humana firmada
+`conversation.import` aceptan el formato canónico `omnicore-conversation-import.v1`
+de texto user/assistant. Core crea identidad y techo `Imported / ObserveOnly /
+ImportReview`, independientemente del default; no copia grants, efectos,
+llamadas de herramientas ni mensajes de sistema. Al importar no hay Run/Input,
+hooks ni inferencia. El historial se materializa en un request posterior
+autorizado y las alternativas internas de checkpoints conservan Native.
+
+La ruta directa también reserva el recibo durable del workspace. Completed
+devuelve el ACK original antes de guardas de turno/selección; Unknown es pasivo
+y no relanza. Se eliminó la carga global de todos los transcripts al importar.
+Luna bajo aprobó **16 casos en ocho métodos**, sin recompilar, cero fallos y
+omisiones, después de detectar y corregir el defecto de replay directo.
+[Acta, formato y límites](../validation/m9-native-import-20261024.md).
+La concurrencia probada son dos runtimes/conexiones SQLite dentro de un proceso;
+la entrada CLI se prueba con `CliApp.RunAsync`, sin ejecutable separado. El Turn
+activo del negativo de replay se siembra en fixture. No acredita dos procesos
+OS, proveedor live, consumidor Electron ni plataformas adicionales. Sin nueva
+CI/publicación ni cambios de OmniCoder. El bloque aporta al criterio de
+procedencia/techo conservador; no cierra SEC-CONV completo, M9 global o M8 manual.
+
 ## Ejecución de cierre M9 (2026-10-22)
 
 **Rectificación de alcance del 23 de octubre:** la construcción descrita abajo
@@ -941,7 +963,7 @@ exactly-once general y OR5 autenticado M8 sigue pendiente.
 |---|---|---|
 | Transporte y negociación | **Construido en M9-A/B/H:** Host real stdio 1.0, framing UTF-8 capado a 1 MiB, `hello`/capabilities, queries/read models, replay paginado y stream durable opcional con ventana ACK acotada, pausa de lectura, reanudación y señal de gap (ADR-0054). | Focales multiproceso cubren negociación/legacy, replay→live, ventanas, query con ACK retenido, Unicode, frame grande/oversized, stop/rebind y gaps. Windows local; Linux/macOS y otros filesystems siguen pendientes. |
 | Lease y supervisión | **Construido en M9-B:** lock OS no expirable por Session, adquisición antes de mutación y reclaim tras muerte; sin heartbeat por reloj. M9-C agrega supervisor de proceso y reserva de workspace antes de spawn; esa reserva de producto no es el lease Core. | Pruebas de dos procesos/reclaim y lifecycle de child verificadas en Windows local. La reserva es interna; OmniCoder presenta un fallo recuperable de conversación, no un panel de conexión. Diagnóstico técnico bajo demanda. Falta aceptación de otros OS/filesystems y ownership coordinado con otros clientes. |
-| Reconexión e historial | **Construido en M9-B/H:** receipt hash-bound, `command.result` sin resend, `Unknown` no ejecutable, cursor/high-water SQL acotados, gaps/tombstones y nueva suscripción desde cursor durable después de restablecer conexión. No es exactly-once general ni reconexión automática. Procedencia Native/Imported pendiente. | Los tests de transporte existentes cubren cursores, reanudación y muerte de Host; el caso focal M9-H valida stop/rebind al mismo Host. No se atribuye a ese focal la reconexión automática. Gap/purga se muestran como historial incompleto. |
+| Reconexión e historial | **Construido en M9-B/H:** receipt hash-bound, `command.result` sin resend, `Unknown` no ejecutable, cursor/high-water SQL acotados, gaps/tombstones y nueva suscripción desde cursor durable después de restablecer conexión. No es exactly-once general ni reconexión automática. El importador neutral Native/Imported tiene aceptación local en su [acta](../validation/m9-native-import-20261024.md); otros formatos y consumidor Electron no están acreditados. | Los tests de transporte existentes cubren cursores, reanudación y muerte de Host; el caso focal M9-H valida stop/rebind al mismo Host. No se atribuye a ese focal la reconexión automática. Gap/purga se muestran como historial incompleto. |
 | Clientes y preferencias | **Core:** CLI in-process/stdio multi-target net8/net10, capabilities y goldens. **M9-C integrado:** consumer TypeScript, Host hijo y Sidecar. **M9-E integrado:** composer OmniCoder conectado a inferencia Core real y recuperación de historial vía journal/replay. `ui.locale` conserva su esquema actual. | Host real Windows y UI; E2E fixture HTTP determina el wiring. Smoke Ollama local qwen08 + reapertura pasó en perfil aislado; otros providers/configuraciones permanecen por validar. Multi-OS/cuatro idiomas y paridad completa siguen abiertos. |
 | Origen humano, conversación y resultado (U-C12) | **M9-D/E integrado, ajustado por M9-K:** Electron main autentica el origen y firma proof efímero; eso no exige otra confirmación para cada acción autorizada. Core valida workspace/Session/Run/revisión y su política vigente, ejecutando una única entrada persistida. Mantener Ask/consentimientos efectivos sin grant global de conexión. Generic `session.input` sigue igual. ACK Accepted es admisión; `conversation.result` reconcilia sin reenvío. | E2E GUI→Host→fixture HTTP prueba respuesta real, replay, modo e interrupción/cancelación; focal Core prueba admisión separada del resultado y cancelación serializada con queries. El fixture no acredita proveedor local ni aceptación humana. Trust boundary: mismo principal OS. Ver ADR-0050/0051, actas M9-D/E y corrección M9-K. |
 

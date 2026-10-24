@@ -219,7 +219,7 @@ public static class StdioProtocolHost
                     || !StdioProtocol.IsSupportedCommand(nameElement.GetString()!))
                     throw new InvalidDataException();
                 var commandName = nameElement.GetString()!;
-                var trustedOnly = commandName is "conversation.start" or "conversation.new" or "conversation.resume"
+                var trustedOnly = commandName is "conversation.start" or "conversation.new" or "conversation.import" or "conversation.resume"
                     or "conversation.rename" or "conversation.compact" or "conversation.alternative" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
                     or "session.model.select" or "session.model.route.respond"
                     or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
@@ -300,7 +300,7 @@ public static class StdioProtocolHost
                         return EncodeAck(new CommandAck(command.MessageId, "error", "interaction_recovery_unavailable",
                             RuntimeCommandOutcome.Rejected()));
                 }
-                if (trustedScope is not null && commandName is not ("session.input" or "conversation.start" or "conversation.new" or "conversation.resume"
+                if (trustedScope is not null && commandName is not ("session.input" or "conversation.start" or "conversation.new" or "conversation.import" or "conversation.resume"
                     or "conversation.rename" or "conversation.compact" or "conversation.alternative" or "session.security.set" or "session.security.default.set"
                     or "session.model.select" or "session.model.route.respond"
                     or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
@@ -400,7 +400,7 @@ public static class StdioProtocolHost
                     return "{\"state\":\"id_conflict\"}";
                 if (receipt.State != OmniCore.Infrastructure.CommandReceiptState.Completed)
                     return "{\"state\":\"unknown\"}";
-                var ack = AckFromReceipt(receipt);
+                var ack = OmniServer.CommandAckFromReceipt(receipt);
                 return "{\"state\":\"completed\",\"ack\":{\"commandId\":" + Quote(ack.CommandId)
                     + ",\"status\":" + Quote(ack.Status) + ",\"outcome\":" + Quote(ack.Outcome?.Kind.ToString() ?? "Deferred")
                     + ",\"reason\":" + (ack.Outcome?.Reason is null ? "null" : Quote(ack.Outcome.Reason))
@@ -593,7 +593,7 @@ public static class StdioProtocolHost
         using var payload = JsonDocument.Parse(command.PayloadJson);
         if (!payload.RootElement.TryGetProperty("cmd", out var cmd) || cmd.ValueKind != JsonValueKind.String) return false;
         var commandName = cmd.GetString();
-        if (commandName is not ("session.input" or "conversation.start" or "conversation.new" or "conversation.resume"
+        if (commandName is not ("session.input" or "conversation.start" or "conversation.new" or "conversation.import" or "conversation.resume"
             or "conversation.rename" or "conversation.compact" or "conversation.alternative" or "session.security.set" or "session.security.default.set" or "run.interrupt" or "run.cancel" or "run.mode.select"
             or "session.model.select" or "session.model.route.respond"
             or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
@@ -906,6 +906,29 @@ public static class StdioProtocolHost
             scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
                 CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
             return true;
+        }
+        if (commandName == "conversation.import")
+        {
+            try
+            {
+                ConversationTranscriptImport.ValidateCommandPayloadSize(command.PayloadJson);
+                using var source = JsonDocument.Parse(command.PayloadJson);
+                var importProperties = source.RootElement.EnumerateObject().Select(property => property.Name).ToArray();
+                if (importProperties.Length != 2 || importProperties.Distinct(StringComparer.Ordinal).Count() != importProperties.Length
+                    || !importProperties.Contains("cmd", StringComparer.Ordinal)
+                    || !importProperties.Contains("documentBase64", StringComparer.Ordinal)
+                    || !source.RootElement.TryGetProperty("cmd", out var importCommand)
+                    || importCommand.ValueKind != JsonValueKind.String || importCommand.GetString() != commandName
+                    || !source.RootElement.TryGetProperty("documentBase64", out var encoded)
+                    || encoded.ValueKind != JsonValueKind.String || encoded.GetString() is not { } base64)
+                    return false;
+                _ = ConversationTranscriptImport.Parse(ConversationTranscriptImport.DecodeBase64Document(base64));
+                scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
+                    CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
+                return true;
+            }
+            catch (Exception error) when (error is InvalidDataException or JsonException or FormatException or ArgumentException)
+            { return false; }
         }
         if (commandName is "conversation.new" or "conversation.resume" or "conversation.compact" or "conversation.rename" or "conversation.alternative")
         {
@@ -1223,7 +1246,7 @@ public static class StdioProtocolHost
             return new CommandAck(command.MessageId, "error", "command_id_conflict",
                 RuntimeCommandOutcome.Rejected());
         if (reservation.State == OmniCore.Infrastructure.CommandReceiptState.Completed)
-            return AckFromReceipt(reservation.Receipt);
+            return OmniServer.CommandAckFromReceipt(reservation.Receipt);
         if (reservation.State != OmniCore.Infrastructure.CommandReceiptState.Reserved)
             return new CommandAck(command.MessageId, "unknown", "command_result_unknown",
                 RuntimeCommandOutcome.Deferred("command_result_unknown"));
@@ -1262,7 +1285,7 @@ public static class StdioProtocolHost
             : WireEnvelope.Command(command.MessageId, executionPayloadJson);
         executed = true;
         var ack = trustedScope is null ? client.Send(executionCommand, CancellationToken.None)
-            : ((ITrustedUserActionClient)client).SendUserAction(executionCommand, CancellationToken.None);
+            : server.SendUserActionWithReservedWorkspaceReceipt(executionCommand, CancellationToken.None);
         store.CompleteCommandReceipt(command.MessageId, hash, ack.Status, ack.Outcome?.Kind.ToString(), ack.Outcome?.Reason,
             ack.FirstSeq, ack.LastSeq, scope, server.LastSessionId()?.ToString());
         return ack;
@@ -1279,7 +1302,7 @@ public static class StdioProtocolHost
         if (receipt.State != OmniCore.Infrastructure.CommandReceiptState.Completed)
             return new CommandAck(command.MessageId, "unknown", "command_result_unknown",
                 RuntimeCommandOutcome.Deferred("command_result_unknown"));
-        return AckFromReceipt(receipt);
+        return OmniServer.CommandAckFromReceipt(receipt);
     }
 
     private sealed class ConversationExecution(
@@ -2943,20 +2966,6 @@ public static class StdioProtocolHost
             }
             _uploads.Dispose();
         }
-    }
-
-    private static CommandAck AckFromReceipt(OmniCore.Infrastructure.CommandReceipt receipt)
-    {
-        var outcome = receipt.OutcomeKind switch
-        {
-            "Accepted" => RuntimeCommandOutcome.Accepted(),
-            "Rejected" => RuntimeCommandOutcome.Rejected(),
-            "NoOp" => RuntimeCommandOutcome.NoOp(),
-            "Deferred" => RuntimeCommandOutcome.Deferred(receipt.OutcomeReason ?? "receipt_result_unknown"),
-            _ => RuntimeCommandOutcome.Deferred("receipt_result_unknown"),
-        };
-        return new CommandAck(receipt.CommandId, receipt.AckStatus ?? "unknown", null, outcome,
-            receipt.FirstSequence, receipt.LastSequence);
     }
 
     private static string EncodeEvents(IReadOnlyList<WireEnvelope> events)

@@ -810,6 +810,22 @@ ni macOS, cuyo Weak persistente sigue explícitamente no disponible. PTY de otra
 plataformas conserva su diferido. Checkpoint local, sin nueva CI/publicación ni
 cambios de OmniCoder; M9 global y M8 manual permanecen abiertos.
 
+El importador neutral Native/Imported tiene aceptación local del 2026-10-24.
+`conversation.import` y la CLI aceptan únicamente texto user/assistant del
+formato canónico v1; Core fija identidad y política Imported/ObserveOnly/ImportReview,
+sin trasladar autoridad del origen. Importar sólo almacena: no crea Run/input,
+hooks ni llamadas al proveedor. El transcript aparece en el contexto de una
+conversación posterior autorizada; las alternativas internas siguen Native.
+Recibo workspace-global también en la ruta directa, replay del ACK original
+sin cambiar selección y Unknown sin redispatch. No carga todos los transcripts
+del workspace para admitir uno nuevo. Luna bajo aprobó 16 casos sin recompilar
+tras corregir el replay directo. [Acta y límites](../validation/m9-native-import-20261024.md).
+La CLI y dos runtimes con SQLite se probaron in-process; el Turn abierto del
+negativo se siembra en fixture. No acredita ejecutable CLI separado, dos procesos
+OS, medios/conversores ajenos, consumidor Electron ni proveedor live. Checkpoint
+local sin CI/publicación; SEC-CONV y las demás aceptaciones transversales, M9 global
+y M8 manual siguen abiertos.
+
 ### P0-OMNI-UNIFICACION
 
 **Revisión:** 2026-10-14 · **Prioridad:** P0 · **Estado global:** CERRADO / ALCANCE ACEPTADO. **Contribución de OmniCore: CERRADA en Windows**, con el alcance y las diferencias de plataforma del [acta local](../validation/omnicore-homologation-closure-20261014.md).

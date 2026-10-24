@@ -3,6 +3,8 @@ namespace OmniCore.Host;
 using OmniCore.Abstractions;
 using OmniCore.Domain;
 using OmniCore.Protocol;
+using System.Text;
+using System.Text.Json;
 
 /// <summary>
 /// Traduce los eventos de dominio del journal a eventos del protocolo (ADR-0013 §1): el cliente
@@ -224,6 +226,13 @@ public sealed class ProtocolMapper
             ["checkpointId"] = e.CheckpointId,
             ["messages"] = System.Text.Json.JsonSerializer.Serialize(e, WorkspacePanelJson.Default.ConversationHistoryImported),
         },
+        ConversationTranscriptImported e => new()
+        {
+            ["origin"] = "Imported", ["reviewRequired"] = "true", ["formatId"] = e.FormatId, ["policy"] = "ObserveOnly",
+            ["sourceSha256"] = e.SourceSha256, ["title"] = e.Title ?? "",
+            ["messageCount"] = e.Messages.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["messages"] = EncodeTranscriptMessages(e.Messages),
+        },
         ContextCheckpointRecorded e => new()
         {
             ["checkpointId"] = e.CheckpointId,
@@ -331,6 +340,24 @@ public sealed class ProtocolMapper
         },
         _ => null,
     };
+
+    private static string EncodeTranscriptMessages(IReadOnlyList<ConversationTranscriptMessage> messages)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartArray();
+            foreach (var message in messages)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("Role", message.Role);
+                writer.WriteString("Text", message.Text);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+        }
+        return Encoding.UTF8.GetString(stream.ToArray());
+    }
 
     private static string ImageOutputsJson(IReadOnlyList<AssistantImageOutput> images) =>
         "[" + string.Join(",", images.Select(image => "{"

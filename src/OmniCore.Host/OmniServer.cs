@@ -1151,6 +1151,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     public CommandAck SendUserAction(WireEnvelope command, CancellationToken cancellationToken) =>
         SafeCommandAck(SendCore(command, cancellationToken, trustedUserAction: true));
 
+    internal CommandAck SendUserActionWithReservedWorkspaceReceipt(WireEnvelope command,
+        CancellationToken cancellationToken) =>
+        SafeCommandAck(SendCore(command, cancellationToken, trustedUserAction: true,
+            workspaceReceiptReserved: true));
+
     private static string SafeCommandError(string error)
     {
         try { return new PiiRedactor().Redact(error); }
@@ -1160,8 +1165,22 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     private static CommandAck SafeCommandAck(CommandAck ack) => ack.Error is null ? ack
         : new CommandAck(ack.CommandId, ack.Status, SafeCommandError(ack.Error), ack.Outcome, ack.FirstSeq, ack.LastSeq);
 
+    internal static CommandAck CommandAckFromReceipt(CommandReceipt receipt)
+    {
+        var outcome = receipt.OutcomeKind switch
+        {
+            "Accepted" => RuntimeCommandOutcome.Accepted(),
+            "Rejected" => RuntimeCommandOutcome.Rejected(),
+            "NoOp" => RuntimeCommandOutcome.NoOp(),
+            "Deferred" => RuntimeCommandOutcome.Deferred(receipt.OutcomeReason ?? "receipt_result_unknown"),
+            _ => RuntimeCommandOutcome.Deferred("receipt_result_unknown"),
+        };
+        return new CommandAck(receipt.CommandId, receipt.AckStatus ?? "unknown", null, outcome,
+            receipt.FirstSequence, receipt.LastSequence);
+    }
+
     private CommandAck SendCore(WireEnvelope command, CancellationToken cancellationToken, bool trustedUserAction,
-        WorkflowRuntimeAuthorization? workflowAuthorization = null)
+        WorkflowRuntimeAuthorization? workflowAuthorization = null, bool workspaceReceiptReserved = false)
     {
         if (command.MessageType != MessageTypes.Command)
         {
@@ -1185,7 +1204,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         }
 
         var requestedConversationCommand = fields.TryGetValue("cmd", out var requestedName)
-            && requestedName is "conversation.new" or "conversation.resume";
+            && requestedName is "conversation.new" or "conversation.resume" or "conversation.import";
         // Reject a plainly stale native input before lease recovery can perform the separate,
         // conservative legacy-policy migration for the active Session.
         if (!requestedConversationCommand && fields.GetValueOrDefault("cmd") == "session.input"
@@ -1211,8 +1230,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         if (commandName is "command.invoke.user" or "command.continue" or "workflow.continue" or "process.control")
             return trustedUserAction ? HandleNativeCommandAction(command, commandName, cancellationToken)
                 : new CommandAck(command.MessageId, "error", "trusted_user_action_required", RuntimeCommandOutcome.Rejected());
-        if (commandName is "conversation.new" or "conversation.resume" or "conversation.rename" or "conversation.compact")
-            return HandleConversationCommand(command, fields, commandName, trustedUserAction, cancellationToken);
+        if (commandName is "conversation.new" or "conversation.resume" or "conversation.rename" or "conversation.compact" or "conversation.import")
+            return HandleConversationCommand(command, fields, commandName, trustedUserAction, cancellationToken,
+                workspaceReceiptReserved && commandName == "conversation.import");
         if (commandName == "session.security.set")
             return trustedUserAction
                 ? SetSessionSecurityPolicy(command, fields)

@@ -67,6 +67,19 @@ otras plataformas conserva ADR-0038. Checkpoint local, sin CI ni publicación nu
 Native/Imported, aceptación transversal y consumidor Electron por su coordinación
 siguen pendientes; M9 global/M8 manual abiertos y OmniCoder en solo lectura.
 
+**M9 importación neutral aceptada localmente (2026-10-24):** `conversation.import`
+usa firma/recibo del workspace y también reserva SQL en la ruta directa. Crea
+Session `Imported / ObserveOnly / ImportReview` con texto user/assistant pasivo,
+sin importar permisos, herramientas o mensajes de sistema ni invocar proveedor.
+El historial alimenta una conversación posterior autorizada. Replay completado
+devuelve el ACK original sin cambiar selección/leases/journals; Unknown no
+redespacha. Luna bajo aprobó 16 casos en ocho métodos sin recompilar, tras corregir
+el replay directo que detectó su primera revisión. [Acta y límites](docs/validation/m9-native-import-20261024.md).
+La CLI se invocó in-process; concurrencia con dos runtimes/conexiones SQLite en
+un proceso, no dos procesos OS. Sólo formato canónico de texto; no conversores,
+medios ni aceptación Electron/Linux/live. Checkpoint local sin CI/publicación;
+SEC-CONV y aceptaciones transversales, M9 global y M8 manual siguen abiertos.
+
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 
 **Checkpoint M9-K/L (2026-10-17):** seguridad durable por Session, lifecycle nativo y respuesta de

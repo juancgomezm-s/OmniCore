@@ -26,6 +26,180 @@ namespace OmniCore.Tests;
 [Collection(nameof(ProcessEnvironmentCollection))]
 public sealed partial class CliEndToEndTests
 {
+    [Fact]
+    public async Task Cli_conversation_import_uses_a_local_file_and_fails_closed_without_provider_effects()
+    {
+        await InIsolatedCli(async (workspace, _, _, provider) =>
+        {
+            // A permissive configured default must not raise the imported Session above ObserveOnly.
+            SetSessionSecurityFullAgent();
+            var validPath = Path.Combine(workspace, "transcript.json");
+            File.WriteAllText(validPath, "{\"formatId\":\"omnicore-conversation-import.v1\",\"schemaVersion\":1,\"messages\":["
+                + "{\"role\":\"user\",\"text\":\"cli-import-marker\"}]}", new UTF8Encoding(false));
+            var positive = await Run("conversation", "import", validPath);
+            Assert.Equal(0, positive.Code);
+            Assert.Contains("\"origin\":\"Imported\"", positive.Output, StringComparison.Ordinal);
+            using var output = JsonDocument.Parse(positive.Output);
+            var identity = JsonDocument.Parse(output.RootElement.GetProperty("session").GetString()!);
+            var sessionId = SessionId.Parse(identity.RootElement.GetProperty("sessionId").GetString()!);
+            var journalPath = Path.Combine(OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace), "journal.db");
+            using (var store = new SqliteEventStore(journalPath, readOnly: true))
+            {
+                var codecs = EventCodecs.Create();
+                var journal = store.ReadFrom(sessionId, 1).Select(codecs.Decode).ToArray();
+                var policy = Assert.Single(journal.OfType<SessionSecurityPolicySet>());
+                Assert.Equal(ModelPolicyCategory.ObserveOnly, policy.Category);
+                Assert.Equal(SessionSecurityProvenance.Imported, policy.Provenance);
+                Assert.Equal(SessionSecurityPolicySource.ImportReview, policy.Source);
+                Assert.Empty(journal.OfType<RunCreated>());
+                Assert.Empty(journal.OfType<UserInputReceived>());
+                Assert.Empty(journal.OfType<HookApplied>());
+                Assert.Single(store.ReadEvents(EventType.Of("session.created")));
+            }
+
+            var malformedPath = Path.Combine(workspace, "malformed-transcript.json");
+            File.WriteAllText(malformedPath, "{\"formatId\":1,\"schemaVersion\":1,\"messages\":[{\"role\":\"user\",\"text\":\"x\"}]}",
+                new UTF8Encoding(false));
+            var malformed = await Run("conversation", "import", malformedPath);
+            Assert.Equal(2, malformed.Code);
+            Assert.False(string.IsNullOrWhiteSpace(malformed.Output));
+            using var reopened = new SqliteEventStore(journalPath, readOnly: true);
+            Assert.Single(reopened.ReadEvents(EventType.Of("session.created")));
+            Assert.Equal(0, provider.RequestCount);
+        });
+    }
+
+    [Fact]
+    public async Task Concurrent_inprocess_transcript_imports_share_the_durable_workspace_receipt()
+    {
+        await InIsolatedCli(async (workspace, _, _, provider) =>
+        {
+            SetSessionSecurityFullAgent();
+            using var runtimeA = OmniCliRuntime.Create(workspace);
+            using var runtimeB = OmniCliRuntime.Create(workspace);
+            var clientA = Assert.IsAssignableFrom<ITrustedUserActionClient>(runtimeA.Connect(CancellationToken.None));
+            var clientB = Assert.IsAssignableFrom<ITrustedUserActionClient>(runtimeB.Connect(CancellationToken.None));
+            var command = WireEnvelope.Command(Guid.NewGuid().ToString("D"),
+                "{\"cmd\":\"conversation.import\",\"documentBase64\":\""
+                + Convert.ToBase64String(Encoding.UTF8.GetBytes("{\"formatId\":\"omnicore-conversation-import.v1\",\"schemaVersion\":1,\"messages\":[{\"role\":\"user\",\"text\":\"concurrent-import-marker\"}]}"))
+                + "\"}");
+            using var start = new ManualResetEventSlim(false);
+            var first = Task.Run(() => { start.Wait(); return clientA.SendUserAction(command, CancellationToken.None); });
+            var second = Task.Run(() => { start.Wait(); return clientB.SendUserAction(command, CancellationToken.None); });
+            start.Set();
+            var results = await Task.WhenAll(first, second);
+            Assert.Contains(results, result => result.Status == "ok");
+            Assert.All(results, result => Assert.Contains(result.Status, new[] { "ok", "busy", "unknown" }));
+
+            var journalPath = Path.Combine(OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace), "journal.db");
+            using var store = new SqliteEventStore(journalPath, readOnly: true);
+            Assert.Single(store.ReadEvents(EventType.Of("session.created")));
+            Assert.Single(store.ReadEvents(EventType.Of("conversation.transcript_imported")));
+            Assert.Equal(0, provider.RequestCount);
+        });
+    }
+
+    [Fact]
+    public async Task Direct_transcript_import_replay_returns_original_ack_without_reselecting_during_active_turn()
+    {
+        await InIsolatedCli(async (workspace, _, _, provider) =>
+        {
+            using var runtime = OmniCliRuntime.Create(workspace);
+            var server = Assert.IsType<OmniServer>(runtime.Connect(CancellationToken.None));
+            var client = Assert.IsAssignableFrom<ITrustedUserActionClient>(server);
+            var store = Assert.IsType<SqliteEventStore>(server.ReceiptStore);
+            const string transcript = "{\"formatId\":\"omnicore-conversation-import.v1\",\"schemaVersion\":1,\"messages\":[{\"role\":\"user\",\"text\":\"receipt-replay-marker\"}]}";
+            var messageId = Guid.NewGuid().ToString("D");
+            var payload = "{\"cmd\":\"conversation.import\",\"documentBase64\":\""
+                + Convert.ToBase64String(Encoding.UTF8.GetBytes(transcript)) + "\"}";
+            var import = WireEnvelope.Command(messageId, payload);
+            var original = client.SendUserAction(import, CancellationToken.None);
+            Assert.Equal("ok", original.Status);
+            var importedSession = Assert.IsType<SessionId>(server.LastSessionId());
+
+            var importedSequence = store.CurrentSequence(importedSession);
+            new EventStream(store, EventCodecs.Create(), importedSession).Append(
+                new SessionTitleChanged(importedSession, "advanced imported journal", importedSequence), DurabilityClass.Barrier);
+            var advancedImportedSequence = store.CurrentSequence(importedSession);
+            Assert.True(advancedImportedSequence > importedSequence);
+
+            var newConversation = client.SendUserAction(WireEnvelope.Command(Guid.NewGuid().ToString("D"), "{\"cmd\":\"conversation.new\"}"),
+                CancellationToken.None);
+            Assert.Equal("ok", newConversation.Status);
+            var selectedSession = Assert.IsType<SessionId>(server.LastSessionId());
+            Assert.NotEqual(importedSession, selectedSession);
+            var selectedStartSequence = store.CurrentSequence(selectedSession);
+            var run = RunId.New();
+            var task = TaskId.New();
+            var lane = LaneId.New();
+            var turn = TurnId.New();
+            new EventStream(store, EventCodecs.Create(), selectedSession).AppendBatch(
+            [
+                new RunCreated(run, selectedSession, "fixture active turn", RunMode.Plan, ExecutionStrategy.Direct,
+                    FailurePolicy.FailRun, new TaskBudget(null, null, null, null), task, DateTimeOffset.UtcNow),
+                new TaskCreated(task, run, "fixture active turn", Array.Empty<TaskDependency>(),
+                    new TaskBudget(null, null, null, null)),
+                new LaneCreated(lane, task, ProfileId.New()),
+                new TurnStarted(turn, lane),
+            ], DurabilityClass.Barrier);
+            var selectedActiveSequence = store.CurrentSequence(selectedSession);
+            Assert.True(selectedActiveSequence > selectedStartSequence);
+
+            var workspaceData = OmniHost.WorkspaceDataDirectory(OmniHost.CreatePlatformPaths(), workspace);
+            var lastSessionPath = Path.Combine(workspaceData, "lastsession.txt");
+            var selectedStateBytes = File.ReadAllBytes(lastSessionPath);
+            var selectedHadLease = store.OwnsSessionWriterLease(selectedSession);
+            var importedHadLease = store.OwnsSessionWriterLease(importedSession);
+            Assert.True(selectedHadLease);
+            Assert.False(importedHadLease);
+
+            var replay = client.SendUserAction(import, CancellationToken.None);
+            Assert.Equal(original.CommandId, replay.CommandId);
+            Assert.Equal(original.Status, replay.Status);
+            Assert.Equal(original.Error, replay.Error);
+            Assert.Equal(original.Outcome?.Kind, replay.Outcome?.Kind);
+            Assert.Equal(original.Outcome?.Reason, replay.Outcome?.Reason);
+            Assert.Equal(original.FirstSeq, replay.FirstSeq);
+            Assert.Equal(original.LastSeq, replay.LastSeq);
+            Assert.Equal(selectedSession, server.LastSessionId());
+            Assert.Equal(selectedStateBytes, File.ReadAllBytes(lastSessionPath));
+            Assert.Equal(advancedImportedSequence, store.CurrentSequence(importedSession));
+            Assert.Equal(selectedActiveSequence, store.CurrentSequence(selectedSession));
+            Assert.Equal(selectedHadLease, store.OwnsSessionWriterLease(selectedSession));
+            Assert.Equal(importedHadLease, store.OwnsSessionWriterLease(importedSession));
+
+            var unknownMessageId = Guid.NewGuid().ToString("D");
+            var unknownTranscript = transcript.Replace("receipt-replay-marker", "unresolved-import-marker", StringComparison.Ordinal);
+            var unknownPayload = "{\"cmd\":\"conversation.import\",\"documentBase64\":\""
+                + Convert.ToBase64String(Encoding.UTF8.GetBytes(unknownTranscript)) + "\"}";
+            var unknownHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(unknownPayload)));
+            Assert.Equal(CommandReceiptState.Reserved, store.ReserveCommandReceipt(unknownMessageId, unknownHash,
+                store.CommandReceiptScope, selectedSession.ToString()).State);
+            var unknown = client.SendUserAction(WireEnvelope.Command(unknownMessageId, unknownPayload), CancellationToken.None);
+            Assert.Equal("unknown", unknown.Status);
+            Assert.Equal(RuntimeCommandOutcomeKind.Deferred, unknown.Outcome?.Kind);
+            Assert.Equal("command_result_unknown", unknown.Outcome?.Reason);
+            Assert.Equal(selectedSession, server.LastSessionId());
+            Assert.Equal(selectedStateBytes, File.ReadAllBytes(lastSessionPath));
+            Assert.Equal(advancedImportedSequence, store.CurrentSequence(importedSession));
+            Assert.Equal(selectedActiveSequence, store.CurrentSequence(selectedSession));
+            Assert.Equal(selectedHadLease, store.OwnsSessionWriterLease(selectedSession));
+            Assert.Equal(importedHadLease, store.OwnsSessionWriterLease(importedSession));
+
+            var changedTranscript = transcript.Replace("receipt-replay-marker", "changed-replay-marker", StringComparison.Ordinal);
+            var changedPayload = "{\"cmd\":\"conversation.import\",\"documentBase64\":\""
+                + Convert.ToBase64String(Encoding.UTF8.GetBytes(changedTranscript)) + "\"}";
+            var conflict = client.SendUserAction(WireEnvelope.Command(messageId, changedPayload), CancellationToken.None);
+            Assert.Equal("error", conflict.Status);
+            Assert.Equal("command_id_conflict", conflict.Error);
+            Assert.Equal(selectedSession, server.LastSessionId());
+            Assert.Equal(selectedStateBytes, File.ReadAllBytes(lastSessionPath));
+            Assert.Equal(advancedImportedSequence, store.CurrentSequence(importedSession));
+            Assert.Equal(selectedActiveSequence, store.CurrentSequence(selectedSession));
+            Assert.Equal(0, provider.RequestCount);
+        });
+    }
+
     [Theory]
     [InlineData(false, false, false)]
     [InlineData(true, false, true)]

@@ -3447,6 +3447,15 @@ public sealed class ExplorerTurn
                     else AppendHistory(new ModelMessage(message.Role == "user" ? MessageRole.User : MessageRole.Assistant,
                         new ContentBlock[] { new TextBlock(message.Text) }));
                 }
+        if (conversationScope.AllowsSessionHistory)
+            foreach (var evt in journal.Where(evt => _codecs.Decode(evt) is ConversationTranscriptImported))
+            {
+                currentHistorySequence = evt.Sequence;
+                var imported = (ConversationTranscriptImported)_codecs.Decode(evt);
+                foreach (var message in imported.Messages)
+                    AppendHistory(new ModelMessage(message.Role == "user" ? MessageRole.User : MessageRole.Assistant,
+                        new ContentBlock[] { new TextBlock(message.Text) }));
+            }
         var steeringInputs = new Dictionary<SteeringId, TurnSteeringReceived>();
         var questionnaireCalls = new HashSet<string>(StringComparer.Ordinal);
         var questionnaireResults = new Dictionary<string, string>(StringComparer.Ordinal);

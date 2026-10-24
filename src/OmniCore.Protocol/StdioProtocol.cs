@@ -66,6 +66,7 @@ public static class StdioProtocol
         "command.session.input.user",
         "command.conversation.start.user",
         "command.conversation.new.user",
+        "command.conversation.import.user",
         "command.conversation.resume.user",
         "command.conversation.rename.user",
         "command.conversation.compact.user",
@@ -225,7 +226,7 @@ public static class StdioProtocol
     }
 
     public static bool IsSupportedCommand(string name) => name is "sim" or "sim.resume" or "session.input"
-        or "conversation.start" or "conversation.new" or "conversation.resume" or "conversation.rename" or "conversation.compact" or "conversation.alternative"
+        or "conversation.start" or "conversation.new" or "conversation.import" or "conversation.resume" or "conversation.rename" or "conversation.compact" or "conversation.alternative"
         or "session.security.set" or "session.security.default.set" or "session.model.select" or "session.model.route.respond"
         or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
         or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
@@ -243,6 +244,7 @@ public static class StdioProtocol
         new("session.input", "command.session.input", "generic", "command.result.lookup", "Persist literal user input without inference"),
         new("conversation.start", "command.conversation.start.user", "native-confirmation+hmac+session-scope+security-revision-v1", "conversation.result.lookup", "Persist input and invoke the Core conversation pipeline"),
         new("conversation.new", "command.conversation.new.user", "native-confirmation+hmac+connection-scope+receipt", "command.result.lookup", "Create a blank Session with the configured security ceiling"),
+        new("conversation.import", "command.conversation.import.user", "native-confirmation+hmac+connection-scope+receipt+payload-hash", "command.result.lookup", "Import a bounded passive user/assistant text transcript into an ObserveOnly Session"),
         new("conversation.resume", "command.conversation.resume.user", "native-confirmation+hmac+workspace-session-scope+lease+receipt", "command.result.lookup", "Resume a Session in the current workspace"),
         new("conversation.rename", "command.conversation.rename.user", "native-confirmation+hmac+session-sequence-cas+receipt", "command.result.lookup", "Set the current Session title with compare-and-set"),
         new("conversation.compact", "command.conversation.compact.user", "native-confirmation+hmac+session-scope+receipt", "command.result.lookup", "Compact the current Session context while retaining history"),

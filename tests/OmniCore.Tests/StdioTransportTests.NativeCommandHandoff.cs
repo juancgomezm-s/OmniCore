@@ -16,6 +16,112 @@ namespace OmniCore.Tests;
 
 public sealed partial class StdioTransportTests
 {
+    [Theory]
+    [InlineData("{\"formatId\":\"omnicore-conversation-import.v1\",\"schemaVersion\":1,\"messages\":[{\"role\":\"system\",\"text\":\"no\"}]}")]
+    [InlineData("{\"formatId\":\"omnicore-conversation-import.v1\",\"formatId\":\"omnicore-conversation-import.v1\",\"schemaVersion\":1,\"messages\":[{\"role\":\"user\",\"text\":\"x\"}]}")]
+    [InlineData("{\"formatId\":\"omnicore-conversation-import.v1\",\"schemaVersion\":1,\"policy\":\"FullAgent\",\"messages\":[{\"role\":\"user\",\"text\":\"x\"}]}")]
+    [InlineData("{\"formatId\":\"omnicore-conversation-import.v1\",\"schemaVersion\":1,\"messages\":[{\"role\":\"tool\",\"text\":\"x\",\"toolCall\":{}}]}")]
+    [InlineData("{\"formatId\":1,\"schemaVersion\":1,\"messages\":[{\"role\":\"user\",\"text\":\"x\"}]}")]
+    [InlineData("{\"formatId\":null,\"schemaVersion\":1,\"messages\":[{\"role\":\"user\",\"text\":\"x\"}]}")]
+    [InlineData("{\"formatId\":{},\"schemaVersion\":1,\"messages\":[{\"role\":\"user\",\"text\":\"x\"}]}")]
+    [InlineData("{\"formatId\":\"omnicore-conversation-import.v1\",\"schemaVersion\":\"1\",\"messages\":[{\"role\":\"user\",\"text\":\"x\"}]}")]
+    [InlineData("{\"formatId\":\"omnicore-conversation-import.v1\",\"schemaVersion\":1,\"messages\":null}")]
+    public void Conversation_transcript_import_parser_rejects_authority_fields_roles_and_duplicates(string input)
+    {
+        Assert.ThrowsAny<InvalidDataException>(() => ConversationTranscriptImport.Parse(Encoding.UTF8.GetBytes(input)));
+    }
+
+    [Fact]
+    public void Conversation_transcript_import_parser_rejects_invalid_utf8_as_a_typed_input_error()
+    {
+        var invalidUtf8 = new byte[] { (byte)'{', (byte)'"', 0xFF, (byte)'}' };
+        Assert.Throws<InvalidDataException>(() => ConversationTranscriptImport.Parse(invalidUtf8));
+    }
+
+    [Fact]
+    public void Conversation_transcript_import_rejects_utf8_escaping_that_would_overrun_event_or_replay_frame()
+    {
+        var text = new string('界', 20_000);
+        var message = "{\"role\":\"user\",\"text\":\"" + text + "\"}";
+        var source = "{\"formatId\":\"omnicore-conversation-import.v1\",\"schemaVersion\":1,\"messages\":["
+            + string.Join(",", Enumerable.Repeat(message, 5)) + "]}";
+        Assert.True(Encoding.UTF8.GetByteCount(source) < ConversationTranscriptImport.MaximumSourceBytes);
+        Assert.Throws<InvalidDataException>(() => ConversationTranscriptImport.Parse(Encoding.UTF8.GetBytes(source)));
+    }
+
+    [Fact]
+    public async Task Native_transcript_import_is_receipted_passive_observe_only_and_feeds_later_authorized_context()
+    {
+        await using var fixture = await NativeCommandHandoffFixture.StartAsync(Guid.NewGuid().ToString("D"));
+        var transcript = "{\"formatId\":\"omnicore-conversation-import.v1\",\"schemaVersion\":1,\"title\":\"Imported check\",\"messages\":["
+            + "{\"role\":\"user\",\"text\":\"imported-user-marker ñ🙂\"},"
+            + "{\"role\":\"assistant\",\"text\":\"imported-assistant-marker\"}]}";
+        var base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(transcript));
+        var import = WireEnvelope.Command(Guid.NewGuid().ToString("D"), JsonSerializer.Serialize(new
+        {
+            cmd = "conversation.import", documentBase64 = base64,
+        }));
+        var firstAck = Ack(fixture.ExchangeTrusted(import, null, null));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, firstAck.Outcome?.Kind);
+        Assert.Equal(0, fixture.Provider.RequestCount);
+        var importedIdentity = fixture.QueryJson("session.model.selection");
+        var sessionId = importedIdentity.GetProperty("sessionId").GetString()
+            ?? throw new InvalidOperationException("Imported Session was not selected.");
+        var security = fixture.QueryJson("sessionSecurity");
+        Assert.Equal("ObserveOnly", security.GetProperty("category").GetString());
+        Assert.Equal("Imported", security.GetProperty("provenance").GetString());
+        Assert.Equal("ImportReview", security.GetProperty("source").GetString());
+        var journal = fixture.ReadEvents(sessionId);
+        Assert.Empty(journal.Select(item => item.Payload).OfType<RunCreated>());
+        Assert.Empty(journal.Select(item => item.Payload).OfType<UserInputReceived>());
+        var importedEvent = Assert.Single(journal.Select(item => item.Payload).OfType<ConversationTranscriptImported>());
+        Assert.Equal(ConversationTranscriptImport.FormatId, importedEvent.FormatId);
+        Assert.Equal(import.MessageId, importedEvent.CommandId);
+        Assert.Equal(ConversationTranscriptImport.Parse(Encoding.UTF8.GetBytes(transcript)).Sha256, importedEvent.SourceSha256);
+        Assert.Collection(importedEvent.Messages,
+            message => { Assert.Equal("user", message.Role); Assert.Equal("imported-user-marker ñ🙂", message.Text); },
+            message => { Assert.Equal("assistant", message.Role); Assert.Equal("imported-assistant-marker", message.Text); });
+
+        var replay = Ack(fixture.ExchangeTrusted(import, null, null));
+        Assert.Equal(firstAck.FirstSeq, replay.FirstSeq);
+        Assert.Equal(firstAck.LastSeq, replay.LastSeq);
+        Assert.Single(fixture.ReadEvents(sessionId).Select(item => item.Payload).OfType<ConversationTranscriptImported>());
+        Assert.Equal(0, fixture.Provider.RequestCount);
+
+        await fixture.RestartHostAsync();
+        var afterRestart = Ack(fixture.ExchangeTrusted(import, null, null));
+        Assert.Equal(firstAck.FirstSeq, afterRestart.FirstSeq);
+        Assert.Single(fixture.ReadEvents(sessionId).Select(item => item.Payload).OfType<ConversationTranscriptImported>());
+
+        var changedPayload = WireEnvelope.Command(import.MessageId, JsonSerializer.Serialize(new
+        {
+            cmd = "conversation.import",
+            documentBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(transcript.Replace("imported-user-marker", "changed-marker", StringComparison.Ordinal))),
+        }));
+        var conflict = Ack(fixture.ExchangeTrusted(changedPayload, null, null));
+        Assert.Equal("command_id_conflict", conflict.Error);
+        Assert.Single(fixture.ReadEvents(sessionId).Select(item => item.Payload).OfType<ConversationTranscriptImported>());
+
+        var currentSecurity = fixture.QueryJson("sessionSecurity");
+        var followUp = WireEnvelope.Command(Guid.NewGuid().ToString("D"), JsonSerializer.Serialize(new
+        {
+            cmd = "conversation.start", text = "authorized-follow-up-marker", mode = "plan",
+            expectedRevision = (long?)null,
+            expectedPolicyRevision = currentSecurity.GetProperty("revision").GetInt64(),
+            expectedDefaultRevision = (string?)null,
+        }));
+        var followUpAck = Ack(fixture.ExchangeTrusted(followUp, sessionId, null));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, followUpAck.Outcome?.Kind);
+        await fixture.WaitForProviderBodiesAsync(1, TestContext.Current.CancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+        var providerBody = fixture.ProviderBodies.Single();
+        Assert.True(providerBody.Contains("imported-user-marker", StringComparison.Ordinal), providerBody);
+        Assert.True(providerBody.Contains("imported-assistant-marker", StringComparison.Ordinal), providerBody);
+        Assert.True(providerBody.Contains("authorized-follow-up-marker", StringComparison.Ordinal), providerBody);
+        Assert.Equal(1, fixture.Provider.RequestCount);
+        await fixture.WaitForReceiptExecutionAsync(followUp.MessageId, "completed");
+    }
+
     [Fact]
     public async Task Native_orchestrate_selection_reads_back_the_canonical_orq_wire_mode()
     {
