@@ -256,6 +256,19 @@ OS, proveedor live, consumidor Electron ni plataformas adicionales. Sin nueva
 CI/publicación ni cambios de OmniCoder. El bloque aporta al criterio de
 procedencia/techo conservador; no cierra SEC-CONV completo, M9 global o M8 manual.
 
+**SEC-CONV Core: aceptación de snapshots A/B (2026-10-24):** el mapa
+[SEC-CONV-01–13](../validation/m9-sec-conv-core-20261024.md)
+separa las contribuciones Core, evidencia histórica y gates de consumidor. El
+hueco nuevo cubierto es la creación de dos Sessions con defaults distintos,
+alternancia y reapertura de ambas con un Host OS separado. ObserveOnly/PatchOnly
+y sus revisiones/origen permanecen propios aun después de cambiar el default
+fixture a FullAgent. El journal confirma ausencia de input/Run introducidos.
+No se cambió producción. Luna bajo aprobó el foco nuevo y dos métodos pertinentes
+de lifecycle/admisión, 3/3 casos sobre los mismos binarios sin recompilar.
+Quedan explícitos grants/dispatch entre Sessions de SEC-CONV-02 y los gates GUI,
+live y plataformas; este corte no cierra SEC-CONV completo ni M9/M8. Se conserva
+OmniCoder en solo lectura, sin nueva CI, publicación o actualización de instalación.
+
 ## Ejecución de cierre M9 (2026-10-22)
 
 **Rectificación de alcance del 23 de octubre:** la construcción descrita abajo

@@ -100,3 +100,12 @@ Windows para procesos/ConPTY Strong y
 [persistencia Weak](../validation/m9-weak-persistence-20261024.md), sin cerrar M9
 global ni acreditar PTY de otras plataformas. La aceptación manual de M8 corresponde al usuario y permanece
 pendiente.
+
+El corte SEC-CONV Core del 2026-10-24 acepta el snapshot de default por Session
+en Host/stdio separado: dos Sessions nacidas con defaults distintos conservan su
+categoría, revisión y origen al alternarlas y reabrir el Host, incluso después de
+un cambio permisivo del default fixture. El journal confirma ausencia de input y
+Run por estas operaciones. No cambió producción; Luna bajo aprobó tres métodos
+focales sin recompilar. [Matriz y límites](../validation/m9-sec-conv-core-20261024.md).
+Esto no acredita separación completa de grants/dispatch de SEC-CONV-02 ni los
+consumidores y gates de SEC-CONV-13/14; no declara cerrado K, M9 ni M8 manual.

@@ -80,6 +80,17 @@ un proceso, no dos procesos OS. Sólo formato canónico de texto; no conversores
 medios ni aceptación Electron/Linux/live. Checkpoint local sin CI/publicación;
 SEC-CONV y aceptaciones transversales, M9 global y M8 manual siguen abiertos.
 
+**SEC-CONV Core: snapshots entre Sessions aceptados localmente (2026-10-24):**
+Host/stdio en proceso OS separado conserva A=ObserveOnly y B=PatchOnly, cada una
+con revisión 1 y origen Native/UserDefault, al alternar/reabrir ambas después de
+cambiar el default a FullAgent. El journal no introduce input ni Run. No hubo
+defecto ni cambio de producción: se añadió la aceptación que faltaba. Luna bajo
+aprobó tres métodos pertinentes sin recompilar, 3/3 casos; verificó la imagen CLI
+y los 16 ensamblados Core adyacentes. [Matriz y evidencia](docs/validation/m9-sec-conv-core-20261024.md).
+El snapshot no acredita aislamiento completo de grants/dispatch (SEC-CONV-02),
+GUI/Electron (13/14), live ni plataformas adicionales. Checkpoint local, sin
+publicación/CI/instalación ni cambios de OmniCoder; SEC-CONV global y M9/M8 abiertos.
+
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 
 **Checkpoint M9-K/L (2026-10-17):** seguridad durable por Session, lifecycle nativo y respuesta de

@@ -826,6 +826,17 @@ OS, medios/conversores ajenos, consumidor Electron ni proveedor live. Checkpoint
 local sin CI/publicación; SEC-CONV y las demás aceptaciones transversales, M9 global
 y M8 manual siguen abiertos.
 
+La aceptación SEC-CONV Core del 2026-10-24 agrega el hueco de snapshots por
+Session sobre Host/stdio en proceso OS separado: A=ObserveOnly, B=PatchOnly,
+default posterior FullAgent sin retroactividad y alternancia/reapertura de ambas
+con revisión/procedencia/origen propios. El journal no incorpora input ni Run
+por esas operaciones. No requirió cambio de producción. Luna bajo aprobó tres
+métodos pertinentes, 3/3 casos, sin recompilar.
+[Matriz, binarios y límites](../validation/m9-sec-conv-core-20261024.md).
+Es evidencia de snapshots y continuidad; grants/dispatch de SEC-CONV-02, consumidor
+GUI, live y otras plataformas conservan sus gates. El checkpoint es local, sin
+CI/publicación/instalación ni cambios de OmniCoder; SEC-CONV global y M9/M8 abiertos.
+
 ### P0-OMNI-UNIFICACION
 
 **Revisión:** 2026-10-14 · **Prioridad:** P0 · **Estado global:** CERRADO / ALCANCE ACEPTADO. **Contribución de OmniCore: CERRADA en Windows**, con el alcance y las diferencias de plataforma del [acta local](../validation/omnicore-homologation-closure-20261014.md).
