@@ -137,7 +137,7 @@ aprobó ConPTY y las suites completas de Windows/Linux; las dos CI anteriores se
 conservan como diagnóstico histórico en el acta.
 
 Quedan explícitos persistencia Weak,
-controles de Lane hijo, el ciclo durable restante de worktrees, aceptación
+el ciclo durable restante de worktrees, aceptación
 transversal pendiente e integración del consumidor Electron por su coordinación.
 La salida terminal conservada es un buffer acotado en memoria: tras recuperación
 se informa gap cuando corresponde. M8 mantiene su aceptación manual pendiente.
@@ -160,9 +160,26 @@ evidencia real de Host/stdio y Git. Luna bajo aprobó 6 casos del bloque y 6
 regresiones sin recompilar, sin fallos ni omisiones; [acta y límites](../validation/m9-worktree-lifecycle-20261023.md).
 Es aceptación local del incremento, sin CI ni publicación nueva. La fixture
 siembra el binding canónico: no acredita provisión/delegación end-to-end.
-Cleanup/retention/discard/undo nativos, controles de Lane hijo y los demás
-pendientes mantienen su alcance separado. Se continúa por los controles de
-procesos de Lane hijo ya previstos, sin modificar OmniCoder ni reconstruir el plan.
+Cleanup/retention/discard/undo nativos y los demás pendientes mantienen su alcance
+separado. El incremento siguiente de controles de procesos hijos se registra
+abajo, sin modificar OmniCoder ni reconstruir el plan.
+
+**M9-child-process-controls aceptado localmente (2026-10-23):** el manager
+persistente está conectado al catálogo de delegaciones genéricas cuyo perfil ya
+permite procesos, conservando delegación aceptada, TaskPacket, sandbox y ToolRuntime.
+Verify conserva su comando de verificación exacto y su runtime de una sola
+ejecución; no se amplía su catálogo para habilitar procesos arbitrarios. Los controles
+nativos usan el Turn original abierto del hijo y su raíz física; no crean
+otro Turn ni controlan el stdin del agente supervisor. La autoridad termina al
+cerrarse la ejecución y las consultas siguen siendo pasivas. Ask, efecto, recibo,
+salida UTF-8, stop y deduplicación tienen evidencia integral local. Luna bajo
+validó seis casos únicos; detectó una carencia de correlación de InteractionId y,
+tras corregirla, revalidó sólo el foco afectado con sus negativos, sin recompilar.
+[Acta y límites](../validation/m9-child-process-controls-20261023.md).
+La admisión de la fixture es Core in-process y los controles son Host/stdio;
+no se afirma admisión de la delegación por stdio end-to-end. Sin nueva CI ni
+publicación. El checkpoint `e3645a5` conserva su aceptación 12/12; M9 global,
+M8 manual y la integración Electron por su coordinación siguen abiertos.
 
 ## Ejecución de cierre M9 (2026-10-22)
 

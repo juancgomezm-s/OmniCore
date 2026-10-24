@@ -19,6 +19,311 @@ public sealed partial class OmniServer
     private static readonly string NativeWorktreeIntegrationFingerprint = Convert.ToHexString(
         SHA256.HashData(Encoding.UTF8.GetBytes("omnicore-native-worktree-integration-v1")));
 
+    internal PersistedConversationCommand? NativeChildProcessControlChoiceBinding(SessionId session, RunId run,
+        TaskId task, LaneId lane, TurnId turn, ToolCallId toolCall, InteractionId interaction,
+        string providerCallId, string toolName, string argumentsJson)
+    {
+        if (toolName is not ("process.read" or "process.send_input" or "process.stop")
+            || !providerCallId.StartsWith("native-action-", StringComparison.Ordinal)
+            || !Guid.TryParseExact(providerCallId["native-action-".Length..], "D", out var invocationGuid)
+            || providerCallId != "native-action-" + invocationGuid.ToString("D")) return null;
+        var invocation = new CommandId(invocationGuid);
+        var journal = _store.ReadFrom(session, 1);
+        var scopedCall = journal.Where(evt => evt.RunId == run && evt.TaskId == task && evt.LaneId == lane
+                && evt.TurnId == turn && evt.ToolCallId == toolCall)
+            .Select(evt => (Event: evt, Payload: _codecs.Decode(evt))).ToArray();
+        var call = scopedCall.SingleOrDefault(item => item.Payload is ToolCallRequested requested
+            && requested.ProviderCallId == providerCallId && requested.ToolName == toolName
+            && requested.ArgumentsJson == argumentsJson);
+        var permission = scopedCall.SingleOrDefault(item => item.Payload is PermissionRequested requested
+            && requested.ToolCallId == toolCall && requested.InteractionId == interaction);
+        if (call.Event is null || call.Payload is not ToolCallRequested nativeCall
+            || permission.Event is null || call.Event.ExecutionId is not { } execution
+            || permission.Event.ExecutionId != execution
+            || call.Event.Sequence >= permission.Event.Sequence
+            || scopedCall.Any(item => item.Event.Sequence > permission.Event.Sequence
+                && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallFailed
+                    or ToolCallEffectUnknown or ToolCallReconciled)) return null;
+        var interactionRequest = journal.SingleOrDefault(evt => evt.RunId == run && evt.TaskId == task
+            && evt.LaneId == lane && evt.TurnId == turn
+            && (evt.ToolCallId is null || evt.ToolCallId == toolCall)
+            && evt.ExecutionId == execution
+            && _codecs.Decode(evt) is InteractionRequested requested
+            && requested.InteractionId == interaction && requested.Kind == InteractionKind.Permission);
+        if (interactionRequest is null || interactionRequest.ExecutionId != execution
+            || permission.Event.Sequence >= interactionRequest.Sequence) return null;
+        var receipt = ReceiptStore?.ReadCommandReceipt(invocation.ToString());
+        if (receipt is not { State: CommandReceiptState.Completed, OutcomeKind: "Accepted",
+                ExecutionState: "deferred", ExecutionCode: "input_required",
+                FirstSequence: not null, LastSequence: not null, RequestHash: { Length: 64 } sourceHash }
+            || receipt.SessionId != session.ToString() || receipt.ExecutionRunId != run.ToString()
+            || !NativeDeferredProcessControlInvocationMatches(session, run, providerCallId, toolName,
+                argumentsJson, sourceHash)) return null;
+        var admitted = journal.SingleOrDefault(evt => evt.RunId == run
+            && evt.Sequence >= receipt.FirstSequence && evt.Sequence <= receipt.LastSequence
+            && _codecs.Decode(evt) is NativeCommandInvocationAdmitted item
+            && item.InvocationId == invocation && item.SessionId == session && item.RunId == run
+            && item.CanonicalCommandId == NativeProcessControlCommandId && item.Kind == "nativeTool");
+        if (admitted is null || admitted.Sequence >= call.Event.Sequence
+            || TaskForLane(session, run, lane) != task
+            || AcceptedDelegationExecutionForChild(session, run, task, lane) != execution
+            || !TryGetNativeChildProcessOwner(session, run, ReadNativeProcessHandle(argumentsJson), toolName,
+                out var ownerLane, out var ownerExecution)
+            || ownerLane != lane || ownerExecution != execution
+            || !_activeExplorerTurns.ContainsKey((session, run, lane))) return null;
+        return new PersistedConversationCommand(invocation.ToString(), receipt.RequestHash!, session.ToString(),
+            run.ToString(), receipt.FirstSequence, receipt.LastSequence,
+            NativeChoiceCapability: true, NativeInvocationId: invocation.ToString(), NativeCommandKind: "nativeTool",
+            NativeProcessControlContinuation: true, NativeProcessControlRequestHash: receipt.RequestHash);
+    }
+
+    private static string ReadNativeProcessHandle(string argumentsJson)
+    {
+        try
+        {
+            using var args = JsonDocument.Parse(argumentsJson);
+            return args.RootElement.ValueKind == JsonValueKind.Object
+                && args.RootElement.TryGetProperty("handle", out var handle) && handle.ValueKind == JsonValueKind.String
+                ? handle.GetString() ?? "" : "";
+        }
+        catch (JsonException) { return ""; }
+    }
+
+    internal PersistedConversationCommand? NativeChildProcessControlChoiceBinding(SessionId session, RunId run,
+        InteractionId interaction)
+    {
+        var journal = _store.ReadFrom(session, 1);
+        var requests = journal.Where(evt => evt.RunId == run && _codecs.Decode(evt) is InteractionRequested asked
+                && asked.InteractionId == interaction && asked.Kind == InteractionKind.Permission)
+            .ToArray();
+        var permissions = journal.Where(evt => evt.RunId == run && _codecs.Decode(evt) is PermissionRequested permission
+                && permission.InteractionId == interaction)
+            .ToArray();
+        if (requests.Length != 1 || permissions.Length != 1
+            || requests[0].TaskId is not { } task || requests[0].LaneId is not { } lane
+            || requests[0].TurnId is not { } turn || permissions[0].ToolCallId is not { } call
+            || requests[0].ExecutionId is not { } execution
+            || permissions[0].TaskId != task || permissions[0].LaneId != lane
+            || permissions[0].TurnId != turn || permissions[0].ToolCallId != call
+            || requests[0].ToolCallId is { } requestCall && requestCall != call
+            || permissions[0].ExecutionId != execution
+            || _codecs.Decode(permissions[0]) is not PermissionRequested permissionRequest
+            || permissionRequest.ToolCallId != call) return null;
+        var calls = journal.Where(evt => evt.RunId == run && evt.TaskId == task && evt.LaneId == lane
+                && evt.ExecutionId == execution && evt.TurnId == turn && evt.ToolCallId == call)
+            .Select(evt => (Event: evt, Payload: _codecs.Decode(evt)))
+            .Where(item => item.Payload is ToolCallRequested nativeCall
+                && nativeCall.ToolName is ("process.read" or "process.send_input" or "process.stop")
+                && nativeCall.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal))
+            .ToArray();
+        if (calls.Length != 1 || calls[0].Payload is not ToolCallRequested source) return null;
+        var binding = NativeChildProcessControlChoiceBinding(session, run, task, lane, turn, call,
+            interaction, source.ProviderCallId, source.ToolName, source.ArgumentsJson);
+        if (binding is null || AcceptedDelegationExecutionForChild(session, run, task, lane) is not { } owner
+            || owner.ToString() != execution.ToString()) return null;
+        return binding with
+        {
+            ContinuationInteractionId = interaction.ToString(),
+            ContinuationTaskId = task.ToString(),
+            ContinuationLaneId = lane.ToString(),
+            ContinuationTurnId = turn.ToString(),
+            ContinuationToolCallId = call.ToString(),
+        };
+    }
+
+    internal int ResumeNativeProcessControlPermission(PersistedConversationCommand continuation,
+        CancellationToken cancellationToken, Action<string>? diagnosticForTests = null)
+    {
+        void Trace(string detail)
+        {
+            try { diagnosticForTests?.Invoke(detail); }
+            catch (Exception) { /* ForTests diagnostics cannot affect the native action. */ }
+        }
+        if (!continuation.NativeProcessControlContinuation || !continuation.NativeChoiceCapability
+            || continuation.NativeInvocationId is not { Length: > 0 } controlId
+            || !Guid.TryParseExact(controlId, "D", out var controlGuid) || controlId != controlGuid.ToString("D")
+            || continuation.NativeProcessControlRequestHash is not { Length: 64 } controlHash
+            || !controlHash.All(Uri.IsHexDigit)
+            || continuation.ContinuationResponseType != "choice"
+            || continuation.ContinuationInteractionId is not { Length: > 0 } interactionText
+            || !Guid.TryParseExact(interactionText, "D", out var interactionGuid)
+            || continuation.ContinuationOptionId is not { Length: > 0 } option
+            || option is not ("allow_once" or "allow_run" or "allow_workspace" or "deny")
+            || continuation.ContinuationTurnId is not { Length: > 0 } turnText
+            || !Guid.TryParseExact(turnText, "D", out var turnGuid)
+            || continuation.ContinuationTaskId is not { Length: > 0 } taskText
+            || !Guid.TryParseExact(taskText, "D", out var taskGuid)
+            || continuation.ContinuationLaneId is not { Length: > 0 } laneText
+            || !Guid.TryParseExact(laneText, "D", out var laneGuid)
+            || continuation.ContinuationToolCallId is not { Length: > 0 } callText
+            || !Guid.TryParseExact(callText, "D", out var callGuid)
+            || continuation.ContinuationCommandId is not { Length: > 0 } responseCommandId
+            || continuation.ContinuationRequestHash is not { Length: 64 } responseHash
+            || !responseHash.All(Uri.IsHexDigit)
+            || continuation.ContinuationFirstSequence is not { } responseFirst
+            || continuation.ContinuationLastSequence is not { } responseLast || responseLast < responseFirst
+            || !Guid.TryParseExact(continuation.CommandId, "D", out _)
+            || continuation.RequestHash is not { Length: 64 } conversationHash
+            || !conversationHash.All(Uri.IsHexDigit)
+            || !Guid.TryParseExact(continuation.SessionId, "D", out var sessionGuid)
+            || !Guid.TryParseExact(continuation.RunId, "D", out var runGuid))
+        {
+            Trace("resume_guard_binding_shape");
+            return 1;
+        }
+
+        var session = new SessionId(sessionGuid);
+        var run = new RunId(runGuid);
+        var task = new TaskId(taskGuid);
+        var lane = new LaneId(laneGuid);
+        var turn = new TurnId(turnGuid);
+        var callId = new ToolCallId(callGuid);
+        var interaction = new InteractionId(interactionGuid);
+        var controlReceipt = ReceiptStore?.ReadCommandReceipt(controlId);
+        var conversationReceipt = ReceiptStore?.ReadCommandReceipt(continuation.CommandId);
+        var responseReceipt = ReceiptStore?.ReadCommandReceipt(responseCommandId);
+        if (_lastSessionId != session || _lastRunId != run
+            || new RunControlService(_store, _codecs).ActiveRun(session) != run
+            || controlReceipt is not { State: CommandReceiptState.Completed, OutcomeKind: "Accepted",
+                ExecutionState: "deferred", ExecutionCode: "input_required" }
+            || !string.Equals(controlReceipt.ExecutionRunId, run.ToString(), StringComparison.Ordinal)
+            || !string.Equals(controlReceipt.RequestHash, controlHash, StringComparison.Ordinal)
+            || conversationReceipt is not { State: CommandReceiptState.Completed, OutcomeKind: "Accepted" }
+            || !string.Equals(conversationReceipt.RequestHash, conversationHash, StringComparison.Ordinal)
+            || responseReceipt is not { State: CommandReceiptState.Completed, OutcomeKind: "Accepted",
+                FirstSequence: { } actualFirst, LastSequence: { } actualLast }
+            || actualFirst != responseFirst || actualLast != responseLast
+            || !string.Equals(responseReceipt.RequestHash, responseHash, StringComparison.Ordinal))
+        {
+            Trace("resume_guard_receipt_scope");
+            return 1;
+        }
+
+        var journal = _store.ReadFrom(session, 1);
+        var response = journal.SingleOrDefault(evt => evt.RunId == run
+            && evt.Sequence >= responseFirst && evt.Sequence <= responseLast
+            && evt.Causation is CommandCausation cause && cause.CommandId.ToString() == responseCommandId
+            && _codecs.Decode(evt) is InteractionResolved resolved && resolved.InteractionId == interaction);
+        if (response is null || _codecs.Decode(response) is not InteractionResolved choice
+            || choice.Cause != InteractionCause.User || choice.IsQuestionnaire || choice.OptionId != option
+            || !journal.Any(evt => evt.RunId == run && evt.Sequence >= responseFirst && evt.Sequence <= responseLast
+                && evt.Causation is CommandCausation cause && cause.CommandId.ToString() == responseCommandId
+                && _codecs.Decode(evt) is RunInteractionResumed resumed && resumed.RunId == run
+                && resumed.InteractionId == interaction && resumed.CommandId == responseCommandId))
+        {
+            Trace("resume_guard_choice_events");
+            return 1;
+        }
+
+        var scoped = journal.Where(evt => evt.RunId == run && evt.TaskId == task && evt.LaneId == lane
+                && evt.TurnId == turn && evt.ToolCallId == callId)
+            .Select(evt => (Event: evt, Payload: _codecs.Decode(evt))).ToArray();
+        var callEvent = scoped.SingleOrDefault(item => item.Payload is ToolCallRequested call
+            && call.ProviderCallId == "native-action-" + controlId
+            && call.ToolName is ("process.read" or "process.send_input" or "process.stop"));
+        var permission = scoped.SingleOrDefault(item => item.Payload is PermissionRequested request
+            && request.ToolCallId == callId && request.InteractionId == interaction);
+        if (callEvent.Event is null || callEvent.Payload is not ToolCallRequested nativeCall
+            || permission.Event is null || permission.Event.Sequence <= callEvent.Event.Sequence
+            || scoped.Any(item => item.Event.Sequence > permission.Event.Sequence
+                && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallFailed
+                    or ToolCallEffectUnknown or ToolCallReconciled)
+            || callEvent.Event.ExecutionId is not { } executionGuid)
+        {
+            Trace("resume_guard_child_tool_call");
+            return 1;
+        }
+
+        var executionId = executionGuid;
+        if (!journal.Any(item => item.RunId == run && item.TaskId == task && item.LaneId == lane
+                && item.ExecutionId == executionGuid && item.TurnId == turn && item.ToolCallId == callId
+                && item.Sequence >= responseFirst && item.Sequence <= responseLast
+                && item.Causation is CommandCausation cause && cause.CommandId.ToString() == responseCommandId
+                && _codecs.Decode(item) is RunInteractionResumed resumed && resumed.RunId == run
+                && resumed.InteractionId == interaction && resumed.CommandId == responseCommandId)
+            || response.TaskId != task || response.LaneId != lane || response.ExecutionId != executionGuid
+            || response.TurnId != turn || response.ToolCallId != callId
+            || !journal.Any(item => item.RunId == run && item.TaskId == task && item.LaneId == lane
+                && item.ExecutionId == executionGuid && item.TurnId == turn
+                && (item.ToolCallId is null || item.ToolCallId == callId)
+                && item.Sequence > permission.Event.Sequence
+                && _codecs.Decode(item) is InteractionRequested requested
+                && requested.InteractionId == interaction && requested.Kind == InteractionKind.Permission))
+        {
+            Trace("resume_guard_child_scope_correlation");
+            return 1;
+        }
+
+        string? handle;
+        try
+        {
+            using var args = JsonDocument.Parse(nativeCall.ArgumentsJson);
+            handle = args.RootElement.ValueKind == JsonValueKind.Object
+                && args.RootElement.TryGetProperty("handle", out var value)
+                && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        }
+        catch (JsonException failure)
+        {
+            Trace("resume_guard_handle_json=" + failure);
+            return 1;
+        }
+        if (string.IsNullOrWhiteSpace(handle)
+            || !TryGetNativeChildProcessOwner(session, run, handle, nativeCall.ToolName,
+                out var actualLane, out var actualExecution)
+            || actualLane != lane || actualExecution != executionGuid
+            || !NativeDeferredProcessControlInvocationMatches(session, run, nativeCall.ProviderCallId,
+                nativeCall.ToolName, nativeCall.ArgumentsJson, controlHash)
+            || !EnsureWriterOwnershipForCommand()
+            || journal.Any(evt => evt.RunId == run
+                && (_codecs.Decode(evt) is AgentExecutionCompleted completed && completed.ExecutionId == actualExecution
+                    || _codecs.Decode(evt) is AgentExecutionFailed failed && failed.ExecutionId == actualExecution
+                    || _codecs.Decode(evt) is DelegationCancellationRequested cancelled
+                        && cancelled.ChildExecutionId == actualExecution))
+            || !_activeExplorerTurns.TryGetValue((session, run, lane), out var childTurn))
+        {
+            Trace("resume_guard_process_owner");
+            return 1;
+        }
+
+        try
+        {
+            Trace("resume_entered_child_explorer_turn");
+            var outcome = childTurn.ResumeNativeToolActionPermission(session, run, task, lane,
+                executionId, turn, callId, nativeCall.ProviderCallId, interaction, option,
+                cancellationToken);
+            var callEvents = _store.ReadFrom(session, 1).Where(evt => evt.RunId == run && evt.TaskId == task
+                    && evt.LaneId == lane && evt.ExecutionId == executionGuid && evt.TurnId == turn
+                    && evt.ToolCallId == callId)
+                .Select(evt => (Event: evt, Payload: _codecs.Decode(evt)))
+                .Where(item => item.Payload is ToolCallSucceeded or ToolCallFailed or ToolCallEffectUnknown)
+                .OrderBy(item => item.Event.Sequence).ToArray();
+            if (outcome.Succeeded && callEvents.LastOrDefault().Payload is ToolCallSucceeded succeeded
+                && succeeded.ToolCallId == callId)
+            {
+                Trace("resume_child_tool_succeeded");
+                return 0;
+            }
+            if (callEvents.LastOrDefault().Payload is ToolCallFailed failed
+                && failed.ToolCallId == callId && failed.EffectOutcome == EffectOutcome.None)
+            {
+                Trace("resume_child_tool_failed_without_effect");
+                return 1;
+            }
+            // Partial, unknown, or missing durable outcome after continuation can follow an effect.
+            // Keep the original process receipt reconcilable instead of inviting a retry.
+            Trace("resume_child_tool_outcome_unknown; succeeded=" + outcome.Succeeded
+                + "; finalState=" + outcome.FinalState + "; events="
+                + string.Join(",", callEvents.Select(item => item.Payload.Type().ToString())));
+            return 6;
+        }
+        catch (Exception failure) when (failure is ArgumentException or InvalidOperationException
+            or InvalidDataException or IOException or UnauthorizedAccessException or OperationCanceledException)
+        {
+            Trace("resume_child_exception=" + failure);
+            return 5;
+        }
+    }
+
     private string EncodeProcessSessions(SessionId session, RunId run)
     {
         if (_lastSessionId != session || _lastRunId != run) return "null";
@@ -38,20 +343,34 @@ public sealed partial class OmniServer
         if (!active && !terminal) return "null";
         var rootLane = projection.RootTask is { } rootTask
             ? LaneProjection.Replay(_codecs, events).ForTask(rootTask).FirstOrDefault()?.Id : null;
-        var summaries = _processSessions.TryGetValue(session, out var manager)
-            ? manager.Snapshot(run.ToString())
-            : events.Select(evt => (evt.Sequence, Payload: _codecs.Decode(evt)))
-                .Where(item => item.Payload is ProcessSessionStateRecorded)
-                .GroupBy(item => ((ProcessSessionStateRecorded)item.Payload).HandleId, StringComparer.Ordinal)
-                .Select(group => group.OrderBy(item => item.Sequence).Last().Payload)
-                .OfType<ProcessSessionStateRecorded>()
-                .Where(item => item.RunId == run.ToString())
-                .Select(item => new ProcessSessionSummary(item.HandleId,
-                    item.State is "starting" or "running" or "stopping" ? "unknown" : item.State,
-                    item.RunId, item.LaneId, item.LastOutputSequence, item.ExitCode, item.ProposalId,
-                    item.SourceToolId ?? "process.start", item.LastOutputSequence > 0,
-                    false, false, false)).ToArray();
-        var rows = summaries.Take(32).Select(item => "{" + string.Join(",", new[]
+        var liveSummaries = (_processSessions.TryGetValue(session, out var manager)
+            ? manager.Snapshot(run.ToString()) : Array.Empty<ProcessSessionSummary>())
+            .Concat(_childProcessSessions.Where(pair => pair.Key.Session == session && pair.Key.Run == run)
+                .SelectMany(pair => pair.Value.Snapshot(run.ToString())))
+            .ToArray();
+        var liveHandles = liveSummaries.Select(item => item.Handle).ToHashSet(StringComparer.Ordinal);
+        var journalSummaries = events.Select(evt => (evt.Sequence, Payload: _codecs.Decode(evt)))
+            .Where(item => item.Payload is ProcessSessionStateRecorded)
+            .GroupBy(item => ((ProcessSessionStateRecorded)item.Payload).HandleId, StringComparer.Ordinal)
+            .Select(group => group.OrderBy(item => item.Sequence).Last().Payload)
+            .OfType<ProcessSessionStateRecorded>()
+            .Where(item => item.RunId == run.ToString() && !liveHandles.Contains(item.HandleId))
+            .Select(item => new ProcessSessionSummary(item.HandleId,
+                item.State is "starting" or "running" or "stopping" ? "unknown" : item.State,
+                item.RunId, item.LaneId, item.LastOutputSequence, item.ExitCode, item.ProposalId,
+                item.SourceToolId ?? "process.start", item.LastOutputSequence > 0,
+                false, false, false));
+        var summaries = liveSummaries.Concat(journalSummaries).ToArray();
+        var rows = summaries.Take(32).Select(item =>
+        {
+            var isRootLane = rootLane is not null && item.LaneId == rootLane.Value.ToString();
+            var childOpen = Guid.TryParse(item.LaneId, out var childLaneGuid)
+                && _activeExplorerTurns.ContainsKey((session, run, new LaneId(childLaneGuid)))
+                && _childProcessSessions.Any(pair => pair.Key.Session == session && pair.Key.Run == run
+                    && pair.Key.Lane.ToString() == item.LaneId
+                    && pair.Value.CanControlOwnedProcess(item.Handle, run.ToString(), item.LaneId, "process.read"));
+            var laneControlAvailable = isRootLane || childOpen;
+            return "{" + string.Join(",", new[]
         {
             JsonObj.Field("handle", item.Handle), JsonObj.Field("state", item.State),
             JsonObj.Field("runId", item.RunId), JsonObj.Field("laneId", item.LaneId),
@@ -60,11 +379,12 @@ public sealed partial class OmniServer
             item.ExitCode is { } exit ? "\"exitCode\":" + exit.ToString(System.Globalization.CultureInfo.InvariantCulture) : "\"exitCode\":null",
             item.ProposalId is { } proposal ? JsonObj.Field("proposalId", proposal) : "\"proposalId\":null",
             JsonObj.FieldBool("outputGap", item.OutputLost),
-            JsonObj.FieldBool("rootLane", rootLane is not null && item.LaneId == rootLane.Value.ToString()),
-            JsonObj.FieldBool("canRead", active && item.CanRead && rootLane is not null && item.LaneId == rootLane.Value.ToString()),
-            JsonObj.FieldBool("canInput", active && item.CanInput && rootLane is not null && item.LaneId == rootLane.Value.ToString()),
-            JsonObj.FieldBool("canStop", active && item.CanStop && rootLane is not null && item.LaneId == rootLane.Value.ToString()),
-        }) + "}");
+            JsonObj.FieldBool("rootLane", isRootLane),
+            JsonObj.FieldBool("canRead", active && item.CanRead && laneControlAvailable),
+            JsonObj.FieldBool("canInput", active && item.CanInput && laneControlAvailable),
+            JsonObj.FieldBool("canStop", active && item.CanStop && laneControlAvailable),
+        }) + "}";
+        }).ToArray();
         return "{" + JsonObj.Field("sessionId", session.ToString()) + "," + JsonObj.Field("runId", run.ToString())
             + ",\"sequence\":" + highWater.ToString(System.Globalization.CultureInfo.InvariantCulture)
             + ",\"truncated\":" + (truncated ? "true" : "false")
@@ -89,18 +409,25 @@ public sealed partial class OmniServer
             ? LaneProjection.Replay(_codecs, events).ForTask(task).FirstOrDefault()?.Id.ToString() : null;
         var lane = events.Select(evt => _codecs.Decode(evt)).OfType<ProcessSessionStateRecorded>()
             .LastOrDefault(item => item.HandleId == handle && item.RunId == run.ToString())?.LaneId;
-        if (lane is null || rootLane is null || lane != rootLane) return "null";
+        if (lane is null || rootLane is null) return "null";
         IReadOnlyList<ProcessOutputChunk> chunks = Array.Empty<ProcessOutputChunk>();
         var last = after;
         var highWater = 0L;
         var gap = true;
         var state = "unknown";
         int? exitCode = null;
-        if (_processSessions.TryGetValue(session, out var manager))
+        var processManager = lane == rootLane && _processSessions.TryGetValue(session, out var rootManager)
+            ? rootManager
+            : events.Select(evt => (Event: evt, Payload: _codecs.Decode(evt)))
+                .LastOrDefault(item => item.Payload is ProcessSessionStateRecorded process
+                    && process.HandleId == handle && item.Event.RunId == run && item.Event.ExecutionId is not null) is { Event.ExecutionId: { } execution }
+                && _childProcessSessions.TryGetValue((session, run, new LaneId(Guid.Parse(lane)), execution), out var childManager)
+                ? childManager : null;
+        if (processManager is not null)
         {
             try
             {
-                chunks = manager.Read(handle, run.ToString(), lane, after, 32,
+                chunks = processManager.Read(handle, run.ToString(), lane, after, 32,
                     out last, out highWater, out gap, out state, out exitCode);
             }
             catch (KeyNotFoundException) { }
@@ -1278,6 +1605,40 @@ public sealed partial class OmniServer
         return events.Any(item => _codecs.Decode(item) is NativeCommandInvocationStarted started
                 && started.InvocationId == invocation && started.Kind == "nativeTool" && started.RunId == run)
             && !events.Any(item => _codecs.Decode(item) is NativeCommandInvocationFinished finished
+                && finished.InvocationId == invocation);
+    }
+
+    private bool NativeDeferredProcessControlInvocationMatches(SessionId session, RunId run,
+        string providerCallId, string toolName, string argumentsJson, string requestHash)
+    {
+        const string prefix = "native-action-";
+        if (!providerCallId.StartsWith(prefix, StringComparison.Ordinal)
+            || !Guid.TryParseExact(providerCallId[prefix.Length..], "D", out var invocationGuid)
+            || providerCallId != prefix + invocationGuid.ToString("D")
+            || requestHash.Length != 64 || !requestHash.All(Uri.IsHexDigit)) return false;
+        var invocation = new CommandId(invocationGuid);
+        var receipt = ReceiptStore?.ReadCommandReceipt(invocation.ToString());
+        if (receipt is not { State: CommandReceiptState.Completed, OutcomeKind: "Accepted",
+                ExecutionState: "deferred", ExecutionCode: "input_required" }
+            || receipt.SessionId != session.ToString() || receipt.ExecutionRunId != run.ToString()
+            || !FixedHashEquals(receipt.RequestHash ?? "", requestHash)
+            || !TryReadNativeCommandPayload(invocation, out var admitted, out var payloadJson)
+            || admitted.InvocationId != invocation || admitted.SessionId != session || admitted.RunId != run
+            || admitted.CanonicalCommandId != NativeProcessControlCommandId || admitted.Kind != "nativeTool"
+            || !TryDecodeNativeCommandPayload(payloadJson, out var payload)
+            || !NativeToolActionPayloadMatches(admitted, payload)
+            || payload.Arguments.Length != 2 || payload.Arguments[0] != toolName
+            || !string.Equals(payload.Arguments[1], argumentsJson, StringComparison.Ordinal)) return false;
+        var events = _store.ReadFrom(session, 1);
+        var admissions = events.Where(evt => evt.RunId == run
+            && evt.Sequence >= receipt.FirstSequence && evt.Sequence <= receipt.LastSequence
+            && _codecs.Decode(evt) is NativeCommandInvocationAdmitted item
+            && item.InvocationId == invocation && item.SessionId == session && item.RunId == run
+            && item.CanonicalCommandId == NativeProcessControlCommandId && item.Kind == "nativeTool").ToArray();
+        return admissions.Length == 1
+            && !events.Any(evt => _codecs.Decode(evt) is NativeCommandInvocationStarted started
+                && started.InvocationId == invocation)
+            && !events.Any(evt => _codecs.Decode(evt) is NativeCommandInvocationFinished finished
                 && finished.InvocationId == invocation);
     }
 

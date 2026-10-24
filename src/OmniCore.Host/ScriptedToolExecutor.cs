@@ -374,6 +374,22 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         return Run(validated, userApprovesAsk, cancellationToken, stream, requestReceipt);
     }
 
+    internal ToolOutcome ExecuteNativeToolAction(ValidatedToolCall validated, bool userApprovesAsk,
+        CancellationToken cancellationToken, EventStream stream, ToolCallRequestReceipt requestReceipt,
+        bool allowDeferredInteraction)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentNullException.ThrowIfNull(requestReceipt);
+        var scope = ExecutionScope.Current;
+        if (!requestReceipt.MatchesCall(validated)
+            || !requestReceipt.MatchesScope(scope?.RunId, scope?.TaskId, scope?.LaneId,
+                scope?.TurnId, scope?.ExecutionId)
+            || !stream.IsCurrentToolCallRequestReceipt(requestReceipt, validated))
+            throw new InvalidOperationException("Tool request receipt is not present in this session journal.");
+        return Run(validated, userApprovesAsk, cancellationToken, stream, requestReceipt,
+            allowDeferredInteractionOverride: allowDeferredInteraction);
+    }
+
     internal ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
         CancellationToken cancellationToken, EventStream stream, ToolCallRequestReceipt requestReceipt,
         bool requiresSubstitutionAsk)
@@ -411,7 +427,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         bool recordReadRegistry = true, InteractionId? approvedPermission = null,
         string? approvedOption = null, string? expectedPreparedArguments = null,
         string? expectedIntentFingerprint = null, InteractionId? approvedWeakSandboxInteraction = null,
-        string? approvedWeakSandboxOption = null)
+        string? approvedWeakSandboxOption = null, bool? allowDeferredInteractionOverride = null)
     {
         // Buffer local a la llamada (evita estado compartido entre Runs). Sin flush, contiene
         // todos los eventos emitidos; tras un flush contiene solo los outcomes.
@@ -534,7 +550,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             requiresSubstitutionAsk: requiresSubstitutionAsk,
             protectedSubstitution: protectedSubstitution,
             acquireSessionSecurityAdmission: _acquireSessionSecurityAdmission,
-            allowDeferredInteraction: _allowDeferredInteraction,
+            allowDeferredInteraction: allowDeferredInteractionOverride ?? _allowDeferredInteraction,
             allowDeferredWeakSandboxConsent: _allowDeferredWeakSandboxConsent,
             weakSandboxConsentForThisCall: approvedWeakSandboxInteraction is not null
                 && approvedWeakSandboxOption == "consent_once",

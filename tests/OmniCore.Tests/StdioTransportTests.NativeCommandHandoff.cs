@@ -476,6 +476,7 @@ public sealed partial class StdioTransportTests
             Provider = provider;
             ProviderBodies = new ConcurrentQueue<string>();
             Diagnostics = new ConcurrentQueue<string>();
+            DetailedDiagnostics = new ConcurrentQueue<string>();
             CutStream = null!;
         }
 
@@ -484,9 +485,29 @@ public sealed partial class StdioTransportTests
         public CliEndToEndTests.ScriptedHttpProvider Provider { get; }
         public ConcurrentQueue<string> ProviderBodies { get; }
         public ConcurrentQueue<string> Diagnostics { get; }
+        public ConcurrentQueue<string> DetailedDiagnostics { get; }
+        public bool PreserveRootOnDispose { get; set; }
+        public Func<CancellationToken, Task>? NativeProcessControlDeferredForTests { get; set; }
+        public Action<string>? NativeProcessControlStageForTests { get; set; }
         public AckDeliveryCutStream CutStream { get; private set; }
+        public string RootDirectory => _root;
         public string JournalPath => Path.Combine(OmniHost.WorkspaceDataDirectory(
             OmniHost.CreatePlatformPaths(), Workspace), "journal.db");
+
+        public string SaveFailureDiagnostic(string suffix, string contents)
+        {
+            DirectoryInfo? repository = new(AppContext.BaseDirectory);
+            while (repository is not null && !File.Exists(Path.Combine(repository.FullName, "OmniCore.slnx")))
+                repository = repository.Parent;
+            if (repository is null) throw new DirectoryNotFoundException("OmniCore.slnx was not found above the test output directory.");
+            var directory = Path.Combine(repository.FullName, "artifacts", "m9-child-process-controls");
+            Directory.CreateDirectory(directory);
+            var safeSuffix = string.Concat(suffix.Where(character => char.IsAsciiLetterOrDigit(character) || character == '-'));
+            var path = Path.Combine(directory, $"diagnostic-{safeSuffix}-{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffZ}-{Guid.NewGuid():N}.log");
+            File.WriteAllText(path, contents, new UTF8Encoding(false));
+            PreserveRootOnDispose = true;
+            return path;
+        }
 
         public async Task WaitForProviderBodiesAsync(int count, CancellationToken cancellationToken)
         {
@@ -502,11 +523,23 @@ public sealed partial class StdioTransportTests
                 + string.Join(",", policy.Policy.ToolPolicy.CapabilityCeiling.Order());
         }
 
+        public Task<int> ExecuteDelegationAsync(string delegationId, Action<string> diagnostics,
+            CancellationToken cancellationToken) => (_runtime
+                ?? throw new InvalidOperationException("The native Host runtime is not connected."))
+            .DelegationAsync(delegationId, diagnostics, cancellationToken);
+
+        public void ObserveChildTurnResultsForTests(Action<ExplorerTurn.TurnResult> observer) =>
+            (_runtime ?? throw new InvalidOperationException("The native Host runtime is not connected."))
+                .ChildTurnResultObserverForTests = observer;
+
         public static async Task<NativeCommandHandoffFixture> StartAsync(string cutCommandId,
             bool includeStrongExtension = false, Func<int, string, string>? providerResponse = null,
             bool includeWorkflowAgentProfile = false,
             Func<int, string, Task<string>>? providerResponseAsync = null,
-            string? permissionsYaml = null)
+            string? permissionsYaml = null, bool allowWorkflowPersistentProcess = false,
+            bool includeZeroModelPricing = false,
+            Func<CancellationToken, Task>? nativeProcessControlDeferredForTests = null,
+            Action<string>? nativeProcessControlStageForTests = null)
         {
             var root = Path.Combine(Path.GetTempPath(), "omni-native-command-handoff-" + Guid.NewGuid().ToString("N"));
             var workspace = Path.Combine(root, "workspace");
@@ -522,6 +555,8 @@ public sealed partial class StdioTransportTests
             var provider = new CliEndToEndTests.ScriptedHttpProvider();
             var fixture = new NativeCommandHandoffFixture(root, workspace, oldData, oldConfig,
                 oldDirectory, key, provider);
+            fixture.NativeProcessControlDeferredForTests = nativeProcessControlDeferredForTests;
+            fixture.NativeProcessControlStageForTests = nativeProcessControlStageForTests;
             void RecordProviderBody(string body)
             {
                 fixture.ProviderBodies.Enqueue(body);
@@ -551,7 +586,10 @@ public sealed partial class StdioTransportTests
                         auth: none
                         billingMode: Local
                     """, new UTF8Encoding(false));
-                File.WriteAllText(Path.Combine(config, "models.yaml"), "models:\n  scripted-model:\n    provider: scripted\n    context: 32768\n    recommendedUsableContext: 24000\n    maxOutput: 512\n    parametersBillions: 100\n", new UTF8Encoding(false));
+                var modelConfiguration = "models:\n  scripted-model:\n    provider: scripted\n    context: 32768\n    recommendedUsableContext: 24000\n    maxOutput: 512\n    parametersBillions: 100\n";
+                if (includeZeroModelPricing)
+                    modelConfiguration += "    inputPricePerMillionUsd: 0\n    outputPricePerMillionUsd: 0\n";
+                File.WriteAllText(Path.Combine(config, "models.yaml"), modelConfiguration, new UTF8Encoding(false));
                 File.WriteAllText(Path.Combine(config, "settings.yaml"), "defaultModel: scripted-model\n", new UTF8Encoding(false));
                 File.WriteAllText(Path.Combine(config, "permissions.yaml"), permissionsYaml ?? (includeStrongExtension
                     ? "profile: balanced\nrules:\n  tool.search: allow\n  ext.fixture.native.mutate: ask\n"
@@ -560,7 +598,7 @@ public sealed partial class StdioTransportTests
                 Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", config);
                 Environment.CurrentDirectory = workspace;
                 if (includeStrongExtension) fixture.ConfigureStrongExtensionPackage();
-                if (includeWorkflowAgentProfile) fixture.ConfigureWorkflowAgentProfile(config);
+                if (includeWorkflowAgentProfile) fixture.ConfigureWorkflowAgentProfile(config, allowWorkflowPersistentProcess);
                 using (var policies = OmniHost.CreateModelPolicyService(data))
                     policies.Set(ModelPolicyKey.For("scripted", "scripted-model"), 0,
                         ModelPolicyPresets.FullAgent(), CancellationToken.None);
@@ -577,11 +615,16 @@ public sealed partial class StdioTransportTests
             }
         }
 
-        private void ConfigureWorkflowAgentProfile(string config)
+        private void ConfigureWorkflowAgentProfile(string config, bool allowPersistentProcess)
         {
             var profileId = Guid.NewGuid();
             var executable = new SystemExecutableResolver().Resolve("dotnet", Workspace).ResolvedPath
                 .Replace("\\", "/", StringComparison.Ordinal);
+            var processRules = $"        - executablePattern: '{executable}'\n"
+                + "          argvPatterns: [\"--version\"]\n          decision: Allow";
+            if (allowPersistentProcess)
+                processRules += "\n        - executablePattern: '**/OmniCore.SandboxTestProcess.exe'\n"
+                    + "          argvPatterns: [\"stdin-state\"]\n          decision: Allow";
             File.WriteAllText(Path.Combine(config, "agent-profiles.yaml"), $$"""
                 defaultProfile: {{profileId:D}}
                 agentProfiles:
@@ -592,9 +635,7 @@ public sealed partial class StdioTransportTests
                       reads: ["**"]
                       writes: ["**"]
                       process:
-                        - executablePattern: '{{executable}}'
-                          argvPatterns: ["--version"]
-                          decision: Allow
+                {{processRules}}
                       network: []
                       secrets: []
                       allowShell: false
@@ -791,7 +832,13 @@ public sealed partial class StdioTransportTests
                 duplex.HostInput, output, TextWriter.Null, _key,
                 runPersistedConversation: async (admitted, token) =>
                     await runtime.ExecutePersistedConversationAsync(admitted,
-                        diagnostic => Diagnostics.Enqueue(SafeDiagnostic(diagnostic)), token)));
+                        diagnostic =>
+                        {
+                            DetailedDiagnostics.Enqueue(diagnostic);
+                            Diagnostics.Enqueue(SafeDiagnostic(diagnostic));
+                        }, token),
+                nativeProcessControlDeferredForTests: NativeProcessControlDeferredForTests,
+                nativeProcessControlStageForTests: NativeProcessControlStageForTests));
         }
 
         private void Negotiate()
@@ -829,7 +876,8 @@ public sealed partial class StdioTransportTests
             Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", _oldData);
             Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", _oldConfig);
             Environment.CurrentDirectory = _oldDirectory;
-            try { Directory.Delete(_root, recursive: true); } catch (IOException) { }
+            if (!PreserveRootOnDispose)
+                try { Directory.Delete(_root, recursive: true); } catch (IOException) { }
         }
     }
 }

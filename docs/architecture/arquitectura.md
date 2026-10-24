@@ -753,15 +753,28 @@ en `main` como `f02d3b5` después de aprobar los cinco jobs de la
 Se retoma el ciclo durable de worktrees de M9-L en ZephyrusG14, con construcción
 y validación Luna secuenciales, sin nueva publicación automática. Esta actualización supera los estados
 históricos de construcción inferiores, sin cerrar M9 global, M8 manual ni la aceptación del
-consumidor Electron, que corresponde a su coordinación. Persistencia Weak, controles de Lane
-hijo, ciclo durable restante de worktrees y aceptación transversal siguen explícitos.
+consumidor Electron, que corresponde a su coordinación. Persistencia Weak,
+ciclo durable restante de worktrees y aceptación transversal siguen explícitos;
+el incremento local de procesos hijos se registra abajo.
 
 El bloque local de integración nativa de worktrees ya conecta preview por Lane
 público y aplicación al pipeline existente, con permisos, recibos y reapertura
 comprobados. Luna bajo aprobó 12 casos pertinentes sobre binarios congelados sin
 recompilar; [evidencia](../validation/m9-worktree-lifecycle-20261023.md).
-No acredita CI/publicación nueva ni el ciclo completo de limpieza/provisión. El
-siguiente pendiente de Core son los controles de procesos de Lane hijo ya previstos.
+No acredita CI/publicación nueva ni el ciclo completo de limpieza/provisión.
+
+Los controles de procesos de delegaciones genéricas también tienen aceptación
+local: el manager conserva el claim del proceso y la raíz física del hijo; cada
+intervención usa su Execution y Turn original, con política y ToolRuntime vigentes.
+La capacidad negociada de entregar Ask pertenece a la acción nativa autenticada,
+no concede permisos ni cambia el ejecutor del modelo. La respuesta y el resultado
+del efecto tienen recibos separados; la incertidumbre no se convierte en éxito
+ni habilita reintento automático. Luna bajo validó seis casos únicos y revalidó
+el foco tras corregir la correlación de InteractionId, sin recompilar.
+[Acta y límites](../validation/m9-child-process-controls-20261023.md).
+La admisión de la fixture es Core in-process y el control es Host/stdio; no acredita
+admisión de delegación por stdio end-to-end. Verify conserva su comando exacto,
+OmniCoder permanece en sólo lectura y no hubo nueva CI ni publicación.
 
 ### P0-OMNI-UNIFICACION
 

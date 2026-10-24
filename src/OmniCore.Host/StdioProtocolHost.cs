@@ -18,6 +18,8 @@ internal sealed record PersistedConversationCommand(string CommandId, string Req
     bool NativeChoiceCapability = false, bool ExplicitChoiceRecovery = false,
     string? NativeInvocationId = null, string? NativeCommandKind = null,
     bool ExplicitNativeCommandRecovery = false, bool NativeWorkflowContinuation = false,
+    bool NativeProcessControlContinuation = false,
+    string? NativeProcessControlRequestHash = null,
     string? ContinuationTaskId = null, string? ContinuationLaneId = null,
     string? ContinuationToolCallId = null, string? ContinuationInvocationId = null,
     bool NativeWeakSandboxCapability = false);
@@ -36,27 +38,33 @@ public static class StdioProtocolHost
     internal static int RunWithTrustedActions(IOmniClient client, Stream input, Stream output, TextWriter diagnostics,
         byte[] bootstrapKey, CancellationToken cancellationToken = default, Func<string, string>? localizeDiagnostic = null,
         Func<PersistedConversationCommand, CancellationToken, Task<int>>? runPersistedConversation = null,
-        Func<string, string?>? validateConversationAttachments = null)
+        Func<string, string?>? validateConversationAttachments = null,
+        Func<CancellationToken, Task>? nativeProcessControlDeferredForTests = null,
+        Action<string>? nativeProcessControlStageForTests = null)
     {
         ArgumentNullException.ThrowIfNull(bootstrapKey);
         if (bootstrapKey.Length != 32) throw new ArgumentException("Trusted action bootstrap key must be 256 bits.", nameof(bootstrapKey));
         return RunCore(client, input, output, diagnostics, bootstrapKey,
             Convert.ToHexString(RandomNumberGenerator.GetBytes(16)), cancellationToken, localizeDiagnostic,
-            runPersistedConversation, validateConversationAttachments);
+            runPersistedConversation, validateConversationAttachments, nativeProcessControlDeferredForTests,
+            nativeProcessControlStageForTests);
     }
 
     private static int RunCore(IOmniClient client, Stream input, Stream output, TextWriter diagnostics,
         byte[]? bootstrapKey, string? actionNonce, CancellationToken cancellationToken,
         Func<string, string>? localizeDiagnostic,
         Func<PersistedConversationCommand, CancellationToken, Task<int>>? runPersistedConversation = null,
-        Func<string, string?>? validateConversationAttachments = null)
+        Func<string, string?>? validateConversationAttachments = null,
+        Func<CancellationToken, Task>? nativeProcessControlDeferredForTests = null,
+        Action<string>? nativeProcessControlStageForTests = null)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(diagnostics);
         var negotiated = false;
-        var conversation = new ConversationExecution(runPersistedConversation, validateConversationAttachments);
+        var conversation = new ConversationExecution(runPersistedConversation, validateConversationAttachments,
+            nativeProcessControlDeferredForTests, nativeProcessControlStageForTests);
         var eventStream = new EventStreamPump(output);
         try
         {
@@ -331,7 +339,9 @@ public static class StdioProtocolHost
                     trustedScope = trustedScope with { CheckRevision = false };
                 }
                 else if (conversation.IsRunning && commandName is not ("process.control" or "session.security.set")
-                    && commandName is not ("delegation.cancel" or "delegation.disposition" or "delegation.mailbox.send"))
+                    && commandName is not ("delegation.cancel" or "delegation.disposition" or "delegation.mailbox.send")
+                    && !(commandName == "interaction.respond" && responseType == "choice"
+                        && conversation.HasNativeChildProcessControlChoiceAdmission(command)))
                 {
                     var duplicate = FindReceiptResult(client, command);
                     if (duplicate is not null) return EncodeAck(duplicate);
@@ -1274,7 +1284,9 @@ public static class StdioProtocolHost
 
     private sealed class ConversationExecution(
         Func<PersistedConversationCommand, CancellationToken, Task<int>>? runner,
-        Func<string, string?>? validateAttachments) : IDisposable
+        Func<string, string?>? validateAttachments,
+        Func<CancellationToken, Task>? nativeProcessControlDeferredForTests,
+        Action<string>? nativeProcessControlStageForTests) : IDisposable
     {
         private sealed record ChoiceRecovery(PersistedConversationCommand Binding, string InteractionId,
             string RunId, long PolicyRevision, string Kind, string OptionId);
@@ -1287,8 +1299,16 @@ public static class StdioProtocolHost
             PersistedConversationCommand Binding, Task<int>? PriorTask);
         private PendingNativeProcessControl? _pendingNativeProcessControl;
         private Task<int>? _nativeProcessControlTask;
+        private CancellationTokenSource? _nativeProcessControlChoiceCancellation;
         private string? _nativeProcessControlCommandId;
+        private void ObserveNativeProcessControlStage(string stage)
+        {
+            try { nativeProcessControlStageForTests?.Invoke(stage); }
+            catch (Exception) { /* Test diagnostics cannot change native control behavior. */ }
+        }
         private PendingContinuation? _pendingContinuation;
+        private PendingContinuation? _pendingNativeProcessControlChoice;
+        private PersistedConversationCommand? _nativeChildProcessControlChoiceAdmission;
         private string? _commandId;
         private PersistedConversationCommand? _deferredConversation;
         private bool _nativeChoiceCapability;
@@ -1313,6 +1333,7 @@ public static class StdioProtocolHost
         {
             get { lock (_gate) return _pendingContinuation is null && _task is not { IsCompleted: false }
                 && _deferredConversation is null && _pendingNativeProcessControl is null
+                && _pendingNativeProcessControlChoice is null && _nativeChildProcessControlChoiceAdmission is null
                 && _nativeProcessControlTask is not { IsCompleted: false }; }
         }
 
@@ -1333,7 +1354,8 @@ public static class StdioProtocolHost
                 lock (_gate)
                 {
                     if (_pendingContinuation is not null || _deferredConversation is not null
-                        || _pendingNativeProcessControl is not null
+                        || _pendingNativeProcessControl is not null || _pendingNativeProcessControlChoice is not null
+                        || _nativeChildProcessControlChoiceAdmission is not null
                         || _nativeProcessControlTask is { IsCompleted: false }) return false;
                 }
                 return server.CanExecuteNativeProcessControl(new SessionId(sessionGuid), new RunId(runGuid),
@@ -1355,9 +1377,12 @@ public static class StdioProtocolHost
         }
 
         public bool IsRunning { get { lock (_gate) return _pendingContinuation is not null || _task is { IsCompleted: false }
-            || _pendingNativeProcessControl is not null || _nativeProcessControlTask is { IsCompleted: false }; } }
+            || _pendingNativeProcessControl is not null || _pendingNativeProcessControlChoice is not null
+            || _nativeChildProcessControlChoiceAdmission is not null
+            || _nativeProcessControlTask is { IsCompleted: false }; } }
         public bool IsRunningFor(string commandId) { lock (_gate) return _commandId == commandId && _task is { IsCompleted: false }
-            || _nativeProcessControlCommandId == commandId && _nativeProcessControlTask is { IsCompleted: false }; }
+            || _nativeProcessControlCommandId == commandId && _nativeProcessControlTask is { IsCompleted: false }
+            || _pendingNativeProcessControlChoice?.ReceiptCommandId == commandId; }
         public (CommandAck Ack, ArtifactRef? Reference) Upload(WireEnvelope command, OmniServer server, string commandName) =>
             _uploads.Dispatch(server, command, commandName);
 
@@ -1661,6 +1686,28 @@ public static class StdioProtocolHost
                             || sourceReceipt.SessionId != sessionId.ToString()
                             || sourceInput.Sequence < sourceFirst || sourceInput.Sequence > sourceLast
                             || sourceReceipt.ExecutionRunId is { } boundRun && boundRun != run.ToString()) break;
+                        var nativeControlCalls = request.Kind == InteractionKind.Permission
+                            && targetTask is not null && targetLane is not null && targetToolCall is not null
+                            && _nativeChoiceCapability
+                            ? events.Where(evt => evt.RunId == run && evt.TaskId == targetTask
+                                && evt.LaneId == targetLane && evt.TurnId == sourceTurnId
+                                && evt.ToolCallId == targetToolCall
+                                && codecs.Decode(evt) is ToolCallRequested call
+                                && call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal)
+                                && call.ToolName is ("process.read" or "process.send_input" or "process.stop"))
+                                .Select(evt => ((ToolCallRequested)codecs.Decode(evt)).ProviderCallId["native-action-".Length..])
+                                .Distinct(StringComparer.Ordinal).ToArray()
+                            : Array.Empty<string>();
+                        var nativeControlId = nativeControlCalls.Length == 1
+                            && Guid.TryParseExact(nativeControlCalls[0], "D", out var controlGuid)
+                            && nativeControlCalls[0] == controlGuid.ToString("D")
+                            ? nativeControlCalls[0] : null;
+                        var nativeControlReceipt = nativeControlId is null ? null
+                            : server.ReceiptStore?.ReadCommandReceipt(nativeControlId);
+                        var nativeProcessControl = nativeControlReceipt is
+                            { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                                OutcomeKind: "Accepted", ExecutionState: "deferred", ExecutionCode: "input_required" };
+                        if (nativeControlCalls.Length > 0 && !nativeProcessControl) break;
                         string? turnId = null;
                         if (request.Kind == InteractionKind.Permission)
                         {
@@ -1680,7 +1727,11 @@ public static class StdioProtocolHost
                             ContinuationTaskId: request.Kind == InteractionKind.Permission ? targetTask?.ToString() : null,
                             ContinuationLaneId: request.Kind == InteractionKind.Permission ? targetLane?.ToString() : null,
                             ContinuationToolCallId: request.Kind == InteractionKind.Permission ? targetToolCall?.ToString() : null,
-                            NativeChoiceCapability: true, ExplicitChoiceRecovery: true);
+                            NativeChoiceCapability: _nativeChoiceCapability, ExplicitChoiceRecovery: true,
+                            NativeInvocationId: nativeProcessControl ? nativeControlId : null,
+                            NativeCommandKind: nativeProcessControl ? "nativeTool" : null,
+                            NativeProcessControlContinuation: nativeProcessControl,
+                            NativeProcessControlRequestHash: nativeProcessControl ? nativeControlReceipt!.RequestHash : null);
                         var chosenOption = resolved.OptionId;
                         choices.Add(new ChoiceRecovery(binding, request.InteractionId.ToString(), run.ToString(),
                             policy.PolicyRevision, request.Kind.ToString(), chosenOption));
@@ -1918,7 +1969,7 @@ public static class StdioProtocolHost
         public bool CanResumeChoice(IOmniClient client, TrustedActionScope scope, WireEnvelope command)
         {
             _choiceResumeFailure = null;
-            if (client is not OmniServer server || runner is null || scope.ExpectedSessionId is not { } expectedSession
+            if (client is not OmniServer server || scope.ExpectedSessionId is not { } expectedSession
                 || scope.ExpectedRunId is not { } expectedRun || !_nativeChoiceCapability) return false;
             using var payload = JsonDocument.Parse(command.PayloadJson);
             var root = payload.RootElement;
@@ -2006,7 +2057,29 @@ public static class StdioProtocolHost
                 // be mistaken for a resumable runner after this response is accepted.
                 lock (_gate) return _task is not { IsCompleted: false };
             }
-            var admitted = FindDeferredConversationBinding(server, events, codecs, session, run, turnStart.Sequence);
+            PersistedConversationCommand? nativeChildProcessControl = null;
+            if (requested.Kind == InteractionKind.Permission && targetIsAcceptedChild
+                && requestedTask is { } processTask && requestedLane is { } processLane
+                && requestEvent.TurnId is { } processTurn && requestedToolCall is { } processCall)
+            {
+                var sourceCall = events.Where(evt => evt.RunId == run && evt.TaskId == processTask
+                        && evt.LaneId == processLane && evt.TurnId == processTurn && evt.ToolCallId == processCall)
+                    .Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
+                    .SingleOrDefault(item => item.Payload is ToolCallRequested call
+                        && call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal)
+                        && call.ToolName is ("process.read" or "process.send_input" or "process.stop"));
+                if (sourceCall.Event is not null && sourceCall.Payload is ToolCallRequested nativeCall)
+                    nativeChildProcessControl = server.NativeChildProcessControlChoiceBinding(session, run,
+                        processTask, processLane, processTurn, processCall, interaction,
+                        nativeCall.ProviderCallId, nativeCall.ToolName, nativeCall.ArgumentsJson);
+            }
+            if (nativeChildProcessControl is null && runner is null)
+            {
+                _choiceResumeFailure = "choice_conversation_runner_unavailable";
+                return false;
+            }
+            var admitted = nativeChildProcessControl
+                ?? FindDeferredConversationBinding(server, events, codecs, session, run, turnStart.Sequence);
             if (admitted is null)
             {
                 _choiceResumeFailure = "choice_deferred_binding_missing";
@@ -2015,14 +2088,30 @@ public static class StdioProtocolHost
             admitted = admitted with
             {
                 NativeChoiceCapability = true,
+                ContinuationInteractionId = interaction.ToString(),
                 ContinuationTurnId = requested.Kind is InteractionKind.Permission or InteractionKind.MemoryPromotion
                     ? requestEvent.TurnId?.ToString() : null,
                 ContinuationTaskId = requested.Kind is InteractionKind.Permission or InteractionKind.MemoryPromotion ? requestedTask?.ToString() : null,
                 ContinuationLaneId = requested.Kind is InteractionKind.Permission or InteractionKind.MemoryPromotion ? requestedLane?.ToString() : null,
                 ContinuationToolCallId = requested.Kind is InteractionKind.Permission or InteractionKind.MemoryPromotion ? requestedToolCall?.ToString() : null,
             };
+            if (nativeChildProcessControl is not null)
+                admitted = admitted with { NativeProcessControlContinuation = true,
+                    NativeProcessControlRequestHash = nativeChildProcessControl.NativeProcessControlRequestHash };
             lock (_gate)
             {
+                if (nativeChildProcessControl is not null)
+                {
+                    if (_pendingContinuation is not null || _pendingNativeProcessControlChoice is not null
+                        || _nativeProcessControlTask is { IsCompleted: false }
+                            && !string.Equals(_nativeProcessControlCommandId,
+                                nativeChildProcessControl.NativeInvocationId, StringComparison.Ordinal)
+                        || _nativeChildProcessControlChoiceAdmission is not null)
+                        return false;
+                    _nativeChildProcessControlChoiceAdmission = admitted;
+                    ObserveNativeProcessControlStage("choice_admitted");
+                    return true;
+                }
                 if (_task is { IsCompleted: false }) return false;
                 if (_deferredConversation is { } current
                     && (!string.Equals(current.SessionId, expectedSession, StringComparison.Ordinal)
@@ -2040,6 +2129,19 @@ public static class StdioProtocolHost
         }
 
         public string? ChoiceResumeFailure { get { lock (_gate) return _choiceResumeFailure; } }
+
+        public bool HasNativeChildProcessControlChoiceAdmission(WireEnvelope command)
+        {
+            try
+            {
+                using var payload = JsonDocument.Parse(command.PayloadJson);
+                if (!CanonicalGuid(payload.RootElement, "interactionId", out var interactionId)) return false;
+                lock (_gate) return _nativeChildProcessControlChoiceAdmission is { } admission
+                    && admission.NativeProcessControlContinuation
+                    && string.Equals(admission.ContinuationInteractionId, interactionId, StringComparison.Ordinal);
+            }
+            catch (JsonException) { return false; }
+        }
 
         public bool CanResumeWeakSandboxConsent(IOmniClient client, TrustedActionScope scope, WireEnvelope command)
         {
@@ -2348,7 +2450,7 @@ public static class StdioProtocolHost
         public CommandAck ResumeChoice(IOmniClient client, WireEnvelope command,
             TrustedActionScope scope, CommandAck acknowledgement)
         {
-            if (client is not OmniServer server || runner is null
+            if (client is not OmniServer server
                 || acknowledgement.FirstSeq is not { } first || acknowledgement.LastSeq is not { } last)
                 return acknowledgement;
             using var payload = JsonDocument.Parse(command.PayloadJson);
@@ -2360,7 +2462,34 @@ public static class StdioProtocolHost
             var requestHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(command.PayloadJson)));
             lock (_gate)
             {
-                if (_pendingContinuation is not null || _task is { IsCompleted: false } || _deferredConversation is not { } deferred
+                if (_nativeChildProcessControlChoiceAdmission is { } childAdmission
+                    && string.Equals(childAdmission.SessionId, sessionId, StringComparison.Ordinal)
+                    && string.Equals(childAdmission.RunId, runId, StringComparison.Ordinal)
+                    && string.Equals(childAdmission.ContinuationInteractionId, interactionId, StringComparison.Ordinal))
+                {
+                    if (_pendingNativeProcessControlChoice is not null
+                        || _nativeProcessControlTask is { IsCompleted: false }
+                            && !string.Equals(_nativeProcessControlCommandId,
+                                childAdmission.NativeInvocationId, StringComparison.Ordinal)
+                        || server.LastSessionId()?.ToString() != sessionId || server.LastRunId()?.ToString() != runId)
+                        return acknowledgement;
+                    var childContinuation = childAdmission with
+                    {
+                        ContinuationCommandId = command.MessageId,
+                        ContinuationRequestHash = requestHash,
+                        ContinuationFirstSequence = first,
+                        ContinuationLastSequence = last,
+                        ContinuationResponseType = "choice",
+                        ContinuationOptionId = optionId,
+                    };
+                    _pendingNativeProcessControlChoice = new PendingContinuation(server, childContinuation,
+                        command.MessageId, requestHash);
+                    _nativeChildProcessControlChoiceAdmission = null;
+                    ObserveNativeProcessControlStage("choice_response_bound");
+                    return acknowledgement;
+                }
+                if (runner is null || _pendingContinuation is not null || _task is { IsCompleted: false }
+                    || _deferredConversation is not { } deferred
                     || !string.Equals(deferred.SessionId, sessionId, StringComparison.Ordinal)
                     || !string.Equals(deferred.RunId, runId, StringComparison.Ordinal)
                     || server.LastSessionId()?.ToString() != sessionId || server.LastRunId()?.ToString() != runId)
@@ -2437,6 +2566,28 @@ public static class StdioProtocolHost
                     _nativeProcessControlTask = Task.Run(() => RunNativeProcessControl(processControl));
                     return;
                 }
+                if (_pendingNativeProcessControlChoice is { } childChoice
+                    && childChoice.ReceiptCommandId == acknowledgedReceiptCommandId)
+                {
+                    var priorProcessControl = _nativeProcessControlTask;
+                    _pendingNativeProcessControlChoice = null;
+                    _nativeProcessControlChoiceCancellation?.Dispose();
+                    _nativeProcessControlChoiceCancellation = new CancellationTokenSource();
+                    var childChoiceToken = _nativeProcessControlChoiceCancellation.Token;
+                    _nativeProcessControlCommandId = childChoice.Binding.NativeInvocationId;
+                    _nativeProcessControlTask = Task.Run(async () =>
+                    {
+                        if (priorProcessControl is not null)
+                        {
+                            try { await priorProcessControl.ConfigureAwait(false); }
+                            catch (Exception) { /* The exact source receipt is revalidated before effect. */ }
+                        }
+                        ObserveNativeProcessControlStage("choice_continuation_started");
+                        return await RunNativeProcessControlChoice(childChoice, childChoiceToken).ConfigureAwait(false);
+                    }, childChoiceToken);
+                    ObserveNativeProcessControlStage("choice_continuation_queued");
+                    return;
+                }
                 pending = _pendingContinuation;
                 if (pending is null || pending.ReceiptCommandId != acknowledgedReceiptCommandId
                     || runner is null || _task is { IsCompleted: false }) return;
@@ -2448,10 +2599,32 @@ public static class StdioProtocolHost
                 _task = Task.Run(async () =>
                 {
                     var code = 1;
-                    try { code = await runner(pending.Binding, token).ConfigureAwait(false); }
+                    try
+                    {
+                        code = pending.Binding.NativeProcessControlContinuation
+                            ? pending.Server.ResumeNativeProcessControlPermission(pending.Binding, token)
+                            : await runner(pending.Binding, token).ConfigureAwait(false);
+                    }
                     catch (OperationCanceledException) when (token.IsCancellationRequested) { code = 130; }
                     catch (Exception) { code = 1; }
-                    if (pending.Binding.NativeCommandKind == "nativeTool"
+                    if (pending.Binding.NativeProcessControlContinuation)
+                    {
+                        try
+                        {
+                            if (pending.Binding.NativeInvocationId is not { } controlId
+                                || pending.Binding.NativeProcessControlRequestHash is not { } controlHash)
+                                throw new InvalidOperationException("Native process control continuation receipt binding is missing.");
+                            pending.Server.ReceiptStore?.CompleteCommandExecution(controlId,
+                                controlHash,
+                                code == 0 ? "completed" : code == 130 ? "cancelled" : "failed",
+                                code == 0 ? "native_tool_completed" : code == 130
+                                    ? "native_tool_cancelled" : "native_tool_failed",
+                                pending.Binding.SessionId, pending.Binding.RunId);
+                        }
+                        catch (Exception) { /* Keep an unproven original action deferred for reconciliation. */ }
+                    }
+                    if (!pending.Binding.NativeProcessControlContinuation
+                        && pending.Binding.NativeCommandKind == "nativeTool"
                         && pending.Binding.NativeInvocationId is { } nativeInvocation && code != 3)
                     {
                         try
@@ -2483,6 +2656,65 @@ public static class StdioProtocolHost
             }
         }
 
+        private Task<int> RunNativeProcessControlChoice(PendingContinuation pending, CancellationToken token)
+        {
+            return Task.Run(() =>
+            {
+                var binding = pending.Binding;
+                var code = 5;
+                ObserveNativeProcessControlStage("choice_resume_entered");
+                try { code = pending.Server.ResumeNativeProcessControlPermission(binding, token,
+                    ObserveNativeProcessControlStage); }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { code = 130; }
+                catch (Exception failure)
+                {
+                    ObserveNativeProcessControlStage("choice_resume_exception_" + failure.GetType().Name);
+                    ObserveNativeProcessControlStage("choice_resume_exception_detail=" + failure);
+                    code = 5;
+                }
+                ObserveNativeProcessControlStage("choice_resume_code_" + code.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                var executionState = code == 0 ? "completed" : code == 130 ? "cancelled"
+                    : code is 5 or 6 ? "unknown" : "failed";
+                var executionCode = code == 0 ? "native_tool_completed" : code == 130
+                    ? "native_tool_cancelled" : code is 5 or 6 ? "effect_outcome_unknown" : "native_tool_failed";
+                try
+                {
+                    if (binding.NativeInvocationId is not { } invocation
+                        || binding.NativeProcessControlRequestHash is not { } controlHash)
+                        throw new InvalidOperationException("Child native process control receipt binding is missing.");
+                    ObserveNativeProcessControlStage("source_receipt_completion_entered");
+                    pending.Server.ReceiptStore?.CompleteDeferredCommandExecution(invocation, controlHash,
+                        executionState, executionCode, binding.SessionId, binding.RunId);
+                    ObserveNativeProcessControlStage("source_receipt_completed_" + executionState);
+                }
+                catch (Exception failure)
+                {
+                    ObserveNativeProcessControlStage("source_receipt_completion_exception=" + failure);
+                }
+                try
+                {
+                    ObserveNativeProcessControlStage("response_receipt_completion_entered");
+                    pending.Server.ReceiptStore?.CompleteCommandExecution(pending.ReceiptCommandId,
+                        pending.ReceiptRequestHash, "completed", "permission_choice_accepted",
+                        binding.SessionId, binding.RunId);
+                    ObserveNativeProcessControlStage("response_receipt_completed");
+                }
+                catch (Exception failure)
+                {
+                    ObserveNativeProcessControlStage("response_receipt_completion_exception=" + failure);
+                }
+                finally
+                {
+                    lock (_gate)
+                    {
+                        _nativeProcessControlChoiceCancellation?.Dispose();
+                        _nativeProcessControlChoiceCancellation = null;
+                    }
+                }
+                return code;
+            }, token);
+        }
+
         private async Task<int> RunNativeProcessControl(PendingNativeProcessControl pending)
         {
             var code = 5;
@@ -2497,12 +2729,17 @@ public static class StdioProtocolHost
                 if (pending.Server.CanExecuteNativeProcessControl(session, run,
                         pending.ToolName, pending.ArgumentsJson))
                     code = pending.Server.ExecuteNativeProcessControlDuringTurn(session, run,
-                        pending.ToolName, pending.ArgumentsJson, pending.CommandId, CancellationToken.None);
+                        pending.ToolName, pending.ArgumentsJson, pending.CommandId, CancellationToken.None,
+                        pending.Binding.NativeChoiceCapability);
                 if (code == 6)
                 {
-                    if (pending.PriorTask is not null) await pending.PriorTask.ConfigureAwait(false);
-                    usedPostTurnRunner = true;
-                    code = runner is null ? 1 : await runner(pending.Binding, CancellationToken.None).ConfigureAwait(false);
+                    if (pending.Server.IsChildProcessHandle(session, run, pending.ArgumentsJson)) code = 1;
+                    else
+                    {
+                        if (pending.PriorTask is not null) await pending.PriorTask.ConfigureAwait(false);
+                        usedPostTurnRunner = true;
+                        code = runner is null ? 1 : await runner(pending.Binding, CancellationToken.None).ConfigureAwait(false);
+                    }
                 }
                 state = code == 0 ? "completed" : code == 3 ? "deferred" : "failed";
                 detail = code == 0 ? "native_tool_completed" : code == 3 ? "input_required" : "native_tool_failed";
@@ -2518,6 +2755,8 @@ public static class StdioProtocolHost
                     state, detail, pending.SessionId, pending.RunId);
             }
             catch (Exception) { /* Keep the command admitted; callers reconcile its durable events. */ }
+            if (state == "deferred" && nativeProcessControlDeferredForTests is not null)
+                await nativeProcessControlDeferredForTests(CancellationToken.None).ConfigureAwait(false);
             if (usedPostTurnRunner && code == 0)
             {
                 try
@@ -2533,7 +2772,9 @@ public static class StdioProtocolHost
         public string? PendingCommandForAcknowledgement(string commandId)
         {
             lock (_gate)
-                return _pendingContinuation?.ReceiptCommandId == commandId || _pendingNativeProcessControl?.CommandId == commandId
+                return _pendingContinuation?.ReceiptCommandId == commandId
+                    || _pendingNativeProcessControl?.CommandId == commandId
+                    || _pendingNativeProcessControlChoice?.ReceiptCommandId == commandId
                     ? commandId : null;
         }
 
@@ -2662,21 +2903,29 @@ public static class StdioProtocolHost
             lock (_gate)
             {
                 task = _task;
-                if (task is null || task.IsCompleted) return true;
-                _cancellation?.Cancel();
+                if (task is not null && !task.IsCompleted) _cancellation?.Cancel();
+                if (_nativeProcessControlTask is { IsCompleted: false })
+                    _nativeProcessControlChoiceCancellation?.Cancel();
             }
-            return task.Wait(timeout);
+            var completed = task is null || task.IsCompleted || task.Wait(timeout);
+            Task<int>? nativeTask;
+            lock (_gate) nativeTask = _nativeProcessControlTask;
+            return completed && (nativeTask is null || nativeTask.IsCompleted || nativeTask.Wait(timeout));
         }
 
         public void StopAndJoin()
         {
             Task<int>? task;
+            Task<int>? nativeTask;
             lock (_gate)
             {
                 _cancellation?.Cancel();
+                _nativeProcessControlChoiceCancellation?.Cancel();
                 task = _task;
+                nativeTask = _nativeProcessControlTask;
             }
             if (task is not null) _ = task.Wait(TimeSpan.FromSeconds(3));
+            if (nativeTask is not null) _ = nativeTask.Wait(TimeSpan.FromSeconds(3));
         }
 
         public void Dispose()
@@ -2686,6 +2935,8 @@ public static class StdioProtocolHost
             {
                 _cancellation?.Dispose();
                 _cancellation = null;
+                _nativeProcessControlChoiceCancellation?.Dispose();
+                _nativeProcessControlChoiceCancellation = null;
             }
             _uploads.Dispose();
         }

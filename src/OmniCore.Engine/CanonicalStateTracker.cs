@@ -104,8 +104,10 @@ public sealed class CanonicalStateTracker
                     { Kind: InteractionKind.Permission } permissionRequest
                     && (evt.Causation is not CommandCausation resumeCause
                         || !RunProjection.ValidNativeWorktreePermissionResume(resumed, evt, resumeCause,
+                            requestEvent, permissionRequest, codecs, events)
+                        && !RunProjection.ValidNativeProcessControlPermissionResume(resumed, evt, resumeCause,
                             requestEvent, permissionRequest, codecs, events)))
-                    throw new InvalidStateTransitionException("run", "native worktree Permission resume is not bound to its canonical tool call",
+                    throw new InvalidStateTransitionException("run", "native Permission resume is not bound to its canonical tool call",
                         payload.Type().ToString());
             }
             tracker.Apply(payload);

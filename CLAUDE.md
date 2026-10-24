@@ -25,8 +25,17 @@ activo a la vez**; Core no modifica ni publica OmniCoder.
 preview por Lane público, aplicación, permisos, recibos y reapertura están
 cableados; Luna bajo aprobó 12 casos pertinentes sin recompilar, cero fallos y
 omisiones. [Evidencia y límites](docs/validation/m9-worktree-lifecycle-20261023.md).
-Sin CI/publicación nueva. Se retoman los controles de procesos de Lane hijo del
-plan existente; la integración Electron permanece en su coordinación.
+Sin CI/publicación nueva. El incremento siguiente de controles de procesos hijos
+se registra abajo; la integración Electron permanece en su coordinación.
+
+**Controles de procesos hijos genéricos aceptados localmente (2026-10-23):**
+delegación, TaskPacket y worktree reales, manager por Execution y controles
+autenticados en el Turn original del hijo. Ask, efecto, recibos, replay y salida
+UTF-8 están conectados sin inferencia adicional para la intervención. Luna bajo
+validó seis casos únicos y, tras corregir la correlación de InteractionId,
+revalidó el foco afectado sin recompilar. [Acta y límites](docs/validation/m9-child-process-controls-20261023.md).
+Verify conserva su comando exacto; no se controla el stdin del agente supervisor.
+Es aceptación local, sin nueva CI/publicación ni cierre global de M9/M8.
 
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 

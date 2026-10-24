@@ -42,6 +42,7 @@ public sealed class OmniCliRuntime : IDisposable
     public string CompanionClientId { get; set; } = "headless";
     internal SandboxStrength ProcessSandboxStrengthForTests { get; set; } = SandboxStrength.Strong;
     internal Func<OmniCore.Abstractions.IProcessRuntime>? ProcessRuntimeFactoryForTests { get; set; }
+    internal Action<ExplorerTurn.TurnResult>? ChildTurnResultObserverForTests { get; set; }
     internal Func<ISandboxProcessLauncher>? McpSandboxLauncherFactoryForTests { get; set; }
     internal Func<string?>? ClaudeExecutableLocatorForTests { get; set; }
     internal Action<OmniServer, WorkflowRuntimeAuthorization>? BeforeWorkflowCompletionGateForTests { get; set; }
@@ -2945,7 +2946,8 @@ public sealed class OmniCliRuntime : IDisposable
                 : (Func<ToolCallId, CancellationToken, Task<string?>>)((toolCallId, token) =>
                     server.ReceiveMailboxMessageAsync(sessionId, runId, route,
                         providerDescription?.BillingMode ?? BillingMode.Unknown, toolCallId, token));
-            var processSessionManager = delegation is null && executingAct ? server.ProcessSessions(sessionId, workspaceRoot) : null;
+            var processSessionManager = delegation is null && executingAct
+                ? server.ProcessSessions(sessionId, workspaceRoot) : null;
             if (processSessionManager is not null)
                 await processSessionManager.PrepareScopeAsync(runId.ToString(), laneId.ToString()).ConfigureAwait(false);
             var hostTools = delegation is not null
@@ -2954,7 +2956,8 @@ public sealed class OmniCliRuntime : IDisposable
                         ProcessSandboxStrengthForTests, processRuntimeFactory())
                     : HostTools.WorkflowStage(workflowStage.Definition.Stage, agentProfile!, artifactReadTool,
                         ProcessSandboxStrengthForTests)
-                    : childRequiresActTools ? HostTools.DelegatedAgent(agentProfile!, artifactReadTool) : HostTools.DelegatedReaderWithMailbox(artifactReadTool)
+                    : childRequiresActTools ? HostTools.DelegatedAgent(agentProfile!, artifactReadTool)
+                        : HostTools.DelegatedReaderWithMailbox(artifactReadTool)
                 : executingAct
                 ? OmniHost.CreateActTools(artifactReadTool: artifactReadTool,
                     worktreeIntegrationCoordinator: delegation is null
@@ -3424,13 +3427,21 @@ public sealed class OmniCliRuntime : IDisposable
                         return external;
                     }
 
+                    // Workflow stages keep their fixed, stage-specific tool catalog. Persistent
+                    // child sessions are available only to generic DelegatedAgent turns.
+                    var childProcessSessionManager = workflowStage is null
+                        && work.Profile.PermissionCeiling.Process.Count > 0
+                        && work.Scope.ExecutionId is { } childExecution && work.TaskPacket is { } taskPacket
+                        ? server.ProcessSessionsForChild(work.Session, work.Run, taskPacket.TaskId,
+                            work.Scope.LaneId!, childExecution, laneRoot, taskPacket, work.Worktree) : null;
                     var childTools = workflowStage is not null
                         ? ProcessRuntimeFactoryForTests is { } processRuntimeFactory
                             ? HostTools.WorkflowStageForTests(workflowStage.Definition.Stage, work.Profile,
                                 artifactReadTool, ProcessSandboxStrengthForTests, processRuntimeFactory())
                             : HostTools.WorkflowStage(workflowStage.Definition.Stage, work.Profile,
                                 artifactReadTool, ProcessSandboxStrengthForTests)
-                        : childRequiresActTools ? HostTools.DelegatedAgent(work.Profile, artifactReadTool)
+                        : childRequiresActTools ? HostTools.DelegatedAgent(work.Profile, artifactReadTool,
+                            processSessionManager: childProcessSessionManager)
                             : HostTools.DelegatedReaderWithMailbox(artifactReadTool);
                     var childBoundary = CreateBoundary(effectivePolicy, laneRoot, childTools.Catalog(),
                         () => server.ReadSessionSecurityPolicy(work.Session));
@@ -3561,10 +3572,13 @@ public sealed class OmniCliRuntime : IDisposable
                         [new WorkingStateContributor(childWorkingState)]);
                     var childTurn = BuildTurn(productReasoning, reasoningResolution, childExecutor,
                         childTools.Catalog(), childBoundary, childMaterializer, workflowStage?.Definition);
+                    using var activeChildTurn = server.RegisterActiveChildExplorerTurn(work.Session,
+                        work.Run, work.Delegation.ChildLaneId, childTurn);
                     var childResult = childTurn.Ask(openTurn is null ? childObjective : "", childInstruction,
                         work.Session, work.Run, work.Delegation.ChildLaneId, childWorkingState, token, "TrustedDelegation",
                         openTurn?.Started.InstructionSnapshot ?? childSnapshot,
                         resumePreflightPassed: childResumePreflightPassed);
+                    ChildTurnResultObserverForTests?.Invoke(childResult);
                     var laneGates = workspaceConfig.Settings?.Gates;
                     if (childResult.StopReason == StopReason.EndTurn && laneGates is not null
                         && (laneGates.Build is not null || laneGates.Test is not null || laneGates.Acceptance))

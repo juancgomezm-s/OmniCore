@@ -129,12 +129,13 @@ public sealed class HostTools
     /// <summary>Child workspace tools are composed from its durable profile; Security still intersects
     /// each request with the parent mode, grants, project restrictions and that exact profile ceiling.</summary>
     public static HostTools DelegatedAgent(AgentProfile profile, ArtifactReadTool? artifactReadTool = null,
-        SandboxStrength processSandboxStrength = SandboxStrength.Strong) =>
+        SandboxStrength processSandboxStrength = SandboxStrength.Strong,
+        PersistentProcessSessionManager? processSessionManager = null) =>
         new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
             includeMutationTools: profile.PermissionCeiling.Writes.Count > 0,
             includeProcessTools: profile.PermissionCeiling.Process.Count > 0 || profile.PermissionCeiling.AllowShell,
             processSandboxStrength: processSandboxStrength, artifactReadTool: artifactReadTool,
-            includeControlTools: false, includeMailboxReceive: true);
+            includeControlTools: false, includeMailboxReceive: true, processSessionManager: processSessionManager);
 
     /// <summary>Workflow stage catalog: only tools whose concrete capabilities are declared by that stage.</summary>
     public static HostTools WorkflowStage(WorkflowStage stage, AgentProfile profile,

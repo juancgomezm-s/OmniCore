@@ -85,10 +85,35 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     private readonly IArtifactStore? _artifacts;
     private readonly IWorkspaceMutationHistoryStore? _mutationHistory;
     private readonly ConcurrentDictionary<SessionId, PersistentProcessSessionManager> _processSessions = new();
+    private readonly ConcurrentDictionary<(SessionId Session, RunId Run, LaneId Lane, ExecutionId Execution), PersistentProcessSessionManager> _childProcessSessions = new();
+    private readonly ConcurrentDictionary<SessionId, PersistentProcessSessionQuota> _processSessionQuotas = new();
     private readonly ConcurrentDictionary<(SessionId Session, RunId Run, LaneId Lane), ExplorerTurn> _activeExplorerTurns = new();
     private readonly ConcurrentDictionary<(SessionId Session, RunId Run),
         Func<(bool? Completed, CommandAck Ack, Exception? Failure)>> _deferredProcessRunCompletions = new();
     private readonly string _hostLeaseGeneration = Guid.NewGuid().ToString("N");
+
+    internal IDisposable RegisterActiveChildExplorerTurn(SessionId session, RunId run, LaneId lane,
+        ExplorerTurn turn)
+    {
+        ArgumentNullException.ThrowIfNull(turn);
+        var key = (session, run, lane);
+        if (!_activeExplorerTurns.TryAdd(key, turn))
+            throw new InvalidOperationException("active_child_turn_registration_conflict");
+        return new ActiveChildExplorerTurnRegistration(this, key, turn);
+    }
+
+    private sealed class ActiveChildExplorerTurnRegistration(OmniServer server,
+        (SessionId Session, RunId Run, LaneId Lane) key, ExplorerTurn turn) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            if (server._activeExplorerTurns.TryGetValue(key, out var current) && ReferenceEquals(current, turn))
+                server._activeExplorerTurns.TryRemove(key, out _);
+        }
+    }
 
     internal PersistentProcessSessionManager ProcessSessions(SessionId session, string? workspaceRoot = null)
     {
@@ -99,9 +124,15 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             var effectiveWorkspaceRoot = workspaceRoot ?? VerifiedWorkspaceRoot(session) ?? _workspaceRoot ?? string.Empty;
             var manager = new PersistentProcessSessionManager(id, _store, _codecs, _hostLeaseGeneration,
                 string.IsNullOrWhiteSpace(effectiveWorkspaceRoot) ? string.Empty : Path.GetFullPath(effectiveWorkspaceRoot), _artifacts,
-                () => _store is not SqliteEventStore ownedStore || ownedStore.OwnsSessionWriterLease(id));
+                () => _store is not SqliteEventStore ownedStore || ownedStore.OwnsSessionWriterLease(id),
+                _processSessionQuotas.GetOrAdd(id, _ => new PersistentProcessSessionQuota()),
+                () => TrimProcessSessions(id));
             var latest = new Dictionary<string, ProcessSessionStateRecorded>(StringComparer.Ordinal);
-            foreach (var envelope in _store.ReadFrom(id, 1))
+            var journal = _store.ReadFrom(id, 1);
+            var childExecutions = journal.Select(_codecs.Decode).OfType<AgentExecutionStarted>()
+                .Where(item => item.ParentExecutionId is not null).Select(item => item.ExecutionId).ToHashSet();
+            foreach (var envelope in journal.Where(evt => evt.ExecutionId is null
+                || !childExecutions.Contains(new ExecutionId(evt.ExecutionId.Value))))
                 if (_codecs.Decode(envelope) is ProcessSessionStateRecorded evidence)
                     latest[evidence.HandleId] = evidence;
             manager.RestoreUnknown(latest);
@@ -109,14 +140,162 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         });
     }
 
+    internal PersistentProcessSessionManager ProcessSessionsForChild(SessionId session, RunId run,
+        TaskId task, LaneId lane, ExecutionId execution, string physicalWorkspaceRoot,
+        TaskPacket packet, WorktreeIdentity? identity)
+    {
+        if (_store is SqliteEventStore sqlite && !sqlite.OwnsSessionWriterLease(session))
+            throw new SessionWriterLeaseUnavailableException(session);
+        var root = Path.GetFullPath(physicalWorkspaceRoot);
+        var journal = _store.ReadFrom(session, 1);
+        var runEvents = journal.Where(evt => evt.RunId == run).ToArray();
+        var packetScopeMatches = packet.SchemaVersion == 1 && packet.SessionId == session && packet.RunId == run
+            && packet.TaskId == task && packet.LaneId == lane && packet.ExecutionId == execution;
+        var packetRootMatches = ProcessPathEquals(packet.WorktreePath, root);
+        var workflowBinding = packet.WorkflowImplementation;
+        var identityMatches = identity is null || ProcessPathEquals(identity.WorktreePath, root)
+            && ProcessPathEquals(identity.RepositoryRoot, packet.RepositoryRoot)
+            && ProcessPathEquals(identity.GitCommonDirectory, packet.GitCommonDirectory)
+            && identity.OwnershipId == packet.OwnershipId
+            && (workflowBinding is null ? identity.LaneId == lane : identity.LaneId == workflowBinding.LaneId
+                && identity.OwnershipId == workflowBinding.OwnershipId);
+        var worktreePacketMatches = false;
+        var ownerBindingMatches = workflowBinding is null;
+        foreach (var payload in runEvents.Select(_codecs.Decode))
+        {
+            if (payload is LaneWorktreeCreated created && created.TaskId == task && created.LaneId == lane
+                && created.ExecutionId == execution && created.OwnershipId == packet.OwnershipId
+                && ProcessPathEquals(created.WorktreePath, root) && ReadTaskPacket(created.TaskPacketRef) == packet)
+            {
+                worktreePacketMatches = true;
+                break;
+            }
+            if (payload is LaneWorktreeBound bound && bound.TaskId == task && bound.LaneId == lane
+                && bound.ExecutionId == execution && bound.OwnershipId == packet.OwnershipId
+                && ProcessPathEquals(bound.WorktreePath, root) && ReadTaskPacket(bound.TaskPacketRef) == packet)
+            {
+                worktreePacketMatches = true;
+                ownerBindingMatches = workflowBinding is { } binding && identity is { } ownerIdentity
+                    && bound.OwnerTaskId == binding.TaskId && bound.OwnerLaneId == binding.LaneId
+                    && bound.OwnerExecutionId == binding.ExecutionId && bound.OwnershipId == binding.OwnershipId
+                    && ownerIdentity.LaneId == binding.LaneId && ownerIdentity.OwnershipId == binding.OwnershipId
+                    && bound.WorkflowId == binding.WorkflowId && bound.WorkflowVersion == binding.WorkflowVersion
+                    && bound.WorkflowInstance == binding.Instance && bound.SourceTree == binding.Tree
+                    && bound.SourceHead == binding.Head && bound.SourceBranch == binding.Branch;
+                break;
+            }
+        }
+        var workflowBindingAccepted = workflowBinding is null;
+        if (workflowBinding is not null && identity is not null
+            && ReadWorkflowStageForTask(session, run, task) is { } verifyContract
+            && verifyContract.Definition.Stage == WorkflowStage.Verify && verifyContract.Task == task
+            && verifyContract.Lane == lane && verifyContract.Execution == execution)
+            workflowBindingAccepted = VerifyAcceptedImplementationBinding(verifyContract, session, run,
+                journal, CancellationToken.None);
+        var runActive = _lastSessionId == session && _lastRunId == run
+            && new RunControlService(_store, _codecs).ActiveRun(session) == run;
+        var runState = RunProjection.Replay(session, run, _codecs, runEvents).State;
+        var runAvailable = runState is RunState.Running or RunState.AwaitingInput;
+        var lanes = LaneProjection.Replay(_codecs, runEvents);
+        var laneRunning = lanes.StateOf(lane) == LaneState.Running
+            && lanes.ForTask(task).SingleOrDefault(item => item.Id == lane) is { AgentProfile: { } };
+        var profileId = lanes.ForTask(task).SingleOrDefault(item => item.Id == lane)?.AgentProfile;
+        var executionActive = profileId is { } currentProfile && runEvents.Select(_codecs.Decode)
+            .OfType<AgentExecutionStarted>().Count(item => item.ExecutionId == execution
+                && item.LaneId == lane && item.ProfileId == currentProfile) == 1
+            && !runEvents.Any(evt => evt.ExecutionId == execution
+                && _codecs.Decode(evt) is AgentExecutionCompleted or AgentExecutionFailed);
+        if (!packetScopeMatches || !packetRootMatches || !identityMatches || !worktreePacketMatches
+            || !ownerBindingMatches || !workflowBindingAccepted || !runActive || !runAvailable
+            || !laneRunning || !executionActive)
+            throw new InvalidOperationException("process.child_scope_unavailable: packetScope=" + packetScopeMatches
+                + "; packetRoot=" + packetRootMatches + "; identity=" + identityMatches
+                + "; worktreePacket=" + worktreePacketMatches + "; ownerBinding=" + ownerBindingMatches
+                + "; workflowBinding=" + workflowBindingAccepted + "; runActive=" + runActive
+                + "; runState=" + runState + "; laneRunning=" + laneRunning + "; executionActive=" + executionActive);
+        var records = PreM6RecordProjection.Replay(session, _codecs, journal);
+        var delegations = records.Records.Values.Where(history => history.Phase == PreM6RecordPhase.Accepted)
+            .SelectMany(history => history.Facts.OfType<DelegationCreated>())
+            .Select(item => item.Delegation).Where(item => item.ChildTaskId == task && item.ChildLaneId == lane
+                && item.ProfileId == profileId).ToArray();
+        if (delegations.Length != 1
+            || !records.Records.TryGetValue("delegation:" + delegations[0].DelegationId, out var acceptedHistory)
+            || acceptedHistory.Facts.OfType<DelegationAccepted>().SingleOrDefault()?.ChildExecutionId != execution)
+            throw new InvalidOperationException("process.child_delegation_not_accepted");
+        var key = (session, run, lane, execution);
+        var manager = _childProcessSessions.GetOrAdd(key, _ =>
+        {
+            var childManager = new PersistentProcessSessionManager(session, _store, _codecs, _hostLeaseGeneration,
+                root, _artifacts, () => _store is not SqliteEventStore ownedStore || ownedStore.OwnsSessionWriterLease(session),
+                _processSessionQuotas.GetOrAdd(session, _ => new PersistentProcessSessionQuota()),
+                () => TrimProcessSessions(session), enforceChildControlProcessScope: true);
+            var latest = new Dictionary<string, ProcessSessionStateRecorded>(StringComparer.Ordinal);
+            foreach (var envelope in journal.Where(evt => evt.RunId == run && evt.TaskId == task
+                && evt.LaneId == lane && evt.ExecutionId == execution))
+                if (_codecs.Decode(envelope) is ProcessSessionStateRecorded state) latest[state.HandleId] = state;
+            using (ExecutionScope.Begin(new ExecutionScopeState(run, task, lane, ExecutionId: execution)))
+                childManager.RestoreUnknown(latest);
+            return childManager;
+        });
+        if (!manager.UsesWorkspaceRoot(root))
+            throw new InvalidOperationException("process.child_workspace_changed");
+        return manager;
+    }
+
+    internal void StopProcessesForChild(SessionId session, RunId run, LaneId lane, ExecutionId execution)
+    {
+        if (_childProcessSessions.TryGetValue((session, run, lane, execution), out var manager))
+        {
+            using var scope = ExecutionScope.Begin(new ExecutionScopeState(run,
+                TaskForLane(session, run, lane), lane, ExecutionId: execution));
+            manager.StopRunAsync(run.ToString(), null).GetAwaiter().GetResult();
+        }
+    }
+
+    private TaskId? TaskForLane(SessionId session, RunId run, LaneId lane) => _store.ReadFrom(session, 1)
+        .Where(evt => evt.RunId == run).Select(_codecs.Decode).OfType<LaneCreated>()
+        .SingleOrDefault(item => item.LaneId == lane)?.TaskId;
+
+    private static bool ProcessPathEquals(string left, string right) => string.Equals(
+        Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+        Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    private void TrimProcessSessions(SessionId session)
+    {
+        if (_processSessions.TryGetValue(session, out var root)) root.RecycleTerminalProcesses(force: true);
+        foreach (var pair in _childProcessSessions.Where(item => item.Key.Session == session))
+            pair.Value.RecycleTerminalProcesses(force: true);
+    }
+
     internal bool CanExecuteNativeProcessControlDuringTurn(SessionId session, RunId run,
         string toolName, string argumentsJson) =>
         CanExecuteNativeProcessControl(session, run, toolName, argumentsJson);
 
+    internal bool IsChildProcessHandle(SessionId session, RunId run, string argumentsJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(argumentsJson);
+            if (!document.RootElement.TryGetProperty("handle", out var handleNode)
+                || handleNode.ValueKind != JsonValueKind.String || handleNode.GetString() is not { } handle) return false;
+            var journal = _store.ReadFrom(session, 1);
+            var state = journal.Where(evt => evt.RunId == run)
+                .Select(evt => (Event: evt, Payload: _codecs.Decode(evt)))
+                .LastOrDefault(item => item.Payload is ProcessSessionStateRecorded process
+                    && process.HandleId == handle && process.RunId == run.ToString());
+            if (state.Payload is not ProcessSessionStateRecorded processState
+                || state.Event.ExecutionId is not { } execution || state.Event.LaneId is not { } lane
+                || processState.LaneId != lane.ToString()) return false;
+            return journal.Where(evt => evt.RunId == run).Select(_codecs.Decode).OfType<AgentExecutionStarted>()
+                .Any(started => started.ExecutionId == execution && started.LaneId == lane
+                    && started.ParentExecutionId is not null);
+        }
+        catch (JsonException) { return false; }
+    }
+
     internal bool CanExecuteNativeProcessControl(SessionId session, RunId run, string toolName, string argumentsJson)
     {
-        if (!TryGetNativeProcessRootLane(session, run, out var lane)
-            || !_processSessions.TryGetValue(session, out var manager)) return false;
         try
         {
             using var document = JsonDocument.Parse(argumentsJson);
@@ -124,12 +303,43 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 || !document.RootElement.TryGetProperty("handle", out var handleNode)
                 || handleNode.ValueKind != JsonValueKind.String || handleNode.GetString() is not { Length: > 0 } handle)
                 return false;
-            if (!manager.CanControlOwnedProcess(handle, run.ToString(), lane.ToString(), toolName)) return false;
+            if (TryGetNativeChildProcessOwner(session, run, handle, toolName, out var childLane, out _))
+                return _activeExplorerTurns.ContainsKey((session, run, childLane));
+            if (!TryGetNativeProcessRootLane(session, run, out var lane)
+                || !_processSessions.TryGetValue(session, out var manager)
+                || !manager.CanControlOwnedProcess(handle, run.ToString(), lane.ToString(), toolName)) return false;
             if (_activeExplorerTurns.ContainsKey((session, run, lane))) return true;
             return NativeProcessControlRunIsQuiescent(session, run, lane, manager)
                 && new RunControlService(_store, _codecs).UnreconciledEffects(session).Count == 0;
         }
         catch (JsonException) { return false; }
+    }
+
+    private bool TryGetNativeChildProcessOwner(SessionId session, RunId run, string handle, string toolName,
+        out LaneId lane, out ExecutionId execution)
+    {
+        lane = default!; execution = default!;
+        if (_lastSessionId != session || _lastRunId != run
+            || new RunControlService(_store, _codecs).ActiveRun(session) != run) return false;
+        var matches = _childProcessSessions.Where(pair => pair.Key.Session == session && pair.Key.Run == run
+            && pair.Value.CanControlOwnedProcess(handle, run.ToString(), pair.Key.Lane.ToString(), toolName)).ToArray();
+        if (matches.Length != 1) return false;
+        var key = matches[0].Key;
+        var journal = _store.ReadFrom(session, 1);
+        if (AcceptedDelegationExecutionForChild(session, run, TaskForLane(session, run, key.Lane), key.Lane) != key.Execution
+            || journal.Any(evt => evt.RunId == run && evt.ExecutionId == key.Execution
+                && _codecs.Decode(evt) is AgentExecutionCompleted or AgentExecutionFailed)) return false;
+        lane = key.Lane; execution = key.Execution;
+        return true;
+    }
+
+    private ExecutionId? AcceptedDelegationExecutionForChild(SessionId session, RunId run, TaskId? task, LaneId lane)
+    {
+        if (task is not { } childTask || AcceptedDelegationForChild(session, run, childTask, lane) is not { } delegationId) return null;
+        var history = PreM6RecordProjection.Replay(session, _codecs, _store.ReadFrom(session, 1));
+        return history.Records.TryGetValue("delegation:" + delegationId, out var record)
+            && record.Phase == PreM6RecordPhase.Accepted
+            ? record.Facts.OfType<DelegationAccepted>().SingleOrDefault()?.ChildExecutionId : null;
     }
 
     private bool TryGetNativeProcessRootLane(SessionId session, RunId run, out LaneId lane)
@@ -149,7 +359,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     }
 
     internal int ExecuteNativeProcessControlDuringTurn(SessionId session, RunId run, string toolName,
-        string argumentsJson, string invocationId, CancellationToken cancellationToken)
+        string argumentsJson, string invocationId, CancellationToken cancellationToken,
+        bool nativeChoiceCapability)
     {
         if (_lastSessionId != session || _lastRunId != run
             || new RunControlService(_store, _codecs).ActiveRun(session) != run)
@@ -157,6 +368,18 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         var own = EventsForRun(_store.ReadFrom(session, 1), run);
         var projection = RunProjection.Replay(session, run, _codecs, own);
         if (projection.State != RunState.Running || projection.RootTask is not { } rootTask) return 6;
+        using var document = JsonDocument.Parse(argumentsJson);
+        var handle = document.RootElement.GetProperty("handle").GetString()!;
+        if (TryGetNativeChildProcessOwner(session, run, handle, toolName, out var childLane, out var childExecution))
+        {
+            if (!_activeExplorerTurns.TryGetValue((session, run, childLane), out var childTurn)) return 6;
+            var childResult = childTurn.ExecuteNativeToolAction(toolName, argumentsJson, invocationId, session, run,
+                childLane, cancellationToken, allowOpenTurn: true, requireExistingTurn: true,
+                allowDeferredInteraction: nativeChoiceCapability, expectedExecutionId: childExecution);
+            if (childResult.FailureDiagnostic == "native_process_turn_closed_before_effect") return 6;
+            if (childResult.PendingInteractionId is not null) return 3;
+            return childResult.StopReason == StopReason.EndTurn && childResult.ToolCalls.All(item => item.Succeeded) ? 0 : 1;
+        }
         var lanes = LaneProjection.Replay(_codecs, own).ForTask(rootTask)
             .Where(lane => lane.State == LaneState.Running).ToArray();
         if (lanes.Length != 1 || !_activeExplorerTurns.TryGetValue((session, run, lanes[0].Id), out var turn)) return 6;
@@ -189,6 +412,13 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     {
         if (_processSessions.TryGetValue(session, out var manager))
             await manager.StopRunAsync(run.ToString(), null).ConfigureAwait(false);
+        foreach (var pair in _childProcessSessions.Where(item => item.Key.Session == session
+            && item.Key.Run == run).ToArray())
+        {
+            using var scope = ExecutionScope.Begin(new ExecutionScopeState(run,
+                TaskForLane(session, run, pair.Key.Lane), pair.Key.Lane, ExecutionId: pair.Key.Execution));
+            await pair.Value.StopRunAsync(run.ToString(), null).ConfigureAwait(false);
+        }
     }
 
     internal void ResumeDeferredProcessRunCompletion(SessionId session, RunId run)
@@ -196,7 +426,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         if (_lastSessionId != session || _lastRunId != run
             || new RunControlService(_store, _codecs).ActiveRun(session) != run
             || _processSessions.TryGetValue(session, out var manager)
-                && manager.HasUnresolvedForRun(run.ToString())) return;
+                && manager.HasUnresolvedForRun(run.ToString())
+            || _childProcessSessions.Any(pair => pair.Key.Session == session && pair.Key.Run == run
+                && pair.Value.HasUnresolvedForRun(run.ToString()))) return;
         if (_deferredProcessRunCompletions.TryRemove((session, run), out var resume))
             _ = resume();
     }
@@ -481,7 +713,15 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     {
         foreach (var sessions in _processSessions.Values)
             CompleteWorkspaceTask(async () => await sessions.StopAllAsync().ConfigureAwait(false));
+        foreach (var pair in _childProcessSessions)
+        {
+            using var scope = ExecutionScope.Begin(new ExecutionScopeState(pair.Key.Run,
+                TaskForLane(pair.Key.Session, pair.Key.Run, pair.Key.Lane), pair.Key.Lane,
+                ExecutionId: pair.Key.Execution));
+            CompleteWorkspaceTask(async () => await pair.Value.StopAllAsync().ConfigureAwait(false));
+        }
         _processSessions.Clear();
+        _childProcessSessions.Clear();
         foreach (var process in _extensionProcesses.Values)
             CompleteWorkspaceTask(async () => await process.DisposeAsync().ConfigureAwait(false));
         _extensionProcesses.Clear();
@@ -4262,10 +4502,31 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                             else
                             {
                                 var expectedRun = new RunId(expectedRunGuid);
-                                var nativeWorktreeToolOnly = IsNativeWorktreeToolPermission(session,
+                                var childProcessBinding = NativeChildProcessControlChoiceBinding(session,
                                     expectedRun, interaction);
-                                control.RespondNativeChoice(session, interaction, new RunId(expectedRunGuid),
-                                    optionId, command.MessageId, nativeWorktreeToolOnly);
+                                if (childProcessBinding is not null
+                                    && Guid.TryParseExact(childProcessBinding.ContinuationTaskId, "D", out var childTaskGuid)
+                                    && Guid.TryParseExact(childProcessBinding.ContinuationLaneId, "D", out var childLaneGuid)
+                                    && Guid.TryParseExact(childProcessBinding.ContinuationTurnId, "D", out var childTurnGuid)
+                                    && Guid.TryParseExact(childProcessBinding.ContinuationToolCallId, "D", out var childCallGuid)
+                                    && childProcessBinding.NativeInvocationId is { } childInvocation
+                                    && AcceptedDelegationExecutionForChild(session, expectedRun,
+                                        new TaskId(childTaskGuid), new LaneId(childLaneGuid)) is { } childExecution)
+                                {
+                                    var childScope = new ExecutionScopeState(expectedRun,
+                                        new TaskId(childTaskGuid), new LaneId(childLaneGuid), new TurnId(childTurnGuid),
+                                        new ToolCallId(childCallGuid), childExecution);
+                                    control.RespondNativeChoice(session, interaction, expectedRun, optionId,
+                                        command.MessageId, nativeProcessControlScope: childScope,
+                                        nativeProcessControlInvocationId: childInvocation);
+                                }
+                                else
+                                {
+                                    var nativeWorktreeToolOnly = IsNativeWorktreeToolPermission(session,
+                                        expectedRun, interaction);
+                                    control.RespondNativeChoice(session, interaction, expectedRun,
+                                        optionId, command.MessageId, nativeWorktreeToolOnly);
+                                }
                             }
                         }
                     }
