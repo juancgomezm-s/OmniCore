@@ -868,6 +868,15 @@ No atribuye el fallo histórico sin snapshot ni cambia PatchOnly. Aceptación lo
 Windows con HTTP scripted; SEC-CONV-02 global, M9/M8 manual siguen abiertos,
 sin cambios de OmniCoder ni CI/publicación/instalación nueva.
 
+El corte de provisión de worktree por workflow stdio acredita la ruta existente
+Orchestrate firmada/`core:orq-auth`: TaskPacket y ownership de etapa reales sin
+binding sembrado, queries pasivas y rechazos de scope/revisión. Luna bajo aprobó
+dos casos aislados sin recompilar; no cambió producción. [Acta](../validation/m9-worktree-workflow-provision-20261024.md).
+Host framed in-process, provider fixture y Verify `dotnet --version` con Weak
+consentido; no valida frontera OS de Host, compilación de FeatureApp ni Strong.
+La delegación genérica stdio sigue sin exponerse y necesita decisión explícita
+de interfaz/autoridad. Sin cambios de OmniCoder ni publicación; M9/M8 abiertos.
+
 ### P0-OMNI-UNIFICACION
 
 **Revisión:** 2026-10-14 · **Prioridad:** P0 · **Estado global:** CERRADO / ALCANCE ACEPTADO. **Contribución de OmniCore: CERRADA en Windows**, con el alcance y las diferencias de plataforma del [acta local](../validation/omnicore-homologation-closure-20261014.md).

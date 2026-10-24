@@ -8,6 +8,11 @@ El cliente stdio consulta `agents`, toma el `LaneId` público y llama `worktree.
 
 La fixture siembra el binding `LaneWorktreeCreated` mediante el lifecycle canónico y ejecuta el recorrido Host/stdio→tool→Git. No prueba aquí la creación ni el retorno de una delegación completa.
 
+El corte posterior [provisión desde workflow stdio](m9-worktree-workflow-provision-20261024.md)
+comprueba TaskPacket y ownership de etapa creados por el runtime sin binding sembrado.
+No convierte esta campaña histórica en un único E2E de provisión más integración:
+las acciones de integración de este documento conservan su fixture y límites.
+
 ## Verificación
 
 Comando ejecutado en el worktree `C:\Users\juanc\.codex\worktrees\m9-completion\OmniCore`:

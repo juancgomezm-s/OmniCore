@@ -308,6 +308,19 @@ discovery en PatchOnly ni se debilitan guardas. No cierra SEC-CONV-02 global,
 SEC-CONV, M9 ni M8 manual. Solo checkpoint local, OmniCoder en solo lectura,
 sin CI/publicación/instalación nueva.
 
+**M9 provisión de worktree desde workflow stdio aceptada localmente (2026-10-24):**
+la ruta existente Orchestrate firmada → `core:orq-auth` → etapas compiladas genera
+delegación, TaskPacket CAS y ownership sin binding sembrado. `agents`/preview
+resuelven el Lane publicado de forma pasiva y se rechazan revisiones/proofs ajenos.
+Luna bajo aprobó dos casos aislados (foco y ack-cut), sin recompilar.
+[Recorrido, evidencia y límites](../validation/m9-worktree-workflow-provision-20261024.md).
+Es stdio framed in-process; Verify ejecuta `dotnet --version` con consentimiento
+Weak, no acredita Strong ni compilación de la aplicación. Producción intacta.
+No habilita `/delegate` genérico por stdio: esa nueva superficie exige decisión
+de interfaz/capability y autoridad humana, no se deriva de la fixture. GUI/live,
+otras plataformas y SEC-CONV/M9/M8 global permanecen abiertos. Sin publicación
+ni cambios de OmniCoder.
+
 ## Ejecución de cierre M9 (2026-10-22)
 
 **Rectificación de alcance del 23 de octubre:** la construcción descrita abajo

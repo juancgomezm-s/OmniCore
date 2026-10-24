@@ -124,6 +124,16 @@ El fallo histórico sin snapshot sigue sin causa atribuible. PatchOnly conserva
 Direct sin discovery; SEC-CONV-02 global, M9 y M8 manual siguen abiertos.
 Checkpoint local únicamente, sin publicación ni cambios de OmniCoder.
 
+**M9 provisión de worktree desde workflow stdio aceptada localmente (2026-10-24):**
+Orchestrate firmado y `core:orq-auth` crean la delegación de etapa, TaskPacket y
+ownership reales sin sembrar el binding. Host framed stdio in-process y runner
+productivo; Verify usa `dotnet --version` y consentimiento Weak firmado, no Strong
+ni compilación de FeatureApp. Luna bajo aprobó el foco y la regresión ack-cut:
+2/2 casos aislados sin recompilar. [Acta y límites](docs/validation/m9-worktree-workflow-provision-20261024.md).
+No cambió producción. `/delegate` genérico no está expuesto por stdio; agregarlo
+requiere decisión de interfaz/autoridad, no está autorizado por este ensayo.
+OmniCoder intacto, sin publicación; SEC-CONV/M9/M8 siguen abiertos.
+
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 
 **Checkpoint M9-K/L (2026-10-17):** seguridad durable por Session, lifecycle nativo y respuesta de

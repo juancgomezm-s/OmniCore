@@ -41,6 +41,11 @@ Las cuatro filas cubren cleanup correcto, edición durante Ask, cliente sin capa
 
 La fixture usa Host/stdio y Git reales, con binding y terminales de Lane sembrados en el journal. No acredita aquí la provisión de una delegación completa por stdio. Todos los retiros afectan repositorios temporales aislados; no se retiró ni archivó ningún worktree real del usuario. No hubo suite general ni repetición por el constructor de las campañas verdes anteriores.
 
+El corte posterior [provisión desde workflow stdio](m9-worktree-workflow-provision-20261024.md)
+añade el origen real del ownership de una etapa sin sembrarlo. Es una aceptación
+separada: no acredita un único E2E de provisión más cleanup/discard, ni habilita
+la admisión genérica de delegaciones por stdio.
+
 ## Diagnóstico y límites
 
 - El primer recorrido no completó dentro del límite: repetir previews de integración generaba centenares de comandos Git. Se separó la validación canónica de la captura exacta de la Lane, eliminando el merge repetido de la disposición. No se aumentó el timeout para ocultarlo. Las capturas históricas son diagnóstico, no aceptación.
