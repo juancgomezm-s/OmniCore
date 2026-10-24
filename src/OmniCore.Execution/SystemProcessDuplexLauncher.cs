@@ -3,8 +3,8 @@ namespace OmniCore.Execution;
 using OmniCore.Sandbox;
 
 /// <summary>
-/// Rejects persistent redirected launches that have no OS-level process-tree ownership.
-/// Persistent duplex sessions must use a Strong launcher with a job/group that can be fenced.
+/// Rejects persistent redirected launches on platforms without a retained OS-level ownership
+/// primitive. A late tree enumeration is not sufficient for a persistent duplex session.
 /// </summary>
 internal sealed class SystemProcessDuplexLauncher : ISandboxProcessLauncher
 {

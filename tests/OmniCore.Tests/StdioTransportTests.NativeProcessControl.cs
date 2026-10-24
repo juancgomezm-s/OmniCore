@@ -5,6 +5,7 @@ using System.Text.Json;
 using OmniCore.Domain;
 using OmniCore.Infrastructure;
 using OmniCore.Protocol;
+using OmniCore.Sandbox;
 using Task = System.Threading.Tasks.Task;
 
 namespace OmniCore.Tests;
@@ -12,11 +13,18 @@ namespace OmniCore.Tests;
 public sealed partial class StdioTransportTests
 {
     [Fact]
-    public async Task Native_process_controls_cover_active_and_quiescent_run_then_passively_read_terminal_output()
+    public Task Native_process_controls_cover_active_and_quiescent_run_then_passively_read_terminal_output() =>
+        RunNativeProcessControlsAsync(SandboxStrength.Strong);
+
+    [Fact]
+    public Task Native_weak_process_controls_use_the_real_persistent_job_without_an_extra_provider_request() =>
+        RunNativeProcessControlsAsync(SandboxStrength.Weak);
+
+    private async Task RunNativeProcessControlsAsync(SandboxStrength strength)
     {
         if (!OperatingSystem.IsWindows())
         {
-            Assert.Skip("The real Strong AppContainer process-control integration test requires Windows.");
+            Assert.Skip("The real Windows persistent process-control integration test requires Windows.");
             return;
         }
 
@@ -45,7 +53,8 @@ public sealed partial class StdioTransportTests
                 2 => Task.FromResult(CliEndToEndTests.ResponsesTextResponse("Both process sessions were handled.")),
                 _ => Task.FromResult(CliEndToEndTests.ResponsesTextResponse("Unexpected extra provider request.")),
             },
-            permissionsYaml: "profile: autonomous\nrules:\n  tool.search: allow\n  process.start: allow\n  process.read: allow\n  process.send_input: allow\n  process.stop: allow\n");
+            permissionsYaml: "profile: autonomous\nrules:\n  tool.search: allow\n  process.start: allow\n  process.read: allow\n  process.send_input: allow\n  process.stop: allow\n",
+            processSandboxStrength: strength);
         CopyProcessHelperInto(fixture.Workspace);
         InitializeProcessWorkspace(fixture.Workspace);
 

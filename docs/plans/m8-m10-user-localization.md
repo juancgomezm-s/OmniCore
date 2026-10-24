@@ -136,9 +136,9 @@ ya pasan localmente. Luna bajo repitió ocho focos sobre los mismos binarios:
 aprobó ConPTY y las suites completas de Windows/Linux; las dos CI anteriores se
 conservan como diagnóstico histórico en el acta.
 
-Quedan explícitos persistencia Weak,
-el ciclo durable restante de worktrees, aceptación
-transversal pendiente e integración del consumidor Electron por su coordinación.
+Los incrementos locales siguientes registran persistencia Weak Windows y
+el ciclo durable de worktrees. Siguen pendientes la aceptación transversal y
+la integración del consumidor Electron por su coordinación.
 La salida terminal conservada es un buffer acotado en memoria: tras recuperación
 se informa gap cuando corresponde. M8 mantiene su aceptación manual pendiente.
 No se modifica ni publica OmniCoder en esta entrega.
@@ -209,6 +209,30 @@ El query es pasivo/acotado y la acción usa refs/OIDs exactos, transacción Git
 sin desreferenciar y stdin exacto; conserva metadata/directorios. [Acta y límites](../validation/m9-worktree-retention-20261024.md).
 Historial superior a 100 000 eventos queda explícitamente no disponible.
 No hay CI/publicación ni cambios de OmniCoder. M9 global y M8 manual siguen abiertos.
+
+**M9-M persistencia Weak Windows aceptada localmente (2026-10-24):**
+`process.start/read/send_input/stop` usan el backend Windows Weak real, con Job
+asignado al proceso suspendido antes de ResumeThread, pipes o ConPTY, UTF-8,
+stdin/EOF, salida secuenciada y limpieza de descendientes al salir el root.
+El entorno hereda únicamente la allowlist Windows exacta y overrides explícitos.
+No se anuncia aislamiento Strong: su selector, los permisos vigentes y la
+frontera de WeakConsent permanecen separados.
+
+La primera revisión independiente encontró que una excepción podía impedir
+cerrar el Job. La candidata corregida libera Job/handles aun fallando consulta,
+terminación o espera; un fallo de construcción del control después de reanudar
+el proceso queda desconocido y no habilita reintento automático. Luna bajo
+aprobó **28 métodos/casos**, sin recompilar, cero fallos y omisiones, sobre
+fuentes/binarios congelados. [Acta y límites](../validation/m9-weak-persistence-20261024.md).
+El recorrido Host usa Weak explícito en fixture y no se presenta como prueba
+live de consentimiento; la clasificación del error postarranque se prueba en
+el launcher y su consumidor manager se revisa en código.
+
+Esta aceptación es Windows local, con compilación Sandbox net8/net10. Linux y
+macOS conservan rechazo tipado para Weak persistente sin backend equivalente;
+PTY de otras plataformas mantiene el diferido ADR-0038. No hubo nueva CI,
+publicación ni cambios de OmniCoder. Native/Imported, SEC-CONV y las demás
+aceptaciones transversales siguen pendientes; M9 global y M8 manual abiertos.
 
 ## Ejecución de cierre M9 (2026-10-22)
 

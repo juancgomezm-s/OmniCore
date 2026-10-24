@@ -464,6 +464,7 @@ public sealed partial class StdioTransportTests
         private bool _disposed;
         private bool _includeNativeChoiceCapability = true;
         private bool _includeRetentionQueryCapability;
+        private SandboxStrength _processSandboxStrength = SandboxStrength.Strong;
 
         private NativeCommandHandoffFixture(string root, string workspace,
             string? oldData, string? oldConfig, string oldDirectory, byte[] key,
@@ -543,7 +544,8 @@ public sealed partial class StdioTransportTests
             Func<CancellationToken, Task>? nativeProcessControlDeferredForTests = null,
             Action<string>? nativeProcessControlStageForTests = null,
             bool includeNativeChoiceCapability = true,
-            bool includeRetentionQueryCapability = false)
+            bool includeRetentionQueryCapability = false,
+            SandboxStrength processSandboxStrength = SandboxStrength.Strong)
         {
             var root = Path.Combine(Path.GetTempPath(), "omni-native-command-handoff-" + Guid.NewGuid().ToString("N"));
             var workspace = Path.Combine(root, "workspace");
@@ -561,6 +563,7 @@ public sealed partial class StdioTransportTests
                 oldDirectory, key, provider);
             fixture._includeNativeChoiceCapability = includeNativeChoiceCapability;
             fixture._includeRetentionQueryCapability = includeRetentionQueryCapability;
+            fixture._processSandboxStrength = processSandboxStrength;
             fixture.NativeProcessControlDeferredForTests = nativeProcessControlDeferredForTests;
             fixture.NativeProcessControlStageForTests = nativeProcessControlStageForTests;
             void RecordProviderBody(string body)
@@ -820,6 +823,7 @@ public sealed partial class StdioTransportTests
         private void StartRuntimeAndHost(string? cutCommandId)
         {
             var runtime = OmniCliRuntime.Create(Workspace);
+            runtime.ProcessSandboxStrengthForTests = _processSandboxStrength;
             runtime.UseConsoleInput = false;
             runtime.QuestionnaireInput = null;
             runtime.PrepareConversationSessionPolicy();

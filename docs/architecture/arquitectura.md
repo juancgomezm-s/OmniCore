@@ -792,8 +792,23 @@ separados, misma Session/workspace, permisos vigentes y refs/OIDs exactos.
 No se borran directorios ni metadata. Luna bajo aprobó 13 casos sin recompilar;
 [acta y límites](../validation/m9-worktree-retention-20261024.md).
 No se acredita caída intermedia, aceptación del consumidor ni CI/publicación.
-Persistencia Weak, Native/Imported y las demás aceptaciones de M9 siguen pendientes;
-M8 manual y el límite de solo lectura de OmniCoder se conservan.
+El incremento siguiente aporta persistencia Weak Windows. Native/Imported y
+las demás aceptaciones de M9 siguen pendientes; M8 manual y el límite de solo
+lectura de OmniCoder se conservan.
+
+La persistencia Weak de Windows tiene aceptación local del 2026-10-24: Job
+Object con KillOnJobClose asignado antes de ResumeThread, pipes y ConPTY real,
+entrada/EOF y controles por el manager existente. Al salir el root se terminan
+los descendientes antes de depender de EOF. La disposición libera Job/handles
+incluso fallando consulta, terminación o espera; fallos posteriores al arranque
+quedan desconocidos y no habilitan relanzamiento. El entorno usa una allowlist
+exacta y los permisos, Strong y WeakConsent conservan su autoridad.
+Luna bajo aprobó 28 casos sin recompilar, después de corregir el defecto de
+limpieza detectado en su primera revisión. [Acta y límites](../validation/m9-weak-persistence-20261024.md).
+La ejecución validada es Windows; la compilación net8/net10 no acredita Linux
+ni macOS, cuyo Weak persistente sigue explícitamente no disponible. PTY de otras
+plataformas conserva su diferido. Checkpoint local, sin nueva CI/publicación ni
+cambios de OmniCoder; M9 global y M8 manual permanecen abiertos.
 
 ### P0-OMNI-UNIFICACION
 

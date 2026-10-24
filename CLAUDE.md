@@ -55,6 +55,18 @@ sin recompilar; [acta y límites](docs/validation/m9-worktree-retention-20261024
 No borra metadata/directorios ni amplía cleanup/discard entre Runs. M9 global y
 M8 manual permanecen abiertos; sin nueva CI/publicación ni cambios de OmniCoder.
 
+**M9-M persistencia Weak Windows aceptada localmente (2026-10-24):** backend
+propio con Job Object asignado antes de ResumeThread, pipes/ConPTY, stdin/EOF,
+salida secuenciada y stop por el manager existente. La limpieza libera el Job y
+los handles incluso ante errores; fallos posteriores al arranque quedan unknown,
+sin relanzar. Entorno heredado por allowlist exacta, Strong y WeakConsent intactos.
+Luna bajo aprobó 28 casos sin recompilar tras corregir el defecto de disposición
+detectado en su primera revisión. [Acta y límites](docs/validation/m9-weak-persistence-20261024.md).
+Linux/macOS no tienen backend Weak persistente equivalente en este corte; PTY de
+otras plataformas conserva ADR-0038. Checkpoint local, sin CI ni publicación nueva.
+Native/Imported, aceptación transversal y consumidor Electron por su coordinación
+siguen pendientes; M9 global/M8 manual abiertos y OmniCoder en solo lectura.
+
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 
 **Checkpoint M9-K/L (2026-10-17):** seguridad durable por Session, lifecycle nativo y respuesta de

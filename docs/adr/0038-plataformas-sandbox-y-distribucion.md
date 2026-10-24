@@ -71,6 +71,15 @@ public sealed record SandboxProfile(
 
 **Nunca accesibles en `Strong`:** `~/.ssh`, `~/.aws`, `~/.config/gh`, los almacenes de credenciales de la plataforma y las rutas de secretos de ADR-0018.
 
+**Persistencia Weak Windows, corte M9-M del 2026-10-24:** usa Job Object
+retenido y asignado antes de ResumeThread, pipes o ConPTY, y allowlist exacta de
+entorno. Esto aporta ownership del árbol, no confinamiento Strong ni permisos
+adicionales. La limpieza conserva KillOnJobClose ante errores y una ejecución
+posiblemente iniciada queda desconocida, sin reintento automático. El selector
+Strong y WeakConsent no cambian. [Contrato y evidencia](../validation/m9-weak-persistence-20261024.md).
+Linux/macOS siguen sin backend Weak persistente equivalente; compilar Sandbox
+para net8/net10 no acredita ejecución ni aceptación de esas plataformas.
+
 ### 4. Identidades con rutas canónicas (precisa ADR-0022)
 
 La "ruta canónica" que se hashea para obtener `WorkspaceId` y `ProjectId` se calcula así:
