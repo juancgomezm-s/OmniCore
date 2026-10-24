@@ -244,6 +244,11 @@ public sealed partial class StdioTransportTests
             var write = Assert.Single(events, item => item.Envelope.RunId == RunId.Parse(pending.RunId)
                 && item.Payload is ToolCallRequested requested && requested.ToolName == "filesystem.write");
             var writeCallId = ((ToolCallRequested)write.Payload).ToolCallId;
+            var writeEvaluations = events.Where(item => item.Envelope.RunId == RunId.Parse(pending.RunId)
+                && item.Payload is PermissionEvaluated evaluated && evaluated.ToolCallId == writeCallId)
+                .Select(item => (PermissionEvaluated)item.Payload).ToArray();
+            Assert.NotEmpty(writeEvaluations);
+            Assert.All(writeEvaluations, evaluation => Assert.Null(evaluation.AppliedGrant));
             if (shouldWrite)
             {
                 Assert.Single(events, item => item.Envelope.RunId == RunId.Parse(pending.RunId)
@@ -545,7 +550,8 @@ public sealed partial class StdioTransportTests
         private readonly string? _oldData;
         private readonly string? _oldConfig;
         private readonly string _oldDirectory;
-        private Task<string>? _stderrCapture;
+        private Task? _stderrCapture;
+        private readonly StringBuilder _stderrOutput = new();
         private bool _disposed;
 
         private NativeChoiceFixture(string root, string workspace, string dataDirectory, string journal,
@@ -574,11 +580,23 @@ public sealed partial class StdioTransportTests
         public string? SelectedOption { get; }
         public string MarkerPath { get; }
         public string SecondMarkerPath { get; }
+        public string GrantTargetPath => Path.Combine(Workspace, "grant-dispatch-target.txt");
         public string? LastStartCommandId { get; private set; }
         public string? Nonce { get; private set; }
         public IReadOnlyList<string> NegotiatedCapabilities { get; private set; } = [];
         public string? CurrentSessionId { get; private set; }
         public Process? Host { get; private set; }
+        public string HostErrorDiagnostic
+        {
+            get
+            {
+                string text;
+                lock (_stderrOutput) text = _stderrOutput.ToString();
+                return text.Length > 2048 ? text[^2048..] : text;
+            }
+        }
+
+        public void SetCurrentSessionIdForTest(string sessionId) => CurrentSessionId = sessionId;
 
         public static async Task<NativeChoiceFixture> StartAsync(string mode, string? selectedOption = null,
             bool requestNativeChoices = true)
@@ -599,6 +617,36 @@ public sealed partial class StdioTransportTests
             var toolId = "choice-tool-" + Guid.NewGuid().ToString("N");
             provider.RespondWith((index, _) =>
             {
+                if (mode == "permission-grant-scope")
+                {
+                    var phase = index % 3;
+                    var run = index / 3;
+                    const string relativePath = "grant-dispatch-target.txt";
+                    if (phase == 0)
+                        return CliEndToEndTests.ResponsesToolCallResponse("grant-read-" + index,
+                            "filesystem.read", JsonSerializer.Serialize(new { path = relativePath }));
+                    if (phase == 1)
+                    {
+                        var state = run switch { 0 => "state-0", 1 => "state-1", 2 => "state-2", _ => "state-2" };
+                        var next = run switch
+                        {
+                            0 => "state-1\n",
+                            1 => "state-2\n",
+                            2 => string.Join("\n", Enumerable.Range(0, 201).Select(line => "expanded-" + line)) + "\n",
+                            _ => "state-3\n",
+                        };
+                        var before = GrantContent(state);
+                        return CliEndToEndTests.ResponsesToolCallResponse("grant-patch-" + index,
+                            "filesystem.patch", JsonSerializer.Serialize(new
+                            {
+                                path = relativePath,
+                                expectedVersion = FilesystemPatchTool.VersionToken(Encoding.UTF8.GetBytes(before)),
+                                    oldText = state + "\n",
+                                newText = next,
+                            }));
+                    }
+                    return CliEndToEndTests.ResponsesTextResponse("Grant scope dispatch completed.");
+                }
                 if (mode is "permission" or "permission-sequential" && index == 0)
                     return CliEndToEndTests.ResponsesToolCallResponse("discover-write-" + toolId, "tool.search",
                         "{\"query\":\"filesystem.write\",\"maxResults\":8}");
@@ -642,14 +690,24 @@ public sealed partial class StdioTransportTests
                 File.WriteAllText(Path.Combine(config, "settings.yaml"), "defaultModel: scripted-model\n", new UTF8Encoding(false));
                 File.WriteAllText(Path.Combine(config, "permissions.yaml"), mode is "permission" or "permission-sequential"
                     ? "profile: balanced\nrules:\n  tool.search: allow\n  filesystem.write: ask\n"
+                    : mode == "permission-grant-scope"
+                        ? "profile: balanced\nrules:\n  tool.search: allow\n  filesystem.read: allow\n  filesystem.patch: ask\n"
                     : "profile: balanced\nrules:\n  tool.search: allow\n  plan.propose: allow\n  filesystem.write: allow\n", new UTF8Encoding(false));
                 Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", data);
                 Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", config);
                 Environment.CurrentDirectory = workspace;
 
                 using (var modelPolicies = OmniHost.CreateModelPolicyService(data))
+                {
+                    var fullAgent = ModelPolicyPresets.FullAgent();
+                    var directFullAgent = new UserModelPolicy(fullAgent.Category,
+                        new ModelToolPolicy(ToolMode.Direct, fullAgent.ToolPolicy.MaxVisibleTools, false,
+                            fullAgent.ToolPolicy.CapabilityCeiling), fullAgent.MutationPolicy, fullAgent.Source,
+                        fullAgent.Note, fullAgent.MaxModelStepsPerTurn, fullAgent.MaxToolCallsPerTurn,
+                        fullAgent.AllowOrchestration, fullAgent.MaxGenerationSeconds);
                     modelPolicies.Set(ModelPolicyKey.For("scripted", "scripted-model"), 0,
-                        ModelPolicyPresets.FullAgent(), CancellationToken.None);
+                        mode == "permission-grant-scope" ? directFullAgent : fullAgent, CancellationToken.None);
+                }
                 var paths = OmniHost.CreatePlatformPaths();
                 var defaults = new SessionSecurityDefaultConfiguration(paths);
                 defaults.Set(defaults.Read().Revision, ModelPolicyCategory.FullAgent, CancellationToken.None);
@@ -666,15 +724,32 @@ public sealed partial class StdioTransportTests
         public async Task<(InteractionRequested Request, string RunId, TurnId TurnId, long PolicyRevision)>
             StartAndWaitForInteractionAsync(InteractionKind kind)
         {
+            var providerRequestsBeforeStart = Provider.RequestCount;
+            if (CurrentSessionId is { } priorSession)
+            {
+                var create = WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"conversation.new\"}");
+                var createAck = Ack(RawExchange(Host!, TrustedActionEnvelope(create, Key, Nonce!, Workspace,
+                    priorSession, null)));
+                Assert.Equal(RuntimeCommandOutcomeKind.Accepted, createAck.Outcome?.Kind);
+                var createdSession = ReadCurrentSessionId(Host!);
+                Assert.NotEqual(priorSession, createdSession);
+                CurrentSessionId = createdSession;
+            }
             var defaultRevision = ReadSessionSecurityDefaultRevision(Host!);
-            var mode = Mode is "permission" or "permission-sequential" ? "act" : "plan";
+            var currentPolicyRevision = CurrentSessionId is null
+                ? (long?)null : ReadNativeSessionSecurity(Host!).GetProperty("revision").GetInt64();
+            var mode = Mode is "permission" or "permission-sequential" or "permission-grant-scope" ? "act" : "plan";
             var start = WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"conversation.start\",\"text\":\"Exercise a server choice\",\"mode\":"
-                + JsonSerializer.Serialize(mode) + ",\"expectedRevision\":null,\"expectedPolicyRevision\":null,\"expectedDefaultRevision\":"
-                + JsonSerializer.Serialize(defaultRevision) + "}");
+                + JsonSerializer.Serialize(mode) + ",\"expectedRevision\":null,\"expectedPolicyRevision\":"
+                + (currentPolicyRevision?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null")
+                + ",\"expectedDefaultRevision\":"
+                + (currentPolicyRevision is null ? JsonSerializer.Serialize(defaultRevision) : "null") + "}");
             LastStartCommandId = start.MessageId;
-            var ack = Ack(RawExchange(Host!, TrustedActionEnvelope(start, Key, Nonce!, Workspace, null, null)));
-            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, ack.Outcome?.Kind);
-            await Provider.WaitForRequestAsync(1, TestContext.Current.CancellationToken)
+            var ack = Ack(RawExchange(Host!, TrustedActionEnvelope(start, Key, Nonce!, Workspace,
+                CurrentSessionId, null)));
+            Assert.True(ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted,
+                "conversation.start rejected: " + ack.Error);
+            await Provider.WaitForRequestAsync(providerRequestsBeforeStart + 1, TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
             var scope = ReadCurrentScope(Host!);
             CurrentSessionId = scope.SessionId;
@@ -704,7 +779,8 @@ public sealed partial class StdioTransportTests
                         var deferred = await WaitForDeferredStartAsync(start);
                         Assert.Equal("deferred", deferred.GetProperty("state").GetString());
                         Assert.Equal("input_required", deferred.GetProperty("code").GetString());
-                        Assert.Equal(kind == InteractionKind.PlanApproval ? 3 : 2, Provider.RequestCount);
+                        Assert.Equal(providerRequestsBeforeStart + (kind == InteractionKind.PlanApproval ? 3
+                            : Mode == "permission-grant-scope" ? 2 : 2), Provider.RequestCount);
                         var policyRevision = ReadNativeSessionSecurity(Host!).GetProperty("revision").GetInt64();
                         return (interaction, run.ToString(), turnId, policyRevision);
                     }
@@ -782,7 +858,7 @@ public sealed partial class StdioTransportTests
             if (Host is null) return;
             Host.Kill(entireProcessTree: true);
             await Host.WaitForExitAsync(TestContext.Current.CancellationToken);
-            if (_stderrCapture is not null) _ = await _stderrCapture;
+            if (_stderrCapture is not null) await _stderrCapture;
             Host.Dispose();
             Host = null;
             _stderrCapture = null;
@@ -794,7 +870,7 @@ public sealed partial class StdioTransportTests
             // also keeps --artifacts-path builds isolated from shared src/bin outputs.
             var cli = Path.Combine(AppContext.BaseDirectory, "omni.dll");
             Host = StartRawHost(cli, Workspace, Convert.ToHexString(Key));
-            _stderrCapture = Host.StandardError.ReadToEndAsync();
+            _stderrCapture = CaptureHostErrorAsync(Host.StandardError);
             var requested = requestNativeChoices
                 ? ",\"capabilities\":[\"command.conversation.interaction.choice.respond.user\"]"
                 : string.Empty;
@@ -807,6 +883,14 @@ public sealed partial class StdioTransportTests
                 .Select(value => value.GetString()!).ToArray();
         }
 
+        private async Task CaptureHostErrorAsync(StreamReader reader)
+        {
+            while (await reader.ReadLineAsync().ConfigureAwait(false) is { } line)
+            {
+                lock (_stderrOutput) _stderrOutput.AppendLine(line);
+            }
+        }
+
         public async Task<string> StopAndCaptureHostDiagnosticsAsync()
         {
             if (Host is null) return "host-already-stopped";
@@ -815,7 +899,8 @@ public sealed partial class StdioTransportTests
                 Host.Kill(entireProcessTree: true);
                 await Host.WaitForExitAsync(TestContext.Current.CancellationToken);
             }
-            var diagnostics = _stderrCapture is null ? string.Empty : await _stderrCapture;
+            if (_stderrCapture is not null) await _stderrCapture;
+            var diagnostics = HostErrorDiagnostic;
             Host.Dispose();
             Host = null;
             _stderrCapture = null;
@@ -843,6 +928,14 @@ public sealed partial class StdioTransportTests
         public IReadOnlyList<(DomainEvent Envelope, DomainEventPayload Payload)> ReadEvents()
         {
             var session = OmniCore.Domain.SessionId.Parse(CurrentSessionId!);
+            var codecs = EventCodecs.Create();
+            using var store = new SqliteEventStore(_journal, readOnly: true);
+            return store.ReadFrom(session, 1).Select(envelope => (envelope, codecs.Decode(envelope))).ToArray();
+        }
+
+        public IReadOnlyList<(DomainEvent Envelope, DomainEventPayload Payload)> ReadSessionEvents(string sessionId)
+        {
+            var session = OmniCore.Domain.SessionId.Parse(sessionId);
             var codecs = EventCodecs.Create();
             using var store = new SqliteEventStore(_journal, readOnly: true);
             return store.ReadFrom(session, 1).Select(envelope => (envelope, codecs.Decode(envelope))).ToArray();
@@ -910,6 +1003,22 @@ public sealed partial class StdioTransportTests
                 await Task.Delay(25, TestContext.Current.CancellationToken);
             }
             throw new TimeoutException("approve_only did not complete the original Plan Run.");
+        }
+
+        public async Task WaitForRunCancellationAsync(string runId)
+        {
+            var run = RunId.Parse(runId);
+            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+                var events = ReadEvents().Where(item => item.Envelope.RunId == run).ToArray();
+                if (events.Any(item => item.Payload is RunCancelled)) return;
+                if (events.Any(item => item.Payload is RunCompleted or RunFailed))
+                    throw new InvalidOperationException("The fixture Run reached a different terminal outcome before cancel.");
+                await Task.Delay(25, TestContext.Current.CancellationToken);
+            }
+            throw new TimeoutException("The authorized fixture run.cancel did not persist RunCancelled.");
         }
 
         public async ValueTask DisposeAsync()

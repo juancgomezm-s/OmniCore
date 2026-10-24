@@ -837,6 +837,18 @@ Es evidencia de snapshots y continuidad; grants/dispatch de SEC-CONV-02, consumi
 GUI, live y otras plataformas conservan sus gates. El checkpoint es local, sin
 CI/publicación/instalación ni cambios de OmniCoder; SEC-CONV global y M9/M8 abiertos.
 
+El corte local SEC-CONV-02 del 2026-10-24 añade dispatch real de `filesystem.patch`
+en un mismo Host OS A→B→A: aislamiento del grant Run, Workspace grant compartido
+legítimamente y techo PatchOnly vigente pese al grant. Se reparan igualdad de
+tipos/lectura JSON en el replay de cobertura y la omisión de AppliedGrant en el
+evento, sin ampliar permisos. Luna bajo aprobó 7 casos en seis métodos sin
+recompilar; [acta y límites](../validation/m9-sec-conv02-dispatch-20261024.md).
+El positivo Direct no valida discovery. El diagnóstico genérico histórico de
+plan descubierto sigue sin causa/resolución confirmada, sin snapshot conservado;
+PatchOnly mantiene discovery deshabilitado. No se acredita Run terminal A2,
+GUI/live ni otras plataformas. SEC-CONV-02 completo y M9/M8 permanecen abiertos,
+con OmniCoder en solo lectura y sin CI/publicación/instalación nueva.
+
 ### P0-OMNI-UNIFICACION
 
 **Revisión:** 2026-10-14 · **Prioridad:** P0 · **Estado global:** CERRADO / ALCANCE ACEPTADO. **Contribución de OmniCore: CERRADA en Windows**, con el alcance y las diferencias de plataforma del [acta local](../validation/omnicore-homologation-closure-20261014.md).

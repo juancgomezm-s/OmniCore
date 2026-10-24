@@ -259,6 +259,13 @@ figura en el acta; los procesos escritores generales todavía no están aceptado
   lectura previa efectiva del modelo y el token correspondiente; la lectura interna del Host
   para calcular el diff no satisface ese requisito. Debe comprobarse la cobertura de lectura
   del contenido que cambia: una página vacía o ajena a la edición no constituye esa evidencia.
+- La evolución M9-L-MUT-01 registra cobertura visible con path, versión y rango, ligada al
+  read solicitado y completado en la misma Session/Run/Lane. Sólo esa evidencia canónica
+  puede rehidratar el requisito de lectura; un token suelto, un summary histórico o I/O
+  interno del Host no lo satisfacen. Se mantiene la comprobación física de versión antes
+  del efecto. El [contrato de historial](../validation/m9-durable-file-history-20261020.md)
+  precede a la [corrección del lector de evidencia y su aceptación](../validation/m9-sec-conv02-dispatch-20261024.md):
+  igualdad por valor del tipo de evento, formatos JSON canónicos y rechazo de aliases ambiguos.
 - El diff completo se comprueba como un solo cambio contra los mismos límites de scope,
   archivos, líneas y ratio de reescritura. No se fracciona automáticamente en parches que eludan
   esos límites. Se revalida la versión física antes de publicar; un conflicto no se sobrescribe.

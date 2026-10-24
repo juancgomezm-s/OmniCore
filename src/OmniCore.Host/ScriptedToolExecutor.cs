@@ -589,13 +589,13 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         foreach (var envelope in events)
         {
             if (envelope.ToolCallId is not { } callId) continue;
-            if (envelope.Type == EventType.Of("toolcall.succeeded")) succeeded.Add(callId);
-            else if (envelope.Type == EventType.Of("toolcall.requested"))
+            if (envelope.Type.Equals(EventType.Of("toolcall.succeeded"))) succeeded.Add(callId);
+            else if (envelope.Type.Equals(EventType.Of("toolcall.requested")))
             {
                 try
                 {
                     using var payload = System.Text.Json.JsonDocument.Parse(envelope.PayloadJson);
-                    if (payload.RootElement.TryGetProperty("toolName", out var name)
+                    if (TryGetUniqueEventProperty(payload.RootElement, "toolName", "ToolName", out var name)
                         && name.ValueKind == System.Text.Json.JsonValueKind.String
                         && name.GetString() == "filesystem.read") requestedReads.Add(callId);
                 }
@@ -603,21 +603,60 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             }
         }
 
-        foreach (var envelope in events.Where(item => item.Type == EventType.Of("workspace.file_read_coverage_recorded")
+        foreach (var envelope in events.Where(item => item.Type.Equals(EventType.Of("workspace.file_read_coverage_recorded"))
             && item.ToolCallId is { } id && requestedReads.Contains(id) && succeeded.Contains(id)))
         {
             try
             {
                 using var payload = System.Text.Json.JsonDocument.Parse(envelope.PayloadJson);
                 var root = payload.RootElement;
-                if (!root.TryGetProperty("relativePath", out var path) || path.ValueKind != System.Text.Json.JsonValueKind.String
-                    || !root.TryGetProperty("versionToken", out var version) || version.ValueKind != System.Text.Json.JsonValueKind.String
-                    || !root.TryGetProperty("start", out var start) || !start.TryGetInt32(out var startValue)
-                    || !root.TryGetProperty("length", out var length) || !length.TryGetInt32(out var lengthValue)
-                    || !root.TryGetProperty("totalLength", out var total) || !total.TryGetInt32(out var totalValue)) continue;
+                if (!TryGetUniqueEventProperty(root, "relativePath", "RelativePath", out var path)
+                    || path.ValueKind != System.Text.Json.JsonValueKind.String
+                    || !TryGetUniqueEventProperty(root, "versionToken", "VersionToken", out var version)
+                    || version.ValueKind != System.Text.Json.JsonValueKind.String
+                    || !TryGetUniqueEventProperty(root, "start", "Start", out var start)
+                    || start.ValueKind != System.Text.Json.JsonValueKind.Number
+                    || !start.TryGetInt32(out var startValue)
+                    || !TryGetUniqueEventProperty(root, "length", "Length", out var length)
+                    || length.ValueKind != System.Text.Json.JsonValueKind.Number
+                    || !length.TryGetInt32(out var lengthValue)
+                    || !TryGetUniqueEventProperty(root, "totalLength", "TotalLength", out var total)
+                    || total.ValueKind != System.Text.Json.JsonValueKind.Number
+                    || !total.TryGetInt32(out var totalValue)) continue;
                 registry.RestoreVisibleRead(path.GetString()!, version.GetString()!, startValue, lengthValue, totalValue);
             }
             catch (Exception failure) when (failure is System.Text.Json.JsonException or ArgumentException or ArgumentOutOfRangeException) { }
         }
+    }
+
+    // Event JSON is emitted with PascalCase record properties; camelCase is the known legacy
+    // spelling. Accept those exact aliases only and refuse duplicate/ambiguous members.
+    private static bool TryGetUniqueEventProperty(System.Text.Json.JsonElement root,
+        string camelCaseName, string pascalCaseName, out System.Text.Json.JsonElement value)
+    {
+        value = default;
+        if (root.ValueKind != System.Text.Json.JsonValueKind.Object) return false;
+        var count = 0;
+        foreach (var property in root.EnumerateObject())
+        {
+            var exactCamel = string.Equals(property.Name, camelCaseName, StringComparison.Ordinal);
+            var exactPascal = string.Equals(property.Name, pascalCaseName, StringComparison.Ordinal);
+            if (!exactCamel && !exactPascal)
+            {
+                // Reject case-insensitive spellings such as TOOLNAME instead of silently
+                // treating a payload with conflicting aliases as canonical evidence.
+                if (string.Equals(property.Name, camelCaseName, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(property.Name, pascalCaseName, StringComparison.OrdinalIgnoreCase))
+                    return false;
+                continue;
+            }
+            if (++count > 1)
+            {
+                value = default;
+                return false;
+            }
+            value = property.Value;
+        }
+        return count == 1;
     }
 }

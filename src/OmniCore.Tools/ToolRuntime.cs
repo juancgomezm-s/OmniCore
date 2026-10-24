@@ -479,7 +479,7 @@ public sealed class ToolRuntime
                 }
             }
         }
-        _emit(new PermissionEvaluated(validated.ToolCallId, decision.Final, LayersToJson(decision), null));
+        _emit(new PermissionEvaluated(validated.ToolCallId, decision.Final, LayersToJson(decision), decision.AppliedGrant));
         if (resumedPermission is not null && resumedPermissionOption == "deny")
         {
             _emit(new PermissionDenied(validated.ToolCallId, "Permission denied by the user."));

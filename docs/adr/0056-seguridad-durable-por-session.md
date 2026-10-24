@@ -53,7 +53,13 @@ El checkpoint publicado Core `5c315ba` incluye seguridad durable, lifecycle y re
 de cuestionarios. El build de solución y 120 casos focales únicos se verificaron en los ciclos
 descritos en [el acta M9-K](../validation/m9-block-k-20261017.md); esa cifra no representa una sola
 ejecución completa. Incluye recuperación tras reiniciar el Host y restauración conservadora del
-presupuesto de mutación del Turn. Los grants de lectura/versionado no se restauran como autoridad.
+presupuesto de mutación del Turn. En ese checkpoint no se restauraban grants de lectura/versionado
+como autoridad desde los summaries disponibles. La evolución posterior
+[M9-L-MUT-01](../validation/m9-durable-file-history-20261020.md) añadió el evento de cobertura
+visible: path, token y rango del read solicitado y completado en la misma Session/Run/Lane.
+Sólo esa prueba canónica puede rehidratar lectura, manteniendo versión física y permisos;
+la [aceptación SEC-CONV-02](../validation/m9-sec-conv02-dispatch-20261024.md) corrige su lector
+sin crear autoridad desde otro ámbito ni desde tokens históricos arbitrarios.
 
 El checkpoint publicado OmniCoder `c85a77c` incluye consumidor SDK/Main/UI para cuestionarios y
 lifecycle. Pasaron el E2E real Electron→Host→fixture HTTP de dos Sessions y el de respuesta de

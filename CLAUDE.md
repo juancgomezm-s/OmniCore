@@ -91,6 +91,18 @@ El snapshot no acredita aislamiento completo de grants/dispatch (SEC-CONV-02),
 GUI/Electron (13/14), live ni plataformas adicionales. Checkpoint local, sin
 publicación/CI/instalación ni cambios de OmniCoder; SEC-CONV global y M9/M8 abiertos.
 
+**SEC-CONV-02, grants/dispatch Direct aceptados localmente (2026-10-24):**
+en el mismo Host OS, un grant de Run en A no autoriza B con claims iguales; un
+Workspace grant de B sí sirve legítimamente a un Run nuevo de A y no eleva el
+límite PatchOnly de B. Se corrigieron el replay de lectura canónica (igualdad de
+EventType y aliases JSON) y el campo `PermissionEvaluated.AppliedGrant` sin cablear.
+Luna bajo aprobó seis métodos/siete casos sin recompilar. [Acta y límites](docs/validation/m9-sec-conv02-dispatch-20261024.md).
+La cobertura sigue ligada a Session/Run/Lane y versión/rango; no hay nuevo permiso.
+Discovery bajo PatchOnly está deshabilitado. El error genérico histórico de la
+variante descubierta carece de snapshot conservado y sigue sin causa/resolución
+confirmada; Direct no lo valida. SEC-CONV-02 completo y M9/M8 siguen abiertos.
+Checkpoint local, sin CI/publicación/instalación ni cambios de OmniCoder.
+
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 
 **Checkpoint M9-K/L (2026-10-17):** seguridad durable por Session, lifecycle nativo y respuesta de

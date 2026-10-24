@@ -70,8 +70,12 @@ interacción ni reenviar una operación con outcome incierto.
 `Permission` debe continuar la llamada original pendiente antes de
 `ToolCallStarted`, con el mismo Turn y la autorización exacta de Core. La
 rehidratación conserva revalidación de argumentos/intent, política vigente,
-presupuestos, sandbox y Barrier; no restaura grants de lectura/versionado desde
-el journal. `Started`, incertidumbre o una correlación incompleta impiden una
+presupuestos, sandbox y Barrier; no concede lectura por un token suelto o un
+summary del journal. La evolución posterior M9-L-MUT-01 permite rehidratar sólo
+cobertura canónica visible (path/versión/rango) del read solicitado y completado
+en la misma Session/Run/Lane, sin cambiar permisos y con versión física vigente.
+[Contrato posterior y corrección del replay](../validation/m9-sec-conv02-dispatch-20261024.md).
+`Started`, incertidumbre o una correlación incompleta impiden una
 nueva ejecución. `PlanApproval` conserva los efectos de las opciones de
 `RunControlService`: aprobar sin ejecutar no inicia efectos de ACT; la ejecución
 aprobada continúa en el mismo Run.

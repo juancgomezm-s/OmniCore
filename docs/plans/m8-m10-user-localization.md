@@ -269,6 +269,22 @@ Quedan explícitos grants/dispatch entre Sessions de SEC-CONV-02 y los gates GUI
 live y plataformas; este corte no cierra SEC-CONV completo ni M9/M8. Se conserva
 OmniCoder en solo lectura, sin nueva CI, publicación o actualización de instalación.
 
+**SEC-CONV-02, grants y dispatch Direct aceptados localmente (2026-10-24):**
+una integral con Host OS separado, mismo workspace y claims de patch iguales,
+comprueba A1 con grant Run, B1 en Ask sin herencia, Workspace grant de B utilizado
+por un Run nuevo A2 y rechazo del límite PatchOnly de B2 sin mutar el archivo.
+Se preserva la compartición Workspace legítima y los techos de Session. El corte
+corrige dos fallos del replay de cobertura de lectura y conecta el GrantId ya
+calculado al evento de permiso; el ID no significa éxito del efecto.
+Luna bajo aprobó 7/7 casos en seis métodos sobre binarios congelados, sin recompilar.
+[Recorrido, contrato y evidencia](../validation/m9-sec-conv02-dispatch-20261024.md).
+El positivo usa herramientas Direct permitidas. El error histórico de recuperación
+de plan descubierto no tiene snapshot conservado para atribuir causa y sigue
+pendiente técnico; no se declara resuelto ni validado por este positivo, y no se
+habilita discovery para PatchOnly. A2 sólo acredita TurnCompleted y receipt, no
+Run terminal. No se cierra SEC-CONV-02 completo, SEC-CONV, M9 o M8 manual; no hubo
+cambios de OmniCoder, publicación, CI remota ni actualización de instalaciones.
+
 ## Ejecución de cierre M9 (2026-10-22)
 
 **Rectificación de alcance del 23 de octubre:** la construcción descrita abajo
