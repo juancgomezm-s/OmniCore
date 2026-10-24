@@ -285,6 +285,18 @@ habilita discovery para PatchOnly. A2 sólo acredita TurnCompleted y receipt, no
 Run terminal. No se cierra SEC-CONV-02 completo, SEC-CONV, M9 o M8 manual; no hubo
 cambios de OmniCoder, publicación, CI remota ni actualización de instalaciones.
 
+**SEC-CONV-02, recuperación Discovered aceptada localmente (2026-10-24):**
+modelo y Session `ScopedCoder` permiten el recorrido Host OS/stdio firmado:
+`tool.search` → lectura → patch en Ask → Once/Workspace → continuación y efecto.
+El alias de patch está ausente al inicio, se incorpora después del discovery y
+permanece al reanudar; snapshot y plan v3 tienen evidencia CAS preservada.
+Luna bajo aprobó 2/2 casos sobre la imagen final, sin recompilar; se reparó el
+cleanup del fixture, sin cambios de producción. [Acta y límites](../validation/m9-sec-conv02-discovered-20261024.md).
+El intento histórico sin snapshot sigue sin causa atribuida; no se habilita
+discovery en PatchOnly ni se debilitan guardas. No cierra SEC-CONV-02 global,
+SEC-CONV, M9 ni M8 manual. Solo checkpoint local, OmniCoder en solo lectura,
+sin CI/publicación/instalación nueva.
+
 ## Ejecución de cierre M9 (2026-10-22)
 
 **Rectificación de alcance del 23 de octubre:** la construcción descrita abajo

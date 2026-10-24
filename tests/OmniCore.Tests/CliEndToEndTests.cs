@@ -3807,6 +3807,8 @@ public sealed partial class CliEndToEndTests
         private Func<int, string, Task<string>>? _asyncResponse;
         private int _requestCount;
         private readonly System.Collections.Concurrent.ConcurrentDictionary<int, TaskCompletionSource<bool>> _requestWaiters = new();
+        private readonly System.Collections.Concurrent.ConcurrentQueue<(int Index, string Body)> _requestBodies = new();
+        private readonly System.Collections.Concurrent.ConcurrentQueue<(int Index, string Body)> _responseBodies = new();
 
         public ScriptedHttpProvider()
         {
@@ -3818,6 +3820,8 @@ public sealed partial class CliEndToEndTests
 
         public string BaseUrl { get; }
         public int RequestCount => Volatile.Read(ref _requestCount);
+        public IReadOnlyList<(int Index, string Body)> RequestBodies => _requestBodies.OrderBy(item => item.Index).ToArray();
+        public IReadOnlyList<(int Index, string Body)> ResponseBodies => _responseBodies.OrderBy(item => item.Index).ToArray();
         public Task WaitForRequestAsync(int count, CancellationToken cancellationToken)
         {
             if (RequestCount >= count) return Task.CompletedTask;
@@ -3876,9 +3880,11 @@ public sealed partial class CliEndToEndTests
                 _requestWaiters.GetOrAdd(requestNumber + 1,
                     _ => new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult(true);
                 var request = new string(body, 0, read);
+                _requestBodies.Enqueue((requestNumber, request));
                 var eventText = _asyncResponse is { } asyncResponse
                     ? await asyncResponse(requestNumber, request).ConfigureAwait(false)
                     : _response?.Invoke(requestNumber, request) ?? TextResponse("respuesta-scripted");
+                _responseBodies.Enqueue((requestNumber, eventText));
                 var bytes = Encoding.UTF8.GetBytes(eventText);
                 var response = Encoding.ASCII.GetBytes(string.Join("\r\n", "HTTP/1.1 200 OK",
                     "Content-Type: text/event-stream", "Cache-Control: no-cache", "Connection: close",

@@ -103,6 +103,17 @@ variante descubierta carece de snapshot conservado y sigue sin causa/resolución
 confirmada; Direct no lo valida. SEC-CONV-02 completo y M9/M8 siguen abiertos.
 Checkpoint local, sin CI/publicación/instalación ni cambios de OmniCoder.
 
+**SEC-CONV-02, recuperación Discovered aceptada localmente (2026-10-24):**
+con modelo y Session `ScopedCoder`, Host OS separado ejecuta discovery, lectura,
+patch en Ask y continuación nativa firmada con Once o Workspace. El plan v3 y
+sus snapshots/CAS se conservan; patch no está visible inicialmente y sigue en
+la petición posterior al permiso. Luna bajo aprobó 2/2 casos de la candidata
+final sin recompilar. Se corrigió la limpieza del fixture; producción intacta.
+[Evidencia y límites](docs/validation/m9-sec-conv02-discovered-20261024.md).
+El fallo histórico sin snapshot sigue sin causa atribuible. PatchOnly conserva
+Direct sin discovery; SEC-CONV-02 global, M9 y M8 manual siguen abiertos.
+Checkpoint local únicamente, sin publicación ni cambios de OmniCoder.
+
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 
 **Checkpoint M9-K/L (2026-10-17):** seguridad durable por Session, lifecycle nativo y respuesta de

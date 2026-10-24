@@ -77,6 +77,11 @@ La causa exacta del error genérico previo queda como pendiente técnico indepen
 Direct no se presenta como solución de discovery. Logs temporales/diagnósticos quedan en
 `artifacts/m9-sec-conv02-dispatch/` y no se suman al conteo final.
 
+El corte posterior [recuperación Discovered con ScopedCoder](m9-sec-conv02-discovered-20261024.md)
+añade 2/2 casos aprobados independientemente bajo una política que permite discovery,
+con journal/CAS y binarios preservados. No sustituye el snapshot histórico perdido
+ni determina su guarda de rechazo; tampoco amplía el contrato PatchOnly.
+
 ## Build y campaña focal sobre la candidata congelada
 
 Build:

@@ -849,6 +849,16 @@ PatchOnly mantiene discovery deshabilitado. No se acredita Run terminal A2,
 GUI/live ni otras plataformas. SEC-CONV-02 completo y M9/M8 permanecen abiertos,
 con OmniCoder en solo lectura y sin CI/publicación/instalación nueva.
 
+El siguiente corte local SEC-CONV-02 valida recuperación Discovered con modelo y
+Session `ScopedCoder`: discovery, lectura, patch en Ask y continuación firmada
+Once/Workspace en Host OS separado. El patch no está visible en el primer request,
+se descubre y sigue en la continuación; se preservan snapshot/CAS y plan v3.
+Luna bajo aprobó 2/2 casos de la candidata final sin recompilar. Solo se modificaron
+pruebas y limpieza del fixture, sin cambios de producción. [Acta](../validation/m9-sec-conv02-discovered-20261024.md).
+No atribuye el fallo histórico sin snapshot ni cambia PatchOnly. Aceptación local
+Windows con HTTP scripted; SEC-CONV-02 global, M9/M8 manual siguen abiertos,
+sin cambios de OmniCoder ni CI/publicación/instalación nueva.
+
 ### P0-OMNI-UNIFICACION
 
 **Revisión:** 2026-10-14 · **Prioridad:** P0 · **Estado global:** CERRADO / ALCANCE ACEPTADO. **Contribución de OmniCore: CERRADA en Windows**, con el alcance y las diferencias de plataforma del [acta local](../validation/omnicore-homologation-closure-20261014.md).
