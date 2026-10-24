@@ -79,6 +79,12 @@ conserva separado: sus cero pruebas ejecutadas no se suman al total final.
 
 Este corte no convierte formatos ajenos, no ejecuta migraciones, no copia grants/receipts/leases/efectos, y no acredita Linux/macOS, dos procesos OS, ejecutable CLI separado, proveedor live ni integración Electron. La aceptación es focal local, sin suite completa ni CI. M9 global, SEC-CONV completo y M8 manual continúan abiertos; todas las copias de OmniCoder se conservaron en solo lectura.
 
+El corte posterior [importación entre procesos OS](m9-native-import-processes-20261024.md)
+complementa dos límites de esta campaña histórica: CLI ejecutable separado y dos
+Hosts OS compartiendo receipt, con 3/3 casos aprobados independientemente. Corrige
+el replay stdio antes del lease sin ampliar permisos. No transforma estos 16 casos
+en pruebas entre procesos ni sustituye los demás límites de GUI/live/plataformas.
+
 ## Hashes
 
 El manifiesto original de 26 archivos está en `artifacts/m9-native-import/manifest-sha256.txt`, SHA-256 `02FF8FB044C1F3EE3FED7E1D3456CDC496624880E8D3C69D8BF3F28912EF17FC`. Incluye los documentos congelados durante la revisión; esta acta y el plan se actualizaron editorialmente después del dictamen. Fuentes/tests y binarios permanecen iguales a los validados y se enumeran abajo para conservar la evidencia en Git. El archivo preexistente `x` conserva su SHA-256 `84E292A1C73B431B64FBC2C8F0FA8B08CC771E58B98F05FB968C842CBBF6FE45`.

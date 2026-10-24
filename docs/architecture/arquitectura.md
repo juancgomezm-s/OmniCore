@@ -826,6 +826,15 @@ OS, medios/conversores ajenos, consumidor Electron ni proveedor live. Checkpoint
 local sin CI/publicación; SEC-CONV y las demás aceptaciones transversales, M9 global
 y M8 manual siguen abiertos.
 
+El corte posterior de importación entre procesos OS cubre la CLI ejecutable y
+dos Hosts coexistentes con una Session/evento y replay del ACK durable original.
+El lookup autenticado de `conversation.import` se adelanta al lease solo cuando
+hay receipt; un ID nuevo mantiene la barrera de escritura. Luna bajo aprobó 3/3
+casos pertinentes sin recompilar. [Acta y evidencia](../validation/m9-native-import-processes-20261024.md).
+El solapamiento medido es de requests; no demuestra simultaneidad SQL ni el
+contenido/propietario interno de leases. No cambia OmniCoder ni acredita GUI,
+live, otras plataformas o cierre SEC-CONV/M9/M8. Sin nueva CI/publicación.
+
 La aceptación SEC-CONV Core del 2026-10-24 agrega el hueco de snapshots por
 Session sobre Host/stdio en proceso OS separado: A=ObserveOnly, B=PatchOnly,
 default posterior FullAgent sin retroactividad y alternancia/reapertura de ambas

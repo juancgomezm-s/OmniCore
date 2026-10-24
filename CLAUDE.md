@@ -80,6 +80,16 @@ un proceso, no dos procesos OS. Sólo formato canónico de texto; no conversores
 medios ni aceptación Electron/Linux/live. Checkpoint local sin CI/publicación;
 SEC-CONV y aceptaciones transversales, M9 global y M8 manual siguen abiertos.
 
+**M9 importación entre procesos OS aceptada localmente (2026-10-24):**
+el corte posterior cubre CLI ejecutable y dos Hosts OS coexistentes, mismo
+CommandId/payload y una sola Session importada. Corrige el replay autenticado
+del receipt de importación antes del lease; un comando nuevo mantiene el bloqueo.
+Luna bajo aprobó 3/3 casos sin recompilar, incluidos negativos de firma/hash y
+la regresión stdio existente. [Acta y evidencia](docs/validation/m9-native-import-processes-20261024.md).
+El solapamiento observado es de requests, no de la transacción SQLite. No prueba
+contenido/propietario interno de leases, GUI, live ni otras plataformas.
+Checkpoint local, OmniCoder intacto y sin publicación; SEC-CONV/M9/M8 abiertos.
+
 **SEC-CONV Core: snapshots entre Sessions aceptados localmente (2026-10-24):**
 Host/stdio en proceso OS separado conserva A=ObserveOnly y B=PatchOnly, cada una
 con revisión 1 y origen Native/UserDefault, al alternar/reabrir ambas después de

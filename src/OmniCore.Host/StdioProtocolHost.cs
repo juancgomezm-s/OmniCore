@@ -1229,6 +1229,21 @@ public static class StdioProtocolHost
             return trustedScope is null ? client.Send(command, CancellationToken.None)
                 : new CommandAck(command.MessageId, "error", "trusted_action_unavailable", RuntimeCommandOutcome.Rejected());
 
+        // A completed import receipt is workspace-global. A second Host process can
+        // authenticate the same user action while another process owns the workspace
+        // writer lease; receipt replay is read-only and must return before that lease gate.
+        // The caller has already verified the HMAC and workspace-bound scope.
+        if (trustedScope is not null)
+        {
+            using var payload = JsonDocument.Parse(command.PayloadJson);
+            if (payload.RootElement.ValueKind == JsonValueKind.Object
+                && payload.RootElement.TryGetProperty("cmd", out var commandName)
+                && commandName.ValueKind == JsonValueKind.String
+                && commandName.GetString() == "conversation.import"
+                && FindReceiptResult(client, command) is { } priorImport)
+                return priorImport;
+        }
+
         // Do not reserve a receipt while another live owner prevents execution: otherwise a
         // transient busy response would poison the command ID as an ambiguous result.
         if (!server.EnsureWriterOwnershipForCommand())

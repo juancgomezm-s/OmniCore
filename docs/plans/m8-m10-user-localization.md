@@ -285,6 +285,17 @@ habilita discovery para PatchOnly. A2 sólo acredita TurnCompleted y receipt, no
 Run terminal. No se cierra SEC-CONV-02 completo, SEC-CONV, M9 o M8 manual; no hubo
 cambios de OmniCoder, publicación, CI remota ni actualización de instalaciones.
 
+**M9 importación entre procesos OS aceptada localmente (2026-10-24):**
+complementa los límites históricos del corte Native/Imported: CLI ejecutable
+separado y dos Hosts OS sobre el mismo receipt durable, una Session/evento y ACK
+original al replay. Se corrigió únicamente el lookup autenticado de importación
+antes del lease; ID nuevo, HMAC inválido y conflicto de hash siguen rechazados.
+Luna bajo aprobó 3/3 casos finales sin recompilar; no se repitió la campaña 16/16.
+[Evidencia y límites](../validation/m9-native-import-processes-20261024.md).
+Hubo solapamiento de requests, sin afirmar simultaneidad SQL ni propiedad del
+contenido de leases. GUI/live/otras plataformas y aceptación global SEC-CONV/M9/M8
+siguen abiertas. Solo checkpoint local, sin cambios de OmniCoder ni publicación.
+
 **SEC-CONV-02, recuperación Discovered aceptada localmente (2026-10-24):**
 modelo y Session `ScopedCoder` permiten el recorrido Host OS/stdio firmado:
 `tool.search` → lectura → patch en Ask → Once/Workspace → continuación y efecto.
