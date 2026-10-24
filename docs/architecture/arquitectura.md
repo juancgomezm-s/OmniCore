@@ -877,6 +877,15 @@ consentido; no valida frontera OS de Host, compilación de FeatureApp ni Strong.
 La delegación genérica stdio sigue sin exponerse y necesita decisión explícita
 de interfaz/autoridad. Sin cambios de OmniCoder ni publicación; M9/M8 abiertos.
 
+El corte de retención ante terminación del Host valida una ventana post-prune:
+Git real termina bajo un proxy de fixture y se corta el Host OS propio antes
+del resultado. Al reabrir, recovery marca EffectUnknown/Unresolvable y bloquea
+continue; el ACK original representa admisión, no éxito del efecto. Luna bajo
+aprobó 2/2 casos en imagen congelada sin build. [Acta](../validation/m9-worktree-retention-crash-20261024.md).
+Solo cambiaron tests/helper. No garantiza atomicidad Git, caída del sistema,
+exactly-once para otro ID ni crash de cleanup/discard; no amplía autoridad ni
+modifica OmniCoder. Sin publicación y sin cierre global M9/M8.
+
 ### P0-OMNI-UNIFICACION
 
 **Revisión:** 2026-10-14 · **Prioridad:** P0 · **Estado global:** CERRADO / ALCANCE ACEPTADO. **Contribución de OmniCore: CERRADA en Windows**, con el alcance y las diferencias de plataforma del [acta local](../validation/omnicore-homologation-closure-20261014.md).

@@ -866,6 +866,11 @@ public sealed partial class StdioTransportTests
         Git(fixture.Workspace, "init", "--quiet", "--initial-branch=main");
         Git(fixture.Workspace, "config", "core.autocrlf", "false");
         Git(fixture.Workspace, "config", "commit.gpgSign", "false");
+        // The worktree store creates snapshot commits with commit-tree, which reads the
+        // repository-local identity. Keep this setup independent of the isolated runner HOME
+        // and never fall back to a user's global Git configuration.
+        Git(fixture.Workspace, "config", "user.name", "OmniCore Fixture");
+        Git(fixture.Workspace, "config", "user.email", "fixture@example.invalid");
         File.WriteAllText(Path.Combine(fixture.Workspace, ".gitignore"), ".omnicore/\n", new UTF8Encoding(false));
         File.WriteAllText(Path.Combine(fixture.Workspace, "integration-target.txt"), "base\n", new UTF8Encoding(false));
         Git(fixture.Workspace, "add", "-A");

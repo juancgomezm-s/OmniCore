@@ -69,6 +69,12 @@ del directorio del runner tiene SHA-256
 - El commit normal de Git valida el conjunto completo antes de escribir, pero no ofrece a los lectores una vista atómica durante el commit ni garantiza el resultado tras caída del proceso. Esos casos permanecen conservadoramente como `Unknown`.
 - Esta acta valida solo retención nativa y los focos listados; no declara M9 global ni M8 manual cerrados.
 
+El corte posterior [retención ante terminación del Host](m9-worktree-retention-crash-20261024.md)
+añade una ventana controlada post-prune con Host OS real y barrera externa de
+fixture: recovery incierto, continue bloqueado y replay pasivo, con 2/2 casos
+independientes aprobados. No transforma esta campaña histórica en prueba de
+caída, ni garantiza todos los puntos de interrupción o atomicidad de lectores.
+
 ## Freeze local
 
 El archivo local `source-manifest-sha256.txt` tiene SHA-256 bruto

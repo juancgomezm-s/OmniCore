@@ -134,6 +134,17 @@ No cambió producción. `/delegate` genérico no está expuesto por stdio; agreg
 requiere decisión de interfaz/autoridad, no está autorizado por este ensayo.
 OmniCoder intacto, sin publicación; SEC-CONV/M9/M8 siguen abiertos.
 
+**M9 retención ante terminación del Host aceptada localmente (2026-10-24):**
+Host OS propio, Git real y barrera externa del fixture permiten cortar después
+del prune y antes de entregar el resultado. Al reabrir, recovery registra
+EffectUnknown/Unresolvable; el receipt conserva admisión Accepted y ejecución
+deferred, con recuperación blocked. Continue firmado se rechaza y replay del
+ACK no inicia otra ToolCall. Luna bajo aprobó 2/2 casos en imagen final sin build.
+[Acta y límites](docs/validation/m9-worktree-retention-crash-20261024.md).
+Solo tests/helper cambiaron; binding histórico preparado en fixture. No acredita
+caída del sistema, atomicidad Git, otro CommandId ni crash de cleanup/discard.
+OmniCoder intacto y sin publicación; M9 global y M8 manual siguen abiertos.
+
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 
 **Checkpoint M9-K/L (2026-10-17):** seguridad durable por Session, lifecycle nativo y respuesta de

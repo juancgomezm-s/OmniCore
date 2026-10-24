@@ -4,6 +4,12 @@ using System.Net.Sockets;
 using System.Text;
 using System.Runtime.InteropServices;
 
+if (OperatingSystem.IsWindows()
+    && string.Equals(Path.GetFileName(Environment.ProcessPath), "git.exe", StringComparison.OrdinalIgnoreCase))
+{
+    return await OmniCore.SandboxTestProcess.WorktreeRetentionGitProxy.RunAsync(args);
+}
+
 if (args.Length == 1 && args[0] == "legacy-stdio")
 {
     var helloLine = Console.ReadLine();

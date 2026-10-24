@@ -321,6 +321,17 @@ de interfaz/capability y autoridad humana, no se deriva de la fixture. GUI/live,
 otras plataformas y SEC-CONV/M9/M8 global permanecen abiertos. Sin publicación
 ni cambios de OmniCoder.
 
+**M9 retención ante terminación del Host aceptada localmente (2026-10-24):**
+un corte controlado del Host OS después de un prune Git real conserva el ACK de
+admisión y deja la ejecución incierta: deferred, recovery blocked y clasificación
+productiva EffectUnknown/Unresolvable. Continue firmado del mismo invocation se
+rechaza; replay y queries no añaden ToolCalls ni efectos observables en refs.
+Luna bajo aprobó 2/2 casos finales, sin recompilar; [evidencia y límites](../validation/m9-worktree-retention-crash-20261024.md).
+No cambió producción ni autoridad. La barrera usa un proxy externo de test solo
+en PATH del Host hijo y un binding histórico preparado en fixture. No prueba
+caída eléctrica, atomicidad de lectores, otro CommandId o crash de cleanup/discard.
+Sin cambios de OmniCoder ni publicación; M9/M8 global permanecen abiertos.
+
 ## Ejecución de cierre M9 (2026-10-22)
 
 **Rectificación de alcance del 23 de octubre:** la construcción descrita abajo

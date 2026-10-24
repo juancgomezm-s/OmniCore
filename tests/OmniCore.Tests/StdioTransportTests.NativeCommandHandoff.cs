@@ -972,6 +972,8 @@ public sealed partial class StdioTransportTests
         public Action<string>? NativeProcessControlStageForTests { get; set; }
         public AckDeliveryCutStream CutStream { get; private set; }
         public string RootDirectory => _root;
+        public string BootstrapKeyForOwnedProcess => Convert.ToHexString(_key);
+        public byte[] KeyForTests => _key;
         public string JournalPath => Path.Combine(OmniHost.WorkspaceDataDirectory(
             OmniHost.CreatePlatformPaths(), Workspace), "journal.db");
 
@@ -1246,9 +1248,10 @@ public sealed partial class StdioTransportTests
             ClearOwnedSqlitePools();
         }
 
-        private void ClearOwnedSqlitePools()
+        internal void ClearOwnedSqlitePools()
         {
             ClearPool(Path.Combine(_root, "data", "user.db"));
+            ClearPool(Path.Combine(_root, "data", "spend-reservations.db"));
             ClearPool(JournalPath);
 
             static void ClearPool(string path)
@@ -1543,8 +1546,13 @@ public sealed partial class StdioTransportTests
                 foreach (var value in _oldExternalRoots)
                     Capture(() => Environment.SetEnvironmentVariable(value.Key, value.Value));
                 Capture(() => Environment.CurrentDirectory = _oldDirectory);
-                if (!PreserveRootOnDispose)
+                if (!PreserveRootOnDispose && cleanupFailure is null)
+                {
                     Capture(DeleteOwnedRoot);
+                    if (cleanupFailure is not null) PreserveRootOnDispose = true;
+                }
+                else if (cleanupFailure is not null)
+                    PreserveRootOnDispose = true;
             }
             if (cleanupFailure is not null)
                 throw new InvalidOperationException("Native command fixture cleanup failed after attempting all owned-resource restorations.", cleanupFailure);
