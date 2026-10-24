@@ -1094,6 +1094,125 @@ public sealed class GitWorktreeStoreTests
     }
 
     [Fact]
+    public async Task Reviewed_retention_prunes_two_refs_atomically_and_rejects_a_stale_review()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("tracked.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var worktree = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(fixture.Request(),
+            CancellationToken.None)).Worktree);
+        Assert.True((await store.CleanupAsync(worktree.Ownership, CancellationToken.None)).Removed);
+        var secondRef = AddExpiredRetainedLaneReference(fixture, worktree);
+        var now = DateTimeOffset.UtcNow.AddDays(8);
+        var inspected = await store.InspectExpiredSnapshotRefsForOwnershipAsync(fixture.Repository, fixture.Data,
+            worktree.WorkspaceId.ToString(), worktree.OwnershipId, now, CancellationToken.None);
+        var candidate = Assert.IsType<WorktreeRetentionCandidate>(inspected.Candidate);
+        Assert.Equal(2, candidate.References.Count);
+
+        var pruned = await store.PruneReviewedSnapshotRefsAsync(fixture.Repository, fixture.Data,
+            worktree.WorkspaceId.ToString(), candidate, now, CancellationToken.None);
+        Assert.True(pruned.PrunedReferences == 2,
+            $"actual={pruned.PrunedReferences}; error={pruned.Error}; unknown={pruned.OutcomeUnknown}");
+        Assert.False(pruned.OutcomeUnknown);
+        Assert.Empty(fixture.Git("for-each-ref", "--format=%(refname)", "refs/omnicore/").Split('\n',
+            StringSplitOptions.RemoveEmptyEntries));
+        Assert.True(File.Exists(worktree.OwnershipMetadataPath));
+        Assert.False(Directory.Exists(worktree.WorktreePath));
+        Assert.NotNull(secondRef);
+
+        using var staleFixture = new GitFixture();
+        staleFixture.Init();
+        staleFixture.Write("tracked.txt", "base\n");
+        staleFixture.CommitAll("base");
+        var staleStore = new GitWorktreeStore(new SystemProcessRuntime());
+        var staleWorktree = Assert.IsType<WorktreeIdentity>((await staleStore.CreateAsync(staleFixture.Request(),
+            CancellationToken.None)).Worktree);
+        Assert.True((await staleStore.CleanupAsync(staleWorktree.Ownership, CancellationToken.None)).Removed);
+        var staleSecondRef = AddExpiredRetainedLaneReference(staleFixture, staleWorktree);
+        var reviewed = await staleStore.InspectExpiredSnapshotRefsForOwnershipAsync(staleFixture.Repository,
+            staleFixture.Data, staleWorktree.WorkspaceId.ToString(), staleWorktree.OwnershipId, now,
+            CancellationToken.None);
+        var staleCandidate = Assert.IsType<WorktreeRetentionCandidate>(reviewed.Candidate);
+        var newObject = staleFixture.Git("rev-parse", "HEAD").Trim();
+        staleFixture.Git("update-ref", staleSecondRef, newObject);
+
+        var rejected = await staleStore.PruneReviewedSnapshotRefsAsync(staleFixture.Repository,
+            staleFixture.Data, staleWorktree.WorkspaceId.ToString(), staleCandidate, now, CancellationToken.None);
+        Assert.Equal(0, rejected.PrunedReferences);
+        Assert.False(rejected.OutcomeUnknown);
+        var unchangedRef = Assert.Single(staleCandidate.References, reference => reference.Name != staleSecondRef);
+        Assert.Equal(unchangedRef.ExpectedObjectId,
+            staleFixture.Git("rev-parse", "--verify", unchangedRef.Name).Trim());
+        Assert.Equal(newObject, staleFixture.Git("rev-parse", "--verify", staleSecondRef).Trim());
+        Assert.True(File.Exists(staleWorktree.OwnershipMetadataPath));
+    }
+
+    [Fact]
+    public async Task Retention_preserves_symbolic_private_ref_and_its_foreign_branch_target()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("tracked.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var worktree = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(fixture.Request(),
+            CancellationToken.None)).Worktree);
+        Assert.True((await store.CleanupAsync(worktree.Ownership, CancellationToken.None)).Removed);
+        const string sentinel = "refs/heads/retention-sentinel";
+        var before = worktree.SnapshotCommit;
+        var mainBefore = fixture.Git("rev-parse", "refs/heads/main").Trim();
+        fixture.Git("update-ref", sentinel, before);
+        fixture.Git("update-ref", "--no-deref", "-d", worktree.SnapshotRef, before);
+        fixture.Git("symbolic-ref", worktree.SnapshotRef, sentinel);
+        var now = DateTimeOffset.UtcNow.AddDays(8);
+
+        var inspected = await store.InspectExpiredSnapshotRefsForOwnershipAsync(fixture.Repository, fixture.Data,
+            worktree.WorkspaceId.ToString(), worktree.OwnershipId, now, CancellationToken.None);
+        Assert.Null(inspected.Candidate);
+        var swept = await store.PruneExpiredSnapshotRefsAsync(fixture.Repository, fixture.Data,
+            worktree.WorkspaceId.ToString(), now, dryRun: false, CancellationToken.None);
+        Assert.Equal(0, swept.Pruned);
+        Assert.Equal(1, swept.Preserved);
+        Assert.Equal(sentinel, fixture.Git("symbolic-ref", "--quiet", worktree.SnapshotRef).Trim());
+        Assert.Equal(before, fixture.Git("rev-parse", "--verify", sentinel).Trim());
+        Assert.Equal(mainBefore, fixture.Git("rev-parse", "--verify", "refs/heads/main").Trim());
+        Assert.True(File.Exists(worktree.OwnershipMetadataPath));
+        Assert.False(Directory.Exists(worktree.WorktreePath));
+    }
+
+    private static string AddExpiredRetainedLaneReference(GitFixture fixture, WorktreeIdentity worktree)
+    {
+        var original = fixture.Git("rev-parse", "HEAD").Trim();
+        fixture.Write("retained-lane-only.txt", Guid.NewGuid().ToString("N"));
+        fixture.CommitAll("unpublished retained lane");
+        var retainedCommit = fixture.Git("rev-parse", "HEAD").Trim();
+        var retainedTree = fixture.Git("rev-parse", "HEAD^{tree}").Trim();
+        static string SafeSegment(string value) => Convert.ToHexStringLower(
+            SHA256.HashData(Encoding.UTF8.GetBytes(value)))[..16];
+        var retainedRef = $"refs/omnicore/retained-lanes/{SafeSegment(worktree.WorkspaceId.ToString())}/"
+            + $"{SafeSegment(worktree.LaneId.ToString())}/{worktree.OwnershipId}";
+        fixture.Git("update-ref", retainedRef, retainedCommit);
+        fixture.Git("reset", "--hard", original);
+
+        var json = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(worktree.OwnershipMetadataPath))!
+            .AsObject();
+        void Set(string name, string value)
+        {
+            var key = json.Select(pair => pair.Key).SingleOrDefault(key =>
+                string.Equals(key, name, StringComparison.OrdinalIgnoreCase)) ?? name;
+            json[key] = value;
+        }
+        Set("RetainedLaneRef", retainedRef);
+        Set("RetainedLaneCommit", retainedCommit);
+        Set("RetainedLaneTree", retainedTree);
+        Set("RetainedLaneDisposition", "discard");
+        File.WriteAllText(worktree.OwnershipMetadataPath, json.ToJsonString());
+        return retainedRef;
+    }
+
+    [Fact]
     public async Task Snapshot_retention_preserves_metadata_bound_to_another_workspace_id()
     {
         using var fixture = new GitFixture();

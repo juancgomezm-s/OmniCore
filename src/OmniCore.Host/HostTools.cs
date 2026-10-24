@@ -29,11 +29,12 @@ public sealed class HostTools
         IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null,
         MediaReadTool? mediaReadTool = null,
         PersistentProcessSessionManager? processSessionManager = null,
-        IWorktreeDispositionCoordinator? worktreeDispositionCoordinator = null)
+        IWorktreeDispositionCoordinator? worktreeDispositionCoordinator = null,
+        IWorktreeRetentionCoordinator? worktreeRetentionCoordinator = null)
         : this(boundary, planService, includeSimulationTools, includeMutationTools, includeProcessTools,
             processSandboxStrength, artifactReadTool, includeControlTools, includeMailboxReceive, includeShellTool,
             processRuntime: null, worktreeIntegrationCoordinator, mediaReadTool, processSessionManager,
-            worktreeDispositionCoordinator)
+            worktreeDispositionCoordinator, worktreeRetentionCoordinator)
     {
     }
 
@@ -43,7 +44,8 @@ public sealed class HostTools
         bool includeShellTool, OmniCore.Abstractions.IProcessRuntime? processRuntime,
         IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null,
         MediaReadTool? mediaReadTool = null, PersistentProcessSessionManager? processSessionManager = null,
-        IWorktreeDispositionCoordinator? worktreeDispositionCoordinator = null)
+        IWorktreeDispositionCoordinator? worktreeDispositionCoordinator = null,
+        IWorktreeRetentionCoordinator? worktreeRetentionCoordinator = null)
     {
         _planPropose = new PlanProposeTool(planService);
         _extensionBatchCoordinator = worktreeIntegrationCoordinator as WorktreeIntegrationHostCoordinator;
@@ -112,6 +114,8 @@ public sealed class HostTools
             catalog = catalog.Add(new WorktreeDispositionTool(WorktreeDispositionOperation.Discard,
                 worktreeDispositionCoordinator));
         }
+        if (worktreeRetentionCoordinator is not null)
+            catalog = catalog.Add(new WorktreeRetentionTool(worktreeRetentionCoordinator));
 
         catalog = catalog.Add(new ReferenceResolveTool(boundary));
         if (artifactReadTool is not null) catalog = catalog.Add(artifactReadTool);

@@ -579,7 +579,7 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
             if (handle is null || ControlClaim(handle, execution.MutationRunId, execution.MutationLaneId) is not { } claim)
                 return false;
             var claims = new ResourceClaims(intent.Claims.Reads, intent.Claims.Writes, intent.Claims.Network,
-                claim, intent.Claims.Secrets, intent.Claims.WorktreeDisposition);
+                claim, intent.Claims.Secrets, intent.Claims.WorktreeDisposition, intent.Claims.WorktreeRetention);
             bound = new ToolIntent(intent.ToolCallId, intent.ToolId, intent.NormalizedArgumentsJson,
                 intent.Effect, claims, intent.Risk, intent.Reconciliation,
                 intent.EffectiveMutationOperation, intent.RequiresPhysicalCreateCapability,

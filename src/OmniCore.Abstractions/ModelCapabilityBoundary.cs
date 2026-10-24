@@ -76,6 +76,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             { "worktree.integrate", ModelToolCapability.DeleteFile },
             { "worktree.cleanup", ModelToolCapability.DeleteFile },
             { "worktree.discard", ModelToolCapability.DeleteFile },
+            { "worktree.retention", ModelToolCapability.DeleteFile },
             { "extension.batch.apply", ModelToolCapability.ReplaceFile },
             { "process.exec", ModelToolCapability.GeneralProcess },
             { "process.start", ModelToolCapability.GeneralProcess },
@@ -181,6 +182,9 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
                 || disposition.Operation == WorktreeDispositionOperation.Cleanup && toolName != "worktree.cleanup"
                 || disposition.Operation == WorktreeDispositionOperation.Discard && toolName != "worktree.discard"))
             return ModelCapabilityDecision.Reject("worktree disposition claim does not match its canonical operation", null);
+        if (intent.Claims.WorktreeRetention is { } retention
+            && (toolName != "worktree.retention" || !IsValidWorktreeRetention(retention)))
+            return ModelCapabilityDecision.Reject("worktree retention claim does not match its canonical operation", null);
 
         // A configured completion gate is a User-owned, Host-bound argv. Do not let a model
         // profile disable that existing control, but require the durable Session ceiling above.
@@ -237,6 +241,19 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             if (_policy.MutationPolicy.Delete == DestructiveActionPolicy.Ask)
                 return ModelCapabilityDecision.Ask("worktree " + worktreeDisposition.Operation.ToString().ToLowerInvariant()
                     + " removes a lane-owned worktree", ModelToolCapability.DeleteFile);
+        }
+        else if (intent.Claims.WorktreeRetention is not null)
+        {
+            if (_policy.MutationPolicy.Mode != FileMutationMode.Full
+                || !_policy.ToolPolicy.Allows(ModelToolCapability.DeleteFile))
+                return ModelCapabilityDecision.Reject("worktree retention requires Full mutation and DeleteFile capability",
+                    ModelToolCapability.DeleteFile);
+            if (_policy.MutationPolicy.Delete == DestructiveActionPolicy.Deny)
+                return ModelCapabilityDecision.Reject("worktree retention is denied by destructive-action policy",
+                    ModelToolCapability.DeleteFile);
+            if (_policy.MutationPolicy.Delete == DestructiveActionPolicy.Ask)
+                return ModelCapabilityDecision.Ask("worktree retention prunes reviewed private references",
+                    ModelToolCapability.DeleteFile);
         }
 
         // Legacy replacement-classified integrations retain their historical mode mapping.
@@ -363,6 +380,17 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             if (ceiling.DeletePolicy == DestructiveActionPolicy.Ask)
                 requiresAsk = true;
         }
+        else if (intent.Claims.WorktreeRetention is not null)
+        {
+            if (ceiling.FileMutationMode != FileMutationMode.Full
+                || !ceiling.CapabilityCeiling.Contains(ModelToolCapability.DeleteFile))
+                return ModelCapabilityDecision.Reject("worktree retention exceeds the Session security ceiling",
+                    ModelToolCapability.DeleteFile);
+            if (ceiling.DeletePolicy == DestructiveActionPolicy.Deny)
+                return ModelCapabilityDecision.Reject("Session security policy denies worktree retention",
+                    ModelToolCapability.DeleteFile);
+            if (ceiling.DeletePolicy == DestructiveActionPolicy.Ask) requiresAsk = true;
+        }
         if (capability == ModelToolCapability.ReplaceFile
             && intent.EffectiveMutationOperation != ModelToolCapability.ReplaceFile)
         {
@@ -415,6 +443,21 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         && claim.LaneHead is { Length: 40 or 64 } && claim.LaneHead.All(Uri.IsHexDigit)
         && claim.LaneTree is { Length: 40 or 64 } && claim.LaneTree.All(Uri.IsHexDigit)
         && Enum.IsDefined(claim.Operation);
+
+    private static bool IsValidWorktreeRetention(WorktreeRetentionClaim claim) =>
+        Guid.TryParseExact(claim.SessionId, "D", out var session) && claim.SessionId == new SessionId(session).ToString()
+        && Guid.TryParseExact(claim.ActionRunId, "D", out var action) && claim.ActionRunId == new RunId(action).ToString()
+        && Guid.TryParseExact(claim.TargetOwnerRunId, "D", out var owner) && claim.TargetOwnerRunId == new RunId(owner).ToString()
+        && claim.SessionId.Length > 0 && claim.ActionRunId != claim.TargetOwnerRunId
+        && claim.WorkspaceId is { Length: 16 } && claim.WorkspaceId.All(Uri.IsHexDigit)
+        && Path.IsPathFullyQualified(claim.WorkspaceRoot)
+        && Guid.TryParseExact(claim.LaneId, "D", out var lane) && claim.LaneId == new LaneId(lane).ToString()
+        && Guid.TryParseExact(claim.OwnershipId, "N", out _) && claim.References is { Count: > 0 and <= 2 }
+        && claim.SnapshotCommit is { Length: 40 or 64 } && claim.SnapshotCommit.All(Uri.IsHexDigit)
+        && Path.IsPathFullyQualified(claim.GitCommonDirectory) && Path.IsPathFullyQualified(claim.WorktreePath)
+        && claim.References.All(reference => (reference.Name.StartsWith("refs/omnicore/snapshots/", StringComparison.Ordinal)
+                || reference.Name.StartsWith("refs/omnicore/retained-lanes/", StringComparison.Ordinal))
+            && reference.ExpectedObjectId.Length is 40 or 64 && reference.ExpectedObjectId.All(Uri.IsHexDigit));
 
     private static bool IsPrivateExtensionStageIntent(ToolIntent intent, string toolName) =>
         (toolName.StartsWith("ext.", StringComparison.Ordinal)
@@ -604,7 +647,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
     /// </summary>
     public bool IsToolVisible(string toolName)
     {
-        if (toolName is "worktree.cleanup" or "worktree.discard") return false;
+        if (toolName is "worktree.cleanup" or "worktree.discard" or "worktree.retention") return false;
         if (!_toolCapabilities.TryGetValue(toolName, out var capability))
         {
             return false;

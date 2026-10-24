@@ -53,6 +53,13 @@ public interface ITrustedWorktreeDispositionTool : IRequiresReconciliationTool
         ReconciliationSpec reconciliation);
 }
 
+/// <summary>Core-owned native exact-reference retention with a protected review receipt.</summary>
+public interface ITrustedWorktreeRetentionTool : IRequiresReconciliationTool
+{
+    bool ValidateWorktreeRetentionEnvelope(ToolIntent intent, ToolExecutionContext context,
+        ReconciliationSpec reconciliation);
+}
+
 /// <summary>Host-provided publisher for a protected immutable extension write proposal.</summary>
 public interface IExtensionBatchPublicationCoordinator
 {
@@ -142,6 +149,18 @@ public interface IWorktreeIntegrationCoordinator
 /// <summary>Host-owned terminal lane cleanup/discard. The Host resolves lane ownership and
 /// reviewed snapshot claims; apply still runs only after ordinary Security authorization.</summary>
 public interface IWorktreeDispositionCoordinator
+{
+    ToolIntent ResolveAuthorizationIntent(ToolIntent intent, ToolPreparationContext preparation,
+        ToolExecutionContext execution, CancellationToken cancellationToken);
+    ReconciliationSpec Prepare(AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken);
+    bool ValidateEnvelope(ToolIntent intent, ToolExecutionContext context, ReconciliationSpec reconciliation);
+    Task<ToolResult> ApplyAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>Host-resolved retention for one terminal historical Run under current-Run authority.</summary>
+public interface IWorktreeRetentionCoordinator
 {
     ToolIntent ResolveAuthorizationIntent(ToolIntent intent, ToolPreparationContext preparation,
         ToolExecutionContext execution, CancellationToken cancellationToken);

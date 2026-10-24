@@ -786,6 +786,15 @@ barrido nativo de retención y undo siguen pendientes; se conservan las demás
 aceptaciones de Core, el límite de solo lectura de OmniCoder y M9/M8 abiertos.
 Este incremento permanece local, sin nueva CI ni publicación.
 
+La retención nativa de refs tiene aceptación local del 2026-10-24, bajo la
+excepción de autoridad aprobada: Run actual y propietario histórico terminal
+separados, misma Session/workspace, permisos vigentes y refs/OIDs exactos.
+No se borran directorios ni metadata. Luna bajo aprobó 13 casos sin recompilar;
+[acta y límites](../validation/m9-worktree-retention-20261024.md).
+No se acredita caída intermedia, aceptación del consumidor ni CI/publicación.
+Persistencia Weak, Native/Imported y las demás aceptaciones de M9 siguen pendientes;
+M8 manual y el límite de solo lectura de OmniCoder se conservan.
+
 ### P0-OMNI-UNIFICACION
 
 **Revisión:** 2026-10-14 · **Prioridad:** P0 · **Estado global:** CERRADO / ALCANCE ACEPTADO. **Contribución de OmniCore: CERRADA en Windows**, con el alcance y las diferencias de plataforma del [acta local](../validation/omnicore-homologation-closure-20261014.md).

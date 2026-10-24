@@ -2287,7 +2287,7 @@ public static class StdioProtocolHost
                     && evt.TurnId == currentTurn.TurnId && evt.Sequence > turnStartSequence
                     && codecs.Decode(evt) is ToolCallRequested)
                 .Select(evt => (Event: evt, Call: (ToolCallRequested)codecs.Decode(evt)))
-                .Where(item => item.Call.ToolName is "worktree.integrate" or "worktree.cleanup" or "worktree.discard"
+                .Where(item => item.Call.ToolName is "worktree.integrate" or "worktree.cleanup" or "worktree.discard" or "worktree.retention"
                     && item.Call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal))
                 .ToArray();
             foreach (var item in currentTurnCalls)

@@ -761,7 +761,8 @@ public sealed class ExplorerTurn
         var scoped = exactScope.Where(item => item.Event.ToolCallId == toolCallId)
             .ToArray();
         var request = scoped.SingleOrDefault(item => item.Payload is ToolCallRequested call
-            && call.ProviderCallId == providerCallId && call.ToolName is "process.read" or "process.send_input" or "process.stop");
+            && call.ProviderCallId == providerCallId && call.ToolName is "process.read" or "process.send_input" or "process.stop"
+                or "worktree.integrate" or "worktree.cleanup" or "worktree.discard" or "worktree.retention");
         var permission = scoped.SingleOrDefault(item => item.Payload is PermissionRequested requested
             && requested.ToolCallId == toolCallId && requested.InteractionId == interactionId);
         if (request.Event is null || permission.Event is null
@@ -918,7 +919,7 @@ public sealed class ExplorerTurn
             && item.Payload is ToolCallPrepared request && request.ToolCallId == toolCallId).ToArray();
         if (calls.Length != 1 || calls[0].Payload is not ToolCallRequested call
             || call.ToolName is not ("process.read" or "process.send_input" or "process.stop" or "worktree.integrate"
-                or "worktree.cleanup" or "worktree.discard")
+                or "worktree.cleanup" or "worktree.discard" or "worktree.retention")
             || !call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal)
             || !Guid.TryParseExact(call.ProviderCallId["native-action-".Length..], "D", out var invocation)
             || call.ProviderCallId != "native-action-" + invocation.ToString("D")

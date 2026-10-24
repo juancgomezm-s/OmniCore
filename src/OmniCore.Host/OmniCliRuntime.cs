@@ -1612,7 +1612,7 @@ public sealed class OmniCliRuntime : IDisposable
         bool allowDeferredPermission)
     {
         if (toolName is not ("process.read" or "process.send_input" or "process.stop" or "worktree.integrate"
-                or "worktree.cleanup" or "worktree.discard")
+                or "worktree.cleanup" or "worktree.discard" or "worktree.retention")
             || string.IsNullOrWhiteSpace(argumentsJson) || argumentsJson.Length > 16_384
             || !Guid.TryParseExact(invocationId, "D", out var invocation) || invocationId != invocation.ToString("D"))
             throw new ArgumentException("Native process action is invalid.");
@@ -1626,6 +1626,9 @@ public sealed class OmniCliRuntime : IDisposable
             && !server.NativeWorktreeDispositionStillAllowed(session, run, toolName, argumentsJson,
                 verifyPhysicalSnapshot: false))
             throw new InvalidOperationException("Native worktree disposition scope changed.");
+        if (toolName == "worktree.retention"
+            && !server.NativeWorktreeRetentionStillAllowed(session, run, argumentsJson))
+            throw new InvalidOperationException("Native worktree retention scope changed.");
         var act = server.CurrentRunMode() is RunMode.Act or RunMode.Orchestrate;
         return RunTurnAsync("", act, diagnostics, token, conversationOnly: true,
             expectedSession: session, expectedRun: run,
@@ -2397,6 +2400,9 @@ public sealed class OmniCliRuntime : IDisposable
         var server = Server(workspaceData);
         var nativeProcessPermissionContinuation = delegationId is null && IsNativeToolPermissionContinuation(
             server, expectedSession, expectedRun, persistedContinuation);
+        var nativePermissionContinuationToolName = nativeProcessPermissionContinuation
+            ? NativeToolPermissionContinuationName(server, expectedSession, expectedRun, persistedContinuation)
+            : null;
         var nativeToolOnly = nativeToolAction is not null || nativeProcessPermissionContinuation;
         if (!server.EnsureWriterOwnershipForCommand())
         {
@@ -2971,7 +2977,10 @@ public sealed class OmniCliRuntime : IDisposable
                         ? OmniHost.CreateWorktreeIntegrationCoordinator(workspaceRoot, paths, artifacts) : null,
                     mediaReadTool: mediaReadTool, processSessionManager: processSessionManager,
                     worktreeDispositionCoordinator: delegation is null
-                        ? server.CreateWorktreeDispositionCoordinator(sessionId, workspaceRoot, artifacts) : null)
+                        ? server.CreateWorktreeDispositionCoordinator(sessionId, workspaceRoot, artifacts) : null,
+                    worktreeRetentionCoordinator: nativeToolAction?.ToolName == "worktree.retention"
+                        || nativePermissionContinuationToolName == "worktree.retention"
+                        ? server.CreateWorktreeRetentionCoordinator(sessionId, workspaceRoot, artifacts) : null)
                 : OmniHost.CreateExplorerTools(artifactReadTool, mediaReadTool);
             var extensionBoundaries = new List<IToolIntentBoundary>();
             IReadOnlyList<LoadedSkill> loadedProjectSkills = [];
@@ -3357,7 +3366,7 @@ public sealed class OmniCliRuntime : IDisposable
                         && codecs.Decode(evt) is ToolCallRequested)
                     .Select(evt => codecs.Decode(evt)).OfType<ToolCallRequested>().ToArray();
                 var isNativeDisposition = nativeDispositionCalls.Length == 1
-                    && nativeDispositionCalls[0].ToolName is "worktree.cleanup" or "worktree.discard"
+                    && nativeDispositionCalls[0].ToolName is "worktree.cleanup" or "worktree.discard" or "worktree.retention"
                     && server.NativeToolInvocationMatches(sessionId, runId, nativeDispositionCalls[0].ProviderCallId,
                         nativeDispositionCalls[0].ToolName, nativeDispositionCalls[0].ArgumentsJson);
                 resumePreflightPassed = () =>
@@ -3918,7 +3927,7 @@ public sealed class OmniCliRuntime : IDisposable
                 if (pendingNativeCall.Payload is PermissionRequested
                     && nativeCall.Payload is ToolCallRequested requestedCall
                     && (requestedCall.ToolName is "process.read" or "process.send_input" or "process.stop"
-                        or "worktree.integrate" or "worktree.cleanup" or "worktree.discard")
+                        or "worktree.integrate" or "worktree.cleanup" or "worktree.discard" or "worktree.retention")
                     && pendingNativeCall.Event.LaneId == laneId)
                 {
                     var actionExecution = server.ExecuteExplorerTurn(sessionId, runId,
@@ -3937,7 +3946,7 @@ public sealed class OmniCliRuntime : IDisposable
                         writeLine(InputRequiredJson(nextPermission, "Permission"));
                         return 3;
                     }
-                    if (requestedCall.ToolName is not ("worktree.integrate" or "worktree.cleanup" or "worktree.discard")
+                    if (requestedCall.ToolName is not ("worktree.integrate" or "worktree.cleanup" or "worktree.discard" or "worktree.retention")
                         && Guid.TryParseExact(requestedCall.ProviderCallId["native-action-".Length..], "D",
                             out var nativeInvocationGuid))
                         server.FinishNativeCommand(new CommandId(nativeInvocationGuid),
@@ -5979,9 +5988,31 @@ public sealed class OmniCliRuntime : IDisposable
                 && item.Payload is ToolCallRequested).ToArray();
         if (calls.Length != 1 || calls[0].Payload is not ToolCallRequested call
             || call.ToolName is not ("process.read" or "process.send_input" or "process.stop" or "worktree.integrate"
-                or "worktree.cleanup" or "worktree.discard")
+                or "worktree.cleanup" or "worktree.discard" or "worktree.retention")
             || !call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal)) return false;
         return server.NativeToolInvocationMatches(session, run, call.ProviderCallId,
             call.ToolName, call.ArgumentsJson);
+    }
+
+    private static string? NativeToolPermissionContinuationName(OmniServer server, SessionId? expectedSession,
+        RunId? expectedRun, PersistedConversationCommand? continuation)
+    {
+        if (expectedSession is not { } session || expectedRun is not { } run
+            || continuation is not { ContinuationResponseType: "choice", ContinuationToolCallId: { } toolText }
+            || !Guid.TryParseExact(toolText, "D", out var toolGuid) || toolText != toolGuid.ToString("D"))
+            return null;
+        var toolCallId = new ToolCallId(toolGuid);
+        var calls = server.AcquireStore().ReadFrom(session, 1).Where(item => item.RunId == run
+                && item.ToolCallId == toolCallId && item.TurnId?.ToString() == continuation.ContinuationTurnId
+                && item.LaneId?.ToString() == continuation.ContinuationLaneId
+                && server.AcquireCodecs().Decode(item) is ToolCallRequested)
+            .Select(item => (Event: item, Call: (ToolCallRequested)server.AcquireCodecs().Decode(item)!)).ToArray();
+        if (calls.Length != 1 || calls[0].Call.ToolName is not ("process.read" or "process.send_input"
+                or "process.stop" or "worktree.integrate" or "worktree.cleanup" or "worktree.discard"
+                or "worktree.retention")
+            || !calls[0].Call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal)
+            || !server.NativeToolInvocationMatches(session, run, calls[0].Call.ProviderCallId,
+                calls[0].Call.ToolName, calls[0].Call.ArgumentsJson)) return null;
+        return calls[0].Call.ToolName;
     }
 }

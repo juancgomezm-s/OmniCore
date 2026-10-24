@@ -29,7 +29,7 @@ public sealed class ExtensionRpcProcessInvoker : IStagedExtensionRpcInvoker
         var stagedRoot = Path.GetFullPath(workspace.Root);
         var stagedClaims = new ResourceClaims(authorizedClaims.Reads, authorizedClaims.Writes,
             authorizedClaims.Network, process with { WorkingDirectory = stagedRoot }, authorizedClaims.Secrets,
-            authorizedClaims.WorktreeDisposition);
+            authorizedClaims.WorktreeDisposition, authorizedClaims.WorktreeRetention);
         var response = await InvokeCoreAsync(extension, method, parametersJson, stagedClaims, stagedRoot,
                 cancellationToken)
             .ConfigureAwait(false);

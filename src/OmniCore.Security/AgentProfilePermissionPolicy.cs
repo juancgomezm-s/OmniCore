@@ -109,6 +109,11 @@ public sealed class AgentProfilePermissionPolicy : IPermissionPolicy, IGrantable
                 || disposition.Operation == WorktreeDispositionOperation.Cleanup && intent.ToolId.ToString() != "worktree.cleanup"
                 || disposition.Operation == WorktreeDispositionOperation.Discard && intent.ToolId.ToString() != "worktree.discard"))
             return PermissionDecision.Deny;
+        if (claims.WorktreeRetention is { } retention
+            && (string.IsNullOrWhiteSpace(retention.WorkspaceId)
+                || !CoversEntireWorkspace(retention.WorkspaceRoot, scope.Writes)
+                || retention.References is not { Count: > 0 and <= 2 }
+                || intent.ToolId.ToString() != "worktree.retention")) return PermissionDecision.Deny;
         if (intent.ToolId.ToString() == "shell.exec" && !scope.AllowShell) return PermissionDecision.Deny;
         if (claims.Reads.Any(path => !PathAllowed(path, scope.Reads))
             || claims.Writes.Any(path => !PathAllowed(path, scope.Writes))

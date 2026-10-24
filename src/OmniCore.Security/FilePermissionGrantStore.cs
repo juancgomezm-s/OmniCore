@@ -125,6 +125,25 @@ public sealed class FilePermissionGrantStore : IPermissionGrantStore
             Add("worktree.laneHead", disposition.LaneHead);
             Add("worktree.laneTree", disposition.LaneTree);
         }
+        if (claims.WorktreeRetention is { } retention)
+        {
+            Add("worktreeRetention.session", retention.SessionId);
+            Add("worktreeRetention.actionRun", retention.ActionRunId);
+            Add("worktreeRetention.ownerRun", retention.TargetOwnerRunId);
+            Add("worktreeRetention.workspace", retention.WorkspaceId);
+            Add("worktreeRetention.root", retention.WorkspaceRoot);
+            Add("worktreeRetention.lane", retention.LaneId);
+            Add("worktreeRetention.ownership", retention.OwnershipId);
+            Add("worktreeRetention.snapshotCommit", retention.SnapshotCommit.ToUpperInvariant());
+            Add("worktreeRetention.gitCommonDirectory", retention.GitCommonDirectory);
+            Add("worktreeRetention.worktreePath", retention.WorktreePath);
+            Add("worktreeRetention.removedAt", retention.RemovedAtUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
+            foreach (var reference in retention.References.OrderBy(item => item.Name, StringComparer.Ordinal))
+            {
+                Add("worktreeRetention.ref", reference.Name);
+                Add("worktreeRetention.oid", reference.ExpectedObjectId.ToUpperInvariant());
+            }
+        }
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text.ToString())));
 
         void Add(string name, string value) => text.Append(name).Append(':').Append(value.Length)

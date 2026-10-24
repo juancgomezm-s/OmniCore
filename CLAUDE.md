@@ -46,6 +46,15 @@ La reapertura comprobada es posterior al éxito; no acredita caída intermedia.
 Barrido nativo de retención, undo, persistencia Weak y demás pendientes conservan
 su alcance. Sin nueva CI/publicación; OmniCoder sigue en solo lectura y M9/M8 abiertos.
 
+**M9-L retención nativa aceptada localmente (2026-10-24):** con autorización
+expresa del usuario, el Run actual puede podar refs privadas vencidas de un Run
+histórico terminado de la misma Session/workspace, usando permisos actuales.
+Consulta pasiva, snapshot/OIDs exactos, Ask/Deny, lease, transacción Git sin
+desreferenciar, recibos y reapertura están cableados. Luna bajo aprobó 13 casos
+sin recompilar; [acta y límites](docs/validation/m9-worktree-retention-20261024.md).
+No borra metadata/directorios ni amplía cleanup/discard entre Runs. M9 global y
+M8 manual permanecen abiertos; sin nueva CI/publicación ni cambios de OmniCoder.
+
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 
 **Checkpoint M9-K/L (2026-10-17):** seguridad durable por Session, lifecycle nativo y respuesta de

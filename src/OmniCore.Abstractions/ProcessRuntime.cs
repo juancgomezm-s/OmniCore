@@ -50,6 +50,9 @@ public sealed class ProcessLaunch
     /// <summary>Optional bounded one-shot UTF-8 input, written and closed immediately after launch.</summary>
     public string? InitialStandardInput { get; init; }
 
+    /// <summary>When set, writes InitialStandardInput byte-for-byte without appending a line terminator.</summary>
+    public bool InitialStandardInputIsExact { get; init; }
+
     public ProcessLaunch(string executable, IReadOnlyList<string> args, string workingDirectory,
         IReadOnlyDictionary<string, string> environment, bool captureOutput)
     {

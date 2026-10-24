@@ -116,10 +116,12 @@ public sealed class ResourceClaims
 
     /// <summary>Host-resolved ownership and operation for a native worktree disposition.</summary>
     public WorktreeDispositionClaim? WorktreeDisposition { get; }
+    /// <summary>Host-resolved exact references for native pruning under current Run authority.</summary>
+    public WorktreeRetentionClaim? WorktreeRetention { get; }
 
     public ResourceClaims(IReadOnlyList<string> reads, IReadOnlyList<string> writes,
         IReadOnlyList<NetworkGrant> network, ProcessClaim? process, IReadOnlyList<string> secrets,
-        WorktreeDispositionClaim? worktreeDisposition = null)
+        WorktreeDispositionClaim? worktreeDisposition = null, WorktreeRetentionClaim? worktreeRetention = null)
     {
         Reads = reads;
         Writes = writes;
@@ -127,6 +129,7 @@ public sealed class ResourceClaims
         Process = process;
         Secrets = secrets;
         WorktreeDisposition = worktreeDisposition;
+        WorktreeRetention = worktreeRetention;
     }
 
     public static ResourceClaims Empty() =>
@@ -138,6 +141,12 @@ public sealed record WorktreeDispositionClaim(string WorkspaceId, string Workspa
     WorktreeDispositionOperation Operation, string LaneHead, string LaneTree);
 
 public enum WorktreeDispositionOperation { Cleanup, Discard }
+
+/// <summary>Exact Host-derived snapshot refs for one terminal historical Run in the current Session.</summary>
+public sealed record WorktreeRetentionClaim(string SessionId, string ActionRunId, string TargetOwnerRunId,
+    string WorkspaceId, string WorkspaceRoot, string LaneId, string OwnershipId, string SnapshotCommit,
+    string GitCommonDirectory, string WorktreePath, DateTimeOffset RemovedAtUtc,
+    IReadOnlyList<WorktreeSnapshotReference> References);
 
 /// <summary>Destino de red reclamado.</summary>
 public record NetworkGrant(string Host, int? Port) { }

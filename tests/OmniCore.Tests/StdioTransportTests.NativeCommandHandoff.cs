@@ -463,6 +463,7 @@ public sealed partial class StdioTransportTests
         private string? _nonce;
         private bool _disposed;
         private bool _includeNativeChoiceCapability = true;
+        private bool _includeRetentionQueryCapability;
 
         private NativeCommandHandoffFixture(string root, string workspace,
             string? oldData, string? oldConfig, string oldDirectory, byte[] key,
@@ -541,7 +542,8 @@ public sealed partial class StdioTransportTests
             bool includeZeroModelPricing = false,
             Func<CancellationToken, Task>? nativeProcessControlDeferredForTests = null,
             Action<string>? nativeProcessControlStageForTests = null,
-            bool includeNativeChoiceCapability = true)
+            bool includeNativeChoiceCapability = true,
+            bool includeRetentionQueryCapability = false)
         {
             var root = Path.Combine(Path.GetTempPath(), "omni-native-command-handoff-" + Guid.NewGuid().ToString("N"));
             var workspace = Path.Combine(root, "workspace");
@@ -558,6 +560,7 @@ public sealed partial class StdioTransportTests
             var fixture = new NativeCommandHandoffFixture(root, workspace, oldData, oldConfig,
                 oldDirectory, key, provider);
             fixture._includeNativeChoiceCapability = includeNativeChoiceCapability;
+            fixture._includeRetentionQueryCapability = includeRetentionQueryCapability;
             fixture.NativeProcessControlDeferredForTests = nativeProcessControlDeferredForTests;
             fixture.NativeProcessControlStageForTests = nativeProcessControlStageForTests;
             void RecordProviderBody(string body)
@@ -852,6 +855,7 @@ public sealed partial class StdioTransportTests
                 "command.process.control.user", "command.invoke.user", "command.invoke.continue.user",
                 "command.run.mode.select.user",
             };
+            if (_includeRetentionQueryCapability) capabilities.Add("query.worktreeRetention");
             if (includeNativeChoiceCapability)
                 capabilities.Add("command.conversation.interaction.choice.respond.user");
             var hello = Exchange(WireEnvelope.FromJson("{\"version\":\"1.0\",\"messageType\":\"hello\",\"messageId\":"

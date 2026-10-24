@@ -195,6 +195,21 @@ por stdio ni caída a mitad del retiro. Barrido nativo de retención y undo qued
 pendientes. No hubo nueva CI/publicación ni cambios de OmniCoder. M9 global y
 M8 manual continúan abiertos.
 
+**Retoma de retención nativa autorizada (2026-10-24):** el usuario aprueba que
+el Run actual, con evaluación de permisos vigente, pueda retirar únicamente refs
+Git vencidas de Runs históricos terminados de la misma Session y workspace.
+Se separa la autoridad actual de la identidad canónica del propietario; no se
+reutilizan autorizaciones antiguas ni se crea acceso persistente. Rechazar refs
+ajenas/recientes, Runs activos y OIDs/identidades modificados antes del efecto.
+No se borran directorios ni metadatos. [Decisión acotada](../adr/0050-autoridad-humana-stdio-omnicoder.md#excepción-acotada-de-retención-entre-runs-2026-10-24).
+Construcción y validación se realizaron secuencialmente en ZephyrusG14, con Git
+de fixtures aisladas. **Aceptación local del bloque:** Luna bajo aprobó 13 casos
+sin recompilar, con 28 fuentes y 17 DLL sin cambios entre verificaciones.
+El query es pasivo/acotado y la acción usa refs/OIDs exactos, transacción Git
+sin desreferenciar y stdin exacto; conserva metadata/directorios. [Acta y límites](../validation/m9-worktree-retention-20261024.md).
+Historial superior a 100 000 eventos queda explícitamente no disponible.
+No hay CI/publicación ni cambios de OmniCoder. M9 global y M8 manual siguen abiertos.
+
 ## Ejecución de cierre M9 (2026-10-22)
 
 **Rectificación de alcance del 23 de octubre:** la construcción descrita abajo

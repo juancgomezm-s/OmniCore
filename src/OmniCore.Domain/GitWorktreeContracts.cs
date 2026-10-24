@@ -219,3 +219,15 @@ public sealed record WorktreeDispositionSnapshot(string LaneHead, string LaneTre
 /// Worktrees and ownership metadata are never deleted by this sweep.</summary>
 public sealed record WorktreeRetentionSweepOutcome(int Eligible, int Pruned, int Preserved, int Failed,
     GitWorktreeErrorCode? Error = null);
+
+/// <summary>One exact private reference reviewed for native retention, with its expected commit OID.</summary>
+public sealed record WorktreeSnapshotReference(string Name, string ExpectedObjectId);
+
+/// <summary>Host-derived snapshot-reference retention target for one removed ownership.</summary>
+public sealed record WorktreeRetentionCandidate(string OwnershipId, string WorkspaceId, string LaneId,
+    string SnapshotCommit, string GitCommonDirectory, string WorktreePath, DateTimeOffset RemovedAtUtc,
+    IReadOnlyList<WorktreeSnapshotReference> References);
+
+/// <summary>Outcome of a reviewed, single-ownership retention action.</summary>
+public sealed record WorktreeRetentionPruneOutcome(int PrunedReferences, GitWorktreeErrorCode? Error = null,
+    bool OutcomeUnknown = false);

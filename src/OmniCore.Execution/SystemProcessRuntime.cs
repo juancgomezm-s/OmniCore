@@ -82,7 +82,7 @@ public sealed class SystemProcessRuntime : IProcessRuntime, IStreamingProcessRun
                 if (initialInput.Length > 0)
                 {
                     process.StandardInput.Write(initialInput);
-                    process.StandardInput.WriteLine();
+                    if (!launch.InitialStandardInputIsExact) process.StandardInput.WriteLine();
                 }
                 process.StandardInput.Close();
             }

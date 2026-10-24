@@ -480,6 +480,304 @@ public sealed partial class StdioTransportTests
     }
 
     [Fact]
+    public async Task Native_retention_uses_current_run_authority_for_expired_refs_of_a_terminal_run()
+    {
+        await using var fixture = await NativeCommandHandoffFixture.StartAsync(Guid.NewGuid().ToString("D"),
+            permissionsYaml: "profile: balanced\nrules:\n  worktree.retention: ask\n",
+            includeRetentionQueryCapability: true);
+        var sessionId = await fixture.CreateSessionAndQuiescentRunAsync("plan");
+        var ownerRun = RunId.Parse(fixture.QueryJson("humanActionScope").GetProperty("runId").GetString()!);
+        var (identity, _) = await CreateNativeWorktreeBindingAsync(fixture, sessionId, ownerRun.ToString(),
+            includeUncommittedSnapshot: true);
+        var store = new GitWorktreeStore(SystemProcessRuntime.Instance());
+        Assert.True((await store.CleanupAsync(identity.Ownership, CancellationToken.None)).Removed);
+        var originalMetadata = File.ReadAllBytes(identity.OwnershipMetadataPath);
+        var metadata = System.Text.Json.Nodes.JsonNode.Parse(originalMetadata)!.AsObject();
+        var removedKey = metadata.Select(pair => pair.Key).Single(key =>
+            string.Equals(key, "RemovedAtUtc", StringComparison.OrdinalIgnoreCase));
+        metadata[removedKey] = DateTimeOffset.UtcNow.AddDays(-8).ToString("O");
+        File.WriteAllText(identity.OwnershipMetadataPath, metadata.ToJsonString(), new UTF8Encoding(false));
+        var retainedMetadata = File.ReadAllBytes(identity.OwnershipMetadataPath);
+
+        var journalStore = fixture.Server.AcquireStore();
+        var codecs = fixture.Server.AcquireCodecs();
+        var binding = Assert.IsType<LaneWorktreeCreated>(fixture.ReadEvents(sessionId)
+            .Single(item => item.Envelope.RunId == ownerRun && item.Payload is LaneWorktreeCreated).Payload);
+        void AppendOwner(DomainEventPayload payload)
+        {
+            var codec = codecs.CodecFor(payload.Type());
+            var envelope = DomainEvent.Create(SessionId.Parse(sessionId), payload.Type(), payload.SchemaVersion(),
+                null, ownerRun, ownerRun, binding.TaskId, binding.LaneId, null, null, null, [],
+                codec.Encode(payload), binding.ExecutionId);
+            journalStore.Append(SessionId.Parse(sessionId), envelope, DurabilityClass.Barrier, CancellationToken.None);
+        }
+        AppendOwner(new LaneCompleted(binding.LaneId, null));
+        AppendOwner(new TaskCompleted(binding.TaskId, null));
+        new RunControlService(journalStore, codecs).CancelRun(SessionId.Parse(sessionId), ownerRun);
+        Assert.True(RunProjection.Replay(SessionId.Parse(sessionId), ownerRun, codecs,
+            fixture.ReadEvents(sessionId).Select(item => item.Envelope).ToArray()).IsTerminal());
+
+        var selection = fixture.QueryJson("session.model.selection");
+        var startRun = WireEnvelope.Command(Ids.NewV7(), JsonSerializer.Serialize(new
+        {
+            cmd = "conversation.start", text = "Authorize retention of a finished run's expired private refs.",
+            mode = "plan", expectedRevision = (long?)null,
+            expectedPolicyRevision = selection.GetProperty("sessionPolicyRevision").GetInt64(),
+            expectedDefaultRevision = (string?)null,
+        }));
+        var startAck = Ack(fixture.ExchangeTrusted(startRun, sessionId, null));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, startAck.Outcome?.Kind);
+        await fixture.Provider.WaitForRequestAsync(2, TestContext.Current.CancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+        var actionRun = RunId.Parse(fixture.QueryJson("humanActionScope").GetProperty("runId").GetString()!);
+        var turnDeadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
+        while (DateTimeOffset.UtcNow < turnDeadline
+            && !fixture.ReadEvents(sessionId).Any(item => item.Envelope.RunId == actionRun
+                && item.Payload is TurnCompleted))
+            await Task.Delay(25, TestContext.Current.CancellationToken);
+        Assert.Contains(fixture.ReadEvents(sessionId), item => item.Envelope.RunId == actionRun
+            && item.Payload is TurnCompleted);
+        await fixture.WaitForReceiptExecutionAsync(startRun.MessageId, "completed");
+        Assert.NotEqual(ownerRun, actionRun);
+        var actionScope = fixture.QueryJson("humanActionScope");
+        var actMode = WireEnvelope.Command(Ids.NewV7(), JsonSerializer.Serialize(new
+        {
+            cmd = "run.mode.select", runId = actionRun.ToString(), mode = "act",
+            expectedRevision = actionScope.GetProperty("revision").GetInt64(),
+        }));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted,
+            Ack(fixture.ExchangeTrusted(actMode, sessionId, actionRun.ToString())).Outcome?.Kind);
+
+        var refsBefore = Git(identity.RepositoryRoot, "for-each-ref", "--format=%(refname)", "refs/omnicore/");
+        var sequenceBefore = fixture.ReadEvents(sessionId).Max(item => item.Envelope.Sequence);
+        var directPreview = await store.InspectExpiredSnapshotRefsForOwnershipAsync(identity.RepositoryRoot,
+            identity.WorkspaceDataRoot, identity.WorkspaceId.ToString(), identity.OwnershipId,
+            DateTimeOffset.UtcNow, CancellationToken.None);
+        Assert.True(directPreview.Candidate is not null,
+            $"direct candidate={directPreview.Candidate}; error={directPreview.Error}");
+        var previewQuery = WireEnvelope.Command(Ids.NewV7(), JsonSerializer.Serialize(new
+        { operation = "query", name = "worktree.retention:" + identity.OwnershipId }));
+        var previewResponse = fixture.Exchange(previewQuery);
+        using var previewPayload = JsonDocument.Parse(previewResponse.PayloadJson);
+        Assert.True(previewPayload.RootElement.TryGetProperty("json", out var previewJson),
+            "retention query response=" + previewResponse.PayloadJson);
+        using var previewDocument = JsonDocument.Parse(previewJson.GetString()!);
+        var preview = previewDocument.RootElement.Clone();
+        Assert.True(preview.ValueKind == JsonValueKind.Object && preview.TryGetProperty("state", out _),
+            "retention preview shape=" + preview.GetRawText());
+        Assert.True(preview.GetProperty("state").GetString() == "eligible", preview.GetRawText());
+        Assert.Equal(ownerRun.ToString(), preview.GetProperty("ownerRunId").GetString());
+        Assert.Equal(actionRun.ToString(), preview.GetProperty("actionRunId").GetString());
+        Assert.Single(preview.GetProperty("references").EnumerateArray());
+        Assert.Equal(sequenceBefore, fixture.ReadEvents(sessionId).Max(item => item.Envelope.Sequence));
+        Assert.Equal(refsBefore, Git(identity.RepositoryRoot, "for-each-ref", "--format=%(refname)", "refs/omnicore/"));
+        Assert.Equal(retainedMetadata, File.ReadAllBytes(identity.OwnershipMetadataPath));
+        Assert.False(Directory.Exists(identity.WorktreePath));
+
+        var reference = Assert.Single(preview.GetProperty("references").EnumerateArray());
+        var args = JsonSerializer.Serialize(new
+        {
+            ownerRunId = ownerRun.ToString(), ownershipId = identity.OwnershipId,
+            removedAtUtc = preview.GetProperty("removedAtUtc").GetString(),
+            references = new[] { new { name = reference.GetProperty("name").GetString(),
+                expectedObjectId = reference.GetProperty("expectedObjectId").GetString() } },
+        });
+        Assert.True(fixture.Server.NativeWorktreeRetentionStillAllowed(SessionId.Parse(sessionId), actionRun, args));
+        Assert.False(fixture.Server.NativeWorktreeRetentionStillAllowed(SessionId.New(), actionRun, args));
+        var catalog = fixture.QueryJson("command.catalog");
+        var descriptor = Assert.Single(catalog.GetProperty("commands").EnumerateArray(), item =>
+            item.GetProperty("canonicalCommandId").GetString() == "core:worktree.retention");
+        var invocationId = Guid.NewGuid().ToString("D");
+        var invoke = WireEnvelope.Command(invocationId, JsonSerializer.Serialize(new
+        {
+            cmd = "command.invoke.user", canonicalCommandId = "core:worktree.retention",
+            arguments = new[] { "worktree.retention", args }, expectedSessionId = sessionId,
+            expectedRunId = actionRun.ToString(),
+            expectedModeRevision = NullableJsonInt64(catalog.GetProperty("modeRevision")),
+            expectedPolicyRevision = catalog.GetProperty("policyRevision").GetInt64(),
+            expectedSelectionRevision = catalog.GetProperty("selectionRevision").GetInt32(),
+            expectedRoutingPolicyRevision = NullableJsonInt64(catalog.GetProperty("routingPolicyRevision")),
+            catalogRevision = catalog.GetProperty("catalogRevision").GetString(),
+            sourceFingerprint = descriptor.GetProperty("sourceFingerprint").GetString(),
+        }));
+        var accepted = Ack(fixture.ExchangeTrusted(invoke, sessionId, actionRun.ToString()));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, accepted.Outcome?.Kind);
+        await WaitForPermissionRequestAsync(fixture, sessionId, actionRun.ToString());
+        var requested = fixture.ReadEvents(sessionId);
+        var permission = Assert.IsType<PermissionRequested>(Assert.Single(requested, item =>
+            item.Envelope.RunId == actionRun && item.Payload is PermissionRequested).Payload);
+        var interaction = Assert.IsType<InteractionRequested>(Assert.Single(requested, item =>
+            item.Payload is InteractionRequested).Payload);
+        Assert.DoesNotContain(requested, item => item.Envelope.ToolCallId == permission.ToolCallId
+            && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallEffectUnknown);
+        var security = fixture.QueryJson("sessionSecurity");
+        var approval = WireEnvelope.Command(Ids.NewV7(), JsonSerializer.Serialize(new
+        {
+            cmd = "interaction.respond", responseType = "choice", interactionId = interaction.InteractionId.ToString(),
+            optionId = "allow_once", expectedRunId = actionRun.ToString(),
+            expectedPolicyRevision = security.GetProperty("revision").GetInt64(),
+        }));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted,
+            Ack(fixture.ExchangeTrusted(approval, sessionId, actionRun.ToString())).Outcome?.Kind);
+        var effectDeadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
+        var terminal = fixture.ReadEvents(sessionId);
+        while (DateTimeOffset.UtcNow < effectDeadline && !terminal.Any(item => item.Envelope.ToolCallId == permission.ToolCallId
+                && item.Payload is ToolCallSucceeded or ToolCallFailed or ToolCallEffectUnknown))
+        {
+            await Task.Delay(25, TestContext.Current.CancellationToken);
+            terminal = fixture.ReadEvents(sessionId);
+        }
+        var failedCall = terminal.SingleOrDefault(item => item.Envelope.ToolCallId == permission.ToolCallId
+            && item.Payload is ToolCallFailed);
+        Assert.True(terminal.Any(item => item.Envelope.ToolCallId == permission.ToolCallId
+                && item.Payload is ToolCallSucceeded),
+            $"failed={failedCall.Payload}; effectUnknown={terminal.Any(item => item.Envelope.ToolCallId == permission.ToolCallId && item.Payload is ToolCallEffectUnknown)}; "
+            + $"receipt={fixture.ReadReceipt(invocationId)?.ExecutionState}/{fixture.ReadReceipt(invocationId)?.ExecutionCode}; "
+            + $"diagnostics={string.Join(',', fixture.Diagnostics)}; detailed={string.Join(" || ", fixture.DetailedDiagnostics)}; "
+            + $"events={string.Join(',', terminal.Select(item => item.Payload.GetType().Name))}");
+        Assert.Single(terminal, item => item.Payload is ToolCallSucceeded);
+        Assert.DoesNotContain(terminal, item => item.Payload is ToolCallEffectUnknown);
+        var prunedReference = reference.GetProperty("name").GetString()!;
+        var remainingReferences = Git(identity.RepositoryRoot, "for-each-ref", "--format=%(refname)",
+            "refs/omnicore/").Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+        Assert.DoesNotContain(prunedReference, remainingReferences);
+        Assert.Equal(retainedMetadata, File.ReadAllBytes(identity.OwnershipMetadataPath));
+        Assert.False(Directory.Exists(identity.WorktreePath));
+        var effectSequence = terminal.Max(item => item.Envelope.Sequence);
+        await fixture.RestartHostAsync();
+        _ = fixture.QueryJson("worktree.retention:" + identity.OwnershipId);
+        var duplicate = Ack(fixture.ExchangeTrusted(invoke, sessionId, actionRun.ToString()));
+        Assert.Equal(accepted.FirstSeq, duplicate.FirstSeq);
+        Assert.Equal(accepted.LastSeq, duplicate.LastSeq);
+        Assert.Equal(effectSequence, fixture.ReadEvents(sessionId).Max(item => item.Envelope.Sequence));
+        Assert.Equal(2, fixture.Provider.RequestCount);
+    }
+
+    [Fact]
+    public async Task Native_retention_deny_preserves_expired_reference_and_metadata()
+    {
+        await using var fixture = await NativeCommandHandoffFixture.StartAsync(Guid.NewGuid().ToString("D"),
+            permissionsYaml: "profile: balanced\nrules:\n  worktree.retention: ask\n",
+            includeRetentionQueryCapability: true);
+        var sessionId = await fixture.CreateSessionAndQuiescentRunAsync("plan");
+        var ownerRun = RunId.Parse(fixture.QueryJson("humanActionScope").GetProperty("runId").GetString()!);
+        var (identity, _) = await CreateNativeWorktreeBindingAsync(fixture, sessionId, ownerRun.ToString(),
+            includeUncommittedSnapshot: true);
+        var store = new GitWorktreeStore(SystemProcessRuntime.Instance());
+        Assert.True((await store.CleanupAsync(identity.Ownership, CancellationToken.None)).Removed);
+        var metadata = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllBytes(identity.OwnershipMetadataPath))!
+            .AsObject();
+        var removedKey = metadata.Select(pair => pair.Key).Single(key =>
+            string.Equals(key, "RemovedAtUtc", StringComparison.OrdinalIgnoreCase));
+        metadata[removedKey] = DateTimeOffset.UtcNow.AddDays(-8).ToString("O");
+        File.WriteAllText(identity.OwnershipMetadataPath, metadata.ToJsonString(), new UTF8Encoding(false));
+        var retainedMetadata = File.ReadAllBytes(identity.OwnershipMetadataPath);
+
+        var codecs = fixture.Server.AcquireCodecs();
+        var journalStore = fixture.Server.AcquireStore();
+        var binding = Assert.IsType<LaneWorktreeCreated>(fixture.ReadEvents(sessionId)
+            .Single(item => item.Envelope.RunId == ownerRun && item.Payload is LaneWorktreeCreated).Payload);
+        void AppendOwner(DomainEventPayload payload)
+        {
+            var codec = codecs.CodecFor(payload.Type());
+            var envelope = DomainEvent.Create(SessionId.Parse(sessionId), payload.Type(), payload.SchemaVersion(),
+                null, ownerRun, ownerRun, binding.TaskId, binding.LaneId, null, null, null, [],
+                codec.Encode(payload), binding.ExecutionId);
+            journalStore.Append(SessionId.Parse(sessionId), envelope, DurabilityClass.Barrier, CancellationToken.None);
+        }
+        AppendOwner(new LaneCompleted(binding.LaneId, null));
+        AppendOwner(new TaskCompleted(binding.TaskId, null));
+        new RunControlService(journalStore, codecs).CancelRun(SessionId.Parse(sessionId), ownerRun);
+
+        var selection = fixture.QueryJson("session.model.selection");
+        var startRun = WireEnvelope.Command(Ids.NewV7(), JsonSerializer.Serialize(new
+        {
+            cmd = "conversation.start", text = "Review expired private refs from a finished run.",
+            mode = "plan", expectedRevision = (long?)null,
+            expectedPolicyRevision = selection.GetProperty("sessionPolicyRevision").GetInt64(),
+            expectedDefaultRevision = (string?)null,
+        }));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, Ack(fixture.ExchangeTrusted(startRun, sessionId, null)).Outcome?.Kind);
+        await fixture.Provider.WaitForRequestAsync(2, TestContext.Current.CancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+        var actionRun = RunId.Parse(fixture.QueryJson("humanActionScope").GetProperty("runId").GetString()!);
+        var turnDeadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
+        while (DateTimeOffset.UtcNow < turnDeadline
+            && !fixture.ReadEvents(sessionId).Any(item => item.Envelope.RunId == actionRun && item.Payload is TurnCompleted))
+            await Task.Delay(25, TestContext.Current.CancellationToken);
+        Assert.Contains(fixture.ReadEvents(sessionId), item => item.Envelope.RunId == actionRun
+            && item.Payload is TurnCompleted);
+        await fixture.WaitForReceiptExecutionAsync(startRun.MessageId, "completed");
+        var actionScope = fixture.QueryJson("humanActionScope");
+        var actMode = WireEnvelope.Command(Ids.NewV7(), JsonSerializer.Serialize(new
+        {
+            cmd = "run.mode.select", runId = actionRun.ToString(), mode = "act",
+            expectedRevision = actionScope.GetProperty("revision").GetInt64(),
+        }));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted,
+            Ack(fixture.ExchangeTrusted(actMode, sessionId, actionRun.ToString())).Outcome?.Kind);
+
+        var refsBefore = Git(identity.RepositoryRoot, "for-each-ref", "--format=%(refname)", "refs/omnicore/");
+        var preview = fixture.QueryJson("worktree.retention:" + identity.OwnershipId);
+        Assert.Equal("eligible", preview.GetProperty("state").GetString());
+        Assert.Equal(ownerRun.ToString(), preview.GetProperty("ownerRunId").GetString());
+        Assert.Equal(actionRun.ToString(), preview.GetProperty("actionRunId").GetString());
+        var reference = Assert.Single(preview.GetProperty("references").EnumerateArray());
+        var args = JsonSerializer.Serialize(new
+        {
+            ownerRunId = ownerRun.ToString(), ownershipId = identity.OwnershipId,
+            removedAtUtc = preview.GetProperty("removedAtUtc").GetString(),
+            references = new[] { new { name = reference.GetProperty("name").GetString(),
+                expectedObjectId = reference.GetProperty("expectedObjectId").GetString() } },
+        });
+        var catalog = fixture.QueryJson("command.catalog");
+        var descriptor = Assert.Single(catalog.GetProperty("commands").EnumerateArray(), item =>
+            item.GetProperty("canonicalCommandId").GetString() == "core:worktree.retention");
+        var invocationId = Guid.NewGuid().ToString("D");
+        var invoke = WireEnvelope.Command(invocationId, JsonSerializer.Serialize(new
+        {
+            cmd = "command.invoke.user", canonicalCommandId = "core:worktree.retention",
+            arguments = new[] { "worktree.retention", args }, expectedSessionId = sessionId,
+            expectedRunId = actionRun.ToString(),
+            expectedModeRevision = NullableJsonInt64(catalog.GetProperty("modeRevision")),
+            expectedPolicyRevision = catalog.GetProperty("policyRevision").GetInt64(),
+            expectedSelectionRevision = catalog.GetProperty("selectionRevision").GetInt32(),
+            expectedRoutingPolicyRevision = NullableJsonInt64(catalog.GetProperty("routingPolicyRevision")),
+            catalogRevision = catalog.GetProperty("catalogRevision").GetString(),
+            sourceFingerprint = descriptor.GetProperty("sourceFingerprint").GetString(),
+        }));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted,
+            Ack(fixture.ExchangeTrusted(invoke, sessionId, actionRun.ToString())).Outcome?.Kind);
+        await WaitForPermissionRequestAsync(fixture, sessionId, actionRun.ToString());
+        var pending = fixture.ReadEvents(sessionId);
+        var permission = Assert.IsType<PermissionRequested>(Assert.Single(pending, item =>
+            item.Envelope.RunId == actionRun && item.Payload is PermissionRequested).Payload);
+        var interaction = Assert.IsType<InteractionRequested>(Assert.Single(pending, item =>
+            item.Payload is InteractionRequested).Payload);
+        Assert.DoesNotContain(pending, item => item.Envelope.ToolCallId == permission.ToolCallId
+            && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallEffectUnknown);
+        var security = fixture.QueryJson("sessionSecurity");
+        var deny = WireEnvelope.Command(Ids.NewV7(), JsonSerializer.Serialize(new
+        {
+            cmd = "interaction.respond", responseType = "choice", interactionId = interaction.InteractionId.ToString(),
+            optionId = "deny", expectedRunId = actionRun.ToString(),
+            expectedPolicyRevision = security.GetProperty("revision").GetInt64(),
+        }));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted,
+            Ack(fixture.ExchangeTrusted(deny, sessionId, actionRun.ToString())).Outcome?.Kind);
+        await fixture.WaitForReceiptExecutionAsync(invocationId, "failed");
+        var afterDeny = fixture.ReadEvents(sessionId);
+        Assert.Contains(afterDeny, item => item.Envelope.ToolCallId == permission.ToolCallId
+            && item.Payload is PermissionDenied);
+        Assert.DoesNotContain(afterDeny, item => item.Envelope.ToolCallId == permission.ToolCallId
+            && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallEffectUnknown);
+        Assert.Equal(refsBefore, Git(identity.RepositoryRoot, "for-each-ref", "--format=%(refname)", "refs/omnicore/"));
+        Assert.Equal(retainedMetadata, File.ReadAllBytes(identity.OwnershipMetadataPath));
+        Assert.False(Directory.Exists(identity.WorktreePath));
+        Assert.Equal(2, fixture.Provider.RequestCount);
+    }
+
+    [Fact]
     public async Task Native_worktree_deny_resumes_without_user_input_or_git_effect()
     {
         await using var fixture = await NativeCommandHandoffFixture.StartAsync(Guid.NewGuid().ToString("D"),
@@ -562,7 +860,8 @@ public sealed partial class StdioTransportTests
     }
 
     private static async Task<(WorktreeIdentity Identity, string Marker)> CreateNativeWorktreeBindingAsync(
-        NativeCommandHandoffFixture fixture, string sessionId, string runId)
+        NativeCommandHandoffFixture fixture, string sessionId, string runId,
+        bool includeUncommittedSnapshot = false)
     {
         Git(fixture.Workspace, "init", "--quiet", "--initial-branch=main");
         Git(fixture.Workspace, "config", "core.autocrlf", "false");
@@ -572,6 +871,9 @@ public sealed partial class StdioTransportTests
         Git(fixture.Workspace, "add", "-A");
         Git(fixture.Workspace, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
             "commit", "--quiet", "-m", "base fixture");
+        if (includeUncommittedSnapshot)
+            File.WriteAllText(Path.Combine(fixture.Workspace, "integration-target.txt"), "retention snapshot\n",
+                new UTF8Encoding(false));
 
         var journal = fixture.ReadEvents(sessionId);
         var session = SessionId.Parse(sessionId);
@@ -586,8 +888,9 @@ public sealed partial class StdioTransportTests
         var laneId = LaneId.New();
         var executionId = ExecutionId.New();
         var profileId = ProfileId.New();
+        var worktreeBase = includeUncommittedSnapshot ? WorktreeBase.SnapshotOfWorkingTree : WorktreeBase.Head;
         var created = await store.CreateAsync(new WorktreeCreateRequest(workspaceId, laneId,
-            physicalRoot, dataRoot, WorktreeBase.Head, IgnoredFilesPolicy.None), CancellationToken.None);
+            physicalRoot, dataRoot, worktreeBase, IgnoredFilesPolicy.None), CancellationToken.None);
         Assert.True(created.Succeeded, "test_worktree_create_failed:" + created.Error);
         var identity = Assert.IsType<WorktreeIdentity>(created.Worktree);
         var artifacts = OmniHost.CreateArtifactStore(dataRoot);
@@ -597,7 +900,7 @@ public sealed partial class StdioTransportTests
             ExecutionId.New(), profileId, "Fixture child worktree", new TaskBudget(1m, 8_000, 2, 8),
             projectionRef, identity.OwnershipId, identity.RepositoryRoot, identity.GitCommonDirectory,
             identity.WorktreePath, identity.Head, identity.SnapshotCommit, identity.SnapshotTree,
-            WorktreeBase.SnapshotOfWorkingTree, "Fixture worktree state");
+            worktreeBase, "Fixture worktree state");
         var packetJson = JsonSerializer.Serialize(taskPacket, TaskPacketJsonContext.Default.TaskPacket);
         var packetRef = artifacts.PutText(packetJson, LaneWorktreeProvisioner.TaskPacketMediaType,
             ArtifactKind.Other, Sensitivity.Sensitive);

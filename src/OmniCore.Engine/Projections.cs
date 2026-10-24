@@ -473,7 +473,7 @@ public sealed class RunProjection
         var calls = scoped.Where(item => item.ToolCallId == toolCallId
             && registry.Decode(item) is ToolCallRequested call
             && call.ToolCallId == toolCallId
-            && call.ToolName is ("worktree.integrate" or "worktree.cleanup" or "worktree.discard")
+            && call.ToolName is ("worktree.integrate" or "worktree.cleanup" or "worktree.discard" or "worktree.retention")
             && call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal)).ToArray();
         if (calls.Length != 1
             || registry.Decode(calls[0]) is not ToolCallRequested toolCall
@@ -485,6 +485,7 @@ public sealed class RunProjection
             "worktree.integrate" => "core:worktree.integrate",
             "worktree.cleanup" => "core:worktree.cleanup",
             "worktree.discard" => "core:worktree.discard",
+            "worktree.retention" => "core:worktree.retention",
             _ => null,
         };
         if (canonicalCommandId is null) return false;

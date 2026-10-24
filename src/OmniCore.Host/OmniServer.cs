@@ -3358,6 +3358,12 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             var ownershipId = name["worktree.preview:".Length..];
             return new SessionQueryResult("worktree.preview", EncodeWorktreePreview(ownershipId, cancellationToken));
         }
+        if (name.StartsWith("worktree.retention:", StringComparison.Ordinal))
+        {
+            var ownershipId = name["worktree.retention:".Length..];
+            return new SessionQueryResult("worktree.retention",
+                EncodeWorktreeRetentionPreview(ownershipId, cancellationToken));
+        }
         if (name.StartsWith("process.sessions:", StringComparison.Ordinal))
         {
             var requested = name["process.sessions:".Length..];

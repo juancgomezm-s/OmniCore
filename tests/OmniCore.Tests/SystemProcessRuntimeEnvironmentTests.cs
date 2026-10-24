@@ -36,6 +36,22 @@ public sealed class SystemProcessRuntimeEnvironmentTests
     }
 
     [Fact]
+    public void Exact_initial_stdin_does_not_append_a_line_terminator()
+    {
+        var runtime = new SystemProcessRuntime();
+        var helper = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows()
+            ? "OmniCore.SandboxTestProcess.exe" : "OmniCore.SandboxTestProcess");
+        var handle = runtime.Launch(new ProcessLaunch(helper, ["stdin-echo"], AppContext.BaseDirectory,
+            new Dictionary<string, string>(), captureOutput: true)
+        { InitialStandardInput = "transaction-input", InitialStandardInputIsExact = true },
+            TestContext.Current.CancellationToken);
+        var result = runtime.Wait(handle, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.False(result.TimedOut);
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("transaction-input", result.Stdout);
+    }
+
+    [Fact]
     public void Windows_runtime_passes_APPDATA_but_excludes_unrelated_environment_values()
     {
         if (!OperatingSystem.IsWindows())

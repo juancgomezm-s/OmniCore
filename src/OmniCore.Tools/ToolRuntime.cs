@@ -346,7 +346,7 @@ public sealed class ToolRuntime
                 var claims = new ResourceClaims(intent.Claims.Reads, intent.Claims.Writes, intent.Claims.Network,
                     new ProcessClaim(resolved.ResolvedPath, processClaim.Args, processClaim.EffectClass,
                         processClaim.NetworkRequired, processClaim.WorkingDirectory), intent.Claims.Secrets,
-                    intent.Claims.WorktreeDisposition);
+                    intent.Claims.WorktreeDisposition, intent.Claims.WorktreeRetention);
                 intent = new ToolIntent(intent.ToolCallId, intent.ToolId, intent.NormalizedArgumentsJson,
                     intent.Effect, claims, intent.Risk, intent.Reconciliation,
                     intent.EffectiveMutationOperation, intent.RequiresPhysicalCreateCapability,
@@ -1001,12 +1001,15 @@ public sealed class ToolRuntime
 
         var trustedBatchPublication = IsTrustedBatchPublicationTool(tool);
         var trustedDisposition = IsTrustedWorktreeDispositionTool(tool);
+        var trustedRetention = IsTrustedWorktreeRetentionTool(tool);
         var validRequiredEnvelope = reconciliation is not null && (IsTrustedIntegrationTool(tool)
             ? ValidateIntegrationEnvelope(intent, execContext, reconciliation)
             : trustedBatchPublication && ((ITrustedBatchPublicationTool)tool)
                 .ValidatePublicationEnvelope(intent, effectiveIntents, execContext, reconciliation)
             || trustedDisposition && ((ITrustedWorktreeDispositionTool)tool)
-                .ValidateWorktreeDispositionEnvelope(intent, execContext, reconciliation));
+                .ValidateWorktreeDispositionEnvelope(intent, execContext, reconciliation)
+            || trustedRetention && ((ITrustedWorktreeRetentionTool)tool)
+                .ValidateWorktreeRetentionEnvelope(intent, execContext, reconciliation));
         if (tool is IRequiresReconciliationTool && !validRequiredEnvelope)
         {
             const string cause = "Required batch metadata did not match its authorized targets.";
@@ -1015,7 +1018,7 @@ public sealed class ToolRuntime
         }
 
         if (reconciliation?.DurableMetadataJson is not null && !trustedIntegration && !trustedBatchPublication
-            && !trustedDisposition)
+            && !trustedDisposition && !trustedRetention)
         {
             const string cause = "Custom reconciliation metadata is restricted to the registered integration tool.";
             _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.ToolFailure));
@@ -1429,7 +1432,8 @@ public sealed class ToolRuntime
         if (resolved.ToolCallId != parent.ToolCallId || resolved.ToolId != parent.ToolId
             || resolved.NormalizedArgumentsJson != parent.NormalizedArgumentsJson
             || resolved.Effect != parent.Effect || resolved.Risk != parent.Risk
-            || claims.WorktreeDisposition is null || claims.Reads.Count != 0 || claims.Writes.Count != 0
+            || claims.WorktreeDisposition is null && claims.WorktreeRetention is null
+            || claims.Reads.Count != 0 || claims.Writes.Count != 0
             || claims.Network.Count != 0 || claims.Process is not null || claims.Secrets.Count != 0)
             throw new InvalidDataException("Host-resolved resource intent does not match its exact native tool call.");
     }
@@ -1455,7 +1459,7 @@ public sealed class ToolRuntime
             // are separately resolved as native filesystem intents by extension.batch.apply.
             var stagedClaims = new ResourceClaims(intent.Claims.Reads, [], intent.Claims.Network,
                 null,
-                intent.Claims.Secrets, intent.Claims.WorktreeDisposition);
+                intent.Claims.Secrets, intent.Claims.WorktreeDisposition, intent.Claims.WorktreeRetention);
             var stagedIntent = new ToolIntent(intent.ToolCallId, intent.ToolId, intent.NormalizedArgumentsJson,
                 intent.Effect, stagedClaims, intent.Risk, intent.Reconciliation,
                 intent.EffectiveMutationOperation, intent.RequiresPhysicalCreateCapability,
@@ -1482,6 +1486,13 @@ public sealed class ToolRuntime
     private static bool IsTrustedWorktreeDispositionTool(ITool tool) =>
         tool is WorktreeDispositionTool && tool is ITrustedWorktreeDispositionTool
         && tool.Descriptor.Id.ToString() is "worktree.cleanup" or "worktree.discard"
+        && tool.Descriptor.Source.Kind == SourceKind.BuiltIn
+        && tool.Descriptor.Source.Trust == TrustLevel.Core
+        && tool.Descriptor.Protection == ToolProtection.Protected;
+
+    private static bool IsTrustedWorktreeRetentionTool(ITool tool) =>
+        tool is WorktreeRetentionTool && tool is ITrustedWorktreeRetentionTool
+        && tool.Descriptor.Id.ToString() == "worktree.retention"
         && tool.Descriptor.Source.Kind == SourceKind.BuiltIn
         && tool.Descriptor.Source.Trust == TrustLevel.Core
         && tool.Descriptor.Protection == ToolProtection.Protected;
@@ -1749,6 +1760,31 @@ public sealed class ToolRuntime
                 writer.WriteString("operation", worktree.Operation.ToString());
                 writer.WriteString("laneHead", worktree.LaneHead);
                 writer.WriteString("laneTree", worktree.LaneTree);
+                writer.WriteEndObject();
+            }
+            if (intent.Claims.WorktreeRetention is { } retention)
+            {
+                writer.WriteStartObject("worktreeRetention");
+                writer.WriteString("sessionId", retention.SessionId);
+                writer.WriteString("actionRunId", retention.ActionRunId);
+                writer.WriteString("targetOwnerRunId", retention.TargetOwnerRunId);
+                writer.WriteString("workspaceId", retention.WorkspaceId);
+                writer.WriteString("workspaceRoot", retention.WorkspaceRoot);
+                writer.WriteString("laneId", retention.LaneId);
+                writer.WriteString("ownershipId", retention.OwnershipId);
+                writer.WriteString("snapshotCommit", retention.SnapshotCommit);
+                writer.WriteString("gitCommonDirectory", retention.GitCommonDirectory);
+                writer.WriteString("worktreePath", retention.WorktreePath);
+                writer.WriteString("removedAtUtc", retention.RemovedAtUtc);
+                writer.WriteStartArray("references");
+                foreach (var reference in retention.References.OrderBy(item => item.Name, StringComparer.Ordinal))
+                {
+                    writer.WriteStartObject();
+                    writer.WriteString("name", reference.Name);
+                    writer.WriteString("expectedObjectId", reference.ExpectedObjectId);
+                    writer.WriteEndObject();
+                }
+                writer.WriteEndArray();
                 writer.WriteEndObject();
             }
             writer.WriteEndObject();

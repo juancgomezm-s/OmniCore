@@ -136,3 +136,27 @@ Retención y undo no adquieren una ruta nueva por disponer de estos comandos.
 La aceptación local y sus correcciones están en [el acta del bloque](../validation/m9-worktree-disposition-20261024.md).
 La integración del consumidor OmniCoder pertenece a su coordinación y no forma
 parte de este incremento; esta ampliación no acredita el cierre de M9 global.
+
+### Retención entre Runs: alcance autorizado (2026-10-24)
+
+La excepción de [ADR-0050](0050-autoridad-humana-stdio-omnicoder.md#excepción-acotada-de-retención-entre-runs-2026-10-24)
+permite construir la retención nativa de refs vencidas de un Run propietario
+histórico terminal, usando la autorización vigente del Run actual en la misma
+Session/workspace. La identidad histórica y la autoridad actual permanecen
+separadas en admisión, intent protegido, recibo y efecto. No se amplía el acceso
+a otras conversaciones/proyectos ni se convierten consultas en mutaciones.
+
+La operación debe ligar el conjunto revisado de refs/OIDs, conservar los siete
+días existentes, rechazar cambios posteriores y usar comparación del OID esperado
+al retirar. Esta es una decisión de alcance; el catálogo no anunciará la capacidad
+por este texto sin dispatcher, pipeline, recibos y pruebas reales construidos.
+
+El bloque se construyó y aceptó localmente: `worktree.retention:<ownershipId>`
+consulta la candidatura acotada y `core:worktree.retention` ejecuta la acción
+mediante `command.invoke.user`. La consulta distingue historial no disponible
+de ausencia de candidatos. Core deriva la pertenencia histórica sin exigir que
+el directorio retirado siga existiendo; verifica su binding y metadatos antes
+de autorizar el conjunto exacto. Ask conserva el ToolCall/Turn de la acción actual.
+La poda usa una transacción Git con OIDs esperados y sin desreferenciar symrefs.
+Luna bajo aprobó 13 casos sin recompilar; [acta](../validation/m9-worktree-retention-20261024.md).
+La entrega sigue local, sin CI/publicación ni cambios del consumidor OmniCoder.
