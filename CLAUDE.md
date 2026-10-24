@@ -37,6 +37,15 @@ revalidó el foco afectado sin recompilar. [Acta y límites](docs/validation/m9-
 Verify conserva su comando exacto; no se controla el stdin del agente supervisor.
 Es aceptación local, sin nueva CI/publicación ni cierre global de M9/M8.
 
+**M9-L limpieza/descarte nativos aceptados localmente (2026-10-24):**
+`core:worktree.cleanup` y `core:worktree.discard` usan Lane pública, revisión
+exacta del árbol, política vigente, Ask, archivado y recibos durables. Luna bajo
+aprobó 13 casos sobre los binarios corregidos sin recompilar, después de detectar
+y corregir una regresión de composición del catálogo de procesos. [Acta y límites](docs/validation/m9-worktree-disposition-20261024.md).
+La reapertura comprobada es posterior al éxito; no acredita caída intermedia.
+Barrido nativo de retención, undo, persistencia Weak y demás pendientes conservan
+su alcance. Sin nueva CI/publicación; OmniCoder sigue en solo lectura y M9/M8 abiertos.
+
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 
 **Checkpoint M9-K/L (2026-10-17):** seguridad durable por Session, lifecycle nativo y respuesta de

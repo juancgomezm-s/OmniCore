@@ -212,6 +212,9 @@ public sealed record WorktreeCleanupOutcome(bool Removed, GitWorktreeErrorCode? 
     public static WorktreeCleanupOutcome Failure(GitWorktreeErrorCode error) => new(false, error);
 }
 
+/// <summary>The reviewed immutable lane revision and tree required by an explicit discard.</summary>
+public sealed record WorktreeDispositionSnapshot(string LaneHead, string LaneTree);
+
 /// <summary>Aggregate result of the explicit seven-day snapshot-reference retention sweep.
 /// Worktrees and ownership metadata are never deleted by this sweep.</summary>
 public sealed record WorktreeRetentionSweepOutcome(int Eligible, int Pruned, int Preserved, int Failed,

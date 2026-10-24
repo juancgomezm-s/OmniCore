@@ -1529,6 +1529,115 @@ public sealed class GitWorktreeStoreTests
     }
 
     [Fact]
+    public async Task Explicit_discard_rejects_lane_edits_made_after_the_reviewed_snapshot()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("base.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        var path = Path.Combine(worktree.WorktreePath, "untracked output.txt");
+        File.WriteAllText(path, "reviewed output\n");
+        var preview = await store.PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(worktree),
+            CancellationToken.None);
+        var reviewed = Assert.IsType<WorktreeIntegrationPreview>(preview.Preview);
+        Assert.True(preview.Succeeded);
+
+        File.WriteAllText(path, "changed while permission was pending\n");
+        var discarded = await store.DiscardAsync(worktree.Ownership,
+            new WorktreeDispositionSnapshot(reviewed.LaneHeadAtCapture, reviewed.TheirsTree),
+            CancellationToken.None);
+
+        Assert.False(discarded.Removed);
+        Assert.Equal(GitWorktreeErrorCode.WorkspaceChanged, discarded.Error);
+        Assert.True(Directory.Exists(worktree.WorktreePath));
+        Assert.Equal("changed while permission was pending\n", File.ReadAllText(path));
+        Assert.Empty(fixture.Git("for-each-ref", "--format=%(refname)", "refs/omnicore/retained-lanes"));
+    }
+
+    [Fact]
+    public async Task Disposition_snapshot_check_is_read_only_and_rejects_a_changed_lane()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("base.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        var reviewed = new WorktreeDispositionSnapshot(worktree.SnapshotCommit, worktree.SnapshotTree);
+        var refsBefore = fixture.Git("for-each-ref", "--format=%(refname) %(objectname)", "refs/omnicore");
+        Assert.Equal(worktree.SnapshotCommit, fixture.Git("-C", worktree.WorktreePath, "rev-parse", "HEAD").Trim());
+        Assert.Equal(worktree.SnapshotTree, fixture.Git("-C", worktree.WorktreePath, "rev-parse", "HEAD^{tree}").Trim());
+        Assert.Empty(fixture.Git("-C", worktree.WorktreePath, "status", "--porcelain", "--untracked-files=all",
+            "--ignored=matching").Split('\n', StringSplitOptions.RemoveEmptyEntries));
+
+        Assert.True(await store.MatchesDispositionSnapshotAsync(worktree, reviewed, CancellationToken.None));
+        Assert.Equal(refsBefore, fixture.Git("for-each-ref", "--format=%(refname) %(objectname)", "refs/omnicore"));
+
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "later.txt"), "changed after review\n");
+        Assert.False(await store.MatchesDispositionSnapshotAsync(worktree, reviewed, CancellationToken.None));
+        Assert.True(Directory.Exists(worktree.WorktreePath));
+    }
+
+    [Fact]
+    public async Task Explicit_cleanup_rechecks_the_reviewed_clean_tree_at_the_removal_fence()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("base.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        var latePath = Path.Combine(worktree.WorktreePath, "late-edit.txt");
+        store.BeforeFinalCleanupValidationForTests = _ => File.WriteAllText(latePath, "preserve me\n");
+
+        var cleanup = await store.CleanupAsync(worktree.Ownership,
+            new WorktreeDispositionSnapshot(worktree.SnapshotCommit, worktree.SnapshotTree), CancellationToken.None);
+
+        Assert.False(cleanup.Removed);
+        Assert.Equal(GitWorktreeErrorCode.WorktreeDirty, cleanup.Error);
+        Assert.True(Directory.Exists(worktree.WorktreePath));
+        Assert.Equal("preserve me\n", File.ReadAllText(latePath));
+        Assert.Empty(fixture.Git("for-each-ref", "--format=%(refname)", "refs/omnicore/retained-lanes"));
+    }
+
+    [Fact]
+    public async Task Explicit_discard_rechecks_ignored_outputs_at_the_removal_fence()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write(".gitignore", ".local-output\n");
+        fixture.Write("base.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "lane-output.txt"), "reviewed\n");
+        var preview = await store.PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(worktree),
+            CancellationToken.None);
+        var reviewed = Assert.IsType<WorktreeIntegrationPreview>(preview.Preview);
+        Assert.True(preview.Succeeded);
+        store.BeforeFinalCleanupValidationForTests = path =>
+            File.WriteAllText(Path.Combine(path, ".local-output"), "keep ignored output\n");
+
+        var discarded = await store.DiscardAsync(worktree.Ownership,
+            new WorktreeDispositionSnapshot(reviewed.LaneHeadAtCapture, reviewed.TheirsTree),
+            CancellationToken.None);
+
+        Assert.False(discarded.Removed);
+        Assert.Equal(GitWorktreeErrorCode.WorktreeDirty, discarded.Error);
+        Assert.True(Directory.Exists(worktree.WorktreePath));
+        Assert.Equal("keep ignored output\n", File.ReadAllText(Path.Combine(worktree.WorktreePath, ".local-output")));
+        var retainedRef = Assert.Single(fixture.Git("for-each-ref", "--format=%(refname)",
+            "refs/omnicore/retained-lanes").Split('\n', StringSplitOptions.RemoveEmptyEntries));
+        Assert.Equal("reviewed\n", fixture.Git("show", retainedRef + ":lane-output.txt"));
+    }
+
+    [Fact]
     public async Task Explicit_discard_refuses_ignored_outputs_that_would_not_be_in_retained_tree()
     {
         using var fixture = new GitFixture();

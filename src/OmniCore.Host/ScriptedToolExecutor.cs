@@ -224,7 +224,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     }
 
     internal ToolOutcome ResumeApprovedPermission(EventStream stream, IEventCodecRegistry codecs, InteractionId interaction,
-        string optionId, CancellationToken cancellationToken)
+        string optionId, CancellationToken cancellationToken, bool isNativeUserAction = false)
     {
         ArgumentNullException.ThrowIfNull(stream);
         var scope = ExecutionScope.Current;
@@ -278,7 +278,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             providerCallId, call.ArgumentsJson);
         var outcome = Run(validated, false, cancellationToken, stream, approvedPermission: interaction,
             approvedOption: optionId, expectedPreparedArguments: preparedCall.ToolIntentJson,
-            expectedIntentFingerprint: intentFingerprint);
+            expectedIntentFingerprint: intentFingerprint, isNativeUserAction: isNativeUserAction);
         if (outcome.Events.Count > 0) stream.AppendBatch(outcome.Events, DurabilityClass.Standard);
         return outcome;
     }
@@ -387,7 +387,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             || !stream.IsCurrentToolCallRequestReceipt(requestReceipt, validated))
             throw new InvalidOperationException("Tool request receipt is not present in this session journal.");
         return Run(validated, userApprovesAsk, cancellationToken, stream, requestReceipt,
-            allowDeferredInteractionOverride: allowDeferredInteraction);
+            allowDeferredInteractionOverride: allowDeferredInteraction, isNativeUserAction: true);
     }
 
     internal ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
@@ -427,7 +427,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         bool recordReadRegistry = true, InteractionId? approvedPermission = null,
         string? approvedOption = null, string? expectedPreparedArguments = null,
         string? expectedIntentFingerprint = null, InteractionId? approvedWeakSandboxInteraction = null,
-        string? approvedWeakSandboxOption = null, bool? allowDeferredInteractionOverride = null)
+        string? approvedWeakSandboxOption = null, bool? allowDeferredInteractionOverride = null,
+        bool isNativeUserAction = false)
     {
         // Buffer local a la llamada (evita estado compartido entre Runs). Sin flush, contiene
         // todos los eventos emitidos; tras un flush contiene solo los outcomes.
@@ -525,7 +526,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         };
 
         var runtime = new ToolRuntime(_catalog, _policy, emit, _boundary, _executableResolver, _additionalBoundaries);
-        var prepContext = new ToolPreparationContext(_workspaceRoot, DateTimeOffset.Now);
+        var prepContext = new ToolPreparationContext(_workspaceRoot, DateTimeOffset.Now, isNativeUserAction);
         // ADR-0044 §5: cuando hay frontera de capacidad (política del modelo), el registro de
         // lecturas efectivas por-Run viaja en el contexto para que las tools exijan lectura previa.
         var execContext = new ToolExecutionContext(_workspaceRoot,
@@ -557,7 +558,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             mutationHistory: _mutationHistory,
             mutationRunId: ExecutionScope.Current?.RunId?.ToString(),
             mutationTurnId: ExecutionScope.Current?.TurnId?.ToString(),
-            mutationLaneId: ExecutionScope.Current?.LaneId?.ToString());
+            mutationLaneId: ExecutionScope.Current?.LaneId?.ToString(),
+            isNativeUserAction: isNativeUserAction);
         var outcome = approvedWeakSandboxInteraction is { } weakInteraction
             ? runtime.ResumeWeakSandboxConsent(validated, prepContext, execContext, cancellationToken,
                 weakInteraction, approvedWeakSandboxOption!, expectedPreparedArguments!, expectedIntentFingerprint!)

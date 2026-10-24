@@ -621,9 +621,10 @@ public sealed class ExplorerTurn
             || FindPendingRunInteraction(runEvents, runId) is not null)
             return new TurnResult("Native tool action is outside an available execution boundary.",
                 StopReason.Error, 0, new TokenUsage(0, 0, 0, 0, 0), [], null);
-        if (_tools is not ScriptedToolExecutor executor
-            || _catalog.Find(new ToolId(toolName)) is null
-            || _boundary?.IsToolVisible(toolName) != true)
+        var nativeActionTool = _catalog.Find(new ToolId(toolName));
+        var nativeUserActionOnly = nativeActionTool is INativeUserActionOnlyTool;
+        if (_tools is not ScriptedToolExecutor executor || nativeActionTool is null
+            || !nativeUserActionOnly && _boundary?.IsToolVisible(toolName) != true)
             return new TurnResult("Native tool action is not available under the current capability boundary.",
                 StopReason.Error, 0, new TokenUsage(0, 0, 0, 0, 0), [], null);
 
@@ -916,7 +917,8 @@ public sealed class ExplorerTurn
         var prepared = decoded.Where(item => item.Event.TurnId == turnId && item.Event.LaneId == laneId
             && item.Payload is ToolCallPrepared request && request.ToolCallId == toolCallId).ToArray();
         if (calls.Length != 1 || calls[0].Payload is not ToolCallRequested call
-            || call.ToolName is not ("process.read" or "process.send_input" or "process.stop" or "worktree.integrate")
+            || call.ToolName is not ("process.read" or "process.send_input" or "process.stop" or "worktree.integrate"
+                or "worktree.cleanup" or "worktree.discard")
             || !call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal)
             || !Guid.TryParseExact(call.ProviderCallId["native-action-".Length..], "D", out var invocation)
             || call.ProviderCallId != "native-action-" + invocation.ToString("D")
@@ -930,7 +932,8 @@ public sealed class ExplorerTurn
         var execution = HostAgentInvocation.Resolve(_store, _codecs, sessionId, runId, resolvedTask, laneId, stream);
         using var scope = ExecutionScope.Begin(new ExecutionScopeState(runId, resolvedTask, laneId, turnId,
             ToolCallId: toolCallId, ExecutionId: execution));
-        var outcome = executor.ResumeApprovedPermission(stream, _codecs, interaction, optionId, cancellationToken);
+        var outcome = executor.ResumeApprovedPermission(stream, _codecs, interaction, optionId, cancellationToken,
+            isNativeUserAction: true);
         var summary = outcome.Summary ?? "process permission resolved";
         if (!outcome.Succeeded)
             DispatchNativeActionLifecycle(LifecyclePoint.ToolFailed, call.ToolName,
@@ -3849,6 +3852,7 @@ public sealed class ExplorerTurn
                 continue;
             }
             var governedMutation = toolName is "filesystem.write" or "filesystem.patch" or "worktree.integrate"
+                or "worktree.cleanup" or "worktree.discard"
                 || integrationCalls.Contains(toolCallId);
             if (!governedMutation)
             {

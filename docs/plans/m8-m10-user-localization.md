@@ -181,6 +181,20 @@ no se afirma admisión de la delegación por stdio end-to-end. Sin nueva CI ni
 publicación. El checkpoint `e3645a5` conserva su aceptación 12/12; M9 global,
 M8 manual y la integración Electron por su coordinación siguen abiertos.
 
+**M9-L limpieza/descarte nativos aceptados localmente (2026-10-24):**
+`worktree.preview:<laneId>` entrega HEAD/árbol y las acciones firmadas
+`core:worktree.cleanup`/`core:worktree.discard` resuelven ownership en Core,
+aplican la política vigente y pasan por ToolRuntime, barrera, archivado y recibos.
+Las ediciones durante Ask y los ámbitos activos/ajenos se rechazan sin retirar
+archivos. Se eliminó el cálculo repetido de merges de los guards de disposición.
+Luna bajo aprobó 13 casos finales sin recompilar, después de corregir la
+composición del catálogo de procesos; [acta y límites](../validation/m9-worktree-disposition-20261024.md).
+Reapertura y deduplicación se probaron tras éxito, sin nueva inferencia ni efecto.
+El binding/terminal de Lane se siembra en la fixture; no acredita provisión
+por stdio ni caída a mitad del retiro. Barrido nativo de retención y undo quedan
+pendientes. No hubo nueva CI/publicación ni cambios de OmniCoder. M9 global y
+M8 manual continúan abiertos.
+
 ## Ejecución de cierre M9 (2026-10-22)
 
 **Rectificación de alcance del 23 de octubre:** la construcción descrita abajo

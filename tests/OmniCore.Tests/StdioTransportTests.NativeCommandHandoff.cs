@@ -462,6 +462,7 @@ public sealed partial class StdioTransportTests
         private Task<int>? _hostTask;
         private string? _nonce;
         private bool _disposed;
+        private bool _includeNativeChoiceCapability = true;
 
         private NativeCommandHandoffFixture(string root, string workspace,
             string? oldData, string? oldConfig, string oldDirectory, byte[] key,
@@ -539,7 +540,8 @@ public sealed partial class StdioTransportTests
             string? permissionsYaml = null, bool allowWorkflowPersistentProcess = false,
             bool includeZeroModelPricing = false,
             Func<CancellationToken, Task>? nativeProcessControlDeferredForTests = null,
-            Action<string>? nativeProcessControlStageForTests = null)
+            Action<string>? nativeProcessControlStageForTests = null,
+            bool includeNativeChoiceCapability = true)
         {
             var root = Path.Combine(Path.GetTempPath(), "omni-native-command-handoff-" + Guid.NewGuid().ToString("N"));
             var workspace = Path.Combine(root, "workspace");
@@ -555,6 +557,7 @@ public sealed partial class StdioTransportTests
             var provider = new CliEndToEndTests.ScriptedHttpProvider();
             var fixture = new NativeCommandHandoffFixture(root, workspace, oldData, oldConfig,
                 oldDirectory, key, provider);
+            fixture._includeNativeChoiceCapability = includeNativeChoiceCapability;
             fixture.NativeProcessControlDeferredForTests = nativeProcessControlDeferredForTests;
             fixture.NativeProcessControlStageForTests = nativeProcessControlStageForTests;
             void RecordProviderBody(string body)
@@ -605,7 +608,7 @@ public sealed partial class StdioTransportTests
                 var defaults = new SessionSecurityDefaultConfiguration(OmniHost.CreatePlatformPaths());
                 defaults.Set(defaults.Read().Revision, ModelPolicyCategory.FullAgent, CancellationToken.None);
                 fixture.StartRuntimeAndHost(cutCommandId);
-                fixture.Negotiate();
+                fixture.Negotiate(includeNativeChoiceCapability);
                 return fixture;
             }
             catch
@@ -764,7 +767,7 @@ public sealed partial class StdioTransportTests
         public Task ReopenHostAsync()
         {
             StartRuntimeAndHost(null);
-            Negotiate();
+            Negotiate(_includeNativeChoiceCapability);
             return Task.CompletedTask;
         }
 
@@ -782,7 +785,7 @@ public sealed partial class StdioTransportTests
             _runtime?.Dispose();
             _runtime = null;
             StartRuntimeAndHost(null);
-            Negotiate();
+            Negotiate(_includeNativeChoiceCapability);
         }
 
         private async Task WaitForTurnCompletedAsync(string sessionId)
@@ -841,11 +844,20 @@ public sealed partial class StdioTransportTests
                 nativeProcessControlStageForTests: NativeProcessControlStageForTests));
         }
 
-        private void Negotiate()
+        private void Negotiate(bool includeNativeChoiceCapability = true)
         {
+            var capabilities = new List<string>
+            {
+                "query.commandCatalog", "query.commandRecovery", "query.processSessions",
+                "command.process.control.user", "command.invoke.user", "command.invoke.continue.user",
+                "command.run.mode.select.user",
+            };
+            if (includeNativeChoiceCapability)
+                capabilities.Add("command.conversation.interaction.choice.respond.user");
             var hello = Exchange(WireEnvelope.FromJson("{\"version\":\"1.0\",\"messageType\":\"hello\",\"messageId\":"
                 + JsonSerializer.Serialize("native-command-hello-" + Guid.NewGuid().ToString("N"))
-                + ",\"payload\":{\"supportedVersions\":[\"1.0\"],\"capabilities\":[\"query.commandCatalog\",\"query.commandRecovery\",\"query.processSessions\",\"command.process.control.user\",\"command.invoke.user\",\"command.invoke.continue.user\",\"command.conversation.interaction.choice.respond.user\",\"command.run.mode.select.user\"]}}"));
+                + ",\"payload\":{\"supportedVersions\":[\"1.0\"],\"capabilities\":"
+                + JsonSerializer.Serialize(capabilities) + "}}"));
             using var json = JsonDocument.Parse(hello.PayloadJson);
             if (!json.RootElement.TryGetProperty("trustedActionNonce", out var nonce))
             {

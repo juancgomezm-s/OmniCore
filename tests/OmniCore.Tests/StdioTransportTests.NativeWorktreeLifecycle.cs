@@ -14,6 +14,223 @@ namespace OmniCore.Tests;
 
 public sealed partial class StdioTransportTests
 {
+    [Theory]
+    [InlineData("cleanup", false, true)]
+    [InlineData("cleanup", true, true)]
+    [InlineData("cleanup", false, false)]
+    [InlineData("discard", false, true)]
+    public async Task Native_disposition_requires_terminal_lane_permission_and_cleans_only_the_reviewed_tree(
+        string operation, bool staleWhileAskIsOpen, bool nativeChoiceAvailable)
+    {
+        await using var fixture = await NativeCommandHandoffFixture.StartAsync(Guid.NewGuid().ToString("D"),
+            permissionsYaml: $"profile: balanced\nrules:\n  tool.search: allow\n  worktree.{operation}: ask\n",
+            includeNativeChoiceCapability: nativeChoiceAvailable);
+        var sessionText = await fixture.CreateSessionAndQuiescentRunAsync("plan");
+        var scope = fixture.QueryJson("humanActionScope");
+        var runText = scope.GetProperty("runId").GetString()!;
+        var mode = WireEnvelope.Command(Ids.NewV7(), JsonSerializer.Serialize(new
+        {
+            cmd = "run.mode.select", runId = runText, mode = "act",
+            expectedRevision = scope.GetProperty("revision").GetInt64(),
+        }));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted,
+            Ack(fixture.ExchangeTrusted(mode, sessionText, runText)).Outcome?.Kind);
+
+        var (identity, _) = await CreateNativeWorktreeBindingAsync(fixture, sessionText, runText);
+        var laneText = identity.LaneId.ToString();
+        var args = JsonSerializer.Serialize(new
+        {
+            laneId = laneText, laneHead = identity.SnapshotCommit, laneTree = identity.SnapshotTree,
+        });
+        var toolName = "worktree." + operation;
+        Assert.False(fixture.Server.NativeWorktreeDispositionStillAllowed(SessionId.Parse(sessionText),
+            RunId.Parse(runText), toolName, args), "An active Lane must be rejected before native admission.");
+        var activeCatalog = fixture.QueryJson("command.catalog");
+        var activeDescriptor = Assert.Single(activeCatalog.GetProperty("commands").EnumerateArray(), item =>
+            item.GetProperty("canonicalCommandId").GetString() == "core:" + toolName);
+        var activeSequence = fixture.ReadEvents(sessionText).Max(item => item.Envelope.Sequence);
+        var activeInvoke = WireEnvelope.Command(Guid.NewGuid().ToString("D"), JsonSerializer.Serialize(new
+        {
+            cmd = "command.invoke.user", canonicalCommandId = "core:" + toolName,
+            arguments = new[] { toolName, args }, expectedSessionId = sessionText, expectedRunId = runText,
+            expectedModeRevision = NullableJsonInt64(activeCatalog.GetProperty("modeRevision")),
+            expectedPolicyRevision = activeCatalog.GetProperty("policyRevision").GetInt64(),
+            expectedSelectionRevision = activeCatalog.GetProperty("selectionRevision").GetInt32(),
+            expectedRoutingPolicyRevision = NullableJsonInt64(activeCatalog.GetProperty("routingPolicyRevision")),
+            catalogRevision = activeCatalog.GetProperty("catalogRevision").GetString(),
+            sourceFingerprint = activeDescriptor.GetProperty("sourceFingerprint").GetString(),
+        }));
+        var activeAck = Ack(fixture.ExchangeTrusted(activeInvoke, sessionText, runText));
+        Assert.Equal(RuntimeCommandOutcomeKind.Rejected, activeAck.Outcome?.Kind);
+        Assert.Equal(activeSequence, fixture.ReadEvents(sessionText).Max(item => item.Envelope.Sequence));
+        Assert.DoesNotContain(fixture.ReadEvents(sessionText), item => item.Payload is ToolCallRequested
+            or ToolCallStarted or ToolCallSucceeded or ToolCallEffectUnknown);
+        Assert.Empty(Git(identity.RepositoryRoot, "for-each-ref", "--format=%(refname)",
+            "refs/omnicore/retained-lanes").Split('\n', StringSplitOptions.RemoveEmptyEntries));
+
+        var session = SessionId.Parse(sessionText);
+        var run = RunId.Parse(runText);
+        var laneEvent = Assert.Single(fixture.ReadEvents(sessionText), item =>
+            item.Envelope.RunId == run && item.Envelope.LaneId == identity.LaneId
+            && item.Payload is LaneWorktreeCreated);
+        var binding = Assert.IsType<LaneWorktreeCreated>(laneEvent.Payload);
+        var store = fixture.Server.AcquireStore();
+        var codecs = fixture.Server.AcquireCodecs();
+        void Append(DomainEventPayload payload)
+        {
+            var codec = codecs.CodecFor(payload.Type());
+            var envelope = DomainEvent.Create(session, payload.Type(), payload.SchemaVersion(), null, run, run,
+                binding.TaskId, binding.LaneId, null, null, null, [], codec.Encode(payload), binding.ExecutionId);
+            store.Append(session, envelope, DurabilityClass.Barrier, CancellationToken.None);
+        }
+        Append(new LaneCompleted(binding.LaneId, null));
+        Append(new TaskCompleted(binding.TaskId, null));
+        const string discardedFile = "discarded-before-review.txt";
+        const string discardedContent = "archive the user's reviewed output\n";
+        if (operation == "discard" && !staleWhileAskIsOpen)
+        {
+            File.WriteAllText(Path.Combine(identity.WorktreePath, discardedFile), discardedContent, new UTF8Encoding(false));
+            var preview = fixture.QueryJson("worktree.preview:" + laneText);
+            Assert.Equal(laneText, preview.GetProperty("laneId").GetString());
+            args = JsonSerializer.Serialize(new
+            {
+                laneId = laneText,
+                laneHead = preview.GetProperty("laneHead").GetString(),
+                laneTree = preview.GetProperty("laneTree").GetString(),
+            });
+        }
+        Assert.True(fixture.Server.NativeWorktreeDispositionStillAllowed(session, run, toolName, args),
+            "The exact terminal lane ownership and reviewed snapshot should be admitted.");
+        Assert.False(fixture.Server.NativeWorktreeDispositionStillAllowed(SessionId.New(), run,
+            toolName, args), "A different Session must not borrow the Lane binding.");
+        Assert.False(fixture.Server.NativeWorktreeDispositionStillAllowed(session, RunId.New(),
+            toolName, args), "A different Run must not borrow the Lane binding.");
+
+        var catalog = fixture.QueryJson("command.catalog");
+        var descriptor = Assert.Single(catalog.GetProperty("commands").EnumerateArray(), item =>
+            item.GetProperty("canonicalCommandId").GetString() == "core:" + toolName);
+        Assert.True(descriptor.GetProperty("enabled").GetBoolean());
+        WireEnvelope BuildInvocation(string requestId, JsonElement sourceCatalog, JsonElement sourceDescriptor) =>
+            WireEnvelope.Command(requestId, JsonSerializer.Serialize(new
+            {
+                cmd = "command.invoke.user", canonicalCommandId = "core:" + toolName,
+                arguments = new[] { toolName, args }, expectedSessionId = sessionText,
+                expectedRunId = runText,
+                expectedModeRevision = NullableJsonInt64(sourceCatalog.GetProperty("modeRevision")),
+                expectedPolicyRevision = sourceCatalog.GetProperty("policyRevision").GetInt64(),
+                expectedSelectionRevision = sourceCatalog.GetProperty("selectionRevision").GetInt32(),
+                expectedRoutingPolicyRevision = NullableJsonInt64(sourceCatalog.GetProperty("routingPolicyRevision")),
+                catalogRevision = sourceCatalog.GetProperty("catalogRevision").GetString(),
+                sourceFingerprint = sourceDescriptor.GetProperty("sourceFingerprint").GetString(),
+            }));
+        var invocationId = Guid.NewGuid().ToString("D");
+        var invoke = BuildInvocation(invocationId, catalog, descriptor);
+        var accepted = Ack(fixture.ExchangeTrusted(invoke, sessionText, runText));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, accepted.Outcome?.Kind);
+        if (!nativeChoiceAvailable)
+        {
+            await fixture.WaitForReceiptExecutionAsync(invocationId, "failed");
+            var unavailableEvents = fixture.ReadEvents(sessionText);
+            Assert.Contains(unavailableEvents, item => item.Payload is InteractionResolved resolved
+                && resolved.Cause == InteractionCause.NoClient);
+            Assert.Contains(unavailableEvents, item => item.Payload is PermissionDenied);
+            Assert.DoesNotContain(unavailableEvents, item => item.Envelope.ToolCallId is not null
+                && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallEffectUnknown);
+            Assert.True(Directory.Exists(identity.WorktreePath));
+            Assert.Empty(Git(identity.RepositoryRoot, "for-each-ref", "--format=%(refname)",
+                "refs/omnicore/retained-lanes").Split('\n', StringSplitOptions.RemoveEmptyEntries));
+            Assert.Equal("runtime_failed", fixture.ReadReceipt(invocationId)?.ExecutionCode);
+            return;
+        }
+        try { await WaitForPermissionRequestAsync(fixture, sessionText, runText); }
+        catch (TimeoutException error)
+        {
+            var trace = string.Join(" | ", fixture.ReadEvents(sessionText)
+                .Where(item => item.Envelope.RunId == run)
+                .Select(item => item.Payload.GetType().Name + ":" + item.Payload));
+            throw new TimeoutException(error.Message + " receipt=" + fixture.ReadReceipt(invocationId)?.ExecutionState
+                + "/" + fixture.ReadReceipt(invocationId)?.ExecutionCode + " events=" + trace, error);
+        }
+        await fixture.WaitForReceiptExecutionAsync(invocationId, "deferred");
+        var permission = Assert.IsType<PermissionRequested>(Assert.Single(fixture.ReadEvents(sessionText),
+            item => item.Envelope.RunId == run && item.Payload is PermissionRequested).Payload);
+        var interaction = Assert.IsType<InteractionRequested>(Assert.Single(fixture.ReadEvents(sessionText),
+            item => item.Envelope.RunId == run && item.Payload is InteractionRequested).Payload);
+        Assert.Equal(permission.InteractionId, interaction.InteractionId);
+        var lateEdit = Path.Combine(identity.WorktreePath, "edited-while-ask-is-open.txt");
+        if (staleWhileAskIsOpen) File.WriteAllText(lateEdit, "keep the concurrent edit\n", new UTF8Encoding(false));
+        var security = fixture.QueryJson("sessionSecurity");
+        var approval = WireEnvelope.Command(Ids.NewV7(), JsonSerializer.Serialize(new
+        {
+            cmd = "interaction.respond", responseType = "choice",
+            interactionId = interaction.InteractionId.ToString(), optionId = "allow_once",
+            expectedRunId = runText, expectedPolicyRevision = security.GetProperty("revision").GetInt64(),
+        }));
+        var approved = Ack(fixture.ExchangeTrusted(approval, sessionText, runText));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, approved.Outcome?.Kind);
+        if (staleWhileAskIsOpen)
+        {
+            await fixture.WaitForReceiptExecutionAsync(invocationId, "failed");
+            var staleEvents = fixture.ReadEvents(sessionText);
+            Assert.Contains(staleEvents, item => item.Envelope.ToolCallId == permission.ToolCallId
+                && item.Payload is PermissionDenied { Cause: "The reviewed worktree ownership or terminal lane scope changed." });
+            Assert.DoesNotContain(staleEvents, item => item.Envelope.ToolCallId == permission.ToolCallId
+                && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallEffectUnknown);
+            Assert.True(Directory.Exists(identity.WorktreePath));
+            Assert.Equal("keep the concurrent edit\n", File.ReadAllText(lateEdit));
+            Assert.Empty(Git(identity.RepositoryRoot, "for-each-ref", "--format=%(refname)",
+                "refs/omnicore/retained-lanes").Split('\n', StringSplitOptions.RemoveEmptyEntries));
+            Assert.Equal("native_tool_failed", fixture.ReadReceipt(invocationId)?.ExecutionCode);
+            return;
+        }
+        await fixture.WaitForReceiptExecutionAsync(invocationId, "completed");
+
+        Assert.False(Directory.Exists(identity.WorktreePath));
+        Assert.Contains(fixture.ReadEvents(sessionText), item => item.Envelope.RunId == run
+            && item.Payload is ToolCallSucceeded success && success.ToolCallId == permission.ToolCallId);
+        var retainedRefs = Git(identity.RepositoryRoot, "for-each-ref", "--format=%(refname)",
+            "refs/omnicore/retained-lanes").Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        if (operation == "discard")
+        {
+            var retainedRef = Assert.Single(retainedRefs);
+            using var reviewed = JsonDocument.Parse(args);
+            var reviewedTree = reviewed.RootElement.GetProperty("laneTree").GetString();
+            Assert.Equal(reviewedTree,
+                Git(identity.RepositoryRoot, "rev-parse", "--verify", retainedRef + "^{tree}").Trim());
+            if (!staleWhileAskIsOpen)
+                Assert.Equal(discardedContent, Git(identity.RepositoryRoot, "show", retainedRef + ":" + discardedFile));
+        }
+        else Assert.Empty(retainedRefs);
+        Assert.Equal("completed", fixture.ReadReceipt(invocationId)?.ExecutionState);
+        var durableEvents = fixture.ReadEvents(sessionText);
+        var durableSequence = durableEvents.Max(item => item.Envelope.Sequence);
+        await fixture.RestartHostAsync();
+        var duplicate = Ack(fixture.ExchangeTrusted(invoke, sessionText, runText));
+        Assert.Equal(accepted.FirstSeq, duplicate.FirstSeq);
+        Assert.Equal(accepted.LastSeq, duplicate.LastSeq);
+        Assert.Equal(durableSequence, fixture.ReadEvents(sessionText).Max(item => item.Envelope.Sequence));
+        Assert.Single(fixture.ReadEvents(sessionText), item => item.Envelope.ToolCallId == permission.ToolCallId
+            && item.Payload is ToolCallStarted);
+        Assert.Single(fixture.ReadEvents(sessionText), item => item.Envelope.ToolCallId == permission.ToolCallId
+            && item.Payload is ToolCallSucceeded);
+        Assert.Equal("completed", fixture.ReadReceipt(invocationId)?.ExecutionState);
+
+        var reopenCatalog = fixture.QueryJson("command.catalog");
+        var reopenDescriptor = Assert.Single(reopenCatalog.GetProperty("commands").EnumerateArray(), item =>
+            item.GetProperty("canonicalCommandId").GetString() == "core:" + toolName);
+        var newInvocation = BuildInvocation(Guid.NewGuid().ToString("D"), reopenCatalog, reopenDescriptor);
+        var beforeRetiredRetry = fixture.ReadEvents(sessionText).Max(item => item.Envelope.Sequence);
+        var retiredRetry = Ack(fixture.ExchangeTrusted(newInvocation, sessionText, runText));
+        Assert.Equal(RuntimeCommandOutcomeKind.Rejected, retiredRetry.Outcome?.Kind);
+        Assert.Equal(beforeRetiredRetry, fixture.ReadEvents(sessionText).Max(item => item.Envelope.Sequence));
+        Assert.Single(fixture.ReadEvents(sessionText), item => item.Envelope.ToolCallId == permission.ToolCallId
+            && item.Payload is ToolCallSucceeded);
+        Assert.False(Directory.Exists(identity.WorktreePath));
+        if (operation == "discard")
+            Assert.Single(Git(identity.RepositoryRoot, "for-each-ref", "--format=%(refname)",
+                "refs/omnicore/retained-lanes").Split('\n', StringSplitOptions.RemoveEmptyEntries));
+    }
+
     [Fact]
     public async Task Native_worktree_preview_is_passive_and_apply_uses_ask_receipt_and_deduplicated_tool_pipeline()
     {
@@ -357,6 +574,7 @@ public sealed partial class StdioTransportTests
             "commit", "--quiet", "-m", "base fixture");
 
         var journal = fixture.ReadEvents(sessionId);
+        var session = SessionId.Parse(sessionId);
         var run = RunId.Parse(runId);
         var parentTaskEvent = Assert.Single(journal, item => item.Envelope.RunId == run && item.Payload is TaskCreated);
         var parentTask = Assert.IsType<TaskCreated>(parentTaskEvent.Payload);
@@ -372,15 +590,21 @@ public sealed partial class StdioTransportTests
             physicalRoot, dataRoot, WorktreeBase.Head, IgnoredFilesPolicy.None), CancellationToken.None);
         Assert.True(created.Succeeded, "test_worktree_create_failed:" + created.Error);
         var identity = Assert.IsType<WorktreeIdentity>(created.Worktree);
-        var packetRef = new ArtifactRef(ArtifactId.New(), ContentHash.Sha256(new string('a', 64)), 1,
-            "application/vnd.omnicore.task-packet+json", ArtifactKind.Other, Sensitivity.Sensitive);
-        var projectionRef = new ArtifactRef(ArtifactId.New(), ContentHash.Sha256(new string('b', 64)), 1,
-            "application/vnd.omnicore.selected-context+json", ArtifactKind.Other, Sensitivity.Sensitive);
+        var artifacts = OmniHost.CreateArtifactStore(dataRoot);
+        var projectionRef = artifacts.PutText("{}", ContextInheritanceService.DelegationPacketMediaType,
+            ArtifactKind.Other, Sensitivity.Sensitive);
+        var taskPacket = new TaskPacket(1, session, run, taskId, laneId, executionId, DelegationId.New(),
+            ExecutionId.New(), profileId, "Fixture child worktree", new TaskBudget(1m, 8_000, 2, 8),
+            projectionRef, identity.OwnershipId, identity.RepositoryRoot, identity.GitCommonDirectory,
+            identity.WorktreePath, identity.Head, identity.SnapshotCommit, identity.SnapshotTree,
+            WorktreeBase.SnapshotOfWorkingTree, "Fixture worktree state");
+        var packetJson = JsonSerializer.Serialize(taskPacket, TaskPacketJsonContext.Default.TaskPacket);
+        var packetRef = artifacts.PutText(packetJson, LaneWorktreeProvisioner.TaskPacketMediaType,
+            ArtifactKind.Other, Sensitivity.Sensitive);
         var binding = new LaneWorktreeCreated(taskId, laneId, executionId,
             identity.OwnershipId, identity.RepositoryRoot, identity.GitCommonDirectory, identity.WorktreePath,
             identity.SnapshotCommit, identity.SnapshotTree, packetRef, projectionRef);
         var codecs = EventCodecs.Create();
-        var session = SessionId.Parse(sessionId);
         var journalStore = fixture.Server.AcquireStore();
         void Append(DomainEventPayload payload, TaskId? eventTask = null, LaneId? eventLane = null,
             ExecutionId? eventExecution = null)

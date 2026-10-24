@@ -1944,7 +1944,8 @@ public static class StdioProtocolHost
             var turnStart = events.FirstOrDefault(evt => evt.RunId == runId && evt.TurnId == turnId
                 && codecs.Decode(evt) is TurnStarted);
             if (turnStart is null || !IsOpenTurn(events, codecs, runId, turnId)) return false;
-            var admitted = FindDeferredConversationBinding(server, events, codecs, sessionId, runId, turnStart.Sequence);
+            var admitted = FindDeferredConversationBinding(server, events, codecs, sessionId, runId,
+                turnStart.Sequence, _nativeChoiceCapability);
             if (admitted is null) return false;
             // Bind the answer to the exact child turn and user.ask call. The runner may resume
             // an accepted child delegation, but it must never infer that target from the UI.
@@ -2079,7 +2080,8 @@ public static class StdioProtocolHost
                 return false;
             }
             var admitted = nativeChildProcessControl
-                ?? FindDeferredConversationBinding(server, events, codecs, session, run, turnStart.Sequence);
+                ?? FindDeferredConversationBinding(server, events, codecs, session, run, turnStart.Sequence,
+                    _nativeChoiceCapability);
             if (admitted is null)
             {
                 _choiceResumeFailure = "choice_deferred_binding_missing";
@@ -2220,7 +2222,7 @@ public static class StdioProtocolHost
 
         private static PersistedConversationCommand? FindDeferredConversationBinding(OmniServer server,
             IReadOnlyList<DomainEvent> events, IEventCodecRegistry codecs, SessionId sessionId, RunId runId,
-            long turnStartSequence)
+            long turnStartSequence, bool nativeChoiceCapability)
         {
             var store = server.ReceiptStore;
             if (store is null) return null;
@@ -2285,7 +2287,7 @@ public static class StdioProtocolHost
                     && evt.TurnId == currentTurn.TurnId && evt.Sequence > turnStartSequence
                     && codecs.Decode(evt) is ToolCallRequested)
                 .Select(evt => (Event: evt, Call: (ToolCallRequested)codecs.Decode(evt)))
-                .Where(item => item.Call.ToolName == "worktree.integrate"
+                .Where(item => item.Call.ToolName is "worktree.integrate" or "worktree.cleanup" or "worktree.discard"
                     && item.Call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal))
                 .ToArray();
             foreach (var item in currentTurnCalls)
@@ -2329,7 +2331,8 @@ public static class StdioProtocolHost
                     && evt.TurnId == currentTurn.TurnId && evt.ToolCallId == item.Call.ToolCallId
                     && codecs.Decode(evt) is PermissionRequested request
                     && request.ToolCallId == item.Call.ToolCallId);
-                if (permission is null || codecs.Decode(permission) is not PermissionRequested requested
+                if (!nativeChoiceCapability || permission is null
+                    || codecs.Decode(permission) is not PermissionRequested requested
                     || events.Any(evt => evt.RunId == runId && codecs.Decode(evt) is InteractionResolved resolved
                         && resolved.InteractionId == requested.InteractionId)
                     || events.Any(evt => evt.RunId == runId && codecs.Decode(evt) is InteractionExpired expired
@@ -2337,7 +2340,7 @@ public static class StdioProtocolHost
                 candidates.Add(new PersistedConversationCommand(receipt.CommandId, receipt.RequestHash,
                     sessionId.ToString(), runId.ToString(), receipt.FirstSequence, receipt.LastSequence,
                     NativeInvocationId: invocation.ToString(), NativeCommandKind: "nativeTool",
-                    NativeChoiceCapability: true));
+                    NativeChoiceCapability: nativeChoiceCapability));
             }
             var uniqueCandidates = candidates.DistinctBy(item => item.CommandId, StringComparer.Ordinal).ToArray();
             return uniqueCandidates.Length == 1 ? uniqueCandidates[0] : null;

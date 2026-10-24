@@ -1348,7 +1348,8 @@ public sealed class OmniCliRuntime : IDisposable
             else if (payload.Kind == "nativeTool" && payload.Arguments.Length == 2)
             {
                 exitCode = await ExecuteNativeToolActionAsync(session, run, payload.Arguments[0],
-                    payload.Arguments[1], invocationGuid.ToString("D"), diagnostics, cancellationToken)
+                    payload.Arguments[1], invocationGuid.ToString("D"), diagnostics, cancellationToken,
+                    admitted.NativeChoiceCapability)
                     .ConfigureAwait(false);
             }
             else return 1;
@@ -1607,9 +1608,11 @@ public sealed class OmniCliRuntime : IDisposable
     }
 
     internal Task<int> ExecuteNativeToolActionAsync(SessionId session, RunId run, string toolName,
-        string argumentsJson, string invocationId, Action<string> diagnostics, CancellationToken token)
+        string argumentsJson, string invocationId, Action<string> diagnostics, CancellationToken token,
+        bool allowDeferredPermission)
     {
-        if (toolName is not ("process.read" or "process.send_input" or "process.stop" or "worktree.integrate")
+        if (toolName is not ("process.read" or "process.send_input" or "process.stop" or "worktree.integrate"
+                or "worktree.cleanup" or "worktree.discard")
             || string.IsNullOrWhiteSpace(argumentsJson) || argumentsJson.Length > 16_384
             || !Guid.TryParseExact(invocationId, "D", out var invocation) || invocationId != invocation.ToString("D"))
             throw new ArgumentException("Native process action is invalid.");
@@ -1619,10 +1622,14 @@ public sealed class OmniCliRuntime : IDisposable
             throw new InvalidOperationException("Native process action scope changed.");
         if (toolName == "worktree.integrate" && !server.NativeWorktreeIntegrationStillAllowed(session, run, argumentsJson))
             throw new InvalidOperationException("Native worktree integration scope changed.");
+        if (toolName is "worktree.cleanup" or "worktree.discard"
+            && !server.NativeWorktreeDispositionStillAllowed(session, run, toolName, argumentsJson,
+                verifyPhysicalSnapshot: false))
+            throw new InvalidOperationException("Native worktree disposition scope changed.");
         var act = server.CurrentRunMode() is RunMode.Act or RunMode.Orchestrate;
         return RunTurnAsync("", act, diagnostics, token, conversationOnly: true,
             expectedSession: session, expectedRun: run,
-            allowDeferredNativePermission: true,
+            allowDeferredNativePermission: allowDeferredPermission,
             nativeToolAction: new NativeToolActionRequest(toolName, argumentsJson, invocationId));
     }
 
@@ -2962,7 +2969,9 @@ public sealed class OmniCliRuntime : IDisposable
                 ? OmniHost.CreateActTools(artifactReadTool: artifactReadTool,
                     worktreeIntegrationCoordinator: delegation is null
                         ? OmniHost.CreateWorktreeIntegrationCoordinator(workspaceRoot, paths, artifacts) : null,
-                    mediaReadTool: mediaReadTool, processSessionManager: processSessionManager)
+                    mediaReadTool: mediaReadTool, processSessionManager: processSessionManager,
+                    worktreeDispositionCoordinator: delegation is null
+                        ? server.CreateWorktreeDispositionCoordinator(sessionId, workspaceRoot, artifacts) : null)
                 : OmniHost.CreateExplorerTools(artifactReadTool, mediaReadTool);
             var extensionBoundaries = new List<IToolIntentBoundary>();
             IReadOnlyList<LoadedSkill> loadedProjectSkills = [];
@@ -3342,11 +3351,21 @@ public sealed class OmniCliRuntime : IDisposable
                     || !string.Equals(permissionTurn.ToString(), persistedContinuation.ContinuationTurnId,
                         StringComparison.Ordinal))
                     throw new InvalidOperationException("The approved Permission is not bound to the resumed root Turn.");
+                var nativeDispositionCalls = journal.Where(evt => evt.RunId == runId
+                        && evt.TaskId == task && evt.LaneId == permissionLane && evt.TurnId == permissionTurn
+                        && evt.ToolCallId == request.ToolCallId
+                        && codecs.Decode(evt) is ToolCallRequested)
+                    .Select(evt => codecs.Decode(evt)).OfType<ToolCallRequested>().ToArray();
+                var isNativeDisposition = nativeDispositionCalls.Length == 1
+                    && nativeDispositionCalls[0].ToolName is "worktree.cleanup" or "worktree.discard"
+                    && server.NativeToolInvocationMatches(sessionId, runId, nativeDispositionCalls[0].ProviderCallId,
+                        nativeDispositionCalls[0].ToolName, nativeDispositionCalls[0].ArgumentsJson);
                 resumePreflightPassed = () =>
                 {
                     var outcome = resumableExecutor.ResumeApprovedPermission(
                         new EventStream(server.AcquireStore(), codecs, sessionId), codecs, interaction,
-                        persistedContinuation.ContinuationOptionId, cancellationToken);
+                        persistedContinuation.ContinuationOptionId, cancellationToken,
+                        isNativeUserAction: isNativeDisposition);
                     return outcome.Succeeded || outcome.Events.Any(item => item is ToolCallSucceeded
                         || item is ToolCallFailed { EffectOutcome: not EffectOutcome.Unknown });
                 };
@@ -3774,7 +3793,9 @@ public sealed class OmniCliRuntime : IDisposable
                                     throw new InvalidOperationException("Delegated continuation requires the active ORQ authority.");
                                 var rootTools = OmniHost.CreateActTools(artifactReadTool: artifactReadTool,
                                     worktreeIntegrationCoordinator: OmniHost.CreateWorktreeIntegrationCoordinator(
-                                        workspaceRoot, paths, artifacts), processSessionManager: server.ProcessSessions(sessionId, workspaceRoot));
+                                        workspaceRoot, paths, artifacts), processSessionManager: server.ProcessSessions(sessionId, workspaceRoot),
+                                    worktreeDispositionCoordinator: server.CreateWorktreeDispositionCoordinator(
+                                        sessionId, workspaceRoot, artifacts));
                                 var rootBoundary = CreateBoundary(effectivePolicy, workspaceRoot, rootTools.Catalog(),
                                     () => server.ReadSessionSecurityPolicy(sessionId));
                                 var rootExecutor = OmniHost.CreateActExecutor(rootTools.Catalog(), workspaceRoot,
@@ -3858,7 +3879,8 @@ public sealed class OmniCliRuntime : IDisposable
             {
                 var actionExecution = server.ExecuteExplorerTurn(sessionId, runId,
                     _ => turn.ExecuteNativeToolAction(directAction.ToolName, directAction.ArgumentsJson,
-                        directAction.InvocationId, sessionId, runId, laneId, cancellationToken),
+                        directAction.InvocationId, sessionId, runId, laneId, cancellationToken,
+                        allowDeferredInteraction: allowDeferredNativePermission),
                     cancellationToken, readOnlyLane: !act);
                 if (actionExecution.Failure is { } actionFailure)
                     System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(actionFailure);
@@ -3896,7 +3918,7 @@ public sealed class OmniCliRuntime : IDisposable
                 if (pendingNativeCall.Payload is PermissionRequested
                     && nativeCall.Payload is ToolCallRequested requestedCall
                     && (requestedCall.ToolName is "process.read" or "process.send_input" or "process.stop"
-                        or "worktree.integrate")
+                        or "worktree.integrate" or "worktree.cleanup" or "worktree.discard")
                     && pendingNativeCall.Event.LaneId == laneId)
                 {
                     var actionExecution = server.ExecuteExplorerTurn(sessionId, runId,
@@ -3915,7 +3937,7 @@ public sealed class OmniCliRuntime : IDisposable
                         writeLine(InputRequiredJson(nextPermission, "Permission"));
                         return 3;
                     }
-                    if (requestedCall.ToolName != "worktree.integrate"
+                    if (requestedCall.ToolName is not ("worktree.integrate" or "worktree.cleanup" or "worktree.discard")
                         && Guid.TryParseExact(requestedCall.ProviderCallId["native-action-".Length..], "D",
                             out var nativeInvocationGuid))
                         server.FinishNativeCommand(new CommandId(nativeInvocationGuid),
@@ -4034,7 +4056,9 @@ public sealed class OmniCliRuntime : IDisposable
                 {
                     var actTools = OmniHost.CreateActTools(artifactReadTool: CreateArtifactReadTool(server, artifacts),
                         worktreeIntegrationCoordinator: OmniHost.CreateWorktreeIntegrationCoordinator(
-                            workspaceRoot, paths, artifacts), processSessionManager: server.ProcessSessions(sessionId, workspaceRoot));
+                            workspaceRoot, paths, artifacts), processSessionManager: server.ProcessSessions(sessionId, workspaceRoot),
+                        worktreeDispositionCoordinator: server.CreateWorktreeDispositionCoordinator(
+                            sessionId, workspaceRoot, artifacts));
                     var actExecutor = OmniHost.CreateActExecutor(actTools.Catalog(), workspaceRoot,
                         boundary, restrictions, runId, audit, interactionResponder, interactive, artifacts,
                         server.ResolveLaneAgentProfile(sessionId, runId, laneId),
@@ -5954,7 +5978,8 @@ public sealed class OmniCliRuntime : IDisposable
                 && item.Event.TurnId?.ToString() == turnText && item.Event.LaneId?.ToString() == laneText
                 && item.Payload is ToolCallRequested).ToArray();
         if (calls.Length != 1 || calls[0].Payload is not ToolCallRequested call
-            || call.ToolName is not ("process.read" or "process.send_input" or "process.stop" or "worktree.integrate")
+            || call.ToolName is not ("process.read" or "process.send_input" or "process.stop" or "worktree.integrate"
+                or "worktree.cleanup" or "worktree.discard")
             || !call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal)) return false;
         return server.NativeToolInvocationMatches(session, run, call.ProviderCallId,
             call.ToolName, call.ArgumentsJson);

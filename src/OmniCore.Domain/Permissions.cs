@@ -114,19 +114,30 @@ public sealed class ResourceClaims
 
     public IReadOnlyList<string> Secrets { get; }
 
+    /// <summary>Host-resolved ownership and operation for a native worktree disposition.</summary>
+    public WorktreeDispositionClaim? WorktreeDisposition { get; }
+
     public ResourceClaims(IReadOnlyList<string> reads, IReadOnlyList<string> writes,
-        IReadOnlyList<NetworkGrant> network, ProcessClaim? process, IReadOnlyList<string> secrets)
+        IReadOnlyList<NetworkGrant> network, ProcessClaim? process, IReadOnlyList<string> secrets,
+        WorktreeDispositionClaim? worktreeDisposition = null)
     {
         Reads = reads;
         Writes = writes;
         Network = network;
         Process = process;
         Secrets = secrets;
+        WorktreeDisposition = worktreeDisposition;
     }
 
     public static ResourceClaims Empty() =>
         new(new string[0], new string[0], new NetworkGrant[0], null, new string[0]);
 }
+
+/// <summary>Bounded native claim for disposing an exact lane-owned worktree.</summary>
+public sealed record WorktreeDispositionClaim(string WorkspaceId, string WorkspaceRoot, string LaneId, string OwnershipId,
+    WorktreeDispositionOperation Operation, string LaneHead, string LaneTree);
+
+public enum WorktreeDispositionOperation { Cleanup, Discard }
 
 /// <summary>Destino de red reclamado.</summary>
 public record NetworkGrant(string Host, int? Port) { }

@@ -18,6 +18,26 @@ public sealed partial class OmniServer
     private const string NativeWorktreeIntegrationCommandId = "core:worktree.integrate";
     private static readonly string NativeWorktreeIntegrationFingerprint = Convert.ToHexString(
         SHA256.HashData(Encoding.UTF8.GetBytes("omnicore-native-worktree-integration-v1")));
+    private const string NativeWorktreeCleanupCommandId = "core:worktree.cleanup";
+    private static readonly string NativeWorktreeCleanupFingerprint = Convert.ToHexString(
+        SHA256.HashData(Encoding.UTF8.GetBytes("omnicore-native-worktree-cleanup-v1")));
+    private const string NativeWorktreeDiscardCommandId = "core:worktree.discard";
+    private static readonly string NativeWorktreeDiscardFingerprint = Convert.ToHexString(
+        SHA256.HashData(Encoding.UTF8.GetBytes("omnicore-native-worktree-discard-v1")));
+
+    private static string? NativeWorktreeDispositionTool(string canonicalCommandId) => canonicalCommandId switch
+    {
+        NativeWorktreeCleanupCommandId => "worktree.cleanup",
+        NativeWorktreeDiscardCommandId => "worktree.discard",
+        _ => null,
+    };
+
+    private static string? NativeWorktreeDispositionFingerprint(string canonicalCommandId) => canonicalCommandId switch
+    {
+        NativeWorktreeCleanupCommandId => NativeWorktreeCleanupFingerprint,
+        NativeWorktreeDiscardCommandId => NativeWorktreeDiscardFingerprint,
+        _ => null,
+    };
 
     internal PersistedConversationCommand? NativeChildProcessControlChoiceBinding(SessionId session, RunId run,
         TaskId task, LaneId lane, TurnId turn, ToolCallId toolCall, InteractionId interaction,
@@ -488,7 +508,9 @@ public sealed partial class OmniServer
         var conflicts = string.Join(",", value.Conflicts.Select(conflict => NativeJsonString(conflict.RelativePath)));
         var result = "{" + JsonObj.Field("sessionId", session.ToString()) + "," + JsonObj.Field("laneId", laneId.ToString())
             + "," + JsonObj.Field("ownershipId", identity!.OwnershipId)
-            + "," + JsonObj.Field("proposalId", value.ProposalId) + ",\"workspaceHeadChanged\":"
+            + "," + JsonObj.Field("proposalId", value.ProposalId)
+            + "," + JsonObj.Field("laneHead", value.LaneHeadAtCapture)
+            + "," + JsonObj.Field("laneTree", value.TheirsTree) + ",\"workspaceHeadChanged\":"
             + (value.WorkspaceHeadChanged ? "true" : "false") + ",\"workspaceBranchChanged\":"
             + (value.WorkspaceBranchChanged ? "true" : "false") + ",\"conflicts\":[" + conflicts
             + "],\"changes\":[" + changes + "],\"applicable\":"
@@ -591,6 +613,197 @@ public sealed partial class OmniServer
         _lastSessionId == session && _lastRunId == run
         && CanExecuteNativeWorktreeIntegration(session, run, argumentsJson, CancellationToken.None);
 
+    internal bool NativeWorktreeDispositionStillAllowed(SessionId session, RunId run, string toolName,
+        string argumentsJson, bool verifyPhysicalSnapshot = true) =>
+        _lastSessionId == session && _lastRunId == run
+        && CanExecuteNativeWorktreeDisposition(session, run, toolName, argumentsJson, CancellationToken.None,
+            verifyPhysicalSnapshot);
+
+    internal IWorktreeDispositionCoordinator? CreateWorktreeDispositionCoordinator(SessionId session,
+        string workspaceRoot, IArtifactStore artifacts)
+    {
+        if (_lastSessionId != session || _workspaceRoot is not { Length: > 0 } configuredRoot
+            || _artifacts is not IProtectedArtifactStore || artifacts is not IProtectedArtifactStore)
+            return null;
+        string root;
+        try { root = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspaceRoot); }
+        catch (Exception) { return null; }
+        if (!PathEqualsForWorktree(root, configuredRoot)) return null;
+        WorktreeDispositionClaim? Resolve(string argumentsJson, WorktreeDispositionOperation operation)
+        {
+            var run = ExecutionScope.Current?.RunId;
+            if (run is null || _lastSessionId != session || _lastRunId != run
+                || !CanExecuteNativeWorktreeDisposition(session, new RunId(run.Value),
+                    operation == WorktreeDispositionOperation.Cleanup ? "worktree.cleanup" : "worktree.discard",
+                    argumentsJson, CancellationToken.None, verifyPhysicalSnapshot: true)) return null;
+            try
+            {
+                using var document = JsonDocument.Parse(argumentsJson);
+                var value = document.RootElement;
+                var lane = new LaneId(Guid.ParseExact(value.GetProperty("laneId").GetString()!, "D"));
+                if (!TryResolveNativeWorktreeByLane(session, new RunId(run.Value), lane, out var found, out _,
+                        CancellationToken.None) || found is not { } identity) return null;
+                return new WorktreeDispositionClaim(
+                    WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(root)).ToString(), root,
+                    lane.ToString(), identity.OwnershipId, operation,
+                    value.GetProperty("laneHead").GetString()!, value.GetProperty("laneTree").GetString()!);
+            }
+            catch (Exception error) when (error is JsonException or ArgumentException or InvalidOperationException)
+            { return null; }
+        }
+        bool Validate(WorktreeDispositionClaim claim)
+        {
+            if (_lastSessionId != session || !PathEqualsForWorktree(claim.WorkspaceRoot, root)
+                || claim.WorkspaceId != WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(root)).ToString()
+                || !Guid.TryParseExact(claim.LaneId, "D", out var laneGuid)) return false;
+            var run = ExecutionScope.Current?.RunId;
+            if (run is null || _lastRunId != run) return false;
+            return CanExecuteNativeWorktreeDisposition(session, new RunId(run.Value),
+                claim.Operation == WorktreeDispositionOperation.Cleanup ? "worktree.cleanup" : "worktree.discard",
+                "{\"laneId\":" + NativeJsonString(claim.LaneId) + ",\"laneHead\":"
+                    + NativeJsonString(claim.LaneHead) + ",\"laneTree\":" + NativeJsonString(claim.LaneTree) + "}",
+                CancellationToken.None, verifyPhysicalSnapshot: false)
+                && TryResolveNativeWorktreeByLane(session, new RunId(run.Value), new LaneId(laneGuid),
+                    out var current, out _, CancellationToken.None)
+                && current?.OwnershipId == claim.OwnershipId;
+        }
+        async Task<WorktreeCleanupOutcome> Apply(WorktreeDispositionClaim claim, CancellationToken cancellationToken)
+        {
+            if (!Validate(claim)) return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.WorkspaceChanged);
+            var paths = _platformPathsFactory();
+            var dataRoot = OmniHost.WorkspaceDataDirectory(paths, root);
+            var store = new GitWorktreeStore(SystemProcessRuntime.Instance());
+            var loaded = await store.LoadIdentityAsync(root, dataRoot, claim.OwnershipId, cancellationToken)
+                .ConfigureAwait(false);
+            if (!loaded.Succeeded || loaded.Worktree is not { } identity)
+                return WorktreeCleanupOutcome.Failure(loaded.Error ?? GitWorktreeErrorCode.OwnershipMismatch);
+            if (claim.Operation == WorktreeDispositionOperation.Discard)
+            {
+                return await store.DiscardAsync(identity.Ownership,
+                    new WorktreeDispositionSnapshot(claim.LaneHead, claim.LaneTree), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            if (_store is not IWorkspaceJournalReader reader)
+                return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.UnsupportedOwnershipMetadata);
+            var proof = WorktreeCleanupHost.FindIntegratedCleanupProof(reader, _store, _codecs,
+                artifacts, root, identity);
+            if (proof is not null)
+            {
+                if (!string.Equals(proof.LaneHead, claim.LaneHead, StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(proof.LaneTree, claim.LaneTree, StringComparison.OrdinalIgnoreCase))
+                    return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.WorkspaceChanged);
+                return await store.CleanupIntegratedAsync(identity.Ownership, proof, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            return await store.CleanupAsync(identity.Ownership,
+                new WorktreeDispositionSnapshot(claim.LaneHead, claim.LaneTree), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        return new WorktreeDispositionHostCoordinator(Resolve, Validate, Apply, artifacts);
+    }
+
+    private bool CanExecuteNativeWorktreeDisposition(SessionId session, RunId run, string toolName,
+        string argumentsJson, CancellationToken cancellationToken, bool verifyPhysicalSnapshot = true)
+    {
+        if (toolName is not ("worktree.cleanup" or "worktree.discard")
+            || _workspaceRoot is not { Length: > 0 } workspace || _store is not IWorkspaceJournalReader reader
+            || _artifacts is not { } artifacts) return false;
+        try
+        {
+            using var document = JsonDocument.Parse(argumentsJson);
+            var value = document.RootElement;
+            if (value.ValueKind != JsonValueKind.Object || value.EnumerateObject().Count() != 3
+                || !value.TryGetProperty("laneId", out var laneNode) || laneNode.ValueKind != JsonValueKind.String
+                || !value.TryGetProperty("laneHead", out var headNode) || headNode.ValueKind != JsonValueKind.String
+                || !value.TryGetProperty("laneTree", out var treeNode) || treeNode.ValueKind != JsonValueKind.String)
+                return false;
+            var laneText = laneNode.GetString()!;
+            if (!Guid.TryParseExact(laneText, "D", out var laneGuid) || laneText != new LaneId(laneGuid).ToString()) return false;
+            var targetLane = new LaneId(laneGuid);
+            var laneHead = headNode.GetString()!;
+            var laneTree = treeNode.GetString()!;
+            if (!IsNativeGitObjectId(laneHead) || !IsNativeGitObjectId(laneTree)) return false;
+            if (!TryResolveNativeWorktreeByLane(session, run, targetLane, out var resolvedIdentity,
+                    out var resolvedBinding, cancellationToken)
+                || resolvedIdentity is not { } identity || resolvedBinding is not { } binding) return false;
+            var events = _store.ReadFrom(session, 1).Where(item => item.RunId == run).ToArray();
+            var targetTask = events.Where(item => item.TaskId == binding!.TaskId
+                    && _codecs.Decode(item) is TaskCreated created && created.TaskId == binding.TaskId)
+                .Select(item => item.Sequence).ToArray();
+            var taskTerminals = events.Where(item => item.TaskId == binding!.TaskId && _codecs.Decode(item) switch
+                {
+                    TaskCompleted completed => completed.TaskId == binding.TaskId,
+                    TaskFailed failed => failed.TaskId == binding.TaskId,
+                    TaskCancelled cancelled => cancelled.TaskId == binding.TaskId,
+                    TaskSkipped skipped => skipped.TaskId == binding.TaskId,
+                    _ => false,
+                }).ToArray();
+            var laneTerminals = events.Where(item => item.LaneId == targetLane && _codecs.Decode(item) switch
+                {
+                    LaneCompleted completed => completed.LaneId == targetLane,
+                    LaneFailed failed => failed.LaneId == targetLane,
+                    LaneCancelled cancelled => cancelled.LaneId == targetLane,
+                    _ => false,
+                }).ToArray();
+            var laneCreates = events.Where(item => item.TaskId == binding!.TaskId && item.LaneId == targetLane
+                    && _codecs.Decode(item) is LaneCreated created && created.TaskId == binding.TaskId
+                    && created.LaneId == targetLane).ToArray();
+            if (targetTask.Length != 1 || taskTerminals.Length != 1 || laneCreates.Length != 1
+                || laneTerminals.Length != 1
+                || !PathEqualsForWorktree(identity!.RepositoryRoot, ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspace)))
+                return false;
+            var workspaceRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspace);
+            var workspaceId = WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(workspaceRoot)).ToString();
+            if (WorktreeCleanupHost.HasActiveWorkflowConsumer(reader, _store, _codecs, artifacts,
+                    workspaceId, identity.OwnershipId)) return false;
+            var processStates = events.Where(item => item.LaneId == targetLane && item.ExecutionId == binding.ExecutionId
+                    && _codecs.Decode(item) is ProcessSessionStateRecorded process
+                    && process.RunId == run.ToString() && process.LaneId == targetLane.ToString())
+                .Select(item => (item.Sequence, State: (ProcessSessionStateRecorded)_codecs.Decode(item)!))
+                .GroupBy(item => item.State.HandleId, StringComparer.Ordinal)
+                .Select(group => group.MaxBy(item => item.Sequence).State);
+            if (processStates.Any(process => process.State is not
+                    ("exited" or "stopped" or "cancelled" or "failed" or "timed_out" or "output_limit"))) return false;
+            if (verifyPhysicalSnapshot && !new GitWorktreeStore(SystemProcessRuntime.Instance())
+                    .MatchesDispositionSnapshotAsync(identity,
+                        new WorktreeDispositionSnapshot(laneHead, laneTree), cancellationToken)
+                    .GetAwaiter().GetResult()) return false;
+            return true;
+        }
+        catch (Exception error) when (error is JsonException or ArgumentException or InvalidOperationException
+            or IOException or UnauthorizedAccessException or FormatException)
+        { return false; }
+    }
+
+    private bool TryResolveNativeWorktreeByLane(SessionId session, RunId run, LaneId lane,
+        out WorktreeIdentity? identity, out LaneWorktreeCreated? binding, CancellationToken cancellationToken)
+    {
+        identity = null;
+        binding = null;
+        var events = _store.ReadFrom(session, 1);
+        var matches = events.Where(item => item.RunId == run && item.LaneId == lane
+                && item.TaskId is not null && item.ExecutionId is not null
+                && _codecs.Decode(item) is LaneWorktreeCreated created && created.LaneId == lane
+                && item.TaskId == created.TaskId && item.ExecutionId == created.ExecutionId)
+            .Select(item => (item, (LaneWorktreeCreated)_codecs.Decode(item)!)).ToArray();
+        if (matches.Length != 1 || !TryResolveOwnedLaneWorktree(session, matches[0].Item2.OwnershipId,
+                out identity, out binding, cancellationToken, expectedRun: run)
+            || binding is null
+            || binding.LaneId != lane || binding.TaskId != matches[0].Item2.TaskId
+            || binding.ExecutionId != matches[0].Item2.ExecutionId) return false;
+        if (identity is null) return false;
+        var resolvedIdentity = identity;
+        var resolvedBinding = binding;
+        var exact = events.Where(item => item.RunId == run && item.TaskId == resolvedBinding.TaskId
+            && item.LaneId == resolvedBinding.LaneId && item.ExecutionId == resolvedBinding.ExecutionId
+            && _codecs.Decode(item) is LaneWorktreeCreated created && created.OwnershipId == resolvedBinding.OwnershipId
+            && PathEqualsForWorktree(created.RepositoryRoot, resolvedIdentity.RepositoryRoot)
+            && PathEqualsForWorktree(created.WorktreePath, resolvedIdentity.WorktreePath)
+            && PathEqualsForWorktree(created.GitCommonDirectory, resolvedIdentity.GitCommonDirectory)
+            && created.SnapshotCommit == resolvedIdentity.SnapshotCommit).ToArray();
+        return exact.Length == 1;
+    }
+
     private static bool PathEqualsForWorktree(string left, string right)
     {
         try { return string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
@@ -598,6 +811,9 @@ public sealed partial class OmniServer
                 ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal); }
         catch (Exception) { return false; }
     }
+
+    private static bool IsNativeGitObjectId(string value) => value is { Length: 40 or 64 }
+        && value.All(Uri.IsHexDigit);
 
     private static string NativeJsonString(string value) => "\"" + JsonObj.Escape(value) + "\"";
 
@@ -1023,6 +1239,8 @@ public sealed partial class OmniServer
             arguments.Add(value);
         }
         var nativeWorktreeIntegration = canonicalId == NativeWorktreeIntegrationCommandId;
+        var dispositionTool = NativeWorktreeDispositionTool(canonicalId);
+        var dispositionFingerprint = NativeWorktreeDispositionFingerprint(canonicalId);
         if (nativeProcessControl && (canonicalId != NativeProcessControlCommandId || expectedRun is null
             || expectedSource != NativeProcessControlFingerprint || arguments.Count != 2
             || arguments[0] is not ("process.read" or "process.send_input" or "process.stop")
@@ -1032,6 +1250,10 @@ public sealed partial class OmniServer
             || expectedSource != NativeWorktreeIntegrationFingerprint || arguments.Count != 2
             || arguments[0] != "worktree.integrate" || !IsJsonObject(arguments[1])))
             return NativeCommandRejected(command.MessageId, "worktree.integrate.invalid_request");
+        if (dispositionTool is not null && (expectedRun is null
+            || expectedSource != dispositionFingerprint || arguments.Count != 2
+            || arguments[0] != dispositionTool || !IsJsonObject(arguments[1])))
+            return NativeCommandRejected(command.MessageId, "worktree.disposition.invalid_request");
         var session = _lastSessionId;
         if (session is null || session.Value.ToString() != WireStringValue(root, "expectedSessionId"))
             return NativeCommandRejected(command.MessageId, "command.session_changed");
@@ -1084,6 +1306,20 @@ public sealed partial class OmniServer
                     if (!CanExecuteNativeWorktreeIntegration(session, expectedRun!,
                             arguments[1], cancellationToken))
                         return NativeCommandRejected(command.MessageId, "worktree.integrate.scope_changed");
+                }
+                else if (dispositionTool is not null)
+                {
+                    var nativeEntry = nativeSnapshot.Commands.SingleOrDefault(entry =>
+                        entry.CanonicalCommandId == canonicalId);
+                    if (nativeEntry is not { Enabled: true }
+                        || !FixedHashEquals(expectedSource, nativeEntry.SourceFingerprint))
+                        return NativeCommandRejected(command.MessageId, nativeEntry?.DisabledReason ?? "command.source_changed");
+                    fingerprint = dispositionFingerprint!;
+                    payload = new NativeCommandPayload(canonicalId, "nativeTool", arguments.ToArray(),
+                        null, null, null, null, null);
+                    if (!CanExecuteNativeWorktreeDisposition(session, expectedRun!, dispositionTool,
+                            arguments[1], cancellationToken, verifyPhysicalSnapshot: false))
+                        return NativeCommandRejected(command.MessageId, "worktree.disposition.scope_changed");
                 }
                 else
                 {
@@ -1362,6 +1598,9 @@ public sealed partial class OmniServer
                 if (admitted.CanonicalCommandId == NativeWorktreeIntegrationCommandId
                     && !CanExecuteNativeWorktreeIntegration(session, expectedRun, decoded.Arguments[1], CancellationToken.None))
                     return false;
+                if (NativeWorktreeDispositionTool(admitted.CanonicalCommandId) is { } dispositionTool
+                    && !CanExecuteNativeWorktreeDisposition(session, expectedRun, dispositionTool,
+                        decoded.Arguments[1], CancellationToken.None, verifyPhysicalSnapshot: false)) return false;
             }
             else
             {
@@ -1416,9 +1655,13 @@ public sealed partial class OmniServer
         if (admitted.CanonicalCommandId == NativeProcessControlCommandId)
             return FixedHashEquals(admitted.SourceFingerprint, NativeProcessControlFingerprint)
                 && payload.Arguments[0] is "process.read" or "process.send_input" or "process.stop";
-        return admitted.CanonicalCommandId == NativeWorktreeIntegrationCommandId
-            && FixedHashEquals(admitted.SourceFingerprint, NativeWorktreeIntegrationFingerprint)
-            && payload.Arguments[0] == "worktree.integrate";
+        if (admitted.CanonicalCommandId == NativeWorktreeIntegrationCommandId)
+            return FixedHashEquals(admitted.SourceFingerprint, NativeWorktreeIntegrationFingerprint)
+                && payload.Arguments[0] == "worktree.integrate";
+        var dispositionTool = NativeWorktreeDispositionTool(admitted.CanonicalCommandId);
+        return dispositionTool is not null && payload.Arguments[0] == dispositionTool
+            && FixedHashEquals(admitted.SourceFingerprint,
+                NativeWorktreeDispositionFingerprint(admitted.CanonicalCommandId)!);
     }
 
     internal void FinishNativeCommand(CommandId invocation, string outcome)
@@ -1431,7 +1674,7 @@ public sealed partial class OmniServer
                 && admission.SessionId == session && admission.Kind == "nativeTool"
                 && TryDecodeNativeCommandPayload(payloadJson, out var payload)
                 && NativeToolActionPayloadMatches(admission, payload)
-                && payload.Arguments[0] == "worktree.integrate")
+                && payload.Arguments[0] is "worktree.integrate" or "worktree.cleanup" or "worktree.discard")
                 return; // Worktree tool-only completion is represented by its hash-bound execution receipt.
             if (!history.Any(evt => _codecs.Decode(evt) is NativeCommandInvocationStarted started
                     && started.InvocationId == invocation)
@@ -1524,7 +1767,8 @@ public sealed partial class OmniServer
         if (!TryReadNativeCommandPayload(invocation, out var admission, out var payloadJson)
             || !TryDecodeNativeCommandPayload(payloadJson, out var payload)
             || admission.Kind != "nativeTool" || admission.RunId is not { } run
-            || !NativeToolActionPayloadMatches(admission, payload) || payload.Arguments[0] != "worktree.integrate"
+            || !NativeToolActionPayloadMatches(admission, payload)
+            || payload.Arguments[0] is not ("worktree.integrate" or "worktree.cleanup" or "worktree.discard")
             || _lastSessionId != admission.SessionId || !EnsureWriterOwnershipForCommand()
             || _lastSessionId != admission.SessionId
             || !string.Equals(ReceiptStore?.ReadCommandReceipt(invocationText)?.RequestHash, requestHash,
@@ -1554,18 +1798,25 @@ public sealed partial class OmniServer
                 && _codecs.Decode(item) is ToolCallSucceeded or ToolCallFailed or ToolCallEffectUnknown
                     or ToolCallReconciled)
             .Select(item => (Event: item, Payload: _codecs.Decode(item))).ToArray();
-        using var argumentDocument = JsonDocument.Parse(payload.Arguments[1]);
-        var proposalId = argumentDocument.RootElement.GetProperty("proposalId").GetString();
         string state;
         string code;
-        var completedIntegration = history.SingleOrDefault(item => item.Sequence > callEvents[0].Sequence
-            && item.ToolCallId == call && item.TaskId == callEvents[0].TaskId
-            && item.LaneId == callEvents[0].LaneId && item.TurnId == callEvents[0].TurnId
-            && _codecs.Decode(item) is WorktreeIntegrationStateRecorded recorded
-            && recorded.State == WorktreeIntegrationState.Completed
-            && recorded.ProposalId == proposalId);
+        var isDisposition = payload.Arguments[0] is "worktree.cleanup" or "worktree.discard";
+        var completedIntegration = isDisposition
+            ? NativeWorktreeDispositionReceiptMatches(admission.SessionId, run, callEvents[0],
+                requested, payload.Arguments[0])
+            : false;
+        if (!isDisposition)
+        {
+            using var argumentDocument = JsonDocument.Parse(payload.Arguments[1]);
+            var proposalId = argumentDocument.RootElement.GetProperty("proposalId").GetString();
+            completedIntegration = history.Any(item => item.Sequence > callEvents[0].Sequence
+                && item.ToolCallId == call && item.TaskId == callEvents[0].TaskId
+                && item.LaneId == callEvents[0].LaneId && item.TurnId == callEvents[0].TurnId
+                && _codecs.Decode(item) is WorktreeIntegrationStateRecorded recorded
+                && recorded.State == WorktreeIntegrationState.Completed && recorded.ProposalId == proposalId);
+        }
         if (outcomes.Length == 1 && outcomes[0].Payload is ToolCallSucceeded
-            && completedIntegration is not null && completedIntegration.Sequence < outcomes[0].Event.Sequence)
+            && completedIntegration && outcomes[0].Event.Sequence > callEvents[0].Sequence)
         {
             state = "completed";
             code = "native_tool_completed";
@@ -1584,6 +1835,59 @@ public sealed partial class OmniServer
         }
         ReceiptStore?.CompleteDeferredCommandExecution(invocationText, requestHash, state, code,
             admission.SessionId.ToString(), run.ToString());
+    }
+
+    private bool NativeWorktreeDispositionReceiptMatches(SessionId session, RunId run,
+        DomainEvent requestEvent, ToolCallRequested request, string toolName)
+    {
+        if (toolName is not ("worktree.cleanup" or "worktree.discard")
+            || request.ToolCallId != requestEvent.ToolCallId
+            || requestEvent.TaskId is not { } task || requestEvent.LaneId is not { } lane
+            || requestEvent.TurnId is not { } turn || requestEvent.ExecutionId is not { } execution
+            || _artifacts is not IProtectedArtifactStore protectedArtifacts
+            || _workspaceRoot is not { Length: > 0 } workspace) return false;
+        try
+        {
+            using var arguments = JsonDocument.Parse(request.ArgumentsJson);
+            var root = arguments.RootElement;
+            var laneText = root.GetProperty("laneId").GetString();
+            var laneHead = root.GetProperty("laneHead").GetString();
+            var laneTree = root.GetProperty("laneTree").GetString();
+            if (laneText is null || laneHead is null || laneTree is null
+                || !Guid.TryParseExact(laneText, "D", out var laneGuid)
+                || laneText != new LaneId(laneGuid).ToString()) return false;
+            var targetLane = new LaneId(laneGuid);
+            var history = _store.ReadFrom(session, 1).Where(item => item.RunId == run).ToArray();
+            var bindings = history.Where(item => item.LaneId == targetLane
+                && _codecs.Decode(item) is LaneWorktreeCreated binding && binding.LaneId == targetLane
+                && binding.TaskId == item.TaskId && binding.ExecutionId == item.ExecutionId)
+                .Select(item => (Envelope: item, Binding: (LaneWorktreeCreated)_codecs.Decode(item)!)).ToArray();
+            if (bindings.Length != 1) return false;
+            var starts = history.Where(item => item.Sequence > requestEvent.Sequence && item.TaskId == task
+                && item.LaneId == lane && item.TurnId == turn && item.ExecutionId == execution
+                && item.ToolCallId == request.ToolCallId
+                && _codecs.Decode(item) is ToolCallStarted).ToArray();
+            if (starts.Length != 1 || _codecs.Decode(starts[0]) is not ToolCallStarted started
+                || started.BeforeStateRef is not { } reference || string.IsNullOrWhiteSpace(started.ReconciliationJson)
+                || !_artifacts.Verify(reference.Hash, reference.Size)) return false;
+            var physicalRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspace);
+            var workspaceId = WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(physicalRoot)).ToString();
+            var purpose = "worktree-disposition:" + workspaceId + ":" + request.ToolCallId;
+            var protectedJson = protectedArtifacts.GetProtectedText(reference, purpose);
+            if (!string.Equals(protectedJson, started.ReconciliationJson, StringComparison.Ordinal)) return false;
+            var durable = JsonSerializer.Deserialize(protectedJson,
+                WorktreeDispositionJsonContext.Default.WorktreeDispositionReceipt);
+            if (durable is not { Version: 1 } || durable.Claim.WorkspaceId != workspaceId
+                || !PathEqualsForWorktree(durable.Claim.WorkspaceRoot, physicalRoot)
+                || durable.Claim.LaneId != laneText || durable.Claim.OwnershipId != bindings[0].Binding.OwnershipId
+                || durable.Claim.LaneHead != laneHead || durable.Claim.LaneTree != laneTree
+                || durable.Claim.Operation != (toolName == "worktree.cleanup"
+                    ? WorktreeDispositionOperation.Cleanup : WorktreeDispositionOperation.Discard)) return false;
+            return true;
+        }
+        catch (Exception error) when (error is JsonException or ArgumentException or InvalidOperationException
+            or IOException or UnauthorizedAccessException)
+        { return false; }
     }
 
     internal bool NativeToolInvocationMatches(SessionId session, RunId run, string providerCallId,
@@ -1661,16 +1965,24 @@ public sealed partial class OmniServer
             && item.TurnId == turn && item.ExecutionId == execution && item.ToolCallId == toolCall
             && _codecs.Decode(item) is ToolCallRequested).ToArray();
         if (interactions.Length != 1 || calls.Length != 1
-            || _codecs.Decode(calls[0]) is not ToolCallRequested call || call.ToolName != "worktree.integrate"
+            || _codecs.Decode(calls[0]) is not ToolCallRequested call
+            || call.ToolName is not ("worktree.integrate" or "worktree.cleanup" or "worktree.discard")
             || !call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal)
             || !Guid.TryParseExact(call.ProviderCallId["native-action-".Length..], "D", out var invocationGuid)
             || call.ProviderCallId != "native-action-" + invocationGuid.ToString("D")) return false;
         var invocation = new CommandId(invocationGuid);
+        var expectedCommandId = call.ToolName switch
+        {
+            "worktree.integrate" => NativeWorktreeIntegrationCommandId,
+            "worktree.cleanup" => NativeWorktreeCleanupCommandId,
+            "worktree.discard" => NativeWorktreeDiscardCommandId,
+            _ => "",
+        };
         var receipt = ReceiptStore?.ReadCommandReceipt(invocation.ToString());
         var admissions = history.Where(item => _codecs.Decode(item) is NativeCommandInvocationAdmitted admitted
             && admitted.InvocationId == invocation && admitted.SessionId == session
             && admitted.RunId == run && admitted.Kind == "nativeTool"
-            && admitted.CanonicalCommandId == NativeWorktreeIntegrationCommandId).ToArray();
+            && admitted.CanonicalCommandId == expectedCommandId).ToArray();
         var starts = history.Where(item => _codecs.Decode(item) is NativeCommandInvocationStarted started
             && started.InvocationId == invocation && started.Kind == "nativeTool" && started.RunId == run).ToArray();
         var admissionAndCallMatch = receipt is { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
@@ -1890,6 +2202,20 @@ public sealed partial class OmniServer
         AppendRevisionPart(revisionInput, "worktree.integrate");
         AppendRevisionPart(revisionInput, "argumentsJson");
         AppendRevisionPart(revisionInput, "command-end");
+        AppendRevisionPart(revisionInput, NativeWorktreeCleanupCommandId);
+        AppendRevisionPart(revisionInput, "nativeTool");
+        AppendRevisionPart(revisionInput, NativeWorktreeCleanupFingerprint);
+        AppendRevisionPart(revisionInput, "Dispose a terminal owned lane worktree through the normal tool permission and receipt pipeline.");
+        AppendRevisionPart(revisionInput, "worktree.cleanup");
+        AppendRevisionPart(revisionInput, "argumentsJson");
+        AppendRevisionPart(revisionInput, "command-end");
+        AppendRevisionPart(revisionInput, NativeWorktreeDiscardCommandId);
+        AppendRevisionPart(revisionInput, "nativeTool");
+        AppendRevisionPart(revisionInput, NativeWorktreeDiscardFingerprint);
+        AppendRevisionPart(revisionInput, "Archive and discard a terminal owned lane worktree through the normal tool permission and receipt pipeline.");
+        AppendRevisionPart(revisionInput, "worktree.discard");
+        AppendRevisionPart(revisionInput, "argumentsJson");
+        AppendRevisionPart(revisionInput, "command-end");
         AppendRevisionPart(revisionInput, session?.ToString() ?? "");
         AppendRevisionPart(revisionInput, modePreference.Mode.ToString());
         AppendRevisionPart(revisionInput, modePreference.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1941,7 +2267,25 @@ public sealed partial class OmniServer
                     ? "A physical workspace root is required." : null,
             NativeWorktreeIntegrationFingerprint,
             "Integrate a passive Git worktree proposal through the normal tool permission and receipt pipeline.",
-            ["toolName", "argumentsJson"])).ToArray();
+            ["toolName", "argumentsJson"]))
+            .Append(new NativeCommandCatalogEntry(NativeWorktreeCleanupCommandId, "nativeTool",
+                run is not null && hasQuiescentScope && worktreeModeCompatible && _workspaceRoot is { Length: > 0 },
+                run is null ? "A Run is required for workflow authorization." : !hasQuiescentScope
+                    ? "The Session Run must be quiescent." : !worktreeModeCompatible
+                        ? "Worktree cleanup requires Act or Orchestrate mode." : _workspaceRoot is not { Length: > 0 }
+                        ? "A physical workspace root is required." : null,
+                NativeWorktreeCleanupFingerprint,
+                "Dispose a terminal owned lane worktree through the normal tool permission and receipt pipeline.",
+                ["toolName", "argumentsJson"]))
+            .Append(new NativeCommandCatalogEntry(NativeWorktreeDiscardCommandId, "nativeTool",
+                run is not null && hasQuiescentScope && worktreeModeCompatible && _workspaceRoot is { Length: > 0 },
+                run is null ? "A Run is required for workflow authorization." : !hasQuiescentScope
+                    ? "The Session Run must be quiescent." : !worktreeModeCompatible
+                        ? "Worktree discard requires Act or Orchestrate mode." : _workspaceRoot is not { Length: > 0 }
+                        ? "A physical workspace root is required." : null,
+                NativeWorktreeDiscardFingerprint,
+                "Archive and discard a terminal owned lane worktree through the normal tool permission and receipt pipeline.",
+                ["toolName", "argumentsJson"])).ToArray();
         return new NativeCommandCatalogSnapshot(session?.ToString(), run?.ToString(), mode?.Revision,
             policy?.PolicyRevision, selection?.Revision ?? 0, routing?.Revision, catalogRevision, commands);
     }

@@ -435,7 +435,6 @@ public sealed class RunProjection
         DomainEvent resumeEnvelope, CommandCausation resumeCause, DomainEvent interactionEnvelope,
         InteractionRequested interaction, IEventCodecRegistry registry, IReadOnlyList<DomainEvent> events)
     {
-        const string canonicalCommandId = "core:worktree.integrate";
         if (interaction.Kind != InteractionKind.Permission
             || interactionEnvelope.SessionId != resumeEnvelope.SessionId
             || interactionEnvelope.RunId != resumed.RunId
@@ -473,13 +472,22 @@ public sealed class RunProjection
         var toolCallId = permissionRequest.ToolCallId;
         var calls = scoped.Where(item => item.ToolCallId == toolCallId
             && registry.Decode(item) is ToolCallRequested call
-            && call.ToolCallId == toolCallId && call.ToolName == "worktree.integrate"
+            && call.ToolCallId == toolCallId
+            && call.ToolName is ("worktree.integrate" or "worktree.cleanup" or "worktree.discard")
             && call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal)).ToArray();
         if (calls.Length != 1
             || registry.Decode(calls[0]) is not ToolCallRequested toolCall
             || !Guid.TryParseExact(toolCall.ProviderCallId["native-action-".Length..], "D", out var invocationGuid)
             || toolCall.ProviderCallId != "native-action-" + invocationGuid.ToString("D"))
             return false;
+        var canonicalCommandId = toolCall.ToolName switch
+        {
+            "worktree.integrate" => "core:worktree.integrate",
+            "worktree.cleanup" => "core:worktree.cleanup",
+            "worktree.discard" => "core:worktree.discard",
+            _ => null,
+        };
+        if (canonicalCommandId is null) return false;
         var preparedCalls = scoped.Where(item => item.ToolCallId == toolCallId
             && registry.Decode(item) is ToolCallPrepared prepared && prepared.ToolCallId == toolCallId).ToArray();
         if (preparedCalls.Length != 1 || preparedCalls[0].Sequence <= calls[0].Sequence

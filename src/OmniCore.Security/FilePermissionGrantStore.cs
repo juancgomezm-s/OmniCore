@@ -115,6 +115,16 @@ public sealed class FilePermissionGrantStore : IPermissionGrantStore
             foreach (var arg in claims.Process.Args) Add("process.arg", arg);
         }
         foreach (var value in claims.Secrets.OrderBy(v => v, StringComparer.Ordinal)) Add("secret", value);
+        if (claims.WorktreeDisposition is { } disposition)
+        {
+            Add("worktree.workspace", disposition.WorkspaceId);
+            Add("worktree.workspaceRoot", disposition.WorkspaceRoot);
+            Add("worktree.lane", disposition.LaneId);
+            Add("worktree.ownership", disposition.OwnershipId);
+            Add("worktree.operation", disposition.Operation.ToString());
+            Add("worktree.laneHead", disposition.LaneHead);
+            Add("worktree.laneTree", disposition.LaneTree);
+        }
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text.ToString())));
 
         void Add(string name, string value) => text.Append(name).Append(':').Append(value.Length)

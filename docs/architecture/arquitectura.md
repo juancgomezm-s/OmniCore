@@ -776,6 +776,16 @@ La admisión de la fixture es Core in-process y el control es Host/stdio; no acr
 admisión de delegación por stdio end-to-end. Verify conserva su comando exacto,
 OmniCoder permanece en sólo lectura y no hubo nueva CI ni publicación.
 
+La limpieza y el descarte nativos de worktrees terminales tienen aceptación
+local del 2026-10-24. El claim tipado liga operación, ownership y árbol revisado;
+la aprobación no cubre cambios posteriores, y discard archiva antes del retiro.
+Luna bajo aprobó 13 casos finales sin recompilar tras corregir una regresión del
+catálogo. [Acta y límites](../validation/m9-worktree-disposition-20261024.md).
+Reapertura tras éxito no acredita recuperación de una caída intermedia. El
+barrido nativo de retención y undo siguen pendientes; se conservan las demás
+aceptaciones de Core, el límite de solo lectura de OmniCoder y M9/M8 abiertos.
+Este incremento permanece local, sin nueva CI ni publicación.
+
 ### P0-OMNI-UNIFICACION
 
 **Revisión:** 2026-10-14 · **Prioridad:** P0 · **Estado global:** CERRADO / ALCANCE ACEPTADO. **Contribución de OmniCore: CERRADA en Windows**, con el alcance y las diferencias de plataforma del [acta local](../validation/omnicore-homologation-closure-20261014.md).

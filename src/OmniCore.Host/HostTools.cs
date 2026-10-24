@@ -28,10 +28,12 @@ public sealed class HostTools
         bool includeControlTools = true, bool includeMailboxReceive = false, bool includeShellTool = true,
         IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null,
         MediaReadTool? mediaReadTool = null,
-        PersistentProcessSessionManager? processSessionManager = null)
+        PersistentProcessSessionManager? processSessionManager = null,
+        IWorktreeDispositionCoordinator? worktreeDispositionCoordinator = null)
         : this(boundary, planService, includeSimulationTools, includeMutationTools, includeProcessTools,
             processSandboxStrength, artifactReadTool, includeControlTools, includeMailboxReceive, includeShellTool,
-            processRuntime: null, worktreeIntegrationCoordinator, mediaReadTool, processSessionManager)
+            processRuntime: null, worktreeIntegrationCoordinator, mediaReadTool, processSessionManager,
+            worktreeDispositionCoordinator)
     {
     }
 
@@ -40,7 +42,8 @@ public sealed class HostTools
         ArtifactReadTool? artifactReadTool, bool includeControlTools, bool includeMailboxReceive,
         bool includeShellTool, OmniCore.Abstractions.IProcessRuntime? processRuntime,
         IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null,
-        MediaReadTool? mediaReadTool = null, PersistentProcessSessionManager? processSessionManager = null)
+        MediaReadTool? mediaReadTool = null, PersistentProcessSessionManager? processSessionManager = null,
+        IWorktreeDispositionCoordinator? worktreeDispositionCoordinator = null)
     {
         _planPropose = new PlanProposeTool(planService);
         _extensionBatchCoordinator = worktreeIntegrationCoordinator as WorktreeIntegrationHostCoordinator;
@@ -101,6 +104,13 @@ public sealed class HostTools
                 catalog = catalog.Add(new ProcessExecTool(processLauncher, boundary, processSandboxStrength, gitActivity));
                 if (includeShellTool) catalog = catalog.Add(new ShellExecTool(processLauncher, boundary, processSandboxStrength, gitActivity));
             }
+        }
+        if (worktreeDispositionCoordinator is not null)
+        {
+            catalog = catalog.Add(new WorktreeDispositionTool(WorktreeDispositionOperation.Cleanup,
+                worktreeDispositionCoordinator));
+            catalog = catalog.Add(new WorktreeDispositionTool(WorktreeDispositionOperation.Discard,
+                worktreeDispositionCoordinator));
         }
 
         catalog = catalog.Add(new ReferenceResolveTool(boundary));

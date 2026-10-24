@@ -119,3 +119,20 @@ de M10 siguen inexistentes y no se anuncian como disponibles.
 La selección durable de modelos/rutas por Session y su consumidor real se
 construyeron después; [ADR-0057](0057-session-model-selection.md) y su acta
 registran CAS, consentimiento exacto, límites y validación integrada.
+
+### Ampliación Core M9-L: disponer worktrees terminales (2026-10-24)
+
+El catálogo nativo incorpora `core:worktree.cleanup` y `core:worktree.discard`
+sobre `command.invoke.user`. Sus argumentos contienen operación canónica,
+Lane pública y HEAD/árbol revisados; `worktree.preview:<laneId>` ofrece esos
+valores. Ownership y rutas físicas se resuelven exclusivamente en Core.
+La admisión conserva las revisiones, firma, Session y Run existentes; la
+capacidad de respuesta a Ask se negocia independientemente de la procedencia.
+
+Ambos comandos pasan por herramientas protegidas, permisos y sobre durable.
+Reabrir o consultar recibos no repite el retiro. La continuación de Ask usa
+el ToolCall y Turn originales; `Unknown` no habilita retry automático.
+Retención y undo no adquieren una ruta nueva por disponer de estos comandos.
+La aceptación local y sus correcciones están en [el acta del bloque](../validation/m9-worktree-disposition-20261024.md).
+La integración del consumidor OmniCoder pertenece a su coordinación y no forma
+parte de este incremento; esta ampliación no acredita el cierre de M9 global.

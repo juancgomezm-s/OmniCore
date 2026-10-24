@@ -188,7 +188,7 @@ public static class WorktreeCleanupHost
         return false;
     }
 
-    private static WorktreeIntegratedCleanupProof? FindIntegratedCleanupProof(IWorkspaceJournalReader reader,
+    internal static WorktreeIntegratedCleanupProof? FindIntegratedCleanupProof(IWorkspaceJournalReader reader,
         IEventStore journal, IEventCodecRegistry codecs, IArtifactStore artifacts, string root,
         WorktreeIdentity identity)
     {
@@ -237,7 +237,8 @@ public static class WorktreeCleanupHost
 
             // No Task or Lane consumer in this journal scope may still be running. This includes
             // Verify lanes, which are consumers of an implementation worktree rather than owners.
-            if (!AllTasksAndLanesAreTerminal(runEvents)) return null;
+            // Disposition is scoped to the owned target Lane. A quiescent child may be
+            // retired while its root Run remains open for a later native user action.
             if (!HasSingleTerminalFor(runEvents, binding.TaskId, binding.LaneId)) return null;
 
             var completions = runEvents.Where(item => item.Payload is WorktreeIntegrationStateRecorded state

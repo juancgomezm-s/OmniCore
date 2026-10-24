@@ -270,6 +270,10 @@ public static class StdioProtocol
         new("process.control", "command.process.control.user", "native-confirmation+hmac+session-run-policy-revision+tool-receipt", "command.result.lookup", "Run one scoped process read, input/EOF, or stop through the Host tool pipeline"),
         new("worktree.integrate", "command.invoke.user", "native-confirmation+hmac+session-run-policy-revision+tool-receipt+proposal-cas", "command.result.lookup", "Apply one exact previewed Lane worktree proposal through the existing tool permission and reconciliation pipeline")
         { WireName = "command.invoke.user", Variant = "canonicalCommandId=core:worktree.integrate; arguments=[toolName,argumentsJson]" },
+        new("worktree.cleanup", "command.invoke.user", "native-confirmation+hmac+session-run-policy-revision+tool-receipt+terminal-lane-ownership", "command.result.lookup", "Retire one exact terminal Lane worktree through the existing tool permission pipeline")
+        { WireName = "command.invoke.user", Variant = "canonicalCommandId=core:worktree.cleanup; arguments=[toolName,argumentsJson]" },
+        new("worktree.discard", "command.invoke.user", "native-confirmation+hmac+session-run-policy-revision+tool-receipt+terminal-lane-ownership+retained-tree", "command.result.lookup", "Archive and discard one exact reviewed terminal Lane worktree through the existing tool permission pipeline")
+        { WireName = "command.invoke.user", Variant = "canonicalCommandId=core:worktree.discard; arguments=[toolName,argumentsJson]" },
         new("run.interrupt", "command.run.interrupt.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Interrupt the active Run"),
         new("run.cancel", "command.run.cancel.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Cancel the active Run"),
         new("run.mode.select", "command.run.mode.select.user", "native-confirmation+hmac+session-scope", "command.result.lookup", "Select the active Run mode"),

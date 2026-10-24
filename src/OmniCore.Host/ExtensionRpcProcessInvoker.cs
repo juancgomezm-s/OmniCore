@@ -28,7 +28,8 @@ public sealed class ExtensionRpcProcessInvoker : IStagedExtensionRpcInvoker
             Path.Combine(Path.GetTempPath(), "OmniCore", "extension-workspaces"), authorizedClaims);
         var stagedRoot = Path.GetFullPath(workspace.Root);
         var stagedClaims = new ResourceClaims(authorizedClaims.Reads, authorizedClaims.Writes,
-            authorizedClaims.Network, process with { WorkingDirectory = stagedRoot }, authorizedClaims.Secrets);
+            authorizedClaims.Network, process with { WorkingDirectory = stagedRoot }, authorizedClaims.Secrets,
+            authorizedClaims.WorktreeDisposition);
         var response = await InvokeCoreAsync(extension, method, parametersJson, stagedClaims, stagedRoot,
                 cancellationToken)
             .ConfigureAwait(false);

@@ -201,4 +201,25 @@ public sealed class PermissionGrantsTests
         Assert.Contains(Path.Combine(directory, "permission-grants.tsv"), Directory.GetFiles(directory));
         Assert.Contains(Path.Combine(directory, "permission-grants.audit.tsv"), Directory.GetFiles(directory));
     }
+
+    [Fact]
+    public void Worktree_disposition_grant_is_bound_to_exact_ownership_and_reviewed_tree()
+    {
+        var empty = ResourceClaims.Empty();
+        var baseClaim = new WorktreeDispositionClaim("workspace-a", "C:/repo", "lane-a",
+            "0123456789abcdef0123456789abcdef", WorktreeDispositionOperation.Discard,
+            new string('a', 40), new string('b', 40));
+        var changedOwner = baseClaim with { OwnershipId = "fedcba9876543210fedcba9876543210" };
+        var changedTree = baseClaim with { LaneTree = new string('c', 40) };
+        ToolIntent IntentFor(WorktreeDispositionClaim claim) => new(ToolCallId.New(),
+            new ToolId("worktree.discard"), "{}", EffectClass.Reconcilable,
+            new ResourceClaims(empty.Reads, empty.Writes, empty.Network, empty.Process, empty.Secrets, claim),
+            ToolRisk.High, null);
+
+        var first = IntentFor(baseClaim);
+        Assert.NotEqual(FilePermissionGrantStore.ClaimsKey(first),
+            FilePermissionGrantStore.ClaimsKey(IntentFor(changedOwner)));
+        Assert.NotEqual(FilePermissionGrantStore.ClaimsKey(first),
+            FilePermissionGrantStore.ClaimsKey(IntentFor(changedTree)));
+    }
 }

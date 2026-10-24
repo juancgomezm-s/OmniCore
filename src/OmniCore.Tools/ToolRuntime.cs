@@ -190,6 +190,11 @@ public sealed class ToolRuntime
             RejectBeforeAuthorization("tool no encontrada: " + validated.ToolId, ToolErrorCode.UnknownTool);
             return new Outcome(false, "tool no encontrada", ToolCallState.Rejected, EffectOutcome.None);
         }
+        if (tool is INativeUserActionOnlyTool && !prepContext.IsNativeUserAction)
+        {
+            RejectBeforeAuthorization("tool requires an admitted native user action", ToolErrorCode.PermissionDenied);
+            return new Outcome(false, "native user action required", ToolCallState.Rejected, EffectOutcome.None);
+        }
 
         // 0. Validación de argumentos contra el InputSchema declarado (ADR-0014 §1, INV-001):
         // campos requeridos, tipos y sin campos desconocidos. La tool NUNCA llega a Prepare ni
@@ -259,7 +264,32 @@ public sealed class ToolRuntime
             intent = boundIntent;
         }
         IReadOnlyList<ToolIntent> additionalEffectiveIntents = [];
-        if (tool is IEffectiveToolAuthorizationIntents batchResolver)
+        if (tool is IHostResolvedAuthorizationIntent hostResolver)
+        {
+            try
+            {
+                var resolvedIntent = hostResolver.ResolveHostAuthorizationIntent(intent,
+                    prepContext, execContext, cancellationToken);
+                ValidateHostResolvedAuthorizationIntent(intent, resolvedIntent);
+                // Host-resolved ownership is the exact primary resource intent. Keeping an
+                // empty primary beside an additional claim would authorize only a shadow intent
+                // while DescribeReconciliation receives the unbound primary.
+                intent = resolvedIntent;
+            }
+            catch (ToolPreflightException ex)
+            {
+                RejectBeforeAuthorization(ex.Message, ex.ErrorCode);
+                return new Outcome(false, ex.Message, ToolCallState.Failed, EffectOutcome.None);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException
+                or System.Text.Json.JsonException or InvalidOperationException or ArgumentException)
+            {
+                RejectBeforeAuthorization("Host resource authorization could not be resolved.", ToolErrorCode.StaleWrite);
+                return new Outcome(false, "Host resource authorization could not be resolved.",
+                    ToolCallState.Rejected, EffectOutcome.None);
+            }
+        }
+        else if (tool is IEffectiveToolAuthorizationIntents batchResolver)
         {
             try
             {
@@ -315,7 +345,8 @@ public sealed class ToolRuntime
                 var resolved = _executableResolver.Resolve(processClaim.Executable, prepContext.WorkspaceRoot);
                 var claims = new ResourceClaims(intent.Claims.Reads, intent.Claims.Writes, intent.Claims.Network,
                     new ProcessClaim(resolved.ResolvedPath, processClaim.Args, processClaim.EffectClass,
-                        processClaim.NetworkRequired, processClaim.WorkingDirectory), intent.Claims.Secrets);
+                        processClaim.NetworkRequired, processClaim.WorkingDirectory), intent.Claims.Secrets,
+                    intent.Claims.WorktreeDisposition);
                 intent = new ToolIntent(intent.ToolCallId, intent.ToolId, intent.NormalizedArgumentsJson,
                     intent.Effect, claims, intent.Risk, intent.Reconciliation,
                     intent.EffectiveMutationOperation, intent.RequiresPhysicalCreateCapability,
@@ -696,7 +727,31 @@ public sealed class ToolRuntime
         }
 
         additionalEffectiveIntents ??= [];
-        if (tool is IEffectiveToolAuthorizationIntents batchResolver)
+        if (tool is IHostResolvedAuthorizationIntent hostResolver)
+        {
+            try
+            {
+                var refreshed = hostResolver.ResolveHostAuthorizationIntent(intent,
+                    new ToolPreparationContext(execContext.WorkspaceRoot, DateTimeOffset.UtcNow,
+                        execContext.IsNativeUserAction),
+                    execContext, cancellationToken);
+                ValidateHostResolvedAuthorizationIntent(intent, refreshed);
+                if (!string.Equals(IntentFingerprint(intent, effectiveIntent),
+                        IntentFingerprint(refreshed, effectiveIntent), StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Host resource authorization changed before execution.");
+                intent = refreshed;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException
+                or System.Text.Json.JsonException or InvalidOperationException or ArgumentException)
+            {
+                _emit(new ToolCallFailed(call.ToolCallId, "Host resource authorization changed before execution.",
+                    EffectOutcome.None, ToolErrorCode.StaleWrite));
+                return new Outcome(false, "Host resource authorization changed before execution.",
+                    null, ToolCallState.Failed, EffectOutcome.None);
+            }
+        }
+        else if (tool is IEffectiveToolAuthorizationIntents batchResolver)
         {
             IReadOnlyList<ToolIntent> refreshed;
             try
@@ -945,10 +1000,13 @@ public sealed class ToolRuntime
         }
 
         var trustedBatchPublication = IsTrustedBatchPublicationTool(tool);
+        var trustedDisposition = IsTrustedWorktreeDispositionTool(tool);
         var validRequiredEnvelope = reconciliation is not null && (IsTrustedIntegrationTool(tool)
             ? ValidateIntegrationEnvelope(intent, execContext, reconciliation)
             : trustedBatchPublication && ((ITrustedBatchPublicationTool)tool)
-                .ValidatePublicationEnvelope(intent, effectiveIntents, execContext, reconciliation));
+                .ValidatePublicationEnvelope(intent, effectiveIntents, execContext, reconciliation)
+            || trustedDisposition && ((ITrustedWorktreeDispositionTool)tool)
+                .ValidateWorktreeDispositionEnvelope(intent, execContext, reconciliation));
         if (tool is IRequiresReconciliationTool && !validRequiredEnvelope)
         {
             const string cause = "Required batch metadata did not match its authorized targets.";
@@ -956,7 +1014,8 @@ public sealed class ToolRuntime
             return new Outcome(false, cause, ToolCallState.Failed, EffectOutcome.None);
         }
 
-        if (reconciliation?.DurableMetadataJson is not null && !trustedIntegration && !trustedBatchPublication)
+        if (reconciliation?.DurableMetadataJson is not null && !trustedIntegration && !trustedBatchPublication
+            && !trustedDisposition)
         {
             const string cause = "Custom reconciliation metadata is restricted to the registered integration tool.";
             _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.ToolFailure));
@@ -1363,6 +1422,17 @@ public sealed class ToolRuntime
             if (!targets.Add(path)) throw new InvalidDataException("Effective batch contains duplicate targets.");
         }
     }
+
+    private static void ValidateHostResolvedAuthorizationIntent(ToolIntent parent, ToolIntent resolved)
+    {
+        var claims = resolved.Claims;
+        if (resolved.ToolCallId != parent.ToolCallId || resolved.ToolId != parent.ToolId
+            || resolved.NormalizedArgumentsJson != parent.NormalizedArgumentsJson
+            || resolved.Effect != parent.Effect || resolved.Risk != parent.Risk
+            || claims.WorktreeDisposition is null || claims.Reads.Count != 0 || claims.Writes.Count != 0
+            || claims.Network.Count != 0 || claims.Process is not null || claims.Secrets.Count != 0)
+            throw new InvalidDataException("Host-resolved resource intent does not match its exact native tool call.");
+    }
     private IEnumerable<IToolIntentBoundary> ActiveBoundaries()
     {
         if (_boundary is not null) yield return _boundary;
@@ -1385,7 +1455,7 @@ public sealed class ToolRuntime
             // are separately resolved as native filesystem intents by extension.batch.apply.
             var stagedClaims = new ResourceClaims(intent.Claims.Reads, [], intent.Claims.Network,
                 null,
-                intent.Claims.Secrets);
+                intent.Claims.Secrets, intent.Claims.WorktreeDisposition);
             var stagedIntent = new ToolIntent(intent.ToolCallId, intent.ToolId, intent.NormalizedArgumentsJson,
                 intent.Effect, stagedClaims, intent.Risk, intent.Reconciliation,
                 intent.EffectiveMutationOperation, intent.RequiresPhysicalCreateCapability,
@@ -1405,6 +1475,13 @@ public sealed class ToolRuntime
     private static bool IsTrustedBatchPublicationTool(ITool tool) =>
         tool is ITrustedBatchPublicationTool
         && tool.Descriptor.Id.ToString() == "extension.batch.apply"
+        && tool.Descriptor.Source.Kind == SourceKind.BuiltIn
+        && tool.Descriptor.Source.Trust == TrustLevel.Core
+        && tool.Descriptor.Protection == ToolProtection.Protected;
+
+    private static bool IsTrustedWorktreeDispositionTool(ITool tool) =>
+        tool is WorktreeDispositionTool && tool is ITrustedWorktreeDispositionTool
+        && tool.Descriptor.Id.ToString() is "worktree.cleanup" or "worktree.discard"
         && tool.Descriptor.Source.Kind == SourceKind.BuiltIn
         && tool.Descriptor.Source.Trust == TrustLevel.Core
         && tool.Descriptor.Protection == ToolProtection.Protected;
@@ -1662,6 +1739,18 @@ public sealed class ToolRuntime
                 writer.WriteEndObject();
             }
             else writer.WriteNull("process");
+            if (intent.Claims.WorktreeDisposition is { } worktree)
+            {
+                writer.WriteStartObject("worktreeDisposition");
+                writer.WriteString("workspaceId", worktree.WorkspaceId);
+                writer.WriteString("workspaceRoot", worktree.WorkspaceRoot);
+                writer.WriteString("laneId", worktree.LaneId);
+                writer.WriteString("ownershipId", worktree.OwnershipId);
+                writer.WriteString("operation", worktree.Operation.ToString());
+                writer.WriteString("laneHead", worktree.LaneHead);
+                writer.WriteString("laneTree", worktree.LaneTree);
+                writer.WriteEndObject();
+            }
             writer.WriteEndObject();
         }
         var primary = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(output.ToArray()));
