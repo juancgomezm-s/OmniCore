@@ -332,6 +332,18 @@ en PATH del Host hijo y un binding histórico preparado en fixture. No prueba
 caída eléctrica, atomicidad de lectores, otro CommandId o crash de cleanup/discard.
 Sin cambios de OmniCoder ni publicación; M9/M8 global permanecen abiertos.
 
+**M9 cleanup/discard ante terminación del Host aceptados localmente (2026-10-24):**
+el incremento cubre el hueco separado de retención: mismo Run propietario,
+acción firmada y Ask, Git real retira el checkout y una barrera externa permite
+cortar el Host OS antes de guardar resultado/metadata removed. Al reabrir,
+snapshot y bytes archivados se conservan, ExecutionState sigue deferred,
+recovery queda blocked con EffectUnknown/Unresolvable y continue se rechaza.
+El replay conserva ACK/journal/refs observables sin otra ToolCall ni proveedor.
+Luna bajo aprobó 3/3 casos finales sin build; [evidencia y límites](../validation/m9-worktree-disposition-crash-20261024.md).
+No cambió producción ni autoridad. Binding terminal preparado en fixture;
+no acredita provisión, caída aleatoria del sistema o exactly-once de otro ID.
+Sin cambios de OmniCoder ni publicación; M9 global y M8 manual siguen abiertos.
+
 ## Ejecución de cierre M9 (2026-10-22)
 
 **Rectificación de alcance del 23 de octubre:** la construcción descrita abajo

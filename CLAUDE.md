@@ -145,6 +145,17 @@ Solo tests/helper cambiaron; binding histórico preparado en fixture. No acredit
 caída del sistema, atomicidad Git, otro CommandId ni crash de cleanup/discard.
 OmniCoder intacto y sin publicación; M9 global y M8 manual siguen abiertos.
 
+**M9 cleanup/discard ante terminación del Host aceptados localmente (2026-10-24):**
+Host OS y Git reales, mismo Run propietario, Ask y revisión exacta del árbol.
+El corte tras retirar el checkout conserva snapshot/archivo de descarte y deja
+el efecto incierto: admisión Completed/Accepted, ejecución deferred y recovery
+blocked con EffectUnknown/Unresolvable. Continue se rechaza; replay del ACK no
+inicia otra ToolCall ni cambia las refs/bytes observados. Luna bajo aprobó 3/3
+casos sin recompilar, incluida la regresión de retención por helper compartido.
+[Acta y límites](docs/validation/m9-worktree-disposition-crash-20261024.md).
+Solo tests/helper; no amplía autoridad ni acredita provisión, caída del sistema
+o exactly-once para otro ID. OmniCoder intacto, sin publicación; M9/M8 abiertos.
+
 Runtime de agentes local-first en C#/.NET 10 y su CLI técnico `omni`. Debe funcionar igual con modelos locales pequeños (4B) y con modelos frontera, cambiando solo política y capacidades efectivas.
 
 **Checkpoint M9-K/L (2026-10-17):** seguridad durable por Session, lifecycle nativo y respuesta de

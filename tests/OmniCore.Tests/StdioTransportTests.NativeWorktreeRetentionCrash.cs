@@ -19,7 +19,8 @@ public sealed partial class StdioTransportTests
     [Fact]
     public async Task Native_retention_host_termination_after_real_git_commit_keeps_deferred_receipt_passive()
     {
-        Assert.True(OperatingSystem.IsWindows(), "This fixture verifies Windows process-tree termination on ZephyrusG14.");
+        if (!OperatingSystem.IsWindows())
+        { Assert.Skip("This fixture verifies Windows process-tree termination on ZephyrusG14."); return; }
         var artifactRoot = Path.Combine(FindRepositoryRoot(), "artifacts", "m9-worktree-retention-crash",
             DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfffZ", System.Globalization.CultureInfo.InvariantCulture)
                 + "-" + Guid.NewGuid().ToString("N"));

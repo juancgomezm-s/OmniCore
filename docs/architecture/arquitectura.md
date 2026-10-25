@@ -886,6 +886,17 @@ Solo cambiaron tests/helper. No garantiza atomicidad Git, caída del sistema,
 exactly-once para otro ID ni crash de cleanup/discard; no amplía autoridad ni
 modifica OmniCoder. Sin publicación y sin cierre global M9/M8.
 
+El incremento de cleanup/discard ante terminación del Host cubre ambas rutas
+del mismo Run propietario después de `git worktree remove` real y antes del
+resultado. Al reabrir conserva snapshot/archivo, clasifica el efecto como
+Unknown/Unresolvable y bloquea continue; admisión Accepted y ejecución deferred
+siguen separadas. Replay pasivo conserva journal/refs/bytes observados. Luna bajo
+aprobó 3/3 casos sin recompilar, incluida la regresión de retención compartida.
+[Acta](../validation/m9-worktree-disposition-crash-20261024.md). Solo tests/helper,
+binding preparado y barrera controlada: no provisión, caída del sistema,
+atomicidad ni exactly-once para un ID nuevo. Sin cambios de OmniCoder ni
+publicación; M9 global y M8 manual siguen abiertos.
+
 ### P0-OMNI-UNIFICACION
 
 **Revisión:** 2026-10-14 · **Prioridad:** P0 · **Estado global:** CERRADO / ALCANCE ACEPTADO. **Contribución de OmniCore: CERRADA en Windows**, con el alcance y las diferencias de plataforma del [acta local](../validation/omnicore-homologation-closure-20261014.md).
