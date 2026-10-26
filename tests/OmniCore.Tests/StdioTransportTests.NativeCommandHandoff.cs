@@ -32,6 +32,8 @@ public sealed partial class StdioTransportTests
         const string implementation = "public static class FeatureModule { public static bool IsInitialized { get; private set; } public static void Initialize() => IsInitialized = true; }\n";
         var programVersion = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(program))).ToLowerInvariant();
         var fixtureWorkspace = string.Empty;
+        var ordinaryLockBasenameFile = new byte[] { 0x4F, 0x4D, 0x4E, 0x49, 0x2D, 0x46, 0x49, 0x58, 0x54, 0x55, 0x52, 0x45 };
+        var ordinaryEmptyLockBasenamePath = Path.Combine("config", "subdir", ".artifact-gc.lease");
         NativeCommandHandoffFixture? responseAuditFixture = null;
         var invocationReceiptHeld = new TaskCompletionSource<PersistedConversationCommand>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -86,6 +88,10 @@ public sealed partial class StdioTransportTests
         responseAuditFixture = fixture;
         fixture.PreserveRootOnDispose = true;
         fixture.PreserveEvidenceOnDispose = true;
+        File.WriteAllBytes(Path.Combine(fixture.RootDirectory, "config", ".artifact-gc.lease"), ordinaryLockBasenameFile);
+        var ordinaryEmptyLockBasenameFullPath = Path.Combine(fixture.RootDirectory, ordinaryEmptyLockBasenamePath);
+        Directory.CreateDirectory(Path.GetDirectoryName(ordinaryEmptyLockBasenameFullPath)!);
+        File.WriteAllBytes(ordinaryEmptyLockBasenameFullPath, Array.Empty<byte>());
         InitializeWorkflowGitRepository(fixture.Workspace, program);
         var initialHead = RunFixtureGit(fixture.Workspace, "rev-parse", "HEAD");
         var initialTree = RunFixtureGit(fixture.Workspace, "rev-parse", "HEAD^{tree}");
@@ -309,9 +315,32 @@ public sealed partial class StdioTransportTests
 
         fixture.RecordProtocolAudit("worktree.preview", sessionId, runId, "passive; no journal delta");
         await fixture.StopHostAsync();
-        var artifactDirectory = fixture.PreserveEvidence("workflow-provision");
-        fixture.PreserveRootOnDispose = false;
-        Assert.True(Directory.Exists(Path.Combine(artifactDirectory, "fixture", "workspace", ".git")));
+        var captureStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.ArtifactSnapshotLeaseContendedForTests = () => captureStarted.TrySetResult();
+        var workspaceArtifactLeasePath = Path.Combine(worktreeData, ".artifact-gc.lease");
+        using (var heldFixtureLease = new FileStream(workspaceArtifactLeasePath, FileMode.OpenOrCreate,
+                   FileAccess.ReadWrite, FileShare.None))
+        {
+            Assert.Equal(0, heldFixtureLease.Length);
+            var captureTask = Task.Run(() => fixture.PreserveEvidence("workflow-provision"));
+            await captureStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            var completedBeforeRelease = await Task.WhenAny(captureTask,
+                Task.Delay(100, TestContext.Current.CancellationToken)) == captureTask;
+            heldFixtureLease.Dispose();
+            var artifactDirectory = await captureTask.WaitAsync(TimeSpan.FromSeconds(30),
+                TestContext.Current.CancellationToken);
+            Assert.False(completedBeforeRelease,
+                "Evidence capture must wait while a fixture-owned artifact publication lease is held.");
+            var capturedLeasePath = Path.Combine(artifactDirectory, "fixture",
+                Path.GetRelativePath(fixture.RootDirectory, workspaceArtifactLeasePath));
+            Assert.False(File.Exists(capturedLeasePath),
+                "The empty publication lock file is ephemeral coordination state and is excluded from the quiescent snapshot.");
+            Assert.Equal(ordinaryLockBasenameFile,
+                File.ReadAllBytes(Path.Combine(artifactDirectory, "fixture", "config", ".artifact-gc.lease")));
+            Assert.Empty(File.ReadAllBytes(Path.Combine(artifactDirectory, "fixture", ordinaryEmptyLockBasenamePath)));
+            fixture.PreserveRootOnDispose = false;
+            Assert.True(Directory.Exists(Path.Combine(artifactDirectory, "fixture", "workspace", ".git")));
+        }
     }
 
     private static async Task<bool> WaitForWorkflowInvocationAsync(NativeCommandHandoffFixture fixture,
@@ -1057,6 +1086,7 @@ public sealed partial class StdioTransportTests
         private bool _includeNativeWeakSandboxCapability;
         private bool _includeRetentionQueryCapability;
         private SandboxStrength _processSandboxStrength = SandboxStrength.Strong;
+        private bool _evidenceCaptureAttempted;
 
         private NativeCommandHandoffFixture(string root, string workspace,
             string? oldData, string? oldConfig, string oldDirectory, byte[] key,
@@ -1091,6 +1121,7 @@ public sealed partial class StdioTransportTests
         public Action<string>? NativeProcessControlStageForTests { get; set; }
         public Func<PersistedConversationCommand, Task>? AfterCommandExecutionReceiptForTests { get; set; }
         public Func<ISandboxCapabilitiesProbe>? WorkflowSandboxCapabilitiesProbeForTests { get; set; }
+        public Action? ArtifactSnapshotLeaseContendedForTests { get; set; }
         public AckDeliveryCutStream CutStream { get; private set; }
         public string RootDirectory => _root;
         public string BootstrapKeyForOwnedProcess => Convert.ToHexString(_key);
@@ -1391,6 +1422,7 @@ public sealed partial class StdioTransportTests
 
         public string PreserveEvidence(string name)
         {
+            _evidenceCaptureAttempted = true;
             DirectoryInfo? repository = new(AppContext.BaseDirectory);
             while (repository is not null && !File.Exists(Path.Combine(repository.FullName, "OmniCore.slnx")))
                 repository = repository.Parent;
@@ -1400,7 +1432,8 @@ public sealed partial class StdioTransportTests
                 DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssZ", System.Globalization.CultureInfo.InvariantCulture)
                     + "-" + Guid.NewGuid().ToString("N"), "fixture");
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-            CopyFixtureDirectory(_root, destination);
+            using var artifactSnapshotLocks = AcquireArtifactSnapshotLocks();
+            CopyFixtureDirectory(_root, destination, artifactSnapshotLocks.Paths);
             File.WriteAllLines(Path.Combine(Path.GetDirectoryName(destination)!, "stdio-actions-redacted.jsonl"),
                 ProtocolAudit, new UTF8Encoding(false));
             File.WriteAllLines(Path.Combine(Path.GetDirectoryName(destination)!, "provider-requests-fixture.jsonl"),
@@ -1410,8 +1443,12 @@ public sealed partial class StdioTransportTests
             File.WriteAllLines(Path.Combine(Path.GetDirectoryName(destination)!, "diagnostics-safe.txt"),
                 Diagnostics, new UTF8Encoding(false));
             File.WriteAllText(Path.Combine(Path.GetDirectoryName(destination)!, "capture.txt"),
-                "Owned fixture copy after stdio Host shutdown. Config uses auth:none and local scripted HTTP provider. "
-                + "All agent HOME roots are temporary fixture paths. Trusted action proof values and API credentials are not captured.\n",
+                "Owned fixture copy after stdio Host/runtime shutdown. Config uses auth:none and local scripted HTTP provider. "
+                + "All agent HOME roots are temporary fixture paths. Trusted action proof values and API credentials are not captured. "
+                + $"Held {artifactSnapshotLocks.Paths.Count} exact zero-length .artifact-gc.lease locks exclusively through capture; "
+                + "those ephemeral lock files alone were excluded: "
+                + string.Join(",", artifactSnapshotLocks.Paths.Select(path => Path.GetRelativePath(_root, path)))
+                + "; durable fixture files were copied.\n",
                 new UTF8Encoding(false));
             var binaryDirectory = Path.Combine(Path.GetDirectoryName(destination)!, "bin");
             Directory.CreateDirectory(binaryDirectory);
@@ -1428,13 +1465,98 @@ public sealed partial class StdioTransportTests
             return PreservedEvidenceDirectory;
         }
 
-        private static void CopyFixtureDirectory(string source, string destination)
+        private sealed class ArtifactSnapshotLeaseSet(List<FileStream> handles, HashSet<string> paths) : IDisposable
+        {
+            public IReadOnlySet<string> Paths { get; } = paths;
+            public void Dispose()
+            {
+                List<Exception>? failures = null;
+                foreach (var handle in handles)
+                {
+                    try { handle.Dispose(); }
+                    catch (Exception failure) { (failures ??= []).Add(failure); }
+                }
+                if (failures is not null)
+                    throw new AggregateException("Fixture artifact snapshot locks could not all be released.", failures);
+            }
+        }
+
+        private ArtifactSnapshotLeaseSet AcquireArtifactSnapshotLocks()
+        {
+            var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+            var fixtureRoot = Path.GetFullPath(_root).TrimEnd(Path.DirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            var expectedWorkspaceData = Path.GetFullPath(OmniHost.WorkspaceDataDirectory(
+                OmniHost.CreatePlatformPaths(), Workspace));
+            var workspacesRoot = Path.GetFullPath(Path.Combine(_root, "data", "workspaces"))
+                .TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            if (!expectedWorkspaceData.StartsWith(workspacesRoot, OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                throw new IOException("The workspace CAS path escaped the owned fixture data/workspaces root.");
+            var leasePath = Path.GetFullPath(Path.Combine(expectedWorkspaceData, ".artifact-gc.lease"));
+            if (!leasePath.StartsWith(fixtureRoot, OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                throw new IOException("The workspace artifact lease escaped the owned fixture root.");
+            var handles = new List<FileStream>();
+            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
+            IOException? lastBusyFailure = null;
+            try
+            {
+                while (true)
+                {
+                    if (DateTimeOffset.UtcNow >= deadline)
+                        throw new IOException("The workspace artifact publication lease did not become quiescent before the evidence snapshot: "
+                            + Path.GetRelativePath(_root, leasePath), lastBusyFailure);
+                    var attributes = File.Exists(leasePath) ? File.GetAttributes(leasePath) : FileAttributes.Normal;
+                    if ((attributes & FileAttributes.ReparsePoint) != 0)
+                        throw new IOException("Fixture artifact lease path is a reparse point: "
+                            + Path.GetRelativePath(_root, leasePath));
+
+                    FileStream handle;
+                    try { handle = new FileStream(leasePath, FileMode.OpenOrCreate,
+                        FileAccess.ReadWrite, FileShare.None); }
+                    catch (IOException failure)
+                    {
+                        lastBusyFailure = failure;
+                        ArtifactSnapshotLeaseContendedForTests?.Invoke();
+                        if (DateTimeOffset.UtcNow >= deadline)
+                            throw new IOException("The workspace artifact publication lease did not become quiescent before the evidence snapshot: "
+                                + Path.GetRelativePath(_root, leasePath), failure);
+                        Task.Delay(25).GetAwaiter().GetResult();
+                        continue;
+                    }
+                    if (handle.Length != 0)
+                    {
+                        handle.Dispose();
+                        throw new InvalidDataException("Fixture artifact lease file is not empty: "
+                            + Path.GetRelativePath(_root, leasePath));
+                    }
+                    handles.Add(handle);
+                    var excluded = new HashSet<string>(comparer) { leasePath };
+                    return new ArtifactSnapshotLeaseSet(handles, excluded);
+                }
+            }
+            catch
+            {
+                foreach (var handle in handles)
+                {
+                    try { handle.Dispose(); }
+                    catch { /* Preserve the snapshot acquisition failure; the root remains owned for diagnosis. */ }
+                }
+                throw;
+            }
+        }
+
+        private static void CopyFixtureDirectory(string source, string destination, IReadOnlySet<string> excludedFiles)
         {
             Directory.CreateDirectory(destination);
             foreach (var file in Directory.EnumerateFiles(source))
+            {
+                if (excludedFiles.Contains(Path.GetFullPath(file))) continue;
                 File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), overwrite: false);
+            }
             foreach (var directory in Directory.EnumerateDirectories(source))
-                CopyFixtureDirectory(directory, Path.Combine(destination, Path.GetFileName(directory)));
+                CopyFixtureDirectory(directory, Path.Combine(destination, Path.GetFileName(directory)), excludedFiles);
         }
 
         public WireEnvelope Exchange(WireEnvelope request)
@@ -1652,7 +1774,8 @@ public sealed partial class StdioTransportTests
                 _runtime = null;
                 Capture(() => runtime?.Dispose());
                 Capture(ClearOwnedSqlitePools);
-                if (PreserveEvidenceOnDispose && PreservedEvidenceDirectory is null && hostStopped)
+                if (PreserveEvidenceOnDispose && PreservedEvidenceDirectory is null
+                    && !_evidenceCaptureAttempted && hostStopped)
                 {
                     try
                     {
