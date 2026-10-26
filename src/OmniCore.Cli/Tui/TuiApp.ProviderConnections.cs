@@ -460,19 +460,34 @@ public sealed partial class TuiApp
         var list = new TableView(new OpenRouterCatalogGrid(page.Models, _localization,
             model => _policies.IsVisibleInPicker(providerId, model.Id)))
         { Id = "openrouter-catalog-models", X = 2, Y = 5, Width = Dim.Fill(4), Height = height - 12,
-            CanFocus = page.Models.Count > 0, FullRowSelect = true, MultiSelect = false };
+            CanFocus = page.Models.Count > 0, FullRowSelect = true, MultiSelect = false, MaxCellWidth = int.MaxValue };
         list.Style.AlwaysShowHeaders = true;
         list.Style.ShowVerticalCellLines = true;
-        list.Style.ExpandLastColumn = true;
+        list.Style.ExpandLastColumn = false;
         list.Style.GetOrCreateColumnStyle(0).MinWidth = 4;
         list.Style.GetOrCreateColumnStyle(0).MaxWidth = 4;
-        list.Style.GetOrCreateColumnStyle(1).MaxWidth = 14;
-        list.Style.GetOrCreateColumnStyle(2).MaxWidth = Math.Clamp(_window.Frame.Width - 72, 12, 60);
-        list.Style.GetOrCreateColumnStyle(3).MinWidth = 10;
-        list.Style.GetOrCreateColumnStyle(4).MinWidth = 20;
+        var lastGridWidth = -1;
+        void SizeGridColumns()
+        {
+            var width = list.Viewport.Width > 0 ? list.Viewport.Width : _window.Frame.Width - 8;
+            if (width == lastGridWidth) return;
+            lastGridWidth = width;
+            var companyWidth = Math.Clamp(width / 7, 8, 16);
+            var costWidth = Math.Clamp(page.Models.Select(model => OpenRouterCatalogGrid.CompactCost(model).Length)
+                .DefaultIfEmpty(8).Max(), 8, 14);
+            var modelWidth = Math.Max(12, width - companyWidth - costWidth - 17);
+            foreach (var (column, size) in new[] { (1, companyWidth), (2, modelWidth), (3, 7), (4, costWidth) })
+            {
+                var style = list.Style.GetOrCreateColumnStyle(column);
+                style.MinWidth = style.MaxWidth = size;
+            }
+            list.SetNeedsDraw();
+        }
+        list.ViewportChanged += (_, _) => SizeGridColumns();
+        SizeGridColumns();
         if (page.Models.Count > 0) list.SetSelection(0, 0, false);
         var details = new Label { Id = "openrouter-catalog-details", X = 2, Y = height - 7,
-            Width = Dim.Fill(4), Height = 1, Text = "" };
+            Width = Dim.Fill(4), Height = 2, Text = "" };
         var statusText = activity ?? (page.Stale ? _localization.Resolve("openrouter.catalog.stale")
             : page.Error is not null ? _localization.Resolve("openrouter.catalog.failed")
             : page.Models.Count == 0 ? _localization.Resolve("openrouter.catalog.notLoaded")
@@ -498,6 +513,8 @@ public sealed partial class TuiApp
                 : _policies.IsVisibleInPicker(providerId, model.Id)
                 ? "openrouter.catalog.hideInPicker" : "openrouter.catalog.showInPicker");
             var parts = new List<string> { CatalogDisplay(model.Id, 120) };
+            if (model.ContextLength is { } context) parts.Add(_localization.Resolve("openrouter.catalog.contextFull")
+                + " " + context.ToString("N0", CultureInfo.InvariantCulture));
             if (model.MaxCompletionTokens is { } output) parts.Add(_localization.Resolve("openrouter.catalog.max") + " " + output.ToString(CultureInfo.InvariantCulture));
             parts.Add(OpenRouterCatalogGrid.Cost(model));
             if (model.InputModalities.Count > 0) parts.Add(_localization.Resolve("openrouter.catalog.input") + " " + CatalogDisplay(string.Join(",", model.InputModalities), 80));
@@ -582,6 +599,20 @@ public sealed partial class TuiApp
         var scheme = list.GetScheme() with { Focus = focus };
         list.SetScheme(scheme);
         list.Style.HeaderScheme = new Scheme { Normal = scheme.HotNormal };
+        list.Style.RowColorGetter = args =>
+        {
+            if (Environment.GetEnvironmentVariable("NO_COLOR") is not null || args.RowIndex < 0
+                || args.RowIndex >= page.Models.Count || !OpenRouterCatalogGrid.IsFree(page.Models[args.RowIndex])) return null;
+            var current = list.GetScheme();
+            var green = new Color("#39FF14");
+            return current with
+            {
+                Normal = new Terminal.Gui.Drawing.Attribute(green, current.Normal.Background),
+                Focus = new Terminal.Gui.Drawing.Attribute(green, current.Focus.Background),
+                HotNormal = new Terminal.Gui.Drawing.Attribute(green, current.Normal.Background),
+                HotFocus = new Terminal.Gui.Drawing.Attribute(green, current.Focus.Background),
+            };
+        };
         _overlay = frame; _window.Add(frame); _preferencesReturnToCategory = true;
         ShowDetails();
         filter.SetFocus();

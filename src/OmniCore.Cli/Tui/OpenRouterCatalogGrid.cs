@@ -19,8 +19,8 @@ internal sealed class OpenRouterCatalogGrid(IReadOnlyList<OpenRouterModel> model
         0 => !CanShowInPicker(models[row]) ? "—" : (isVisible?.Invoke(models[row]) ?? true) ? "[✓]" : "[ ]",
         1 => Company(models[row]),
         2 => Safe(models[row].Id.Split('/', 2).Last()),
-        3 => models[row].ContextLength?.ToString("N0", CultureInfo.InvariantCulture) ?? "—",
-        4 => Cost(models[row]),
+        3 => CompactContext(models[row].ContextLength),
+        4 => CompactCost(models[row]),
         _ => throw new ArgumentOutOfRangeException(nameof(column)),
     };
 
@@ -36,6 +36,22 @@ internal sealed class OpenRouterCatalogGrid(IReadOnlyList<OpenRouterModel> model
         || model.OutputModalities.Contains("text", StringComparer.Ordinal);
     internal static string Cost(OpenRouterModel model) => PerMillion(model.PromptPricePerToken) + "/"
         + PerMillion(model.CompletionPricePerToken) + " USD";
+    internal static string CompactCost(OpenRouterModel model) => CompactPrice(model.PromptPricePerToken) + "/"
+        + CompactPrice(model.CompletionPricePerToken);
+    private static string CompactPrice(string? value)
+    {
+        var price = PerMillion(value);
+        return price.EndsWith(".00", StringComparison.Ordinal) ? price[..^3] : price;
+    }
+    internal static string CompactContext(long? value) => value switch
+    {
+        null or <= 0 => "—",
+        >= 1_000_000 => (value.Value / 1_000_000m).ToString("0.##", CultureInfo.InvariantCulture) + "M",
+        >= 1000 => (value.Value / 1000m).ToString("0.#", CultureInfo.InvariantCulture) + "K",
+        _ => value.Value.ToString(CultureInfo.InvariantCulture),
+    };
+    internal static bool IsFree(OpenRouterModel model) => PerMillion(model.PromptPricePerToken) == "0.00"
+        && PerMillion(model.CompletionPricePerToken) == "0.00";
 
     internal static string PerMillion(string? value)
     {

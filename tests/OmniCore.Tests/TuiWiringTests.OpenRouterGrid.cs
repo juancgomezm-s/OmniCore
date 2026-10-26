@@ -69,8 +69,8 @@ public sealed partial class TuiWiringTests
         var table = Descendants(fx.App.Overlay!).OfType<TableView>().Single();
         Assert.Equal("Anthropic", table.Table![0, 1]);
         Assert.Equal("OpenAI", table.Table[1, 1]);
-        Assert.Equal("0.10/10.00 USD", table.Table[1, 4]);
-        Assert.Equal("0.00/— USD", table.Table[0, 4]);
+        Assert.Equal("0.10/10", table.Table[1, 4]);
+        Assert.Equal("0/—", table.Table[0, 4]);
         Assert.Equal(new Localization(locale).Resolve("openrouter.catalog.cost"), table.Table.ColumnNames[4]);
         Assert.DoesNotContain("openrouter.catalog.title", OverlayText(fx.App.Overlay!));
         fx.Invoke(() => { table.SetSelection(0, 1, false); table.SetFocus(); });

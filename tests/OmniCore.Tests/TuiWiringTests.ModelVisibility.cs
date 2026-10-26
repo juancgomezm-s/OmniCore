@@ -46,7 +46,7 @@ public sealed partial class TuiWiringTests
         fx.InjectKey(new Key(KeyCode.Space));
         fx.Wait(() => policies.IsVisibleInPicker("openrouter", "org/first"), "space restores visibility");
         Assert.Equal("[✓]", Grid().Table![0, 0]);
-        ExportPreferenceFrame(fx, width, height, "openrouter-visibility", "Costo (USD/M)");
+        ExportPreferenceFrame(fx, width, height, "openrouter-visibility", "USD/M");
         ClickThroughApplication(fx, "openrouter-catalog-manage-visibility");
         fx.Wait(() => fx.App.Overlay?.Id == "model-toggles", "maintenance from catalog");
         Assert.Equal("openrouter", Descendants(fx.App.Overlay!).OfType<TextField>().Single().Text.ToString());

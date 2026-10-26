@@ -89,3 +89,18 @@ proveedor, edición individual y filtrada, F3, borrador/modelo activo/eventos in
 80×25/120×40 y recursos es/en/fr/it. Build Release sin errores ni advertencias.
 Los frames RGB sintéticos y logs están en `%TEMP%/omnicore-model-visibility-frames-20261026/`
 y `omnicore-model-visibility-{tests,atomic,layout,build}.log`.
+
+## Seguimiento: ancho del nombre y modelos gratuitos
+
+El nombre ocupa el espacio restante del grid, recalculado al cambiar el viewport.
+F3, compañía, contexto y costo tienen anchos acotados. Contexto usa K/M (`8.2K`,
+`1.05M`), y costo usa pares compactos como `0.10/10` bajo el encabezado USD/M.
+El detalle seleccionado conserva el contexto exacto y ambas tarifas completas.
+
+Las filas con entrada y salida explícitamente a cero usan texto verde fluorescente
+`#39FF14`, también estando seleccionadas. Precio desconocido no se considera gratis;
+NO_COLOR conserva la presentación sin color. Se inspeccionaron los frames RGB del
+driver real con fixtures de tarifa cero, de pago y desconocida. Los 20 casos focales
+del grid y visibilidad pasan; build Release sin errores ni advertencias. Evidencia
+en `%TEMP%/omnicore-catalog-width-green-frames-20261026/` y
+`omnicore-catalog-width-green-{build,tests}.log`.
