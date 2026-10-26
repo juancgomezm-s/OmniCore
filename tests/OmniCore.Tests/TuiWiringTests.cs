@@ -330,14 +330,14 @@ public sealed partial class TuiWiringTests
         var host = new HumanShellComposerTurnHost();
         fx.StartTui(client: new HumanActionScopeClient(fx.Server, session), turnHost: host);
 
-        Type(fx, "!exit 7");
+        Type(fx, "!exit 3");
         KeyWithEffect(fx, KeyCode.Enter, () => host.ShellCalls == 1, "! se despacha al contrato de shell humano");
         fx.Wait(() => fx.App.Overlay is not null
-            && OverlayText(fx.App.Overlay).Contains("fixture exit 7", StringComparison.Ordinal),
+            && OverlayText(fx.App.Overlay).Contains("fixture exit 3", StringComparison.Ordinal),
             "el error del comando se presenta sin despacharlo al modelo");
         Assert.Equal(0, host.ModelCalls);
-        Assert.Equal("exit 7", host.LastCommand);
-        Assert.Equal("!exit 7", fx.App.Composer!.Text?.ToString());
+        Assert.Equal("exit 3", host.LastCommand);
+        Assert.Equal("!exit 3", fx.App.Composer!.Text?.ToString());
 
         Type(fx, "!printf fixture");
         KeyWithEffect(fx, KeyCode.Enter, () => host.ShellCalls == 2, "el segundo ! vuelve al mismo Host");
@@ -380,6 +380,20 @@ public sealed partial class TuiWiringTests
             }
             output("NATIVE_TUI_SHELL_OUTPUT");
             return System.Threading.Tasks.Task.FromResult(0);
+        }
+
+        public System.Threading.Tasks.Task<OmniCliRuntime.HumanShellCommandOutcome> ExecuteHumanShellWithOutcomeAsync(
+            string command, Action<string> output, Action<string> diagnostics, CancellationToken cancellationToken)
+        {
+            LastCommand = command;
+            var call = Interlocked.Increment(ref ShellCalls);
+            if (call == 1)
+            {
+                diagnostics("fixture exit 3");
+                return System.Threading.Tasks.Task.FromResult(new OmniCliRuntime.HumanShellCommandOutcome(3, false));
+            }
+            output("NATIVE_TUI_SHELL_OUTPUT");
+            return System.Threading.Tasks.Task.FromResult(new OmniCliRuntime.HumanShellCommandOutcome(0, false));
         }
     }
 

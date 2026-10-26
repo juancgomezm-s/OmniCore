@@ -24,6 +24,17 @@ public sealed partial class StdioTransportTests
         public SandboxCapabilities Probe() => new(false, true, true, "test: Strong unavailable before launch");
     }
 
+    private sealed class RecordingSandboxCapabilitiesProbeForWorkflowTest(ISandboxCapabilitiesProbe inner,
+        ConcurrentQueue<string> observations) : ISandboxCapabilitiesProbe
+    {
+        public SandboxCapabilities Probe()
+        {
+            var capabilities = inner.Probe();
+            observations.Enqueue($"strong={capabilities.StrongAvailable};weak={capabilities.WeakAvailable};none={capabilities.NoneAvailable}");
+            return capabilities;
+        }
+    }
+
     private sealed class UnavailableStrongProcessLauncherForHumanShellTest(ISandboxProcessLauncher inner)
         : ISandboxProcessLauncher, IStrongSandboxPreflight
     {
@@ -41,10 +52,11 @@ public sealed partial class StdioTransportTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
     public async Task Native_stdio_orq_workflow_publishes_real_owned_implementation_worktree_and_passive_queries_resolve_it(
-        bool forceStrongUnavailableBeforeLaunch)
+        bool forceStrongUnavailableBeforeLaunch, bool exerciseTimeoutCleanup)
     {
         var invocationId = Guid.NewGuid().ToString("D");
         var program = "public static class Program\n{\n    public static int Main()\n    {\n        /* FEATURE_MODULE_HOOK */\n        return 0;\n    }\n}\n";
@@ -57,8 +69,14 @@ public sealed partial class StdioTransportTests
         var invocationReceiptHeld = new TaskCompletionSource<PersistedConversationCommand>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseInvocationReceipt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var controlledProviderHoldEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sandboxCapabilityObservations = new ConcurrentQueue<string>();
         Func<ISandboxCapabilitiesProbe>? workflowSandboxProbe = forceStrongUnavailableBeforeLaunch
-            ? static () => new UnavailableStrongProbeForWorkflowTest() : null;
+            ? static () => new UnavailableStrongProbeForWorkflowTest()
+            : () => new RecordingSandboxCapabilitiesProbeForWorkflowTest(
+                OperatingSystem.IsWindows() ? new WindowsAppContainerCapabilitiesProbe()
+                    : OperatingSystem.IsLinux() ? new LinuxBubblewrapCapabilitiesProbe()
+                    : new NoIsolationSandboxCapabilitiesProbe(), sandboxCapabilityObservations);
         async Task HoldInvocationAfterReceiptAsync(PersistedConversationCommand binding)
         {
             if (!string.Equals(binding.CommandId, invocationId, StringComparison.Ordinal)) return;
@@ -67,6 +85,11 @@ public sealed partial class StdioTransportTests
         }
         string WorkflowResponse(int index, string _)
         {
+            if (exerciseTimeoutCleanup && index == 1)
+            {
+                controlledProviderHoldEntered.TrySetResult();
+                Thread.Sleep(TimeSpan.FromMilliseconds(750));
+            }
             // A real provider round-trip can exceed the historical 30 s test-only gate under
             // loaded Windows CI. Keep one deterministic delay within the already-declared
             // two-minute workflow deadline; this is fixture latency, not a new model request.
@@ -211,8 +234,27 @@ public sealed partial class StdioTransportTests
         Assert.Equal(invocationId, admitted.CommandId);
         fixture.RecordProtocolAudit("command.invoke.user core:orq-auth", sessionId, runId,
             "accepted; exact catalog fingerprint and revisions; HMAC redacted");
-        var weakConsentResponded = await WaitForWorkflowInvocationAsync(fixture, sessionId, invocationId,
-            invocationReceiptHeld.Task, releaseInvocationReceipt);
+        if (exerciseTimeoutCleanup)
+        {
+            await controlledProviderHoldEntered.Task.WaitAsync(TimeSpan.FromSeconds(15),
+                TestContext.Current.CancellationToken);
+            var controlledTimeout = await Assert.ThrowsAsync<TimeoutException>(() =>
+                WaitForWorkflowInvocationAsync(fixture, sessionId, runId, invocationId,
+                    invocationReceiptHeld.Task, releaseInvocationReceipt, sandboxCapabilityObservations,
+                    TimeSpan.FromMilliseconds(100)));
+            Assert.Contains("runnerQuiesced=true", controlledTimeout.Message, StringComparison.Ordinal);
+            Assert.Contains("timeoutSnapshotJson=", controlledTimeout.Message, StringComparison.Ordinal);
+            Assert.Contains("\"recentEvents\"", controlledTimeout.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain("principal workflow context", controlledTimeout.Message, StringComparison.Ordinal);
+            var cancelledReceipt = fixture.ReadReceipt(invocationId);
+            Assert.Contains(cancelledReceipt?.ExecutionState, new[] { "failed", "cancelled", "unknown" });
+            fixture.RecordProtocolAudit("controlled workflow timeout diagnostic", sessionId, runId,
+                "owned Run cancelled and terminal before evidence capture; metadata emitted in bounded test failure");
+            return;
+        }
+
+        var weakConsentResponded = await WaitForWorkflowInvocationAsync(fixture, sessionId, runId, invocationId,
+            invocationReceiptHeld.Task, releaseInvocationReceipt, sandboxCapabilityObservations);
         if (forceStrongUnavailableBeforeLaunch) Assert.True(weakConsentResponded);
 
         var eventsAfterWorkflow = fixture.ReadEvents(sessionId);
@@ -381,10 +423,11 @@ public sealed partial class StdioTransportTests
     }
 
     private static async Task<bool> WaitForWorkflowInvocationAsync(NativeCommandHandoffFixture fixture,
-        string sessionId, string invocationId, Task<PersistedConversationCommand> invocationReceiptHeld,
-        TaskCompletionSource releaseInvocationReceipt)
+        string sessionId, string runId, string invocationId, Task<PersistedConversationCommand> invocationReceiptHeld,
+        TaskCompletionSource releaseInvocationReceipt, ConcurrentQueue<string> sandboxCapabilityObservations,
+        TimeSpan? timeoutForTest = null)
     {
-        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2);
+        var deadline = DateTimeOffset.UtcNow + (timeoutForTest ?? TimeSpan.FromMinutes(2));
         var weakSandboxConsentResponded = false;
         PersistedConversationCommand heldReceipt;
         try
@@ -398,10 +441,21 @@ public sealed partial class StdioTransportTests
         {
             releaseInvocationReceipt.TrySetResult();
             var missingReceipt = fixture.ReadReceipt(invocationId);
+            var timeoutSnapshot = fixture.CaptureWorkflowTimeoutSnapshot(sessionId, invocationId,
+                sandboxCapabilityObservations);
+            var cancellation = await fixture.CancelOwnedWorkflowAndWaitAsync(sessionId, runId, invocationId,
+                    releaseInvocationReceipt).ConfigureAwait(false);
+            if (!cancellation.Quiesced)
+            {
+                fixture.PreserveEvidenceOnDispose = false;
+                fixture.PreserveRootOnDispose = true;
+            }
             throw new TimeoutException("The target invocation did not reach the test-only post-receipt gate. "
                 + $"receipt={missingReceipt?.State}/{missingReceipt?.OutcomeKind}/"
                 + $"{missingReceipt?.ExecutionState}/{missingReceipt?.ExecutionCode}; "
-                + $"providerRequests={fixture.Provider.RequestCount}; diagnostics={string.Join(",", fixture.Diagnostics)}.");
+                + $"providerRequests={fixture.Provider.RequestCount}; diagnostics={string.Join(",", fixture.Diagnostics.TakeLast(8))}; "
+                + $"snapshotPath={timeoutSnapshot.Path}; timeoutSnapshotJson={timeoutSnapshot.Json}; "
+                + $"cancelSend={cancellation.SendStatus}; cancelAck={cancellation.AckOutcome}; runnerQuiesced={cancellation.Quiesced.ToString().ToLowerInvariant()}.");
         }
         var eventsAtReceipt = fixture.ReadEvents(sessionId);
         var weakRequestEvent = eventsAtReceipt.LastOrDefault(item => item.Payload is InteractionRequested request
@@ -419,7 +473,7 @@ public sealed partial class StdioTransportTests
                 + $"actual={sourceReceiptAtGate?.State}/{sourceReceiptAtGate?.OutcomeKind}/"
                 + $"{sourceReceiptAtGate?.ExecutionState}/{sourceReceiptAtGate?.ExecutionCode}.");
             var requestEnvelope = weakRequestEvent.Envelope;
-            var runId = requestEnvelope.RunId?.ToString()
+            var weakRunId = requestEnvelope.RunId?.ToString()
                 ?? throw new InvalidDataException("Weak sandbox consent has no Run scope.");
             var taskId = requestEnvelope.TaskId?.ToString()
                 ?? throw new InvalidDataException("Weak sandbox consent has no Task scope.");
@@ -441,11 +495,11 @@ public sealed partial class StdioTransportTests
             var response = WireEnvelope.Command(Ids.NewV7(), JsonSerializer.Serialize(new
             {
                 cmd = "interaction.respond", responseType = "weakSandboxConsent",
-                expectedRunId = runId, taskId, laneId, turnId, toolCallId,
+                expectedRunId = weakRunId, taskId, laneId, turnId, toolCallId,
                 invocationId, interactionId = weakConsent.InteractionId.ToString(),
                 optionId = "consent_once", expectedPolicyRevision = policyRevision,
             }));
-            var consentAck = Ack(fixture.ExchangeTrusted(response, sessionId, runId));
+            var consentAck = Ack(fixture.ExchangeTrusted(response, sessionId, weakRunId));
             var continuationReceipt = fixture.ReadReceipt(response.MessageId);
             var sourceReceipt = fixture.ReadReceipt(invocationId);
             var recentEvents = string.Join(",", fixture.ReadEvents(sessionId).TakeLast(12)
@@ -725,6 +779,8 @@ public sealed partial class StdioTransportTests
     {
         await using var fixture = await NativeCommandHandoffFixture.StartAsync(Guid.NewGuid().ToString("D"),
             permissionsYaml: "profile: autonomous\nrules:\n  shell.exec: allow\n", isolateAgentRoots: true);
+        try
+        {
         var sessionId = fixture.CreateEmptySession();
         var preference = fixture.QueryJson("modePreference");
         var planDefault = WireEnvelope.Command(Guid.NewGuid().ToString("D"), JsonSerializer.Serialize(new
@@ -798,6 +854,22 @@ public sealed partial class StdioTransportTests
         var cliInvocationId = Assert.IsType<ToolCallRequested>(cliShellCall.Payload).ProviderCallId
             .Replace("native-action-", "", StringComparison.Ordinal);
         Assert.Equal("completed", fixture.ReadReceipt(cliInvocationId)?.ExecutionState);
+        var beforeCliExitThreeSequence = fixture.ReadEvents(sessionId).Max(item => item.Envelope.Sequence);
+        var cliExitThreeCommand = OperatingSystem.IsWindows() ? "!exit /b 3" : "!exit 3";
+        previousCliRuntime = CliApp.UseRuntimeForTests(fixture.Runtime);
+        int cliExitThree;
+        try { cliExitThree = await CliApp.RunAsync([cliExitThreeCommand]); }
+        finally { _ = CliApp.UseRuntimeForTests(previousCliRuntime); }
+        Assert.Equal(3, cliExitThree);
+        var cliExitThreeEvents = fixture.ReadEvents(sessionId);
+        var cliExitThreeCall = Assert.Single(cliExitThreeEvents, item => item.Envelope.Sequence > beforeCliExitThreeSequence
+            && item.Payload is ToolCallRequested call && call.ToolName == "shell.exec");
+        var cliExitThreeInvocationId = Assert.IsType<ToolCallRequested>(cliExitThreeCall.Payload).ProviderCallId
+            .Replace("native-action-", "", StringComparison.Ordinal);
+        Assert.Equal("completed", fixture.ReadReceipt(cliExitThreeInvocationId)?.ExecutionState);
+        Assert.Equal("native_shell_exit_nonzero", fixture.ReadReceipt(cliExitThreeInvocationId)?.ExecutionCode);
+        Assert.DoesNotContain(cliExitThreeEvents, item => item.Envelope.ToolCallId == cliExitThreeCall.Envelope.ToolCallId
+            && item.Payload is InteractionRequested);
 
         var exitOutput = new StringBuilder();
         var exitCommand = OperatingSystem.IsWindows() ? "exit /b 7" : "exit 7";
@@ -805,8 +877,32 @@ public sealed partial class StdioTransportTests
             diagnostics.Add, TestContext.Current.CancellationToken);
         Assert.Equal(7, nonZeroExit);
         Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
+
+        // OS exit code 3 is a valid completed process result. It must not be confused with
+        // RunTurnCoreAsync's internal input-required sentinel.
+        var exitThreeCommand = OperatingSystem.IsWindows() ? "exit /b 3" : "exit 3";
+        var beforeExitThreeSequence = fixture.ReadEvents(sessionId).Max(item => item.Envelope.Sequence);
+        var exitThree = await fixture.ExecuteHumanShellCommandAsync(exitThreeCommand, _ => { }, diagnostics.Add,
+            TestContext.Current.CancellationToken);
+        Assert.Equal(3, exitThree);
+        Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
+        var exitThreeEvents = fixture.ReadEvents(sessionId);
+        var exitThreeCall = Assert.Single(exitThreeEvents, item => item.Envelope.Sequence > beforeExitThreeSequence
+            && item.Payload is ToolCallRequested call
+            && call.ToolName == "shell.exec" && call.ProviderCallId != "native-action-" + shellInvocationId
+            && call.ProviderCallId != "native-action-" + cliInvocationId);
+        var exitThreeInvocationId = Assert.IsType<ToolCallRequested>(exitThreeCall.Payload).ProviderCallId
+            .Replace("native-action-", "", StringComparison.Ordinal);
+        var exitThreeReceipt = fixture.ReadReceipt(exitThreeInvocationId);
+        Assert.Equal("completed", exitThreeReceipt?.ExecutionState);
+        Assert.Equal("native_shell_exit_nonzero", exitThreeReceipt?.ExecutionCode);
+        Assert.Contains(exitThreeEvents, item => item.Envelope.ToolCallId == exitThreeCall.Envelope.ToolCallId
+            && item.Payload is ToolCallSucceeded);
+        Assert.DoesNotContain(exitThreeEvents, item => item.Envelope.ToolCallId == exitThreeCall.Envelope.ToolCallId
+            && item.Payload is InteractionRequested);
         var cancelOutput = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         var orphanMarker = Path.Combine(fixture.Workspace, "human-shell-orphan-marker.txt");
+        var childReadyMarker = Path.Combine(fixture.Workspace, "human-shell-child-ready.txt");
         Process? unrelatedProcess = null;
         try
         {
@@ -828,7 +924,10 @@ public sealed partial class StdioTransportTests
                     { UseShellExecute = false, CreateNoWindow = true })
                     ?? throw new InvalidOperationException("Could not start the independent fixture process.");
                 Assert.False(unrelatedProcess.HasExited);
-                longCommand = "sleep 30 & child=$!; printf 'DESCENDANT:%s\\n' \"$child\"; wait \"$child\"";
+                var markerPath = orphanMarker.Replace("'", "'\"'\"'", StringComparison.Ordinal);
+                var readyPath = childReadyMarker.Replace("'", "'\"'\"'", StringComparison.Ordinal);
+                longCommand = $"(printf 'ready' > '{readyPath}'; sleep 8; printf 'orphan-marker' > '{markerPath}'; sleep 120) & "
+                    + $"while [ ! -f '{readyPath}' ]; do sleep 0.05; done; printf 'DESCENDANT:ready\\n'; sleep 120";
             }
             using var cancellation = new CancellationTokenSource();
             var invocationStart = Stopwatch.StartNew();
@@ -840,13 +939,23 @@ public sealed partial class StdioTransportTests
                 {
                     var end = chunk.IndexOfAny(['\r', '\n'], marker);
                     var token = chunk[(marker + prefix.Length)..(end < 0 ? chunk.Length : end)];
-                    if (int.TryParse(token, out var descendantPid)) cancelOutput.TrySetResult(descendantPid);
+                    if (OperatingSystem.IsWindows() && int.TryParse(token, out var descendantPid))
+                        cancelOutput.TrySetResult(descendantPid);
+                    else if (!OperatingSystem.IsWindows() && string.Equals(token, "ready", StringComparison.Ordinal))
+                        cancelOutput.TrySetResult(-1);
                 }
             }, diagnostics.Add, cancellation.Token);
             Assert.True(invocationStart.Elapsed < TimeSpan.FromSeconds(1),
                 "The async human-shell API blocked before returning its Task.");
             var descendantPid = await cancelOutput.Task.WaitAsync(TimeSpan.FromSeconds(10),
                 TestContext.Current.CancellationToken);
+            if (!OperatingSystem.IsWindows())
+            {
+                Assert.True(File.Exists(childReadyMarker),
+                    "The namespace-scoped descendant did not prove write access before cancellation.");
+                Assert.False(File.Exists(orphanMarker),
+                    "The namespace-scoped descendant reached its delayed marker before cancellation began.");
+            }
             var cancelTimer = Stopwatch.StartNew();
             cancellation.Cancel();
             var cancelExit = await cancelTask.WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
@@ -855,17 +964,25 @@ public sealed partial class StdioTransportTests
             Assert.True(cancelTimer.Elapsed < TimeSpan.FromSeconds(10),
                 $"Cancellation did not terminate the human shell promptly: {cancelTimer.Elapsed}.");
             Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
-            var descendantDeadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
-            var descendantAlive = true;
-            while (DateTimeOffset.UtcNow < descendantDeadline)
-            {
-                descendantAlive = IsProcessAlive(descendantPid);
-                if (!descendantAlive) break;
-                await Task.Delay(TimeSpan.FromMilliseconds(100), TestContext.Current.CancellationToken);
-            }
-            Assert.False(descendantAlive, "Stopping the human shell left its fixture descendant alive.");
             if (OperatingSystem.IsWindows())
+            {
+                var descendantDeadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
+                var descendantAlive = true;
+                while (DateTimeOffset.UtcNow < descendantDeadline)
+                {
+                    descendantAlive = IsProcessAlive(descendantPid);
+                    if (!descendantAlive) break;
+                    await Task.Delay(TimeSpan.FromMilliseconds(100), TestContext.Current.CancellationToken);
+                }
+                Assert.False(descendantAlive, "Stopping the human shell left its fixture descendant alive.");
                 Assert.False(File.Exists(orphanMarker), "Stopping the human shell let its delayed descendant write the marker.");
+            }
+            else
+            {
+                await Task.Delay(TimeSpan.FromSeconds(9), TestContext.Current.CancellationToken);
+                Assert.False(File.Exists(orphanMarker),
+                    "Stopping the Linux shell let its delayed, namespace-scoped descendant write the host-visible marker.");
+            }
             Assert.False(unrelatedProcess!.HasExited, "Stopping the human shell killed an unrelated fixture process.");
         }
         finally
@@ -899,6 +1016,7 @@ public sealed partial class StdioTransportTests
         var followupAck = Ack(fixture.ExchangeTrusted(followup, sessionId, followupRunId));
         Assert.True(followupAck.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted,
             $"Follow-up conversation start was rejected: status={followupAck.Status}, error={followupAck.Error}, reason={followupAck.Outcome?.Reason}.");
+        await fixture.WaitForTurnCompletedAsync(sessionId, followupAck.LastSeq ?? 0);
         await fixture.WaitForProviderBodiesAsync(providerRequestsBefore + 1, TestContext.Current.CancellationToken)
             .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
         Assert.DoesNotContain("NATIVE_HUMAN_SHELL_MARKER", fixture.ProviderBodies.Last(), StringComparison.Ordinal);
@@ -916,6 +1034,12 @@ public sealed partial class StdioTransportTests
             && processState.SourceToolId == HumanShellProcessTool.ProcessOwnerSource
             && processState.SourceCallId == shellCall.Envelope.ToolCallId?.ToString()));
         Assert.Equal(providerRequestsBefore + 1, fixture.Provider.RequestCount);
+        }
+        catch (Exception failure)
+        {
+            fixture.RecordPrimaryTestFailure(failure);
+            throw;
+        }
     }
 
     [Theory]
@@ -959,10 +1083,10 @@ public sealed partial class StdioTransportTests
 
         var providerRequestsBefore = fixture.Provider.RequestCount;
         var markerPath = Path.Combine(fixture.Workspace, "native-human-shell-permission-marker.txt");
-        var command = scenario == "ask"
+        var command = scenario is "ask" or "weak-consent"
             ? OperatingSystem.IsWindows()
-                ? "echo NATIVE_SHELL_PERMISSION_MARKER > \"" + markerPath + "\" & exit /b 7"
-                : "printf 'NATIVE_SHELL_PERMISSION_MARKER\\n' > '" + markerPath + "'; exit 7"
+                ? "echo NATIVE_SHELL_PERMISSION_MARKER > \"" + markerPath + "\" & exit /b 3"
+                : "printf 'NATIVE_SHELL_PERMISSION_MARKER\\n' > '" + markerPath + "'; exit 3"
             : OperatingSystem.IsWindows()
                 ? "echo NATIVE_SHELL_PERMISSION_MARKER > \"" + markerPath + "\""
                 : "printf 'NATIVE_SHELL_PERMISSION_MARKER\\n' > '" + markerPath + "'";
@@ -1093,7 +1217,7 @@ public sealed partial class StdioTransportTests
                 ToolCallAuthorized => "ToolCallAuthorized",
                 _ => item.Payload.GetType().Name,
             })).ToArray();
-        var expectedExitCode = scenario == "ask" ? 7 : 0;
+        var expectedExitCode = scenario is "ask" or "weak-consent" ? 3 : 0;
         Assert.True(resumedCode == expectedExitCode,
             $"Signed {scenario} continuation did not complete the human shell action: code={resumedCode}, expected={expectedExitCode}, diagnostics={string.Join(" | ", diagnostics)}, permissionFailures={string.Join(" | ", permissionFailures)}, permissionDecisions={string.Join(" | ", permissionDecisions)}, permissionProof={string.Join(" | ", permissionProof)}.");
         Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
@@ -1145,7 +1269,7 @@ public sealed partial class StdioTransportTests
     }
 
     [Theory]
-    [InlineData("allow-exit-seven")]
+    [InlineData("allow-exit-three")]
     [InlineData("ask-then-weak")]
     public async Task Framed_stdio_native_shell_finishes_source_and_response_receipts_without_manual_resume(
         string scenario)
@@ -1186,9 +1310,9 @@ public sealed partial class StdioTransportTests
         var markerPath = Path.Combine(fixture.Workspace, "framed-shell-effect.txt");
         var commandText = OperatingSystem.IsWindows()
             ? "echo FRAMED_NATIVE_SHELL_EFFECT > \"" + markerPath + "\""
-                + (askThenWeak ? "" : " & exit /b 7")
+                + " & exit /b 3"
             : "printf 'FRAMED_NATIVE_SHELL_EFFECT\\n' > '" + markerPath + "'"
-                + (askThenWeak ? "" : "; exit 7");
+                + "; exit 3";
         var shellArgs = JsonSerializer.Serialize(new { command = commandText, cwd = fixture.Workspace, timeoutSeconds = 60 });
         var invocationId = Guid.NewGuid().ToString("D");
         var invocation = WireEnvelope.Command(invocationId, JsonSerializer.Serialize(new
@@ -1292,15 +1416,14 @@ public sealed partial class StdioTransportTests
         else
             await fixture.WaitForReceiptExecutionAsync(invocationId, "completed");
 
-        var expectedExit = askThenWeak ? 0 : 7;
         var sourceReceipt = fixture.ReadReceipt(invocationId);
         Assert.Equal("completed", sourceReceipt?.ExecutionState);
-        Assert.Equal(askThenWeak ? "native_shell_completed" : "native_shell_exit_nonzero", sourceReceipt?.ExecutionCode);
+        Assert.Equal("native_shell_exit_nonzero", sourceReceipt?.ExecutionCode);
         if (weakResponseId is not null)
         {
             var responseReceipt = fixture.ReadReceipt(weakResponseId);
             Assert.Equal("completed", responseReceipt?.ExecutionState);
-            Assert.Equal("native_shell_completed", responseReceipt?.ExecutionCode);
+            Assert.Equal("native_shell_exit_nonzero", responseReceipt?.ExecutionCode);
         }
         Assert.Equal("FRAMED_NATIVE_SHELL_EFFECT", File.ReadAllText(markerPath).Trim());
         Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
@@ -1856,6 +1979,7 @@ public sealed partial class StdioTransportTests
         private OmniServer? _server;
         private RecoveryDuplex? _duplex;
         private Task<int>? _hostTask;
+        private Task<CommandAck>? _ownedCancellationExchange;
         private string? _nonce;
         private bool _disposed;
         private bool _includeNativeChoiceCapability = true;
@@ -1864,6 +1988,7 @@ public sealed partial class StdioTransportTests
         private SandboxStrength _processSandboxStrength = SandboxStrength.Strong;
         private bool _evidenceCaptureAttempted;
         private Exception? _primaryTestFailure;
+        private ArtifactSnapshotLeaseSet? _postCancellationSnapshotLocks;
 
         private NativeCommandHandoffFixture(string root, string workspace,
             string? oldData, string? oldConfig, string oldDirectory, byte[] key,
@@ -2170,6 +2295,190 @@ public sealed partial class StdioTransportTests
 
         public void RecordPrimaryTestFailure(Exception failure) => _primaryTestFailure ??= failure;
 
+        public sealed record WorkflowTimeoutSnapshot(string Path, string Json);
+
+        public sealed record WorkflowCancellationObservation(bool Quiesced, string SendStatus, string AckOutcome);
+
+        public WorkflowTimeoutSnapshot CaptureWorkflowTimeoutSnapshot(string sessionId, string invocationId,
+            ConcurrentQueue<string> capabilityObservations)
+        {
+            string json;
+            try
+            {
+                var events = ReadEvents(sessionId);
+                var receipt = ReadReceipt(invocationId);
+                var snapshot = new
+                {
+                    invocationId,
+                    receipt = new { receipt?.State, receipt?.OutcomeKind, receipt?.ExecutionState, receipt?.ExecutionCode,
+                        receipt?.ExecutionRunId, receipt?.FirstSequence, receipt?.LastSequence },
+                    providerRequests = Provider.RequestCount,
+                    sandboxCapabilityProbeResults = capabilityObservations.TakeLast(8)
+                        .Select(value => ClipDiagnostic(value, 96)).ToArray(),
+                    recentEvents = events.TakeLast(24).Select(item => new
+                    {
+                        sequence = item.Envelope.Sequence,
+                        type = item.Payload.GetType().Name,
+                        runId = item.Envelope.RunId?.ToString(),
+                        taskId = item.Envelope.TaskId?.ToString(),
+                        laneId = item.Envelope.LaneId?.ToString(),
+                        turnId = item.Envelope.TurnId?.ToString(),
+                        toolCallId = item.Envelope.ToolCallId?.ToString(),
+                        detail = item.Payload switch
+                        {
+                            ToolCallRequested call => "tool=" + call.ToolName,
+                            ProcessSessionStateRecorded state => "processState=" + state.State
+                                + ";source=" + (state.SourceToolId ?? "none")
+                                + ";exit=" + (state.ExitCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none")
+                                + ";outputSequence=" + state.LastOutputSequence.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                            InteractionRequested interaction => "interaction=" + interaction.Kind,
+                            InteractionResolved interaction => "choice=" + interaction.OptionId + ";cause=" + interaction.Cause,
+                            PermissionEvaluated permission => "permission=" + permission.Decision,
+                            NativeCommandInvocationStarted started => "invocationKind=" + started.Kind,
+                            NativeCommandInvocationFinished finished => "invocationOutcome=" + finished.OutcomeCode,
+                            _ => string.Empty,
+                        },
+                    }).ToArray(),
+                    diagnostics = Diagnostics.TakeLast(8).Select(value => ClipDiagnostic(value, 96)).ToArray(),
+                };
+                json = JsonSerializer.Serialize(snapshot);
+                if (Encoding.UTF8.GetByteCount(json) > 12 * 1024)
+                {
+                    json = JsonSerializer.Serialize(new
+                    {
+                        invocationId,
+                        providerRequests = Provider.RequestCount,
+                        capabilityProbeCount = capabilityObservations.Count,
+                        recentEventCount = events.Count,
+                        diagnosticsCount = Diagnostics.Count,
+                        snapshotTruncated = true,
+                    });
+                }
+            }
+            catch (Exception exception)
+            {
+                json = JsonSerializer.Serialize(new
+                {
+                    invocationId,
+                    providerRequests = Provider.RequestCount,
+                    snapshotReadErrorType = exception.GetType().Name,
+                    snapshotTruncated = true,
+                });
+            }
+            var path = Path.Combine(_root, "workflow-timeout-snapshot.json");
+            try { File.WriteAllText(path, json, new UTF8Encoding(false)); }
+            catch (Exception exception)
+            {
+                json = JsonSerializer.Serialize(new
+                {
+                    invocationId,
+                    providerRequests = Provider.RequestCount,
+                    snapshotWriteErrorType = exception.GetType().Name,
+                    snapshotTruncated = true,
+                });
+            }
+            return new WorkflowTimeoutSnapshot(path, json);
+        }
+
+        public async Task<WorkflowCancellationObservation> CancelOwnedWorkflowAndWaitAsync(string sessionId, string runId,
+            string invocationId, TaskCompletionSource releaseInvocationReceipt)
+        {
+            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(35);
+            releaseInvocationReceipt.TrySetResult();
+            var cancel = WireEnvelope.Command(Ids.NewV7(), JsonSerializer.Serialize(new { cmd = "run.cancel", runId }));
+            var signedCancel = TrustedActionEnvelope(cancel, _key, _nonce!, Workspace, sessionId, runId);
+            string sendStatus;
+            string ackOutcome;
+            var cancelTask = Task.Run(() => Ack(Exchange(signedCancel)));
+            _ownedCancellationExchange = cancelTask;
+            try
+            {
+                var remaining = deadline - DateTimeOffset.UtcNow;
+                if (remaining <= TimeSpan.Zero) throw new TimeoutException();
+                var acknowledgement = await cancelTask.WaitAsync(remaining, CancellationToken.None).ConfigureAwait(false);
+                _ownedCancellationExchange = null;
+                sendStatus = "acknowledged";
+                ackOutcome = acknowledgement.Outcome?.Kind.ToString() ?? "none";
+                RecordProtocolAudit("run.cancel after workflow timeout", sessionId, runId,
+                    "signed cancellation sent only to the fixture Run; outcome=" + ackOutcome);
+            }
+            catch (Exception exception)
+            {
+                sendStatus = "failed_" + exception.GetType().Name;
+                ackOutcome = "none";
+                AbortOwnedStdioTransport();
+                try { await cancelTask.WaitAsync(TimeSpan.FromSeconds(2), CancellationToken.None).ConfigureAwait(false); }
+                catch { /* transport is closed below; preserve the primary timeout and owned root */ }
+                if (cancelTask.IsCompleted) _ownedCancellationExchange = null;
+                PreserveEvidenceOnDispose = false;
+                PreserveRootOnDispose = true;
+                return new WorkflowCancellationObservation(false, sendStatus, ackOutcome);
+            }
+
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                try
+                {
+                    var receipt = ReadReceipt(invocationId);
+                    var terminal = receipt?.ExecutionState is "completed" or "failed" or "cancelled" or "unknown";
+                    var events = ReadEvents(sessionId);
+                    var invocationFinished = events.Any(item => item.Payload is NativeCommandInvocationFinished finished
+                        && finished.InvocationId.ToString() == invocationId);
+                    var runTerminal = events.Any(item => item.Payload switch
+                    {
+                        RunCancelled cancelled => cancelled.RunId.ToString() == runId,
+                        RunFailed failed => failed.RunId.ToString() == runId,
+                        RunCompleted completed => completed.RunId.ToString() == runId,
+                        _ => false,
+                    });
+                    if ((terminal || invocationFinished) && runTerminal)
+                    {
+                        var remaining = deadline - DateTimeOffset.UtcNow;
+                        if (remaining <= TimeSpan.Zero) throw new TimeoutException();
+                        try
+                        {
+                            _postCancellationSnapshotLocks = AcquireArtifactSnapshotLocks(remaining);
+                            return new WorkflowCancellationObservation(true, sendStatus, ackOutcome);
+                        }
+                        catch (Exception exception)
+                        {
+                            sendStatus += "_lease_" + exception.GetType().Name;
+                            break;
+                        }
+                    }
+                }
+                catch (Exception exception)
+                {
+                    sendStatus += "_receipt_" + exception.GetType().Name;
+                    break;
+                }
+                await Task.Delay(50, CancellationToken.None).ConfigureAwait(false);
+            }
+            AbortOwnedStdioTransport();
+            try
+            {
+                await cancelTask.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None).ConfigureAwait(false);
+                _ownedCancellationExchange = null;
+            }
+            catch (Exception exception)
+            {
+                sendStatus += "_transport_" + exception.GetType().Name;
+            }
+            PreserveEvidenceOnDispose = false;
+            PreserveRootOnDispose = true;
+            return new WorkflowCancellationObservation(false, sendStatus, ackOutcome);
+        }
+
+        private void AbortOwnedStdioTransport()
+        {
+            try { _duplex?.CompleteClientInput(); } catch { }
+            try { CutStream?.Dispose(); } catch { }
+            try { _duplex?.Dispose(); } catch { }
+        }
+
+        private static string ClipDiagnostic(string value, int maxLength) =>
+            value.Length <= maxLength ? value : value[..maxLength];
+
         public void RecordProviderResponse(int requestIndex, string response) =>
             ProviderResponses.Enqueue(JsonSerializer.Serialize(new { requestIndex, response }));
 
@@ -2218,7 +2527,9 @@ public sealed partial class StdioTransportTests
                 DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssZ", System.Globalization.CultureInfo.InvariantCulture)
                     + "-" + Guid.NewGuid().ToString("N"), "fixture");
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-            using var artifactSnapshotLocks = AcquireArtifactSnapshotLocks();
+            var heldSnapshotLocks = _postCancellationSnapshotLocks;
+            _postCancellationSnapshotLocks = null;
+            using var artifactSnapshotLocks = heldSnapshotLocks ?? AcquireArtifactSnapshotLocks();
             CopyFixtureDirectory(_root, destination, artifactSnapshotLocks.Paths);
             File.WriteAllLines(Path.Combine(Path.GetDirectoryName(destination)!, "stdio-actions-redacted.jsonl"),
                 ProtocolAudit, new UTF8Encoding(false));
@@ -2267,7 +2578,7 @@ public sealed partial class StdioTransportTests
             }
         }
 
-        private ArtifactSnapshotLeaseSet AcquireArtifactSnapshotLocks()
+        private ArtifactSnapshotLeaseSet AcquireArtifactSnapshotLocks(TimeSpan? timeout = null)
         {
             var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
             var fixtureRoot = Path.GetFullPath(_root).TrimEnd(Path.DirectorySeparatorChar)
@@ -2284,7 +2595,10 @@ public sealed partial class StdioTransportTests
                     ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
                 throw new IOException("The workspace artifact lease escaped the owned fixture root.");
             var handles = new List<FileStream>();
-            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
+            var waitBudget = timeout ?? TimeSpan.FromSeconds(20);
+            if (waitBudget <= TimeSpan.Zero)
+                throw new TimeoutException("No time remained to acquire the fixture workspace CAS lease.");
+            var deadline = DateTimeOffset.UtcNow + waitBudget;
             IOException? lastBusyFailure = null;
             try
             {
@@ -2441,13 +2755,14 @@ public sealed partial class StdioTransportTests
             Negotiate(_includeNativeChoiceCapability);
         }
 
-        private async Task WaitForTurnCompletedAsync(string sessionId)
+        public async Task WaitForTurnCompletedAsync(string sessionId, long afterSequence = 0)
         {
             var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
             while (DateTimeOffset.UtcNow < deadline)
             {
                 TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
-                if (ReadEvents(sessionId).Any(item => item.Payload is TurnCompleted)) return;
+                if (ReadEvents(sessionId).Any(item => item.Envelope.Sequence > afterSequence
+                    && item.Payload is TurnCompleted)) return;
                 await Task.Delay(25, TestContext.Current.CancellationToken);
             }
             throw new TimeoutException("The setup conversation Turn did not complete.");
@@ -2541,6 +2856,22 @@ public sealed partial class StdioTransportTests
             }
             try
             {
+                if (_ownedCancellationExchange is { } cancellationExchange)
+                {
+                    AbortOwnedStdioTransport();
+                    try
+                    {
+                        await cancellationExchange.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+                        _ownedCancellationExchange = null;
+                    }
+                    catch (Exception exception)
+                    {
+                        cleanupFailures.Add(new InvalidOperationException(
+                            "Owned timeout-cancellation exchange did not quiesce after closing its fixture transport.", exception));
+                        PreserveRootOnDispose = true;
+                        PreserveEvidenceOnDispose = false;
+                    }
+                }
                 Capture(() => _duplex?.CompleteClientInput());
                 if (_hostTask is not null)
                 {
@@ -2576,6 +2907,9 @@ public sealed partial class StdioTransportTests
             finally
             {
                 Capture(_providerBodyArrived.Dispose);
+                var heldSnapshotLocks = _postCancellationSnapshotLocks;
+                _postCancellationSnapshotLocks = null;
+                if (heldSnapshotLocks is not null) Capture(heldSnapshotLocks.Dispose);
                 CryptographicOperations.ZeroMemory(_key);
                 Capture(() => Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", _oldData));
                 Capture(() => Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", _oldConfig));

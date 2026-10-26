@@ -20,6 +20,9 @@ using System.Text.Json;
 /// <summary>Fachada tipada del runtime usada por el CLI; oculta composición y tipos internos.</summary>
 public sealed class OmniCliRuntime : IDisposable
 {
+    /// <summary>Separates a human shell's real OS exit code from an internal pending interaction.</summary>
+    public readonly record struct HumanShellCommandOutcome(int ExitCode, bool InputRequired);
+
     internal sealed record NativeToolActionRequest(string ToolName, string ArgumentsJson, string InvocationId,
         Action<string>? HumanShellOutput = null);
     internal sealed record NativeWeakSandboxActionContinuation(string InvocationId, string InteractionId,
@@ -1493,9 +1496,18 @@ public sealed class OmniCliRuntime : IDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { code = 130; }
         catch (Exception failure) { diagnostics(RedactSensitive(failure.Message)); code = 1; }
-        if (code == 0 && server.NativeCommandRequiredEffectSucceeded(invocation))
+        var effectApplied = server.NativeCommandRequiredEffectSucceeded(invocation);
+        var interactionPending = code == 3
+            && IsHumanShellInteractionPending(server, invocationText, session, run);
+        if (effectApplied)
+        {
+            // The process may legitimately exit with OS status 3. The required effect is the
+            // durable terminal signal; code 3 means input_required only while an exact native
+            // shell interaction is still unresolved.
             server.FinishNativeCommand(invocation, "completed");
-        else if (code != 3) server.FinishNativeCommand(invocation, code == 130 ? "cancelled" : "failed");
+        }
+        else if (!interactionPending)
+            server.FinishNativeCommand(invocation, code == 130 ? "cancelled" : "failed");
         return code;
     }
 
@@ -1740,44 +1752,49 @@ public sealed class OmniCliRuntime : IDisposable
 
     /// <summary>Submits a human-origin !command through the signed native command catalog and
     /// the ordinary Host ToolRuntime. It does not create UserInputReceived or request a model.</summary>
-    public Task<int> ExecuteHumanShellCommandAsync(string command, Action<string> output,
+    public async Task<int> ExecuteHumanShellCommandAsync(string command, Action<string> output,
+        Action<string> diagnostics, CancellationToken token, bool allowDeferredPermission = true) =>
+        (await ExecuteHumanShellCommandWithOutcomeAsync(command, output, diagnostics, token, allowDeferredPermission)
+            .ConfigureAwait(false)).ExitCode;
+
+    public Task<HumanShellCommandOutcome> ExecuteHumanShellCommandWithOutcomeAsync(string command, Action<string> output,
         Action<string> diagnostics, CancellationToken token, bool allowDeferredPermission = true)
     {
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(diagnostics);
         if (string.IsNullOrWhiteSpace(command) || command.Length > 16_384 || command.Any(char.IsControl))
-        { diagnostics("shell.invalid_request"); return System.Threading.Tasks.Task.FromResult(2); }
+        { diagnostics("shell.invalid_request"); return System.Threading.Tasks.Task.FromResult(new HumanShellCommandOutcome(2, false)); }
         // Native tool execution can perform synchronous Host work before its first incomplete
         // await. Keep CLI/TUI input loops responsive and make cancellation observable immediately.
         return System.Threading.Tasks.Task.Run(() => ExecuteHumanShellCommandCoreAsync(command, output, diagnostics, token,
             allowDeferredPermission), CancellationToken.None);
     }
 
-    private async Task<int> ExecuteHumanShellCommandCoreAsync(string command, Action<string> output,
+    private async Task<HumanShellCommandOutcome> ExecuteHumanShellCommandCoreAsync(string command, Action<string> output,
         Action<string> diagnostics, CancellationToken token, bool allowDeferredPermission)
     {
-        if (token.IsCancellationRequested) return 130;
+        if (token.IsCancellationRequested) return new(130, false);
         var server = Server();
         var session = server.LastSessionId();
         var run = server.ActiveRunId();
         if (session is null)
-        { diagnostics("shell.session_required"); return 1; }
+        { diagnostics("shell.session_required"); return new(1, false); }
         var catalogJson = server.Query("command.catalog", token)?.Json;
         if (catalogJson is null)
-        { diagnostics("shell.command_catalog_unavailable"); return 1; }
+        { diagnostics("shell.command_catalog_unavailable"); return new(1, false); }
         using var catalogDocument = JsonDocument.Parse(catalogJson);
         var catalog = catalogDocument.RootElement;
         var catalogRun = catalog.GetProperty("runId").ValueKind == JsonValueKind.String
             ? catalog.GetProperty("runId").GetString() : null;
         if (catalog.GetProperty("sessionId").GetString() != session.Value.ToString()
             || catalogRun != run?.ToString())
-        { diagnostics("shell.command_scope_changed"); return 1; }
+        { diagnostics("shell.command_scope_changed"); return new(1, false); }
         var entry = catalog.GetProperty("commands").EnumerateArray().SingleOrDefault(item =>
             item.GetProperty("canonicalCommandId").GetString() == "core:shell.exec");
         if (entry.ValueKind != JsonValueKind.Object || !entry.GetProperty("enabled").GetBoolean())
         { diagnostics(entry.ValueKind == JsonValueKind.Object
                 ? entry.GetProperty("disabledReason").GetString() ?? "shell.command_disabled"
-                : "shell.command_unavailable"); return 1; }
+                : "shell.command_unavailable"); return new(1, false); }
 
         var cwd = Path.GetFullPath(_workspaceRoot);
         var argumentsJson = "{" + JsonObj.Field("command", command) + "," + JsonObj.Field("cwd", cwd)
@@ -1801,28 +1818,30 @@ public sealed class OmniCliRuntime : IDisposable
             WireEnvelope.Command(commandId, requestJson), session.Value.ToString(), run?.ToString(), policyRevision);
         if (ack.Status != "ok" || ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted
             || ack.FirstSeq is null || ack.LastSeq is null)
-        { diagnostics(ack.Error ?? ack.Outcome?.Reason ?? "shell.admission_rejected"); return 1; }
+        { diagnostics(ack.Error ?? ack.Outcome?.Reason ?? "shell.admission_rejected"); return new(1, false); }
         var receipt = server.ReceiptStore?.ReadCommandReceipt(commandId);
         if (receipt is not { State: CommandReceiptState.Completed, OutcomeKind: "Accepted",
                 RequestHash: { Length: 64 } hash })
-        { diagnostics($"shell.admission_receipt_state_invalid:{receipt?.State.ToString() ?? "missing"}:{receipt?.OutcomeKind ?? "missing"}:{receipt?.RequestHash?.Length ?? 0}"); return 1; }
+        { diagnostics($"shell.admission_receipt_state_invalid:{receipt?.State.ToString() ?? "missing"}:{receipt?.OutcomeKind ?? "missing"}:{receipt?.RequestHash?.Length ?? 0}"); return new(1, false); }
         if (receipt.SessionId != session.Value.ToString()
             || receipt.FirstSequence != ack.FirstSeq || receipt.LastSequence != ack.LastSeq)
-        { diagnostics("shell.admission_receipt_sequence_mismatch"); return 1; }
+        { diagnostics("shell.admission_receipt_sequence_mismatch"); return new(1, false); }
         if (!server.TryReadNativeCommandPayload(new CommandId(Guid.Parse(commandId)), out var admitted, out _))
-        { diagnostics("shell.admission_receipt_payload_unavailable"); return 1; }
+        { diagnostics("shell.admission_receipt_payload_unavailable"); return new(1, false); }
         if (admitted.SessionId.ToString() != session.Value.ToString()
             || admitted.RunId is not { } admittedRun
             || server.LastRunId() != admittedRun
             || admitted.CanonicalCommandId != "core:shell.exec" || admitted.Kind != "nativeTool")
-        { diagnostics("shell.admission_receipt_scope_mismatch"); return 1; }
+        { diagnostics("shell.admission_receipt_scope_mismatch"); return new(1, false); }
 
         var binding = new PersistedConversationCommand(commandId, hash, session.Value.ToString(),
             admittedRun.ToString(), ack.FirstSeq, ack.LastSeq, NativeChoiceCapability: allowDeferredPermission,
             NativeInvocationId: commandId, NativeCommandKind: "nativeTool",
             NativeWeakSandboxCapability: allowDeferredPermission);
         var code = await ExecutePersistedConversationAsync(binding, diagnostics, token, output).ConfigureAwait(false);
-        if (code == 3)
+        var inputRequired = code == 3
+            && IsHumanShellInteractionPending(server, commandId, new SessionId(session.Value), admittedRun);
+        if (inputRequired)
         {
             try
             {
@@ -1833,9 +1852,11 @@ public sealed class OmniCliRuntime : IDisposable
             if (allowDeferredPermission && UseConsoleInput && !Console.IsInputRedirected)
                 code = await ContinueHumanShellConsoleInteractionsAsync(commandId, output, diagnostics, token)
                     .ConfigureAwait(false);
+            inputRequired = code == 3
+                && IsHumanShellInteractionPending(server, commandId, new SessionId(session.Value), admittedRun);
         }
         CompleteHumanShellExecutionReceipt(server, commandId, hash, session, admittedRun, code, diagnostics);
-        return code;
+        return new(code, inputRequired);
     }
 
     private async Task<int> ContinueHumanShellConsoleInteractionsAsync(string invocationId, Action<string> output,
@@ -1886,7 +1907,7 @@ public sealed class OmniCliRuntime : IDisposable
             else
                 code = await ResumeHumanShellPermissionAsync(pending.Request.InteractionId.ToString(),
                     options[selected - 1].Id, response, output, diagnostics, token).ConfigureAwait(false);
-            if (code != 3) return code;
+            if (code != 3 || !IsHumanShellInteractionPending(server, invocationId, session, run)) return code;
         }
         diagnostics("shell.interaction_limit_exceeded");
         return 1;
@@ -1915,7 +1936,7 @@ public sealed class OmniCliRuntime : IDisposable
 
         string state;
         string code;
-        if (exitCode == 3)
+        if (IsHumanShellInteractionPending(server, invocationId, session, run))
         {
             state = "deferred";
             code = "input_required";
@@ -2003,28 +2024,36 @@ public sealed class OmniCliRuntime : IDisposable
             new InteractionId(interactionGuid), optionId: null, responseAck: null, out _);
     }
 
-    public Task<int> ResumeHumanShellPermissionAsync(string interactionId, string optionId,
+    public async Task<int> ResumeHumanShellPermissionAsync(string interactionId, string optionId,
+        CommandAck responseAck, Action<string> output, Action<string> diagnostics, CancellationToken token) =>
+        (await ResumeHumanShellPermissionWithOutcomeAsync(interactionId, optionId, responseAck, output, diagnostics, token)
+            .ConfigureAwait(false)).ExitCode;
+
+    public Task<HumanShellCommandOutcome> ResumeHumanShellPermissionWithOutcomeAsync(string interactionId, string optionId,
         CommandAck responseAck, Action<string> output, Action<string> diagnostics, CancellationToken token) =>
         System.Threading.Tasks.Task.Run(() => ResumeHumanShellPermissionCoreAsync(interactionId, optionId,
             responseAck, output, diagnostics, token), CancellationToken.None);
 
-    private async Task<int> ResumeHumanShellPermissionCoreAsync(string interactionId, string optionId,
+    private async Task<HumanShellCommandOutcome> ResumeHumanShellPermissionCoreAsync(string interactionId, string optionId,
         CommandAck responseAck, Action<string> output, Action<string> diagnostics, CancellationToken token)
     {
         if (!Guid.TryParseExact(interactionId, "D", out var interactionGuid)
             || interactionId != interactionGuid.ToString("D")
-            || optionId is not ("allow_once" or "allow_run" or "allow_workspace" or "deny")) return 1;
+            || optionId is not ("allow_once" or "allow_run" or "allow_workspace" or "deny")) return new(1, false);
         var server = Server();
         if (server.LastSessionId() is not { } session || server.LastRunId() is not { } run
             || !TryBuildHumanShellPermissionBinding(server, session, run, new InteractionId(interactionGuid),
-                optionId, responseAck, out var binding)) return 1;
+                optionId, responseAck, out var binding)) return new(1, false);
         var code = await ExecutePersistedConversationAsync(binding!, diagnostics, token, output).ConfigureAwait(false);
         if (binding!.NativeInvocationId is { } invocationId
             && Guid.TryParseExact(invocationId, "D", out var invocationGuid))
+        {
             CompleteHumanShellExecutionReceipt(server, invocationId, binding.RequestHash,
                 new SessionId(Guid.ParseExact(binding.SessionId, "D")),
                 new RunId(Guid.ParseExact(binding.RunId, "D")), code, diagnostics);
-        return code;
+            return new(code, code == 3 && IsHumanShellInteractionPending(server, invocationId, session, run));
+        }
+        return new(code, false);
     }
 
     public bool IsHumanShellWeakSandboxConsent(string interactionId)
@@ -2111,27 +2140,36 @@ public sealed class OmniCliRuntime : IDisposable
         }
     }
 
-    public Task<int> ResumeHumanShellWeakSandboxConsentAsync(string interactionId, string optionId,
+    public async Task<int> ResumeHumanShellWeakSandboxConsentAsync(string interactionId, string optionId,
         CommandAck responseAck, Action<string> output, Action<string> diagnostics, CancellationToken token) =>
+        (await ResumeHumanShellWeakSandboxConsentWithOutcomeAsync(interactionId, optionId, responseAck, output,
+            diagnostics, token).ConfigureAwait(false)).ExitCode;
+
+    public Task<HumanShellCommandOutcome> ResumeHumanShellWeakSandboxConsentWithOutcomeAsync(string interactionId,
+        string optionId, CommandAck responseAck, Action<string> output, Action<string> diagnostics,
+        CancellationToken token) =>
         System.Threading.Tasks.Task.Run(() => ResumeHumanShellWeakSandboxConsentCoreAsync(interactionId, optionId,
             responseAck, output, diagnostics, token), CancellationToken.None);
 
-    private async Task<int> ResumeHumanShellWeakSandboxConsentCoreAsync(string interactionId, string optionId,
+    private async Task<HumanShellCommandOutcome> ResumeHumanShellWeakSandboxConsentCoreAsync(string interactionId, string optionId,
         CommandAck responseAck, Action<string> output, Action<string> diagnostics, CancellationToken token)
     {
         if (!Guid.TryParseExact(interactionId, "D", out var interactionGuid)
-            || interactionId != interactionGuid.ToString("D") || optionId is not ("consent_once" or "deny")) return 1;
+            || interactionId != interactionGuid.ToString("D") || optionId is not ("consent_once" or "deny")) return new(1, false);
         var server = Server();
         if (server.LastSessionId() is not { } session || server.LastRunId() is not { } run
             || !TryBuildHumanShellWeakSandboxBinding(server, session, run, new InteractionId(interactionGuid),
-                optionId, responseAck, out var binding)) return 1;
+                optionId, responseAck, out var binding)) return new(1, false);
         var code = await ExecutePersistedConversationAsync(binding!, diagnostics, token, output).ConfigureAwait(false);
         if (binding!.NativeInvocationId is { } invocationId
             && Guid.TryParseExact(invocationId, "D", out _))
+        {
             CompleteHumanShellExecutionReceipt(server, invocationId, binding.RequestHash,
                 new SessionId(Guid.ParseExact(binding.SessionId, "D")),
                 new RunId(Guid.ParseExact(binding.RunId, "D")), code, diagnostics);
-        return code;
+            return new(code, code == 3 && IsHumanShellInteractionPending(server, invocationId, session, run));
+        }
+        return new(code, false);
     }
 
     private static bool TryBuildHumanShellWeakSandboxBinding(OmniServer server, SessionId session, RunId run,
@@ -2207,6 +2245,48 @@ public sealed class OmniCliRuntime : IDisposable
             NativeChoiceCapability: true, NativeInvocationId: sourceId, NativeCommandKind: "nativeTool",
             NativeWeakSandboxCapability: true);
         return true;
+    }
+
+    /// <summary>Proves that code 3 represents an unresolved native shell interaction for this
+    /// exact invocation and scope. OS exit code 3 is otherwise an ordinary process result.</summary>
+    internal static bool IsHumanShellInteractionPending(OmniServer server, string invocationId,
+        SessionId session, RunId run)
+    {
+        if (!Guid.TryParseExact(invocationId, "D", out var invocationGuid)
+            || invocationId != invocationGuid.ToString("D")) return false;
+        var codecs = server.AcquireCodecs();
+        var events = server.AcquireStore().ReadFrom(session, 1).Where(item => item.RunId == run).ToArray();
+        var calls = events.Where(item => codecs.Decode(item) is ToolCallRequested call
+                && call.ToolName == "shell.exec"
+                && call.ProviderCallId == "native-action-" + invocationId)
+            .ToArray();
+        if (calls.Length != 1 || calls[0].ToolCallId is not { } toolCallId) return false;
+        var callEvent = calls[0];
+        var pendingInteractions = events.Where(item => item.TaskId == callEvent.TaskId
+                && item.LaneId == callEvent.LaneId && item.TurnId == callEvent.TurnId
+                && item.ToolCallId == toolCallId)
+            .Where(item => codecs.Decode(item) is InteractionRequested request
+                && request.Kind is InteractionKind.Permission or InteractionKind.WeakSandboxConsent)
+            .Select(item => (Event: item, Request: (InteractionRequested)codecs.Decode(item)))
+            .ToArray();
+        var unresolved = pendingInteractions.Where(candidate => !events.Any(later => later.Sequence > candidate.Event.Sequence
+                && codecs.Decode(later) is InteractionResolved resolved
+                && resolved.InteractionId == candidate.Request.InteractionId)
+            && !events.Any(later => later.Sequence > candidate.Event.Sequence
+                && codecs.Decode(later) is InteractionExpired expired
+                && expired.InteractionId == candidate.Request.InteractionId))
+            .OrderByDescending(candidate => candidate.Event.Sequence)
+            .FirstOrDefault();
+        if (unresolved.Event is null) return false;
+
+        // A terminal invocation/tool event is stronger than an older unanswered prompt. It
+        // prevents a completed OS exit code 3 from being reclassified as input_required if a
+        // transport recorded the prompt resolution outside this Run's event projection.
+        return !events.Any(item => item.Sequence > unresolved.Event.Sequence
+                && codecs.Decode(item) is NativeCommandInvocationFinished finished
+                && finished.InvocationId == new CommandId(invocationGuid))
+            && !events.Any(item => item.Sequence > unresolved.Event.Sequence && item.ToolCallId == toolCallId
+                && codecs.Decode(item) is ToolCallSucceeded or ToolCallFailed or ToolCallEffectUnknown or ToolCallReconciled);
     }
 
     private static bool TryBuildHumanShellPermissionBinding(OmniServer server, SessionId session, RunId run,

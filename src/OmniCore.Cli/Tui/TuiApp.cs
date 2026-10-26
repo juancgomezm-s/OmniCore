@@ -1326,7 +1326,7 @@ public sealed partial class TuiApp
         _turnTask = Task.Run(async () =>
         {
             var diagnostics = new List<string>();
-            int code;
+            OmniCliRuntime.HumanShellCommandOutcome outcome;
             try
             {
                 Action<string> writeOutput = CreateHumanShellOutputSink(streamedOutput, sourceSession, generation);
@@ -1335,11 +1335,12 @@ public sealed partial class TuiApp
                     if (diagnostics.Count == 4) diagnostics.RemoveAt(0);
                     diagnostics.Add(OmniCliRuntime.RedactSensitive(line));
                 };
-                code = await _turnHost.ExecuteHumanShellAsync(command, writeOutput, diagnostic,
+                outcome = await _turnHost.ExecuteHumanShellWithOutcomeAsync(command, writeOutput, diagnostic,
                     cancellation.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { code = 2; }
-            catch (Exception) { code = 1; diagnostics.Add(_localization.Resolve("shell.turn_failed_check_omni_doctor")); }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { outcome = new(2, false); }
+            catch (Exception) { outcome = new(1, false); diagnostics.Add(_localization.Resolve("shell.turn_failed_check_omni_doctor")); }
+            var code = outcome.ExitCode;
             _uiActions.Enqueue(() =>
             {
                 if (generation != _humanShellGeneration) return;
@@ -1353,12 +1354,12 @@ public sealed partial class TuiApp
                 }
                 _turnStatus = cancellation.IsCancellationRequested ? _localization.Resolve("shell.cancelled")
                     : code == 0 ? _localization.Resolve("shell.done")
-                    : code == 3 ? _localization.Resolve("shell.input_required") : _localization.Resolve("shell.error");
+                    : outcome.InputRequired ? _localization.Resolve("shell.input_required") : _localization.Resolve("shell.error");
                 PollEvents();
                 if (code == 0 && _composer?.Text?.ToString() == submittedDraft) _composer.Text = "";
-                if (code != 3 && !cancellation.IsCancellationRequested && streamedOutput.Length > 0)
+                if (!outcome.InputRequired && !cancellation.IsCancellationRequested && streamedOutput.Length > 0)
                     ShowHumanShellOutput(streamedOutput.ToString(), sourceSession);
-                else if (code != 0 && code != 3 && !cancellation.IsCancellationRequested)
+                else if (code != 0 && !outcome.InputRequired && !cancellation.IsCancellationRequested)
                     ShowMessage(string.Join("\n", diagnostics));
             });
         });
@@ -2259,7 +2260,7 @@ public sealed partial class TuiApp
         _turnTask = Task.Run(async () =>
         {
             var diagnostics = new List<string>();
-            int code;
+            OmniCliRuntime.HumanShellCommandOutcome outcome;
             try
             {
                 Action<string> output = CreateHumanShellOutputSink(streamedOutput, sourceSession, generation);
@@ -2268,11 +2269,12 @@ public sealed partial class TuiApp
                     if (diagnostics.Count == 4) diagnostics.RemoveAt(0);
                     diagnostics.Add(OmniCliRuntime.RedactSensitive(line));
                 };
-                code = await _turnHost.ResumeHumanShellPermissionAsync(interactionId, optionId,
+                outcome = await _turnHost.ResumeHumanShellPermissionWithOutcomeAsync(interactionId, optionId,
                     responseAck, output, diagnostic, cancellation.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { code = 2; }
-            catch (Exception) { code = 1; diagnostics.Add(_localization.Resolve("shell.turn_failed_check_omni_doctor")); }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { outcome = new(2, false); }
+            catch (Exception) { outcome = new(1, false); diagnostics.Add(_localization.Resolve("shell.turn_failed_check_omni_doctor")); }
+            var code = outcome.ExitCode;
             _uiActions.Enqueue(() =>
             {
                 if (generation != _humanShellGeneration) return;
@@ -2285,11 +2287,12 @@ public sealed partial class TuiApp
                     return;
                 }
                 _turnStatus = cancellation.IsCancellationRequested ? _localization.Resolve("shell.cancelled")
-                    : code == 0 ? _localization.Resolve("shell.done") : _localization.Resolve("shell.error");
+                    : code == 0 ? _localization.Resolve("shell.done")
+                    : outcome.InputRequired ? _localization.Resolve("shell.input_required") : _localization.Resolve("shell.error");
                 PollEvents();
-                if (code != 3 && !cancellation.IsCancellationRequested && streamedOutput.Length > 0)
+                if (!outcome.InputRequired && !cancellation.IsCancellationRequested && streamedOutput.Length > 0)
                     ShowHumanShellOutput(streamedOutput.ToString(), sourceSession);
-                else if (code != 0 && !cancellation.IsCancellationRequested)
+                else if (code != 0 && !outcome.InputRequired && !cancellation.IsCancellationRequested)
                     ShowMessage(string.Join("\n", diagnostics));
             });
         });
@@ -2308,7 +2311,7 @@ public sealed partial class TuiApp
         _turnTask = Task.Run(async () =>
         {
             var diagnostics = new List<string>();
-            int code;
+            OmniCliRuntime.HumanShellCommandOutcome outcome;
             try
             {
                 Action<string> output = CreateHumanShellOutputSink(streamedOutput, sourceSession, generation);
@@ -2317,11 +2320,12 @@ public sealed partial class TuiApp
                     if (diagnostics.Count == 4) diagnostics.RemoveAt(0);
                     diagnostics.Add(OmniCliRuntime.RedactSensitive(line));
                 };
-                code = await _turnHost.ResumeHumanShellWeakSandboxConsentAsync(interactionId, optionId,
+                outcome = await _turnHost.ResumeHumanShellWeakSandboxConsentWithOutcomeAsync(interactionId, optionId,
                     responseAck, output, diagnostic, cancellation.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { code = 2; }
-            catch (Exception) { code = 1; diagnostics.Add(_localization.Resolve("shell.turn_failed_check_omni_doctor")); }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { outcome = new(2, false); }
+            catch (Exception) { outcome = new(1, false); diagnostics.Add(_localization.Resolve("shell.turn_failed_check_omni_doctor")); }
+            var code = outcome.ExitCode;
             _uiActions.Enqueue(() =>
             {
                 if (generation != _humanShellGeneration) return;
@@ -2334,11 +2338,12 @@ public sealed partial class TuiApp
                     return;
                 }
                 _turnStatus = cancellation.IsCancellationRequested ? _localization.Resolve("shell.cancelled")
-                    : code == 0 ? _localization.Resolve("shell.done") : _localization.Resolve("shell.error");
+                    : code == 0 ? _localization.Resolve("shell.done")
+                    : outcome.InputRequired ? _localization.Resolve("shell.input_required") : _localization.Resolve("shell.error");
                 PollEvents();
-                if (code != 3 && !cancellation.IsCancellationRequested && streamedOutput.Length > 0)
+                if (!outcome.InputRequired && !cancellation.IsCancellationRequested && streamedOutput.Length > 0)
                     ShowHumanShellOutput(streamedOutput.ToString(), sourceSession);
-                else if (code != 0 && !cancellation.IsCancellationRequested)
+                else if (code != 0 && !outcome.InputRequired && !cancellation.IsCancellationRequested)
                     ShowMessage(string.Join("\n", diagnostics));
             });
         });

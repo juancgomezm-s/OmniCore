@@ -49,6 +49,12 @@ public interface ITuiTurnHost
         CancellationToken cancellationToken) => System.Threading.Tasks.Task.FromResult(1);
     Task<int> ExecuteHumanShellAsync(string command, Action<string> output, Action<string> diagnostics,
         CancellationToken cancellationToken) => System.Threading.Tasks.Task.FromResult(1);
+    async Task<OmniCliRuntime.HumanShellCommandOutcome> ExecuteHumanShellWithOutcomeAsync(string command,
+        Action<string> output, Action<string> diagnostics, CancellationToken cancellationToken)
+    {
+        var code = await ExecuteHumanShellAsync(command, output, diagnostics, cancellationToken).ConfigureAwait(false);
+        return new(code, code == 3);
+    }
     bool IsHumanShellPermission(string interactionId) => false;
     bool IsHumanShellWeakSandboxConsent(string interactionId) => false;
     CommandAck DispatchHumanShellInteractionResponse(WireEnvelope command) =>
@@ -56,9 +62,25 @@ public interface ITuiTurnHost
     Task<int> ResumeHumanShellPermissionAsync(string interactionId, string optionId, CommandAck responseAck,
         Action<string> output, Action<string> diagnostics, CancellationToken cancellationToken) =>
         System.Threading.Tasks.Task.FromResult(1);
+    async Task<OmniCliRuntime.HumanShellCommandOutcome> ResumeHumanShellPermissionWithOutcomeAsync(string interactionId,
+        string optionId, CommandAck responseAck, Action<string> output, Action<string> diagnostics,
+        CancellationToken cancellationToken)
+    {
+        var code = await ResumeHumanShellPermissionAsync(interactionId, optionId, responseAck, output,
+            diagnostics, cancellationToken).ConfigureAwait(false);
+        return new(code, code == 3);
+    }
     Task<int> ResumeHumanShellWeakSandboxConsentAsync(string interactionId, string optionId, CommandAck responseAck,
         Action<string> output, Action<string> diagnostics, CancellationToken cancellationToken) =>
         System.Threading.Tasks.Task.FromResult(1);
+    async Task<OmniCliRuntime.HumanShellCommandOutcome> ResumeHumanShellWeakSandboxConsentWithOutcomeAsync(
+        string interactionId, string optionId, CommandAck responseAck, Action<string> output,
+        Action<string> diagnostics, CancellationToken cancellationToken)
+    {
+        var code = await ResumeHumanShellWeakSandboxConsentAsync(interactionId, optionId, responseAck,
+            output, diagnostics, cancellationToken).ConfigureAwait(false);
+        return new(code, code == 3);
+    }
     Task<int> ExecuteActAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken) => ExecuteAsync(input, diagnostics, cancellationToken);
     Task<int> ExecuteActAsync(string input, IReadOnlyList<TuiAttachmentReference> attachments,
         Action<string> diagnostics, CancellationToken cancellationToken) => attachments.Count == 0
@@ -109,6 +131,10 @@ public sealed class TuiTurnHost : ITuiTurnHost
     public Task<int> ExecuteHumanShellAsync(string command, Action<string> output, Action<string> diagnostics,
         CancellationToken token) => _runtime.ExecuteHumanShellCommandAsync(command, output, diagnostics, token,
             allowDeferredPermission: true);
+    public Task<OmniCliRuntime.HumanShellCommandOutcome> ExecuteHumanShellWithOutcomeAsync(string command,
+        Action<string> output, Action<string> diagnostics, CancellationToken token) =>
+        _runtime.ExecuteHumanShellCommandWithOutcomeAsync(command, output, diagnostics, token,
+            allowDeferredPermission: true);
     public bool IsHumanShellPermission(string interactionId) => _runtime.IsHumanShellPermission(interactionId);
     public bool IsHumanShellWeakSandboxConsent(string interactionId) => _runtime.IsHumanShellWeakSandboxConsent(interactionId);
     public CommandAck DispatchHumanShellInteractionResponse(WireEnvelope command) =>
@@ -116,9 +142,18 @@ public sealed class TuiTurnHost : ITuiTurnHost
     public Task<int> ResumeHumanShellPermissionAsync(string interactionId, string optionId, CommandAck responseAck,
         Action<string> output, Action<string> diagnostics, CancellationToken token) =>
         _runtime.ResumeHumanShellPermissionAsync(interactionId, optionId, responseAck, output, diagnostics, token);
+    public Task<OmniCliRuntime.HumanShellCommandOutcome> ResumeHumanShellPermissionWithOutcomeAsync(string interactionId,
+        string optionId, CommandAck responseAck, Action<string> output, Action<string> diagnostics,
+        CancellationToken token) => _runtime.ResumeHumanShellPermissionWithOutcomeAsync(interactionId, optionId,
+            responseAck, output, diagnostics, token);
     public Task<int> ResumeHumanShellWeakSandboxConsentAsync(string interactionId, string optionId, CommandAck responseAck,
         Action<string> output, Action<string> diagnostics, CancellationToken token) =>
         _runtime.ResumeHumanShellWeakSandboxConsentAsync(interactionId, optionId, responseAck, output, diagnostics, token);
+    public Task<OmniCliRuntime.HumanShellCommandOutcome> ResumeHumanShellWeakSandboxConsentWithOutcomeAsync(
+        string interactionId, string optionId, CommandAck responseAck, Action<string> output,
+        Action<string> diagnostics, CancellationToken token) =>
+        _runtime.ResumeHumanShellWeakSandboxConsentWithOutcomeAsync(interactionId, optionId, responseAck,
+            output, diagnostics, token);
     public async Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken)
         => await ExecuteAsync(input, Array.Empty<TuiAttachmentReference>(), diagnostics, cancellationToken).ConfigureAwait(false);
 

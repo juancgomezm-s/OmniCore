@@ -2802,6 +2802,7 @@ public static class StdioProtocolHost
                         catch (Exception) { /* Keep an unproven original action deferred for reconciliation. */ }
                     }
                     var nativeHumanShell = false;
+                    var nativeHumanShellPending = false;
                     if (!pending.Binding.NativeProcessControlContinuation
                         && pending.Binding.NativeCommandKind == "nativeTool"
                         && pending.Binding.NativeInvocationId is { } nativeInvocation
@@ -2817,7 +2818,10 @@ public static class StdioProtocolHost
                             && invocationPayload.CanonicalCommandId == "core:shell.exec")
                         {
                             nativeHumanShell = true;
-                            if (code != 3)
+                            nativeHumanShellPending = code == 3 && OmniCliRuntime.IsHumanShellInteractionPending(
+                                pending.Server, nativeInvocation, new SessionId(Guid.Parse(pending.Binding.SessionId)),
+                                new RunId(Guid.Parse(pending.Binding.RunId)));
+                            if (!nativeHumanShellPending)
                             {
                                 try
                                 {
@@ -2845,7 +2849,7 @@ public static class StdioProtocolHost
                         : code == 3 ? "deferred" : "failed";
                     var responseExecutionCode = code == 0 ? "turn_completed" : code == 130 ? "turn_cancelled"
                         : code == 3 ? "input_required" : code == 4 ? "model_tools_unsupported" : "runtime_failed";
-                    if (nativeHumanShell && code != 3
+                    if (nativeHumanShell && !nativeHumanShellPending
                         && pending.Binding.NativeInvocationId is { } shellInvocationId)
                     {
                         var sourceReceipt = pending.Server.ReceiptStore?.ReadCommandReceipt(shellInvocationId);
@@ -2854,7 +2858,7 @@ public static class StdioProtocolHost
                     }
                     try
                     {
-                        if (!nativeHumanShell || code == 3
+                        if (!nativeHumanShell || nativeHumanShellPending
                             || pending.ReceiptCommandId != pending.Binding.NativeInvocationId)
                             pending.Server.ReceiptStore?.CompleteCommandExecution(pending.ReceiptCommandId,
                                 pending.ReceiptRequestHash, responseExecutionState, responseExecutionCode,
@@ -2865,7 +2869,8 @@ public static class StdioProtocolHost
                     {
                         lock (_gate)
                         {
-                            _deferredConversation = code == 3 ? pending.Binding : null;
+                            _deferredConversation = code == 3 && (!nativeHumanShell || nativeHumanShellPending)
+                                ? pending.Binding : null;
                         }
                     }
                     if (afterCommandExecutionReceiptForTests is not null)
