@@ -40,14 +40,15 @@ public static class StdioProtocolHost
         Func<PersistedConversationCommand, CancellationToken, Task<int>>? runPersistedConversation = null,
         Func<string, string?>? validateConversationAttachments = null,
         Func<CancellationToken, Task>? nativeProcessControlDeferredForTests = null,
-        Action<string>? nativeProcessControlStageForTests = null)
+        Action<string>? nativeProcessControlStageForTests = null,
+        Func<PersistedConversationCommand, Task>? afterCommandExecutionReceiptForTests = null)
     {
         ArgumentNullException.ThrowIfNull(bootstrapKey);
         if (bootstrapKey.Length != 32) throw new ArgumentException("Trusted action bootstrap key must be 256 bits.", nameof(bootstrapKey));
         return RunCore(client, input, output, diagnostics, bootstrapKey,
             Convert.ToHexString(RandomNumberGenerator.GetBytes(16)), cancellationToken, localizeDiagnostic,
             runPersistedConversation, validateConversationAttachments, nativeProcessControlDeferredForTests,
-            nativeProcessControlStageForTests);
+            nativeProcessControlStageForTests, afterCommandExecutionReceiptForTests);
     }
 
     private static int RunCore(IOmniClient client, Stream input, Stream output, TextWriter diagnostics,
@@ -56,7 +57,8 @@ public static class StdioProtocolHost
         Func<PersistedConversationCommand, CancellationToken, Task<int>>? runPersistedConversation = null,
         Func<string, string?>? validateConversationAttachments = null,
         Func<CancellationToken, Task>? nativeProcessControlDeferredForTests = null,
-        Action<string>? nativeProcessControlStageForTests = null)
+        Action<string>? nativeProcessControlStageForTests = null,
+        Func<PersistedConversationCommand, Task>? afterCommandExecutionReceiptForTests = null)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(input);
@@ -64,7 +66,8 @@ public static class StdioProtocolHost
         ArgumentNullException.ThrowIfNull(diagnostics);
         var negotiated = false;
         var conversation = new ConversationExecution(runPersistedConversation, validateConversationAttachments,
-            nativeProcessControlDeferredForTests, nativeProcessControlStageForTests);
+            nativeProcessControlDeferredForTests, nativeProcessControlStageForTests,
+            afterCommandExecutionReceiptForTests);
         var eventStream = new EventStreamPump(output);
         try
         {
@@ -1324,7 +1327,8 @@ public static class StdioProtocolHost
         Func<PersistedConversationCommand, CancellationToken, Task<int>>? runner,
         Func<string, string?>? validateAttachments,
         Func<CancellationToken, Task>? nativeProcessControlDeferredForTests,
-        Action<string>? nativeProcessControlStageForTests) : IDisposable
+        Action<string>? nativeProcessControlStageForTests,
+        Func<PersistedConversationCommand, Task>? afterCommandExecutionReceiptForTests) : IDisposable
     {
         private sealed record ChoiceRecovery(PersistedConversationCommand Binding, string InteractionId,
             string RunId, long PolicyRevision, string Kind, string OptionId);
@@ -1426,14 +1430,16 @@ public static class StdioProtocolHost
 
         public string EncodeChoiceRecoveryStatus(OmniServer server)
         {
-            var weakField = NativeWeakSandboxCapability
-                ? ",\"weakSandbox\":" + EncodeWeakSandboxRecovery(server)
-                : string.Empty;
             lock (_gate)
             {
                 if (_pendingContinuation is not null || _task is { IsCompleted: false })
-                    return "{\"state\":\"none\",\"choices\":[]" + weakField + "}";
+                    return "{\"state\":\"none\",\"choices\":[]"
+                        + (NativeWeakSandboxCapability ? ",\"weakSandbox\":{\"state\":\"none\"}" : string.Empty)
+                        + "}";
             }
+            var weakField = NativeWeakSandboxCapability
+                ? ",\"weakSandbox\":" + EncodeWeakSandboxRecovery(server)
+                : string.Empty;
             var recovery = ReadChoiceRecovery(server, null, null, null);
             if (recovery is null)
             {
@@ -2692,6 +2698,8 @@ public static class StdioProtocolHost
                             _deferredConversation = code == 3 ? pending.Binding : null;
                         }
                     }
+                    if (afterCommandExecutionReceiptForTests is not null)
+                        await afterCommandExecutionReceiptForTests(pending.Binding).ConfigureAwait(false);
                     return code;
                 });
             }

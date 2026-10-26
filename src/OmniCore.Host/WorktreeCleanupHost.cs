@@ -332,22 +332,63 @@ public static class WorktreeCleanupHost
                 || !string.Equals(session.WorkspaceId, workspaceId, StringComparison.Ordinal)) continue;
             var events = journal.ReadFrom(session.SessionId, 1);
             var payloads = events.Select(envelope => (Envelope: envelope, Payload: codecs.Decode(envelope))).ToArray();
-            foreach (var item in payloads.Where(item => item.Payload is LaneWorktreeCreated))
+            foreach (var item in payloads.Where(item => item.Payload is LaneWorktreeCreated or LaneWorktreeBound))
             {
-                var created = (LaneWorktreeCreated)item.Payload!;
-                if (!artifacts.Verify(created.TaskPacketRef.Hash, created.TaskPacketRef.Size)
-                    || created.TaskPacketRef.Size is <= 0 or > LaneWorktreeProvisioner.MaximumTaskPacketBytes)
+                var packetRef = item.Payload switch
+                {
+                    LaneWorktreeCreated createdPayload => createdPayload.TaskPacketRef,
+                    LaneWorktreeBound boundPayload => boundPayload.TaskPacketRef,
+                    _ => throw new InvalidOperationException("Unexpected worktree binding payload."),
+                };
+                if (!artifacts.Verify(packetRef.Hash, packetRef.Size)
+                    || packetRef.Size is <= 0 or > LaneWorktreeProvisioner.MaximumTaskPacketBytes)
                     return true;
-                var json = artifacts.GetText(created.TaskPacketRef.Hash);
+                var json = artifacts.GetText(packetRef.Hash);
                 if (json is null || System.Text.Encoding.UTF8.GetByteCount(json) > LaneWorktreeProvisioner.MaximumTaskPacketBytes)
                     return true;
                 TaskPacket? packet;
                 try { packet = System.Text.Json.JsonSerializer.Deserialize(json, TaskPacketJsonContext.Default.TaskPacket); }
                 catch (Exception) { return true; }
-                if (packet?.WorkflowImplementation?.OwnershipId != ownershipId) continue;
-                if (packet.LaneId != created.LaneId || packet.TaskId != created.TaskId
-                    || packet.ExecutionId != created.ExecutionId || packet.SessionId != session.SessionId)
+                var workflow = packet?.WorkflowImplementation;
+                var boundToTarget = item.Payload is LaneWorktreeBound value && value.OwnershipId == ownershipId;
+                if (workflow?.OwnershipId != ownershipId && !boundToTarget) continue;
+                if (workflow?.OwnershipId != ownershipId || packet is null
+                    || packet.SessionId != session.SessionId || packet.RunId != item.Envelope.RunId
+                    || packet.LaneId != item.Envelope.LaneId || packet.TaskId != item.Envelope.TaskId
+                    || packet.ExecutionId != item.Envelope.ExecutionId)
                     return true;
+                if (item.Payload is LaneWorktreeCreated created
+                    && (created.LaneId != packet.LaneId || created.TaskId != packet.TaskId
+                        || created.ExecutionId != packet.ExecutionId))
+                    return true;
+                if (item.Payload is LaneWorktreeBound bound)
+                {
+                    var ownerEvents = payloads.Where(entry => entry.Payload is LaneWorktreeCreated owner
+                            && owner.OwnershipId == ownershipId && owner.TaskId == bound.OwnerTaskId
+                            && owner.LaneId == bound.OwnerLaneId && owner.ExecutionId == bound.OwnerExecutionId)
+                        .ToArray();
+                    if (bound.OwnershipId != ownershipId || ownerEvents.Length != 1
+                        || ownerEvents[0].Envelope.RunId != item.Envelope.RunId
+                        || ownerEvents[0].Envelope.TaskId != bound.OwnerTaskId
+                        || ownerEvents[0].Envelope.LaneId != bound.OwnerLaneId
+                        || ownerEvents[0].Envelope.ExecutionId != bound.OwnerExecutionId
+                        || packet.OwnershipId != bound.OwnershipId
+                        || !PathEquals(packet.RepositoryRoot, bound.RepositoryRoot)
+                        || !PathEquals(packet.GitCommonDirectory, bound.GitCommonDirectory)
+                        || !PathEquals(packet.WorktreePath, bound.WorktreePath)
+                        || packet.SnapshotCommit != bound.SnapshotCommit
+                        || packet.SnapshotTree != bound.SnapshotTree
+                        || packet.SelectedProjectionRef != bound.SelectedProjectionRef
+                        || workflow.WorkflowId != bound.WorkflowId
+                        || workflow.WorkflowVersion != bound.WorkflowVersion
+                        || workflow.Instance != bound.WorkflowInstance
+                        || workflow.TaskId != bound.OwnerTaskId
+                        || workflow.LaneId != bound.OwnerLaneId
+                        || workflow.ExecutionId != bound.OwnerExecutionId
+                        || workflow.Tree != bound.SourceTree || workflow.Head != bound.SourceHead
+                        || workflow.Branch != bound.SourceBranch)
+                        return true;
+                }
                 var runEvents = payloads.Where(entry => entry.Envelope.RunId == packet.RunId).ToArray();
                 if (!HasSingleTerminalFor(runEvents, packet.TaskId, packet.LaneId)) return true;
                 if (runEvents.Count(entry => entry.Payload switch

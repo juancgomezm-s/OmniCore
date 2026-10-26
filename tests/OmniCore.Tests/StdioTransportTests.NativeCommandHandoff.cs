@@ -16,8 +16,16 @@ namespace OmniCore.Tests;
 
 public sealed partial class StdioTransportTests
 {
-    [Fact]
-    public async Task Native_stdio_orq_workflow_publishes_real_owned_implementation_worktree_and_passive_queries_resolve_it()
+    private sealed class UnavailableStrongProbeForWorkflowTest : ISandboxCapabilitiesProbe
+    {
+        public SandboxCapabilities Probe() => new(false, true, true, "test: Strong unavailable before launch");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Native_stdio_orq_workflow_publishes_real_owned_implementation_worktree_and_passive_queries_resolve_it(
+        bool forceStrongUnavailableBeforeLaunch)
     {
         var invocationId = Guid.NewGuid().ToString("D");
         var program = "public static class Program\n{\n    public static int Main()\n    {\n        /* FEATURE_MODULE_HOOK */\n        return 0;\n    }\n}\n";
@@ -25,6 +33,17 @@ public sealed partial class StdioTransportTests
         var programVersion = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(program))).ToLowerInvariant();
         var fixtureWorkspace = string.Empty;
         NativeCommandHandoffFixture? responseAuditFixture = null;
+        var invocationReceiptHeld = new TaskCompletionSource<PersistedConversationCommand>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseInvocationReceipt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Func<ISandboxCapabilitiesProbe>? workflowSandboxProbe = forceStrongUnavailableBeforeLaunch
+            ? static () => new UnavailableStrongProbeForWorkflowTest() : null;
+        async Task HoldInvocationAfterReceiptAsync(PersistedConversationCommand binding)
+        {
+            if (!string.Equals(binding.CommandId, invocationId, StringComparison.Ordinal)) return;
+            invocationReceiptHeld.TrySetResult(binding);
+            await releaseInvocationReceipt.Task.WaitAsync(TimeSpan.FromSeconds(45)).ConfigureAwait(false);
+        }
         string WorkflowResponse(int index, string _)
         {
             var response = index switch
@@ -60,7 +79,9 @@ public sealed partial class StdioTransportTests
             includeWorkflowAgentProfile: true, providerResponse: WorkflowResponse,
             permissionsYaml: "profile: autonomous\nrules:\n  dyn.core.verify_integration: allow\n",
             includeZeroModelPricing: true, isolateAgentRoots: true, workflowModel: true,
-            includeNativeWeakSandboxCapability: true);
+            includeNativeWeakSandboxCapability: true,
+            workflowSandboxCapabilitiesProbeForTests: workflowSandboxProbe,
+            afterCommandExecutionReceiptForTests: HoldInvocationAfterReceiptAsync);
         fixtureWorkspace = fixture.Workspace;
         responseAuditFixture = fixture;
         fixture.PreserveRootOnDispose = true;
@@ -153,7 +174,9 @@ public sealed partial class StdioTransportTests
         Assert.Equal(invocationId, admitted.CommandId);
         fixture.RecordProtocolAudit("command.invoke.user core:orq-auth", sessionId, runId,
             "accepted; exact catalog fingerprint and revisions; HMAC redacted");
-        await WaitForWorkflowInvocationAsync(fixture, sessionId, invocationId);
+        var weakConsentResponded = await WaitForWorkflowInvocationAsync(fixture, sessionId, invocationId,
+            invocationReceiptHeld.Task, releaseInvocationReceipt);
+        if (forceStrongUnavailableBeforeLaunch) Assert.True(weakConsentResponded);
 
         var eventsAfterWorkflow = fixture.ReadEvents(sessionId);
         var workflowRun = RunId.Parse(runId);
@@ -172,12 +195,22 @@ public sealed partial class StdioTransportTests
         var verifierSuccess = Assert.Single(eventsAfterWorkflow, item => item.Payload is ToolCallSucceeded success
             && success.ToolCallId == verifierToolCall.ToolCallId);
         Assert.Contains("Proceso terminó con código 0", Assert.IsType<ToolCallSucceeded>(verifierSuccess.Payload).ResultJson);
-        var weakConsentRequest = Assert.Single(eventsAfterWorkflow, item => item.Payload is InteractionRequested request
-            && request.Kind == InteractionKind.WeakSandboxConsent);
-        var weakConsent = Assert.IsType<InteractionRequested>(weakConsentRequest.Payload);
-        var weakConsentResolved = Assert.Single(eventsAfterWorkflow, item => item.Payload is InteractionResolved response
-            && response.InteractionId == weakConsent.InteractionId);
-        Assert.Equal("consent_once", Assert.IsType<InteractionResolved>(weakConsentResolved.Payload).OptionId);
+        var weakConsentRequests = eventsAfterWorkflow.Where(item => item.Payload is InteractionRequested request
+            && request.Kind == InteractionKind.WeakSandboxConsent).ToArray();
+        Assert.Equal(weakConsentResponded ? 1 : 0, weakConsentRequests.Length);
+        if (weakConsentResponded)
+        {
+            var weakConsent = Assert.IsType<InteractionRequested>(weakConsentRequests[0].Payload);
+            var weakConsentResolved = Assert.Single(eventsAfterWorkflow, item => item.Payload is InteractionResolved response
+                && response.InteractionId == weakConsent.InteractionId);
+            Assert.Equal("consent_once", Assert.IsType<InteractionResolved>(weakConsentResolved.Payload).OptionId);
+        }
+        else
+        {
+            Assert.False(forceStrongUnavailableBeforeLaunch);
+            Assert.DoesNotContain(eventsAfterWorkflow, item => item.Payload is InteractionResolved response
+                && response.OptionId == "consent_once");
+        }
         var implementationTask = Assert.Single(eventsAfterWorkflow, item => item.Envelope.RunId == workflowRun
             && item.Payload is PlanItemLinked link && link.PlanItemId == implementPlan.Id)
             .Payload is PlanItemLinked linked ? linked.Link.TaskId : throw new InvalidDataException("Implement stage has no linked Task.");
@@ -281,62 +314,148 @@ public sealed partial class StdioTransportTests
         Assert.True(Directory.Exists(Path.Combine(artifactDirectory, "fixture", "workspace", ".git")));
     }
 
-    private static async Task WaitForWorkflowInvocationAsync(NativeCommandHandoffFixture fixture,
-        string sessionId, string invocationId)
+    private static async Task<bool> WaitForWorkflowInvocationAsync(NativeCommandHandoffFixture fixture,
+        string sessionId, string invocationId, Task<PersistedConversationCommand> invocationReceiptHeld,
+        TaskCompletionSource releaseInvocationReceipt)
     {
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2);
         var weakSandboxConsentResponded = false;
+        PersistedConversationCommand heldReceipt;
+        try
+        {
+            heldReceipt = await invocationReceiptHeld.WaitAsync(TimeSpan.FromSeconds(30),
+                TestContext.Current.CancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            releaseInvocationReceipt.TrySetResult();
+            var missingReceipt = fixture.ReadReceipt(invocationId);
+            throw new TimeoutException("The target invocation did not reach the test-only post-receipt gate. "
+                + $"receipt={missingReceipt?.State}/{missingReceipt?.OutcomeKind}/"
+                + $"{missingReceipt?.ExecutionState}/{missingReceipt?.ExecutionCode}; "
+                + $"providerRequests={fixture.Provider.RequestCount}; diagnostics={string.Join(",", fixture.Diagnostics)}.");
+        }
+        var eventsAtReceipt = fixture.ReadEvents(sessionId);
+        var weakRequestEvent = eventsAtReceipt.LastOrDefault(item => item.Payload is InteractionRequested request
+            && request.Kind == InteractionKind.WeakSandboxConsent
+            && !eventsAtReceipt.Any(resolved => resolved.Payload is InteractionResolved response
+                && response.InteractionId == request.InteractionId));
+        var sourceReceiptAtGate = fixture.ReadReceipt(invocationId);
+        Assert.Equal(invocationId, heldReceipt.CommandId);
+        Assert.NotNull(sourceReceiptAtGate);
+        if (weakRequestEvent.Payload is InteractionRequested weakConsent)
+        {
+            Assert.True(sourceReceiptAtGate is { State: CommandReceiptState.Completed,
+                    OutcomeKind: "Accepted", ExecutionState: "deferred", ExecutionCode: "input_required" },
+                "The consent path must hold only after its original invocation receipt is deferred. "
+                + $"actual={sourceReceiptAtGate?.State}/{sourceReceiptAtGate?.OutcomeKind}/"
+                + $"{sourceReceiptAtGate?.ExecutionState}/{sourceReceiptAtGate?.ExecutionCode}.");
+            var requestEnvelope = weakRequestEvent.Envelope;
+            var runId = requestEnvelope.RunId?.ToString()
+                ?? throw new InvalidDataException("Weak sandbox consent has no Run scope.");
+            var taskId = requestEnvelope.TaskId?.ToString()
+                ?? throw new InvalidDataException("Weak sandbox consent has no Task scope.");
+            var laneId = requestEnvelope.LaneId?.ToString()
+                ?? throw new InvalidDataException("Weak sandbox consent has no Lane scope.");
+            var turnId = requestEnvelope.TurnId?.ToString()
+                ?? throw new InvalidDataException("Weak sandbox consent has no Turn scope.");
+            var toolCallId = requestEnvelope.ToolCallId?.ToString()
+                ?? throw new InvalidDataException("Weak sandbox consent has no ToolCall scope.");
+            try
+            {
+                var recoveryWhileRunnerHeld = fixture.QueryJson("interaction.recovery");
+                Assert.Equal("none", recoveryWhileRunnerHeld.GetProperty("weakSandbox").GetProperty("state").GetString());
+            }
+            finally { releaseInvocationReceipt.TrySetResult(); }
+            await WaitForWeakSandboxRecoveryReadyAsync(fixture, invocationId, weakConsent.InteractionId,
+                taskId, laneId, turnId, toolCallId);
+            var policyRevision = fixture.QueryJson("sessionSecurity").GetProperty("revision").GetInt64();
+            var response = WireEnvelope.Command(Ids.NewV7(), JsonSerializer.Serialize(new
+            {
+                cmd = "interaction.respond", responseType = "weakSandboxConsent",
+                expectedRunId = runId, taskId, laneId, turnId, toolCallId,
+                invocationId, interactionId = weakConsent.InteractionId.ToString(),
+                optionId = "consent_once", expectedPolicyRevision = policyRevision,
+            }));
+            var consentAck = Ack(fixture.ExchangeTrusted(response, sessionId, runId));
+            var continuationReceipt = fixture.ReadReceipt(response.MessageId);
+            var sourceReceipt = fixture.ReadReceipt(invocationId);
+            var recentEvents = string.Join(",", fixture.ReadEvents(sessionId).TakeLast(12)
+                .Select(item => item.Payload.GetType().Name));
+            Assert.True(consentAck.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted,
+                "Weak consent continuation was rejected. "
+                + $"status={consentAck.Status}; error={consentAck.Error ?? "none"}; "
+                + $"reason={consentAck.Outcome?.Reason ?? "none"}; "
+                + $"receipt={continuationReceipt?.State}/{continuationReceipt?.OutcomeKind}/"
+                + $"{continuationReceipt?.ExecutionState}/{continuationReceipt?.ExecutionCode}; "
+                + $"sourceReceipt={sourceReceipt?.State}/{sourceReceipt?.OutcomeKind}/"
+                + $"{sourceReceipt?.ExecutionState}/{sourceReceipt?.ExecutionCode}; "
+                + $"providerRequests={fixture.Provider.RequestCount}; "
+                + $"diagnosticCount={fixture.Diagnostics.Count}; recentEvents={recentEvents}");
+            fixture.RecordProtocolAudit("interaction.respond weakSandboxConsent", sessionId, runId,
+                "human-signed consent_once for the exact verifier ToolCall; HMAC redacted");
+            weakSandboxConsentResponded = true;
+        }
+        else
+        {
+            Assert.True(sourceReceiptAtGate is { State: CommandReceiptState.Completed,
+                    OutcomeKind: "Accepted", ExecutionState: "completed" },
+                "Without Weak consent, the Strong-requested workflow must have completed rather than silently downgraded. "
+                + $"actual={sourceReceiptAtGate?.State}/{sourceReceiptAtGate?.OutcomeKind}/"
+                + $"{sourceReceiptAtGate?.ExecutionState}/{sourceReceiptAtGate?.ExecutionCode}.");
+            releaseInvocationReceipt.TrySetResult();
+        }
         while (DateTimeOffset.UtcNow < deadline)
         {
             TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
             var events = fixture.ReadEvents(sessionId);
-            if (!weakSandboxConsentResponded)
-            {
-                var requestEvent = events.LastOrDefault(item => item.Payload is InteractionRequested request
-                    && request.Kind == InteractionKind.WeakSandboxConsent
-                    && !events.Any(resolved => resolved.Payload is InteractionResolved response
-                        && response.InteractionId == request.InteractionId));
-                if (requestEvent.Payload is InteractionRequested weakConsent)
-                {
-                    var envelope = requestEvent.Envelope;
-                    var runId = envelope.RunId?.ToString()
-                        ?? throw new InvalidDataException("Weak sandbox consent has no Run scope.");
-                    var taskId = envelope.TaskId?.ToString()
-                        ?? throw new InvalidDataException("Weak sandbox consent has no Task scope.");
-                    var laneId = envelope.LaneId?.ToString()
-                        ?? throw new InvalidDataException("Weak sandbox consent has no Lane scope.");
-                    var turnId = envelope.TurnId?.ToString()
-                        ?? throw new InvalidDataException("Weak sandbox consent has no Turn scope.");
-                    var toolCallId = envelope.ToolCallId?.ToString()
-                        ?? throw new InvalidDataException("Weak sandbox consent has no ToolCall scope.");
-                    var policyRevision = fixture.QueryJson("sessionSecurity").GetProperty("revision").GetInt64();
-                    var response = WireEnvelope.Command(Ids.NewV7(), JsonSerializer.Serialize(new
-                    {
-                        cmd = "interaction.respond", responseType = "weakSandboxConsent",
-                        expectedRunId = runId, taskId, laneId, turnId, toolCallId,
-                        invocationId, interactionId = weakConsent.InteractionId.ToString(),
-                        optionId = "consent_once", expectedPolicyRevision = policyRevision,
-                    }));
-                    var consentAck = Ack(fixture.ExchangeTrusted(response, sessionId, runId));
-                    Assert.Equal(RuntimeCommandOutcomeKind.Accepted, consentAck.Outcome?.Kind);
-                    fixture.RecordProtocolAudit("interaction.respond weakSandboxConsent", sessionId, runId,
-                        "human-signed consent_once for the exact verifier ToolCall; HMAC redacted");
-                    weakSandboxConsentResponded = true;
-                }
-            }
             if (events.Any(item => item.Payload is NativeCommandInvocationFinished finished
                 && finished.InvocationId.ToString() == invocationId))
             {
                 var finish = events.Last(item => item.Payload is NativeCommandInvocationFinished value
                     && value.InvocationId.ToString() == invocationId).Payload as NativeCommandInvocationFinished;
                 Assert.Equal("completed", finish?.OutcomeCode);
-                return;
+                return weakSandboxConsentResponded;
             }
             await Task.Delay(50, TestContext.Current.CancellationToken);
         }
         throw new TimeoutException("The stdio Orchestrate workflow did not reach a durable terminal invocation event. "
             + $"providerRequests={fixture.Provider.RequestCount}; diagnostics={string.Join(",", fixture.Diagnostics)}; "
             + $"events={string.Join(",", fixture.ReadEvents(sessionId).TakeLast(20).Select(item => item.Payload.GetType().Name))}.");
+    }
+
+    private static async Task<JsonElement> WaitForWeakSandboxRecoveryReadyAsync(NativeCommandHandoffFixture fixture,
+        string invocationId, InteractionId interactionId, string taskId, string laneId, string turnId, string toolCallId)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
+        string state = "unavailable";
+        string reason = "none";
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+            var recovery = fixture.QueryJson("interaction.recovery");
+            var weak = recovery.GetProperty("weakSandbox");
+            state = weak.GetProperty("state").GetString() ?? "invalid";
+            reason = weak.TryGetProperty("reasonCode", out var reasonNode)
+                ? reasonNode.GetString() ?? "invalid" : "none";
+            if (state == "pending")
+            {
+                Assert.Equal(invocationId, weak.GetProperty("invocationId").GetString());
+                Assert.Equal(interactionId.ToString(), weak.GetProperty("interactionId").GetString());
+                Assert.Equal(taskId, weak.GetProperty("taskId").GetString());
+                Assert.Equal(laneId, weak.GetProperty("laneId").GetString());
+                Assert.Equal(turnId, weak.GetProperty("turnId").GetString());
+                Assert.Equal(toolCallId, weak.GetProperty("toolCallId").GetString());
+                return weak;
+            }
+            if (state == "blocked" && reason is not "weak_consent_scope_unavailable")
+                throw new InvalidOperationException($"Weak consent recovery is blocked: {reason}.");
+            await Task.Delay(25, TestContext.Current.CancellationToken);
+        }
+        var receipt = fixture.ReadReceipt(invocationId);
+        throw new TimeoutException("Weak consent recovery did not become publicly actionable. "
+            + $"state={state}; reason={reason}; sourceReceipt={receipt?.State}/{receipt?.OutcomeKind}/"
+            + $"{receipt?.ExecutionState}/{receipt?.ExecutionCode}; providerRequests={fixture.Provider.RequestCount}.");
     }
 
     private static void InitializeWorkflowGitRepository(string workspace, string program)
@@ -970,6 +1089,8 @@ public sealed partial class StdioTransportTests
         public string? PreservedEvidenceDirectory { get; private set; }
         public Func<CancellationToken, Task>? NativeProcessControlDeferredForTests { get; set; }
         public Action<string>? NativeProcessControlStageForTests { get; set; }
+        public Func<PersistedConversationCommand, Task>? AfterCommandExecutionReceiptForTests { get; set; }
+        public Func<ISandboxCapabilitiesProbe>? WorkflowSandboxCapabilitiesProbeForTests { get; set; }
         public AckDeliveryCutStream CutStream { get; private set; }
         public string RootDirectory => _root;
         public string BootstrapKeyForOwnedProcess => Convert.ToHexString(_key);
@@ -1028,7 +1149,9 @@ public sealed partial class StdioTransportTests
             SandboxStrength processSandboxStrength = SandboxStrength.Strong,
             bool isolateAgentRoots = false,
             bool workflowModel = false,
-            bool includeNativeWeakSandboxCapability = false)
+            bool includeNativeWeakSandboxCapability = false,
+            Func<PersistedConversationCommand, Task>? afterCommandExecutionReceiptForTests = null,
+            Func<ISandboxCapabilitiesProbe>? workflowSandboxCapabilitiesProbeForTests = null)
         {
             var root = Path.Combine(Path.GetTempPath(), "omni-native-command-handoff-" + Guid.NewGuid().ToString("N"));
             var workspace = Path.Combine(root, "workspace");
@@ -1057,6 +1180,8 @@ public sealed partial class StdioTransportTests
             fixture._processSandboxStrength = processSandboxStrength;
             fixture.NativeProcessControlDeferredForTests = nativeProcessControlDeferredForTests;
             fixture.NativeProcessControlStageForTests = nativeProcessControlStageForTests;
+            fixture.AfterCommandExecutionReceiptForTests = afterCommandExecutionReceiptForTests;
+            fixture.WorkflowSandboxCapabilitiesProbeForTests = workflowSandboxCapabilitiesProbeForTests;
             void RecordProviderBody(string body)
             {
                 fixture.ProviderBodies.Enqueue(body);
@@ -1438,6 +1563,7 @@ public sealed partial class StdioTransportTests
         {
             var runtime = OmniCliRuntime.Create(Workspace);
             runtime.ProcessSandboxStrengthForTests = _processSandboxStrength;
+            runtime.WorkflowSandboxCapabilitiesProbeForTests = WorkflowSandboxCapabilitiesProbeForTests;
             runtime.UseConsoleInput = false;
             runtime.QuestionnaireInput = null;
             runtime.PrepareConversationSessionPolicy();
@@ -1462,7 +1588,8 @@ public sealed partial class StdioTransportTests
                             Diagnostics.Enqueue(SafeDiagnostic(diagnostic));
                         }, token),
                 nativeProcessControlDeferredForTests: NativeProcessControlDeferredForTests,
-                nativeProcessControlStageForTests: NativeProcessControlStageForTests));
+                nativeProcessControlStageForTests: NativeProcessControlStageForTests,
+                afterCommandExecutionReceiptForTests: AfterCommandExecutionReceiptForTests));
         }
 
         private void Negotiate(bool includeNativeChoiceCapability = true)

@@ -1,8 +1,9 @@
+using System.Security.Cryptography;
+using System.Text;
 using OmniCore.Abstractions;
 using OmniCore.Client;
 using OmniCore.Host;
 using OmniCore.Protocol;
-using ConversationTranscriptImport = OmniCore.Domain.ConversationTranscriptImport;
 
 namespace OmniCore.Cli;
 
@@ -1001,19 +1002,27 @@ public sealed partial class CliApp
             {
                 var fullPath = Path.GetFullPath(sourcePath);
                 using var input = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                if (input.Length is <= 0 or > ConversationTranscriptImport.MaximumSourceBytes)
+                // Keep the CLI inside the stdio frame budget without taking a direct dependency
+                // on Domain. Host remains the single authority that parses and validates the
+                // canonical import document and its stricter source/event limits.
+                if (input.Length is <= 0 or > StdioProtocol.MaximumFrameBytes / 2)
                     throw new InvalidDataException("Transcript file size is outside the allowed limit.");
                 var bytes = new byte[checked((int)input.Length)];
                 input.ReadExactly(bytes);
-                var document = ConversationTranscriptImport.Parse(bytes);
                 var base64 = Convert.ToBase64String(bytes);
                 var payload = "{" + JsonObj.Field("cmd", "conversation.import") + ","
                     + JsonObj.Field("documentBase64", base64) + "}";
-                ConversationTranscriptImport.ValidateCommandPayloadSize(payload);
-                var importAck = importClient.SendUserAction(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+                var envelope = WireEnvelope.Command(Ids.NewV7(), payload);
+                if (Encoding.UTF8.GetByteCount(envelope.ToJson()) > StdioProtocol.MaximumFrameBytes - 8192)
+                    throw new InvalidDataException("Transcript command exceeds the allowed protocol frame size.");
+                var sourceSha256 = Convert.ToHexString(SHA256.HashData(bytes));
+                var importAck = importClient.SendUserAction(envelope, CancellationToken.None);
                 if (importAck.Status != "ok")
-                { Console.WriteLine(Loc().ResolveWire(importAck.Error ?? "conversation.failed")); return Task.FromResult(1); }
-                Console.WriteLine("{" + JsonObj.Field("origin", "Imported") + "," + JsonObj.Field("sourceSha256", document.Sha256)
+                {
+                    Console.WriteLine(Loc().ResolveWire(importAck.Error ?? "conversation.failed"));
+                    return Task.FromResult(importAck.Error == "conversation.import.invalid" ? 2 : 1);
+                }
+                Console.WriteLine("{" + JsonObj.Field("origin", "Imported") + "," + JsonObj.Field("sourceSha256", sourceSha256)
                     + "," + JsonObj.Field("session", client.Query("sessionIdentity", CancellationToken.None)?.Json ?? "null") + "}");
                 return Task.FromResult(0);
             }

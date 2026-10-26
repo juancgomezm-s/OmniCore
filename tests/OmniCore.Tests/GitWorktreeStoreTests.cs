@@ -1927,22 +1927,59 @@ public sealed class GitWorktreeStoreTests
     }
 
     [Theory]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(false, false, true)]
     public async Task Host_cleanup_preserves_lane_when_proposal_is_partial_or_a_consumer_is_active(
-        bool subset, bool activeConsumer)
+        bool subset, bool activeConsumer, bool unrelatedActiveLane)
     {
-        var scenario = await CreateCleanupScenario(subset, activeConsumer);
+        var scenario = await CreateCleanupScenario(subset, activeConsumer, unrelatedActiveLane);
         var before = File.ReadAllText(Path.Combine(scenario.Worktree.WorktreePath, "sample.txt"));
         var outcome = await WorktreeCleanupHost.CleanupWithDependenciesAsync(scenario.Fixture.Repository,
             scenario.Fixture.Data, scenario.Worktree.OwnershipId, scenario.Journal, scenario.Codecs,
             scenario.Artifacts, scenario.Git, CancellationToken.None);
+
+        if (unrelatedActiveLane)
+        {
+            Assert.True(outcome.Removed, outcome.Error?.ToString());
+            Assert.False(Directory.Exists(scenario.Worktree.WorktreePath));
+            var retainedRef = Assert.Single(scenario.Fixture.Git("for-each-ref", "--format=%(refname)",
+                "refs/omnicore/retained-lanes").Split('\n', StringSplitOptions.RemoveEmptyEntries));
+            Assert.Equal(scenario.Preview.TheirsTree, scenario.Fixture.Git("show", "-s", "--format=%T", retainedRef).Trim());
+            Assert.Equal(before, scenario.Fixture.Git("show", retainedRef + ":sample.txt"));
+            return;
+        }
 
         Assert.False(outcome.Removed);
         Assert.Equal(GitWorktreeErrorCode.WorktreeDirty, outcome.Error);
         Assert.True(Directory.Exists(scenario.Worktree.WorktreePath));
         Assert.Equal(before, File.ReadAllText(Path.Combine(scenario.Worktree.WorktreePath, "sample.txt")));
         Assert.Empty(scenario.Fixture.Git("for-each-ref", "--format=%(refname)", "refs/omnicore/retained-lanes"));
+        if (activeConsumer)
+        {
+            var consumerTask = Assert.IsType<TaskId>(scenario.ActiveConsumerTask);
+            var consumerLane = Assert.IsType<LaneId>(scenario.ActiveConsumerLane);
+            var consumerExecution = Assert.IsType<ExecutionId>(scenario.ActiveConsumerExecution);
+            var consumerProfile = Assert.IsType<ProfileId>(scenario.ActiveConsumerProfile);
+            AppendScoped(scenario.Journal, scenario.Codecs, scenario.Session, scenario.Run,
+                consumerTask, consumerLane, consumerExecution,
+                new AgentExecutionCompleted(consumerExecution, consumerLane, consumerProfile,
+                    scenario.RootExecution, ExecutionRelation.Awaited, ExecutionSupervision.Managed));
+            AppendScoped(scenario.Journal, scenario.Codecs, scenario.Session, scenario.Run,
+                consumerTask, consumerLane, consumerExecution, new LaneCompleted(consumerLane, null));
+            AppendScoped(scenario.Journal, scenario.Codecs, scenario.Session, scenario.Run,
+                consumerTask, consumerLane, consumerExecution, new TaskCompleted(consumerTask, null));
+
+            var afterConsumer = await WorktreeCleanupHost.CleanupWithDependenciesAsync(scenario.Fixture.Repository,
+                scenario.Fixture.Data, scenario.Worktree.OwnershipId, scenario.Journal, scenario.Codecs,
+                scenario.Artifacts, scenario.Git, CancellationToken.None);
+            Assert.True(afterConsumer.Removed, afterConsumer.Error?.ToString());
+            Assert.False(Directory.Exists(scenario.Worktree.WorktreePath));
+            var retainedRef = Assert.Single(scenario.Fixture.Git("for-each-ref", "--format=%(refname)",
+                "refs/omnicore/retained-lanes").Split('\n', StringSplitOptions.RemoveEmptyEntries));
+            Assert.Equal(scenario.Preview.TheirsTree, scenario.Fixture.Git("show", "-s", "--format=%T", retainedRef).Trim());
+            Assert.Equal(before, scenario.Fixture.Git("show", retainedRef + ":sample.txt"));
+        }
     }
 
     [Fact]
@@ -1961,7 +1998,8 @@ public sealed class GitWorktreeStoreTests
         Assert.True(Directory.Exists(scenario.Worktree.WorktreePath));
     }
 
-    private static async Task<CleanupScenario> CreateCleanupScenario(bool subset = false, bool activeConsumer = false)
+    private static async Task<CleanupScenario> CreateCleanupScenario(bool subset = false, bool activeConsumer = false,
+        bool unrelatedActiveLane = false)
     {
         var fixture = new GitFixture();
         fixture.Init();
@@ -2029,6 +2067,10 @@ public sealed class GitWorktreeStoreTests
             new TaskStarted(childTask, worktree.LaneId));
         var selectedProjection = artifacts.PutText("{}", ContextInheritanceService.DelegationPacketMediaType,
             ArtifactKind.Other, Sensitivity.Sensitive);
+        TaskId? activeConsumerTask = null;
+        LaneId? activeConsumerLane = null;
+        ExecutionId? activeConsumerExecution = null;
+        ProfileId? activeConsumerProfile = null;
         var taskPacket = new TaskPacket(1, session, run, childTask, worktree.LaneId, childExecution,
             DelegationId.New(), rootExecution, ProfileId.New(), "cleanup fixture lane",
             new TaskBudget(null, null, null, null), selectedProjection, worktree.OwnershipId,
@@ -2046,10 +2088,70 @@ public sealed class GitWorktreeStoreTests
         {
             var pendingTask = TaskId.New(); var pendingLane = LaneId.New();
             var pendingExecution = ExecutionId.New();
+            var pendingDelegationId = DelegationId.New();
+            var verifierProfile = ProfileId.New();
+            activeConsumerTask = pendingTask;
+            activeConsumerLane = pendingLane;
+            activeConsumerExecution = pendingExecution;
+            activeConsumerProfile = verifierProfile;
             AppendScoped(journal, codecs, session, run, pendingTask, pendingLane, pendingExecution,
                 new TaskCreated(pendingTask, run, "pending verify", [], new TaskBudget(null, null, null, null)));
             AppendScoped(journal, codecs, session, run, pendingTask, pendingLane, pendingExecution,
-                new LaneCreated(pendingLane, pendingTask, ProfileId.New()));
+                new LaneCreated(pendingLane, pendingTask, verifierProfile));
+            AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
+                new DelegationCreated(rootExecution, new Delegation(pendingDelegationId, rootExecution,
+                    pendingTask, pendingLane, verifierProfile, selectedProjection,
+                    ExecutionRelation.Awaited, ExecutionSupervision.Managed)));
+            AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
+                new DelegationAccepted(rootExecution, pendingDelegationId, pendingExecution));
+            AppendScoped(journal, codecs, session, run, pendingTask, pendingLane, pendingExecution,
+                new AgentExecutionStarted(pendingExecution, pendingLane, verifierProfile, rootExecution,
+                    ExecutionRelation.Awaited, ExecutionSupervision.Managed));
+            AppendScoped(journal, codecs, session, run, pendingTask, pendingLane, pendingExecution,
+                new TaskStarted(pendingTask, pendingLane));
+            var workflowBinding = new WorkflowImplementationBinding("core.orq", "1", "fixture-instance",
+                childTask, worktree.LaneId, childExecution, worktree.OwnershipId,
+                preview.TheirsTree, preview.LaneHeadAtCapture, preview.LaneBranchAtCapture);
+            var verifyPacket = new TaskPacket(1, session, run, pendingTask, pendingLane, pendingExecution,
+                pendingDelegationId, rootExecution, verifierProfile, "verify implementation fixture",
+                new TaskBudget(null, null, null, null), selectedProjection, worktree.OwnershipId,
+                worktree.RepositoryRoot, worktree.GitCommonDirectory, worktree.WorktreePath,
+                worktree.Head, worktree.SnapshotCommit, worktree.SnapshotTree,
+                WorktreeBase.SnapshotOfWorkingTree, "read-only consumer of the exact implementation snapshot",
+                workflowBinding);
+            var verifyPacketJson = System.Text.Json.JsonSerializer.Serialize(verifyPacket,
+                TaskPacketJsonContext.Default.TaskPacket);
+            var verifyPacketRef = artifacts.PutText(verifyPacketJson, LaneWorktreeProvisioner.TaskPacketMediaType,
+                ArtifactKind.Other, Sensitivity.Sensitive);
+            AppendScoped(journal, codecs, session, run, pendingTask, pendingLane, pendingExecution,
+                new LaneWorktreeBound(pendingTask, pendingLane, pendingExecution,
+                    childTask, worktree.LaneId, childExecution, worktree.OwnershipId,
+                    worktree.RepositoryRoot, worktree.GitCommonDirectory, worktree.WorktreePath,
+                    worktree.SnapshotCommit, worktree.SnapshotTree, verifyPacketRef, selectedProjection,
+                    workflowBinding.WorkflowId, workflowBinding.WorkflowVersion, workflowBinding.Instance,
+                    workflowBinding.Tree, workflowBinding.Head, workflowBinding.Branch));
+        }
+        if (unrelatedActiveLane)
+        {
+            var unrelatedTask = TaskId.New(); var unrelatedLane = LaneId.New();
+            var unrelatedExecution = ExecutionId.New();
+            var unrelatedDelegationId = DelegationId.New();
+            var unrelatedProfile = ProfileId.New();
+            AppendScoped(journal, codecs, session, run, unrelatedTask, unrelatedLane, unrelatedExecution,
+                new TaskCreated(unrelatedTask, run, "unrelated active task", [], new TaskBudget(null, null, null, null)));
+            AppendScoped(journal, codecs, session, run, unrelatedTask, unrelatedLane, unrelatedExecution,
+                new LaneCreated(unrelatedLane, unrelatedTask, unrelatedProfile));
+            AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
+                new DelegationCreated(rootExecution, new Delegation(unrelatedDelegationId, rootExecution,
+                    unrelatedTask, unrelatedLane, unrelatedProfile, selectedProjection,
+                    ExecutionRelation.Awaited, ExecutionSupervision.Managed)));
+            AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
+                new DelegationAccepted(rootExecution, unrelatedDelegationId, unrelatedExecution));
+            AppendScoped(journal, codecs, session, run, unrelatedTask, unrelatedLane, unrelatedExecution,
+                new AgentExecutionStarted(unrelatedExecution, unrelatedLane, unrelatedProfile, rootExecution,
+                    ExecutionRelation.Awaited, ExecutionSupervision.Managed));
+            AppendScoped(journal, codecs, session, run, unrelatedTask, unrelatedLane, unrelatedExecution,
+                new TaskStarted(unrelatedTask, unrelatedLane));
         }
 
         if (spec is not null && completed is not null)
@@ -2078,7 +2180,9 @@ public sealed class GitWorktreeStoreTests
             new LaneCompleted(rootLane, null));
         AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
             new TaskCompleted(rootTask, null));
-        return new CleanupScenario(fixture, git, worktree, preview, journal, codecs, artifacts);
+        return new CleanupScenario(fixture, git, worktree, preview, journal, codecs, artifacts,
+            session, run, rootExecution, activeConsumerTask, activeConsumerLane,
+            activeConsumerExecution, activeConsumerProfile);
     }
 
     private static void AppendScoped(IEventStore store, IEventCodecRegistry codecs, SessionId session,
@@ -2099,7 +2203,9 @@ public sealed class GitWorktreeStoreTests
     }
 
     private sealed record CleanupScenario(GitFixture Fixture, GitWorktreeStore Git, WorktreeIdentity Worktree,
-        WorktreeIntegrationPreview Preview, InMemoryEventStore Journal, IEventCodecRegistry Codecs, IArtifactStore Artifacts);
+        WorktreeIntegrationPreview Preview, InMemoryEventStore Journal, IEventCodecRegistry Codecs, IArtifactStore Artifacts,
+        SessionId Session, RunId Run, ExecutionId RootExecution, TaskId? ActiveConsumerTask,
+        LaneId? ActiveConsumerLane, ExecutionId? ActiveConsumerExecution, ProfileId? ActiveConsumerProfile);
 
     [Fact]
     public async Task Integration_batch_policy_preflight_rejects_excess_file_budget_before_barrier_or_artifact()

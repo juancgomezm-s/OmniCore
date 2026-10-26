@@ -42,6 +42,7 @@ public sealed class OmniCliRuntime : IDisposable
     public string CompanionClientId { get; set; } = "headless";
     internal SandboxStrength ProcessSandboxStrengthForTests { get; set; } = SandboxStrength.Strong;
     internal Func<OmniCore.Abstractions.IProcessRuntime>? ProcessRuntimeFactoryForTests { get; set; }
+    internal Func<ISandboxCapabilitiesProbe>? WorkflowSandboxCapabilitiesProbeForTests { get; set; }
     internal Action<ExplorerTurn.TurnResult>? ChildTurnResultObserverForTests { get; set; }
     internal Func<ISandboxProcessLauncher>? McpSandboxLauncherFactoryForTests { get; set; }
     internal Func<string?>? ClaudeExecutableLocatorForTests { get; set; }
@@ -1590,6 +1591,17 @@ public sealed class OmniCliRuntime : IDisposable
         catch (System.Text.Json.JsonException) { return false; }
     }
 
+    private HostTools CreateWorkflowStageTools(WorkflowStage stage, AgentProfile profile,
+        ArtifactReadTool? artifactReadTool)
+    {
+        var runtimeFactory = ProcessRuntimeFactoryForTests;
+        var capabilitiesFactory = WorkflowSandboxCapabilitiesProbeForTests;
+        if (runtimeFactory is null && capabilitiesFactory is null)
+            return HostTools.WorkflowStage(stage, profile, artifactReadTool, ProcessSandboxStrengthForTests);
+        return HostTools.WorkflowStageForTests(stage, profile, artifactReadTool, ProcessSandboxStrengthForTests,
+            runtimeFactory?.Invoke() ?? SystemProcessRuntime.Instance(), capabilitiesFactory?.Invoke());
+    }
+
     public Task<int> DelegationAsync(string delegationId, Action<string> diagnostics, CancellationToken token) =>
         RunTurnAsync("", false, diagnostics, token, delegationId: new DelegationId(Guid.Parse(delegationId)));
 
@@ -2964,11 +2976,8 @@ public sealed class OmniCliRuntime : IDisposable
             if (processSessionManager is not null)
                 await processSessionManager.PrepareScopeAsync(runId.ToString(), laneId.ToString()).ConfigureAwait(false);
             var hostTools = delegation is not null
-                ? workflowStage is not null ? ProcessRuntimeFactoryForTests is { } processRuntimeFactory
-                    ? HostTools.WorkflowStageForTests(workflowStage.Definition.Stage, agentProfile!, artifactReadTool,
-                        ProcessSandboxStrengthForTests, processRuntimeFactory())
-                    : HostTools.WorkflowStage(workflowStage.Definition.Stage, agentProfile!, artifactReadTool,
-                        ProcessSandboxStrengthForTests)
+                ? workflowStage is not null ? CreateWorkflowStageTools(workflowStage.Definition.Stage,
+                    agentProfile!, artifactReadTool)
                     : childRequiresActTools ? HostTools.DelegatedAgent(agentProfile!, artifactReadTool)
                         : HostTools.DelegatedReaderWithMailbox(artifactReadTool)
                 : executingAct
@@ -3463,11 +3472,7 @@ public sealed class OmniCliRuntime : IDisposable
                         ? server.ProcessSessionsForChild(work.Session, work.Run, taskPacket.TaskId,
                             work.Scope.LaneId!, childExecution, laneRoot, taskPacket, work.Worktree) : null;
                     var childTools = workflowStage is not null
-                        ? ProcessRuntimeFactoryForTests is { } processRuntimeFactory
-                            ? HostTools.WorkflowStageForTests(workflowStage.Definition.Stage, work.Profile,
-                                artifactReadTool, ProcessSandboxStrengthForTests, processRuntimeFactory())
-                            : HostTools.WorkflowStage(workflowStage.Definition.Stage, work.Profile,
-                                artifactReadTool, ProcessSandboxStrengthForTests)
+                        ? CreateWorkflowStageTools(workflowStage.Definition.Stage, work.Profile, artifactReadTool)
                         : childRequiresActTools ? HostTools.DelegatedAgent(work.Profile, artifactReadTool,
                             processSessionManager: childProcessSessionManager)
                             : HostTools.DelegatedReaderWithMailbox(artifactReadTool);
