@@ -1,7 +1,10 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using OmniCore.Abstractions;
+using OmniCore.Cli;
 using OmniCore.Domain;
 using OmniCore.Engine;
 using OmniCore.Extensions;
@@ -19,6 +22,22 @@ public sealed partial class StdioTransportTests
     private sealed class UnavailableStrongProbeForWorkflowTest : ISandboxCapabilitiesProbe
     {
         public SandboxCapabilities Probe() => new(false, true, true, "test: Strong unavailable before launch");
+    }
+
+    private sealed class UnavailableStrongProcessLauncherForHumanShellTest(ISandboxProcessLauncher inner)
+        : ISandboxProcessLauncher, IStrongSandboxPreflight
+    {
+        public SandboxStrength? LastRequestedStrength { get; private set; }
+
+        public StrongSandboxPreflightResult CheckStrongAvailability(SandboxLaunchSpec launch) =>
+            StrongSandboxPreflightResult.UnavailableBeforeLaunch;
+
+        public ValueTask<ISandboxProcessControl> StartAsync(SandboxLaunchSpec launch,
+            CancellationToken cancellationToken)
+        {
+            LastRequestedStrength = launch.RequestedStrength;
+            return inner.StartAsync(launch, cancellationToken);
+        }
     }
 
     [Theory]
@@ -48,6 +67,11 @@ public sealed partial class StdioTransportTests
         }
         string WorkflowResponse(int index, string _)
         {
+            // A real provider round-trip can exceed the historical 30 s test-only gate under
+            // loaded Windows CI. Keep one deterministic delay within the already-declared
+            // two-minute workflow deadline; this is fixture latency, not a new model request.
+            if (!forceStrongUnavailableBeforeLaunch && index == 1)
+                Thread.Sleep(TimeSpan.FromSeconds(35));
             var response = index switch
             {
                 0 => CliEndToEndTests.ResponsesTextResponse("principal workflow context"),
@@ -118,13 +142,18 @@ public sealed partial class StdioTransportTests
             maxToolCalls = 36, maxElapsedSeconds = 300, maxSpendUsd = 5m,
         }));
         var modeAck = Ack(fixture.ExchangeTrusted(mode, sessionId, runId));
-        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, modeAck.Outcome?.Kind);
+        Assert.True(modeAck.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted,
+            $"Act selection failed: status={modeAck.Status}, error={modeAck.Error}, reason={modeAck.Outcome?.Reason}");
         fixture.RecordProtocolAudit("run.mode.select", sessionId, runId, "accepted; exact revision; HMAC redacted");
         var catalog = fixture.QueryJson("command.catalog");
         var workflow = Assert.Single(catalog.GetProperty("commands").EnumerateArray(), item =>
             item.GetProperty("canonicalCommandId").GetString() == "core:orq-auth");
         Assert.True(workflow.GetProperty("enabled").GetBoolean(),
             "The compiled workflow must be enabled by the signed Orchestrate authorization.");
+        var humanShell = Assert.Single(catalog.GetProperty("commands").EnumerateArray(), item =>
+            item.GetProperty("canonicalCommandId").GetString() == "core:shell.exec");
+        Assert.True(humanShell.GetProperty("enabled").GetBoolean(),
+            "A quiescent Run with explicit Orchestrate authorization retains the human shell command entry.");
 
         var stableSequence = fixture.ReadEvents(sessionId).Max(item => item.Envelope.Sequence);
         var currentRevision = fixture.QueryJson("humanActionScope").GetProperty("revision").GetInt64();
@@ -360,7 +389,9 @@ public sealed partial class StdioTransportTests
         PersistedConversationCommand heldReceipt;
         try
         {
-            heldReceipt = await invocationReceiptHeld.WaitAsync(TimeSpan.FromSeconds(30),
+            var remaining = deadline - DateTimeOffset.UtcNow;
+            if (remaining <= TimeSpan.Zero) throw new TimeoutException("The workflow exceeded its existing two-minute deadline before the post-receipt gate.");
+            heldReceipt = await invocationReceiptHeld.WaitAsync(remaining,
                 TestContext.Current.CancellationToken);
         }
         catch (TimeoutException)
@@ -687,6 +718,743 @@ public sealed partial class StdioTransportTests
         // Selecting a Run mode must not mutate the separate user default preference.
         Assert.Equal(defaultMode, fixture.QueryJson("modePreference").GetProperty("mode").GetString());
         Assert.Equal(1, fixture.Provider.RequestCount);
+    }
+
+    [Fact]
+    public async Task Native_human_shell_runs_through_host_without_provider_and_is_not_inherited_by_later_model_context()
+    {
+        await using var fixture = await NativeCommandHandoffFixture.StartAsync(Guid.NewGuid().ToString("D"),
+            permissionsYaml: "profile: autonomous\nrules:\n  shell.exec: allow\n", isolateAgentRoots: true);
+        var sessionId = fixture.CreateEmptySession();
+        var preference = fixture.QueryJson("modePreference");
+        var planDefault = WireEnvelope.Command(Guid.NewGuid().ToString("D"), JsonSerializer.Serialize(new
+        {
+            cmd = "mode.default.set", mode = "plan", expectedRevision = preference.GetProperty("revision").GetInt64(),
+        }));
+        var planAck = fixture.Server.SendUserAction(planDefault, CancellationToken.None);
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, planAck.Outcome?.Kind);
+        var securitySnapshot = fixture.QueryJson("sessionSecurity");
+        var providerRequestsBefore = fixture.Provider.RequestCount;
+        var output = new StringBuilder();
+        var diagnostics = new List<string>();
+        var command = OperatingSystem.IsWindows()
+            ? "echo NATIVE_HUMAN_SHELL_MARKER & cd & echo NATIVE_HUMAN_SHELL_STDERR 1>&2"
+            : "printf 'NATIVE_HUMAN_SHELL_MARKER\\n'; pwd; printf 'NATIVE_HUMAN_SHELL_STDERR\\n' >&2";
+        var planExit = await fixture.ExecuteHumanShellCommandAsync(command, _ => { }, diagnostics.Add,
+            TestContext.Current.CancellationToken);
+        Assert.Equal(1, planExit);
+        Assert.Contains(diagnostics, item => item.Contains("Act default", StringComparison.OrdinalIgnoreCase));
+        Assert.Null(fixture.QueryJson("humanActionScope").GetProperty("runId").GetString());
+        Assert.Equal(0, fixture.Provider.RequestCount);
+        var actPreference = fixture.QueryJson("modePreference");
+        var actDefault = WireEnvelope.Command(Guid.NewGuid().ToString("D"), JsonSerializer.Serialize(new
+        {
+            cmd = "mode.default.set", mode = "act", expectedRevision = actPreference.GetProperty("revision").GetInt64(),
+        }));
+        var actAck = fixture.Server.SendUserAction(actDefault, CancellationToken.None);
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, actAck.Outcome?.Kind);
+        var exitCode = await fixture.ExecuteHumanShellCommandAsync(command, chunk => output.Append(chunk), diagnostics.Add,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(exitCode == 0,
+            $"Human shell failed: exit={exitCode}, output={output}, diagnostics={string.Join(" | ", diagnostics)}, security={securitySnapshot.GetRawText()}");
+        Assert.Contains("NATIVE_HUMAN_SHELL_MARKER", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("NATIVE_HUMAN_SHELL_STDERR", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains(fixture.Workspace, output.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(diagnostics, item => item.Contains("cli.tool.ok", StringComparison.Ordinal));
+        Assert.DoesNotContain(diagnostics, item => item.Contains("cli.tool.failed", StringComparison.Ordinal));
+        Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
+        var scope = fixture.QueryJson("humanActionScope");
+        var runId = Assert.IsType<string>(scope.GetProperty("runId").GetString());
+        Assert.Equal("act", scope.GetProperty("mode").GetString());
+        var journal = fixture.ReadEvents(sessionId);
+        var shellCall = Assert.Single(journal, item => item.Envelope.RunId?.ToString() == runId
+            && item.Payload is ToolCallRequested call && call.ToolName == "shell.exec");
+        var shellInvocationId = Assert.IsType<ToolCallRequested>(shellCall.Payload).ProviderCallId
+            .Replace("native-action-", "", StringComparison.Ordinal);
+        var shellReceipt = fixture.ReadReceipt(shellInvocationId);
+        Assert.Equal("completed", shellReceipt?.ExecutionState);
+        Assert.Equal(runId, shellReceipt?.ExecutionRunId);
+        Assert.Contains(journal, item => item.Envelope.RunId?.ToString() == runId && item.Envelope.ToolCallId == shellCall.Envelope.ToolCallId
+            && item.Payload is ToolCallSucceeded);
+        var shellState = Assert.Single(journal, item => item.Payload is ProcessSessionStateRecorded state
+            && state.SourceToolId == HumanShellProcessTool.ProcessOwnerSource
+            && state.SourceCallId == shellCall.Envelope.ToolCallId?.ToString() && state.State == "exited");
+        Assert.Equal(runId, shellState.Envelope.RunId?.ToString());
+        Assert.DoesNotContain(journal, item => item.Payload is ModelStepStarted
+            && item.Envelope.Sequence > shellCall.Envelope.Sequence);
+
+        var previousCliRuntime = CliApp.UseRuntimeForTests(fixture.Runtime);
+        try
+        {
+            var cliExit = await CliApp.RunAsync([OperatingSystem.IsWindows()
+                ? "!echo NATIVE_CLI_SHELL_MARKER" : "!printf NATIVE_CLI_SHELL_MARKER"]);
+            Assert.Equal(0, cliExit);
+        }
+        finally { _ = CliApp.UseRuntimeForTests(previousCliRuntime); }
+        Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
+        var cliShellCall = Assert.Single(fixture.ReadEvents(sessionId), item => item.Payload is ToolCallRequested call
+            && call.ToolName == "shell.exec" && call.ProviderCallId != "native-action-" + shellInvocationId);
+        var cliInvocationId = Assert.IsType<ToolCallRequested>(cliShellCall.Payload).ProviderCallId
+            .Replace("native-action-", "", StringComparison.Ordinal);
+        Assert.Equal("completed", fixture.ReadReceipt(cliInvocationId)?.ExecutionState);
+
+        var exitOutput = new StringBuilder();
+        var exitCommand = OperatingSystem.IsWindows() ? "exit /b 7" : "exit 7";
+        var nonZeroExit = await fixture.ExecuteHumanShellCommandAsync(exitCommand, chunk => exitOutput.Append(chunk),
+            diagnostics.Add, TestContext.Current.CancellationToken);
+        Assert.Equal(7, nonZeroExit);
+        Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
+        var cancelOutput = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var orphanMarker = Path.Combine(fixture.Workspace, "human-shell-orphan-marker.txt");
+        Process? unrelatedProcess = null;
+        try
+        {
+            string longCommand;
+            if (OperatingSystem.IsWindows())
+            {
+                CopyProcessHelperInto(fixture.Workspace);
+                var helper = Path.Combine(fixture.Workspace, "OmniCore.SandboxTestProcess.exe");
+                unrelatedProcess = Process.Start(new ProcessStartInfo(helper, "sleep")
+                { UseShellExecute = false, CreateNoWindow = true })
+                    ?? throw new InvalidOperationException("Could not start the independent fixture process.");
+                Assert.False(unrelatedProcess.HasExited);
+                longCommand = "\"" + helper + "\" spawn-delayed-marker \"" + orphanMarker + "\"";
+            }
+            else
+            {
+                var sleep = new SystemExecutableResolver().Resolve("sleep", fixture.Workspace).ResolvedPath;
+                unrelatedProcess = Process.Start(new ProcessStartInfo(sleep, "120")
+                    { UseShellExecute = false, CreateNoWindow = true })
+                    ?? throw new InvalidOperationException("Could not start the independent fixture process.");
+                Assert.False(unrelatedProcess.HasExited);
+                longCommand = "sleep 30 & child=$!; printf 'DESCENDANT:%s\\n' \"$child\"; wait \"$child\"";
+            }
+            using var cancellation = new CancellationTokenSource();
+            var invocationStart = Stopwatch.StartNew();
+            var cancelTask = fixture.ExecuteHumanShellCommandAsync(longCommand, chunk =>
+            {
+                const string prefix = "DESCENDANT:";
+                var marker = chunk.IndexOf(prefix, StringComparison.Ordinal);
+                if (marker >= 0)
+                {
+                    var end = chunk.IndexOfAny(['\r', '\n'], marker);
+                    var token = chunk[(marker + prefix.Length)..(end < 0 ? chunk.Length : end)];
+                    if (int.TryParse(token, out var descendantPid)) cancelOutput.TrySetResult(descendantPid);
+                }
+            }, diagnostics.Add, cancellation.Token);
+            Assert.True(invocationStart.Elapsed < TimeSpan.FromSeconds(1),
+                "The async human-shell API blocked before returning its Task.");
+            var descendantPid = await cancelOutput.Task.WaitAsync(TimeSpan.FromSeconds(10),
+                TestContext.Current.CancellationToken);
+            var cancelTimer = Stopwatch.StartNew();
+            cancellation.Cancel();
+            var cancelExit = await cancelTask.WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
+            Assert.True(cancelExit == 130,
+                $"Human shell cancellation returned {cancelExit}; diagnostics={string.Join(" | ", diagnostics)}");
+            Assert.True(cancelTimer.Elapsed < TimeSpan.FromSeconds(10),
+                $"Cancellation did not terminate the human shell promptly: {cancelTimer.Elapsed}.");
+            Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
+            var descendantDeadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(3);
+            var descendantAlive = true;
+            while (DateTimeOffset.UtcNow < descendantDeadline)
+            {
+                descendantAlive = IsProcessAlive(descendantPid);
+                if (!descendantAlive) break;
+                await Task.Delay(TimeSpan.FromMilliseconds(100), TestContext.Current.CancellationToken);
+            }
+            Assert.False(descendantAlive, "Stopping the human shell left its fixture descendant alive.");
+            if (OperatingSystem.IsWindows())
+                Assert.False(File.Exists(orphanMarker), "Stopping the human shell let its delayed descendant write the marker.");
+            Assert.False(unrelatedProcess!.HasExited, "Stopping the human shell killed an unrelated fixture process.");
+        }
+        finally
+        {
+            if (unrelatedProcess is not null)
+            {
+                try
+                {
+                    if (!unrelatedProcess.HasExited)
+                    {
+                        unrelatedProcess.Kill(entireProcessTree: true);
+                        await unrelatedProcess.WaitForExitAsync(CancellationToken.None);
+                    }
+                }
+                finally { unrelatedProcess.Dispose(); }
+            }
+        }
+        Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
+
+        var security = fixture.QueryJson("sessionSecurity");
+        var followupScope = fixture.QueryJson("humanActionScope");
+        var followupRunId = NullableJsonString(followupScope.GetProperty("runId"));
+        var followup = WireEnvelope.Command(Guid.NewGuid().ToString("D"), JsonSerializer.Serialize(new
+        {
+            cmd = "conversation.start", text = "Describe the prior human command output without guessing.",
+            mode = "act", expectedRevision = followupRunId is null
+                ? (long?)null : followupScope.GetProperty("revision").GetInt64(),
+            expectedPolicyRevision = security.GetProperty("revision").GetInt64(),
+            expectedDefaultRevision = (string?)null,
+        }));
+        var followupAck = Ack(fixture.ExchangeTrusted(followup, sessionId, followupRunId));
+        Assert.True(followupAck.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted,
+            $"Follow-up conversation start was rejected: status={followupAck.Status}, error={followupAck.Error}, reason={followupAck.Outcome?.Reason}.");
+        await fixture.WaitForProviderBodiesAsync(providerRequestsBefore + 1, TestContext.Current.CancellationToken)
+            .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+        Assert.DoesNotContain("NATIVE_HUMAN_SHELL_MARKER", fixture.ProviderBodies.Last(), StringComparison.Ordinal);
+        Assert.DoesNotContain("NATIVE_CLI_SHELL_MARKER", fixture.ProviderBodies.Last(), StringComparison.Ordinal);
+        Assert.DoesNotContain("NATIVE_CANCEL_MARKER", fixture.ProviderBodies.Last(), StringComparison.Ordinal);
+        Assert.Equal(providerRequestsBefore + 1, fixture.Provider.RequestCount);
+        var sourceProcessStateCount = fixture.ReadEvents(sessionId).Count(item =>
+            item.Payload is ProcessSessionStateRecorded processState
+            && processState.SourceToolId == HumanShellProcessTool.ProcessOwnerSource
+            && processState.SourceCallId == shellCall.Envelope.ToolCallId?.ToString());
+        await fixture.RestartHostAsync();
+        Assert.Equal("completed", fixture.ReadReceipt(shellInvocationId)?.ExecutionState);
+        Assert.Equal(sourceProcessStateCount, fixture.ReadEvents(sessionId).Count(item =>
+            item.Payload is ProcessSessionStateRecorded processState
+            && processState.SourceToolId == HumanShellProcessTool.ProcessOwnerSource
+            && processState.SourceCallId == shellCall.Envelope.ToolCallId?.ToString()));
+        Assert.Equal(providerRequestsBefore + 1, fixture.Provider.RequestCount);
+    }
+
+    [Theory]
+    [InlineData("ask")]
+    [InlineData("weak-consent")]
+    [InlineData("deny")]
+    [InlineData("observe-only")]
+    public async Task Native_human_shell_permission_and_weak_consent_use_signed_resume_without_provider(string scenario)
+    {
+        if (scenario == "weak-consent" && !OperatingSystem.IsWindows())
+        {
+            Assert.Skip("Persistent Weak process sessions are supported by this cut on Windows only.");
+            return;
+        }
+        var userDecision = scenario is "ask" or "weak-consent" ? "ask" : scenario == "deny" ? "deny" : "allow";
+        var permissions = "profile: autonomous\nrules:\n  shell.exec: " + userDecision + "\n";
+        await using var fixture = await NativeCommandHandoffFixture.StartAsync(Guid.NewGuid().ToString("D"),
+            permissionsYaml: permissions, isolateAgentRoots: true, includeNativeWeakSandboxCapability: true);
+        var sessionId = fixture.CreateEmptySession();
+        var modePreference = fixture.QueryJson("modePreference");
+        var actDefault = fixture.Server.SendUserAction(WireEnvelope.Command(Guid.NewGuid().ToString("D"),
+            JsonSerializer.Serialize(new { cmd = "mode.default.set", mode = "act",
+                expectedRevision = modePreference.GetProperty("revision").GetInt64() })), CancellationToken.None);
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, actDefault.Outcome?.Kind);
+
+        if (scenario == "observe-only")
+        {
+            var security = fixture.QueryJson("sessionSecurity");
+            var observeOnly = fixture.Server.SendUserAction(WireEnvelope.Command(Guid.NewGuid().ToString("D"),
+                JsonSerializer.Serialize(new { cmd = "session.security.set", sessionId, category = "ObserveOnly",
+                    expectedRevision = security.GetProperty("revision").GetInt64() })), CancellationToken.None);
+            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, observeOnly.Outcome?.Kind);
+        }
+
+        if (scenario == "weak-consent")
+        {
+            var actualWeakLauncher = OmniHost.CreateProcessSandboxLauncher(SystemProcessRuntime.Instance());
+            fixture.Runtime.HumanShellProcessLauncherFactoryForTests = () =>
+                new UnavailableStrongProcessLauncherForHumanShellTest(actualWeakLauncher);
+        }
+
+        var providerRequestsBefore = fixture.Provider.RequestCount;
+        var markerPath = Path.Combine(fixture.Workspace, "native-human-shell-permission-marker.txt");
+        var command = scenario == "ask"
+            ? OperatingSystem.IsWindows()
+                ? "echo NATIVE_SHELL_PERMISSION_MARKER > \"" + markerPath + "\" & exit /b 7"
+                : "printf 'NATIVE_SHELL_PERMISSION_MARKER\\n' > '" + markerPath + "'; exit 7"
+            : OperatingSystem.IsWindows()
+                ? "echo NATIVE_SHELL_PERMISSION_MARKER > \"" + markerPath + "\""
+                : "printf 'NATIVE_SHELL_PERMISSION_MARKER\\n' > '" + markerPath + "'";
+        var output = new StringBuilder();
+        var diagnostics = new List<string>();
+        var execution = await fixture.ExecuteHumanShellCommandAsync(command, chunk => output.Append(chunk),
+            diagnostics.Add, TestContext.Current.CancellationToken, allowDeferredPermission: true);
+        Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
+        var events = fixture.ReadEvents(sessionId);
+        var processEventsBeforeResume = events.Where(item => item.Payload is ProcessSessionStateRecorded state
+            && state.SourceToolId == HumanShellProcessTool.ProcessOwnerSource).ToArray();
+
+        if (scenario is "deny" or "observe-only")
+        {
+            Assert.NotEqual(0, execution);
+            Assert.False(File.Exists(markerPath), "A denied or ObserveOnly shell command must not create its fixture marker.");
+            Assert.Empty(processEventsBeforeResume);
+            Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
+            if (scenario == "deny")
+            {
+                var deniedShellCall = Assert.Single(events, item => item.Payload is ToolCallRequested call
+                    && call.ToolName == "shell.exec");
+                Assert.Contains(events, item => item.Payload is PermissionEvaluated evaluation
+                    && evaluation.ToolCallId == Assert.IsType<ToolCallRequested>(deniedShellCall.Payload).ToolCallId
+                    && evaluation.Decision == PermissionDecision.Deny);
+            }
+            else
+            {
+                Assert.Equal(ModelPolicyCategory.ObserveOnly,
+                    fixture.QueryJson("sessionSecurity").GetProperty("category").GetString() is { } category
+                        ? Enum.Parse<ModelPolicyCategory>(category) : throw new InvalidDataException("ObserveOnly category missing."));
+            }
+            Assert.DoesNotContain(events, item => item.Payload is InteractionRequested request
+                && request.Kind is InteractionKind.Permission or InteractionKind.WeakSandboxConsent);
+            return;
+        }
+
+        var expectedKind = scenario is "ask" or "weak-consent"
+            ? InteractionKind.Permission : InteractionKind.WeakSandboxConsent;
+        Assert.True(execution == 3, $"Expected a deferred {expectedKind} response; got code={execution}, diagnostics={string.Join(" | ", diagnostics)}, requests={string.Join(",", events.Select(item => item.Payload.GetType().Name).Where(name => name.Contains("Interaction") || name.Contains("Permission") || name.Contains("ToolCall")))}.");
+        Assert.False(File.Exists(markerPath), "A process must not start before the signed response resumes its exact invocation.");
+        Assert.Empty(processEventsBeforeResume);
+        var requestEvent = Assert.Single(events, item => item.Payload is InteractionRequested request
+            && request.Kind == expectedKind);
+        var request = Assert.IsType<InteractionRequested>(requestEvent.Payload);
+        var interactionId = request.InteractionId.ToString();
+        var runId = requestEvent.Envelope.RunId?.ToString()
+            ?? throw new InvalidDataException("Human shell interaction has no Run scope.");
+        var shellRequest = Assert.Single(events, item => item.Payload is ToolCallRequested call
+            && call.ToolName == "shell.exec");
+        var shellInvocationId = Assert.IsType<ToolCallRequested>(shellRequest.Payload).ProviderCallId
+            .Replace("native-action-", "", StringComparison.Ordinal);
+        var deferredReceipt = fixture.ReadReceipt(shellInvocationId);
+        Assert.Equal("deferred", deferredReceipt?.ExecutionState);
+        Assert.Equal("input_required", deferredReceipt?.ExecutionCode);
+        Assert.Equal(runId, deferredReceipt?.ExecutionRunId);
+        var resumable = scenario is "ask" or "weak-consent" ? fixture.Runtime.IsHumanShellPermission(interactionId)
+            : fixture.Runtime.IsHumanShellWeakSandboxConsent(interactionId);
+        Assert.True(resumable, $"The persisted human shell interaction was not resumable: scenario={scenario}, interaction={interactionId}, eventRun={runId}, scope={fixture.QueryJson("humanActionScope").GetRawText()}, kinds={string.Join(",", events.Select(item => item.Payload.GetType().Name))}.");
+        var securityRevision = fixture.QueryJson("sessionSecurity").GetProperty("revision").GetInt64();
+        var responseType = scenario is "ask" or "weak-consent" ? "choice" : "weakSandboxConsent";
+        var optionId = scenario is "ask" or "weak-consent" ? "allow_once" : "consent_once";
+        var response = WireEnvelope.Command(Guid.NewGuid().ToString("D"), JsonSerializer.Serialize(new
+        {
+            cmd = "interaction.respond", responseType, interactionId, optionId,
+            expectedRunId = runId, expectedPolicyRevision = securityRevision,
+        }));
+        var responseAck = fixture.Runtime.DispatchHumanShellInteractionResponse(response);
+        Assert.True(responseAck.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted,
+            $"Signed {scenario} response was rejected: status={responseAck.Status}, error={responseAck.Error}, reason={responseAck.Outcome?.Reason}.");
+        var finalInteraction = request.InteractionId;
+        int resumedCode;
+        if (scenario == "weak-consent")
+        {
+            var firstResumeCode = await fixture.Runtime.ResumeHumanShellPermissionAsync(interactionId, optionId,
+                responseAck, _ => { }, diagnostics.Add, TestContext.Current.CancellationToken);
+            Assert.Equal(3, firstResumeCode);
+            Assert.Equal("deferred", fixture.ReadReceipt(shellInvocationId)?.ExecutionState);
+            Assert.False(File.Exists(markerPath), "Allowing Ask must still wait for the separately signed Weak consent.");
+            Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
+            var weakEvents = fixture.ReadEvents(sessionId);
+            var weakRequestEvent = Assert.Single(weakEvents, item => item.Payload is InteractionRequested weakRequest
+                && weakRequest.Kind == InteractionKind.WeakSandboxConsent);
+            var weakRequest = Assert.IsType<InteractionRequested>(weakRequestEvent.Payload);
+            finalInteraction = weakRequest.InteractionId;
+            Assert.True(fixture.Runtime.IsHumanShellWeakSandboxConsent(finalInteraction.ToString()),
+                "The Weak consent must bind to the same native shell invocation after Ask resumes.");
+            var weakRecovery = fixture.QueryJson("interaction.recovery").GetProperty("weakSandbox");
+            Assert.True(weakRecovery.GetProperty("state").GetString() == "pending",
+                $"The current native shell Weak choice was not advertised as actionable: {weakRecovery.GetRawText()}.");
+            interactionId = finalInteraction.ToString();
+            responseType = "weakSandboxConsent";
+            optionId = "consent_once";
+            response = WireEnvelope.Command(Guid.NewGuid().ToString("D"), JsonSerializer.Serialize(new
+            {
+                cmd = "interaction.respond", responseType, interactionId, optionId,
+                expectedRunId = runId, expectedPolicyRevision = securityRevision,
+            }));
+            responseAck = fixture.Runtime.DispatchHumanShellInteractionResponse(response);
+            Assert.True(responseAck.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted,
+                $"Signed Weak response was rejected: status={responseAck.Status}, error={responseAck.Error}, reason={responseAck.Outcome?.Reason}.");
+            var codecs = fixture.Server.AcquireCodecs();
+            var persistedRun = fixture.Server.AcquireStore().ReadFrom(new SessionId(Guid.Parse(sessionId)), 1)
+                .Where(item => item.RunId?.ToString() == runId).ToArray();
+            AssertWeakNativeShellResumeProjectionRejectsUnboundHistory(persistedRun, codecs,
+                new SessionId(Guid.Parse(sessionId)), new RunId(Guid.Parse(runId)));
+            resumedCode = await fixture.Runtime.ResumeHumanShellWeakSandboxConsentAsync(interactionId, optionId,
+                responseAck, _ => { }, diagnostics.Add, TestContext.Current.CancellationToken);
+        }
+        else if (scenario == "ask")
+            resumedCode = await fixture.Runtime.ResumeHumanShellPermissionAsync(interactionId, optionId, responseAck,
+                _ => { }, diagnostics.Add, TestContext.Current.CancellationToken);
+        else
+            resumedCode = await fixture.Runtime.ResumeHumanShellWeakSandboxConsentAsync(interactionId, optionId, responseAck,
+                _ => { }, diagnostics.Add, TestContext.Current.CancellationToken);
+        var resumeEvents = fixture.ReadEvents(sessionId);
+        var permissionFailures = resumeEvents.Select(item => item.Payload).OfType<PermissionDenied>()
+            .Select(item => item.Cause).ToArray();
+        var permissionDecisions = resumeEvents.Select(item => item.Payload).OfType<PermissionEvaluated>()
+            .Select(item => item.Decision + ":" + item.LayersJson).ToArray();
+        var permissionProof = resumeEvents.Where(item => item.Envelope.ToolCallId == shellRequest.Envelope.ToolCallId)
+            .Select(item => item.Envelope.Sequence + ":" + (item.Payload switch
+            {
+                PermissionRequested value => "PermissionRequested:" + value.InteractionId,
+                InteractionRequested value => "InteractionRequested:" + value.Kind + ":" + value.OptionsJson,
+                InteractionResolved value => "InteractionResolved:" + value.OptionId + ":" + value.Cause,
+                PermissionGranted value => "PermissionGranted:" + value.Lifetime + ":" + value.GrantId,
+                ToolCallAuthorized => "ToolCallAuthorized",
+                _ => item.Payload.GetType().Name,
+            })).ToArray();
+        var expectedExitCode = scenario == "ask" ? 7 : 0;
+        Assert.True(resumedCode == expectedExitCode,
+            $"Signed {scenario} continuation did not complete the human shell action: code={resumedCode}, expected={expectedExitCode}, diagnostics={string.Join(" | ", diagnostics)}, permissionFailures={string.Join(" | ", permissionFailures)}, permissionDecisions={string.Join(" | ", permissionDecisions)}, permissionProof={string.Join(" | ", permissionProof)}.");
+        Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
+        Assert.Equal("NATIVE_SHELL_PERMISSION_MARKER", File.ReadAllText(markerPath).Trim());
+        var terminalReceipt = fixture.ReadReceipt(shellInvocationId);
+        Assert.Equal("completed", terminalReceipt?.ExecutionState);
+        Assert.Equal(runId, terminalReceipt?.ExecutionRunId);
+
+        var completedEvents = fixture.ReadEvents(sessionId);
+        if (scenario == "weak-consent")
+        {
+            var codecs = fixture.Server.AcquireCodecs();
+            var persistedRun = fixture.Server.AcquireStore().ReadFrom(new SessionId(Guid.Parse(sessionId)), 1)
+                .Where(item => item.RunId?.ToString() == runId).ToArray();
+            _ = RunProjection.Replay(new SessionId(Guid.Parse(sessionId)), new RunId(Guid.Parse(runId)), codecs,
+                persistedRun);
+        }
+        var toolCalls = completedEvents.Where(item => item.Payload is ToolCallRequested call
+            && call.ToolName == "shell.exec").ToArray();
+        var shellCallEvent = Assert.Single(toolCalls);
+        var shellCall = Assert.IsType<ToolCallRequested>(shellCallEvent.Payload);
+        Assert.Single(completedEvents, item => item.Payload is ToolCallSucceeded success
+            && success.ToolCallId == shellCall.ToolCallId);
+        var processState = Assert.Single(completedEvents, item => item.Payload is ProcessSessionStateRecorded state
+            && state.SourceToolId == HumanShellProcessTool.ProcessOwnerSource
+            && state.SourceCallId == shellCall.ToolCallId.ToString() && state.State == "exited");
+        Assert.Equal(runId, processState.Envelope.RunId?.ToString());
+        Assert.Contains(completedEvents, item => item.Payload is InteractionResolved resolved
+            && resolved.InteractionId == finalInteraction && resolved.OptionId == optionId
+            && resolved.Cause == InteractionCause.User);
+        if (scenario == "weak-consent")
+            Assert.Contains(completedEvents, item => item.Payload is InteractionResolved resolved
+                && resolved.InteractionId == request.InteractionId && resolved.OptionId == "allow_once"
+                && resolved.Cause == InteractionCause.User);
+        Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
+        if (scenario == "weak-consent")
+        {
+            var processStateCount = completedEvents.Count(item => item.Payload is ProcessSessionStateRecorded state
+                && state.SourceToolId == HumanShellProcessTool.ProcessOwnerSource
+                && state.SourceCallId == shellCall.ToolCallId.ToString());
+            await fixture.RestartHostAsync();
+            Assert.Equal("completed", fixture.ReadReceipt(shellInvocationId)?.ExecutionState);
+            Assert.Equal(processStateCount, fixture.ReadEvents(sessionId).Count(item =>
+                item.Payload is ProcessSessionStateRecorded state
+                && state.SourceToolId == HumanShellProcessTool.ProcessOwnerSource
+                && state.SourceCallId == shellCall.ToolCallId.ToString()));
+            Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
+        }
+    }
+
+    [Theory]
+    [InlineData("allow-exit-seven")]
+    [InlineData("ask-then-weak")]
+    public async Task Framed_stdio_native_shell_finishes_source_and_response_receipts_without_manual_resume(
+        string scenario)
+    {
+        if (scenario == "ask-then-weak" && !OperatingSystem.IsWindows())
+        {
+            Assert.Skip("Persistent Weak process sessions are supported by this cut on Windows only.");
+            return;
+        }
+
+        var askThenWeak = scenario == "ask-then-weak";
+        var permissions = askThenWeak
+            ? "profile: autonomous\nrules:\n  shell.exec: ask\n"
+            : "profile: autonomous\nrules:\n  shell.exec: allow\n";
+        await using var fixture = await NativeCommandHandoffFixture.StartAsync(Guid.NewGuid().ToString("D"),
+            permissionsYaml: permissions, isolateAgentRoots: true, includeNativeWeakSandboxCapability: true);
+        var sessionId = fixture.CreateEmptySession();
+        var preference = fixture.QueryJson("modePreference");
+        var mode = WireEnvelope.Command(Guid.NewGuid().ToString("D"), JsonSerializer.Serialize(new
+        {
+            cmd = "mode.default.set", mode = "act", expectedRevision = preference.GetProperty("revision").GetInt64(),
+        }));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted,
+            fixture.Server.SendUserAction(mode, TestContext.Current.CancellationToken).Outcome?.Kind);
+
+        UnavailableStrongProcessLauncherForHumanShellTest? unavailableStrong = null;
+        if (askThenWeak)
+        {
+            var actualWeakLauncher = OmniHost.CreateProcessSandboxLauncher(SystemProcessRuntime.Instance());
+            unavailableStrong = new UnavailableStrongProcessLauncherForHumanShellTest(actualWeakLauncher);
+            fixture.Runtime.HumanShellProcessLauncherFactoryForTests = () => unavailableStrong;
+        }
+
+        var catalog = fixture.QueryJson("command.catalog");
+        var shell = Assert.Single(catalog.GetProperty("commands").EnumerateArray(), item =>
+            item.GetProperty("canonicalCommandId").GetString() == "core:shell.exec");
+        Assert.True(shell.GetProperty("enabled").GetBoolean());
+        var markerPath = Path.Combine(fixture.Workspace, "framed-shell-effect.txt");
+        var commandText = OperatingSystem.IsWindows()
+            ? "echo FRAMED_NATIVE_SHELL_EFFECT > \"" + markerPath + "\""
+                + (askThenWeak ? "" : " & exit /b 7")
+            : "printf 'FRAMED_NATIVE_SHELL_EFFECT\\n' > '" + markerPath + "'"
+                + (askThenWeak ? "" : "; exit 7");
+        var shellArgs = JsonSerializer.Serialize(new { command = commandText, cwd = fixture.Workspace, timeoutSeconds = 60 });
+        var invocationId = Guid.NewGuid().ToString("D");
+        var invocation = WireEnvelope.Command(invocationId, JsonSerializer.Serialize(new
+        {
+            cmd = "command.invoke.user",
+            canonicalCommandId = "core:shell.exec",
+            arguments = new[] { "shell.exec", shellArgs },
+            expectedSessionId = sessionId,
+            expectedRunId = fixture.QueryJson("humanActionScope").GetProperty("runId").GetString(),
+            expectedModeRevision = NullableJsonInt64(catalog.GetProperty("modeRevision")),
+            expectedPolicyRevision = catalog.GetProperty("policyRevision").GetInt64(),
+            expectedSelectionRevision = catalog.GetProperty("selectionRevision").GetInt32(),
+            expectedRoutingPolicyRevision = NullableJsonInt64(catalog.GetProperty("routingPolicyRevision")),
+            catalogRevision = catalog.GetProperty("catalogRevision").GetString(),
+            sourceFingerprint = shell.GetProperty("sourceFingerprint").GetString(),
+        }));
+        var providerRequestsBefore = fixture.Provider.RequestCount;
+        var initialAck = Ack(fixture.ExchangeTrusted(invocation, sessionId, null));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, initialAck.Outcome?.Kind);
+
+        string? weakResponseId = null;
+        string? weakResponsePayload = null;
+        if (askThenWeak)
+        {
+            var initialDeadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+            while (DateTimeOffset.UtcNow < initialDeadline
+                && fixture.ReadReceipt(invocationId)?.ExecutionState is null)
+                await Task.Delay(25, TestContext.Current.CancellationToken);
+            var initialReceipt = fixture.ReadReceipt(invocationId);
+            if (initialReceipt?.ExecutionState != "deferred")
+            {
+                var initialEvents = fixture.ReadEvents(sessionId);
+                var decisionSummary = string.Join(";", initialEvents.Select(item => item.Payload)
+                    .OfType<PermissionEvaluated>().Select(item => item.Decision + "/" + item.LayersJson));
+                var interactionSummary = string.Join(",", initialEvents.Select(item => item.Payload)
+                    .OfType<InteractionRequested>().Select(item => item.Kind.ToString()));
+                var finishSummary = string.Join(",", initialEvents.Select(item => item.Payload)
+                    .OfType<NativeCommandInvocationFinished>().Select(item => item.OutcomeCode));
+                Assert.Fail($"The framed Ask did not defer: receipt={initialReceipt?.ExecutionState}/{initialReceipt?.ExecutionCode}; "
+                    + $"permissionDecisions={decisionSummary}; interactions={interactionSummary}; finishes={finishSummary}; "
+                    + $"policy={fixture.QueryJson("sessionSecurity").GetRawText()}.");
+            }
+            Assert.False(File.Exists(markerPath));
+            var events = fixture.ReadEvents(sessionId);
+            var permissionRequestEvent = Assert.Single(events, item => item.Payload is InteractionRequested request
+                && request.Kind == InteractionKind.Permission);
+            var permissionRequest = Assert.IsType<InteractionRequested>(permissionRequestEvent.Payload);
+            var runId = permissionRequestEvent.Envelope.RunId?.ToString()
+                ?? throw new InvalidDataException("Permission request has no Run scope.");
+            var policyRevision = fixture.QueryJson("sessionSecurity").GetProperty("revision").GetInt64();
+            var allow = WireEnvelope.Command(Guid.NewGuid().ToString("D"), JsonSerializer.Serialize(new
+            {
+                cmd = "interaction.respond", responseType = "choice", interactionId = permissionRequest.InteractionId.ToString(),
+                optionId = "allow_once", expectedRunId = runId, expectedPolicyRevision = policyRevision,
+            }));
+            var allowAck = Ack(fixture.ExchangeTrusted(allow, sessionId, runId));
+            Assert.True(allowAck.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted,
+                $"The framed Ask response was rejected: status={allowAck.Status}, error={allowAck.Error}, reason={allowAck.Outcome?.Reason}, options={permissionRequest.OptionsJson}.");
+            var allowDeadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
+            while (DateTimeOffset.UtcNow < allowDeadline
+                && fixture.ReadReceipt(allow.MessageId)?.ExecutionState is null)
+                await Task.Delay(25, TestContext.Current.CancellationToken);
+            var allowReceipt = fixture.ReadReceipt(allow.MessageId);
+            if (allowReceipt?.ExecutionState != "deferred")
+            {
+                var allowEvents = fixture.ReadEvents(sessionId);
+                var weakKinds = string.Join(",", allowEvents.Select(item => item.Payload)
+                    .OfType<InteractionRequested>().Select(item => item.Kind.ToString()));
+                var decisions = string.Join(";", allowEvents.Select(item => item.Payload)
+                    .OfType<PermissionEvaluated>().Select(item => item.Decision + "/" + item.LayersJson));
+                Assert.Fail($"Framed Ask did not defer into Weak consent: receipt={allowReceipt?.ExecutionState}/{allowReceipt?.ExecutionCode}; "
+                    + $"interactions={weakKinds}; decisions={decisions}; launcherRequested={unavailableStrong?.LastRequestedStrength}.");
+            }
+
+            var weakRequestEvent = await WaitForNativeShellInteractionAsync(fixture, sessionId,
+                InteractionKind.WeakSandboxConsent);
+            Assert.False(File.Exists(markerPath), "The shell must remain unlaunched until the Weak consent ACK.");
+            var weakRequest = Assert.IsType<InteractionRequested>(weakRequestEvent.Payload);
+            var toolCallId = weakRequestEvent.Envelope.ToolCallId?.ToString()
+                ?? throw new InvalidDataException("Weak request has no ToolCall scope.");
+            var taskId = weakRequestEvent.Envelope.TaskId?.ToString()
+                ?? throw new InvalidDataException("Weak request has no Task scope.");
+            var laneId = weakRequestEvent.Envelope.LaneId?.ToString()
+                ?? throw new InvalidDataException("Weak request has no Lane scope.");
+            var turnId = weakRequestEvent.Envelope.TurnId?.ToString()
+                ?? throw new InvalidDataException("Weak request has no Turn scope.");
+            weakResponseId = Guid.NewGuid().ToString("D");
+            weakResponsePayload = JsonSerializer.Serialize(new
+            {
+                cmd = "interaction.respond", responseType = "weakSandboxConsent",
+                interactionId = weakRequest.InteractionId.ToString(), optionId = "consent_once",
+                invocationId, taskId, laneId, turnId, toolCallId,
+                expectedRunId = runId, expectedPolicyRevision = policyRevision,
+            });
+            var consent = WireEnvelope.Command(weakResponseId, weakResponsePayload);
+            var consentAck = Ack(fixture.ExchangeTrusted(consent, sessionId, runId));
+            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, consentAck.Outcome?.Kind);
+            await fixture.WaitForReceiptExecutionAsync(weakResponseId, "completed");
+            Assert.Equal(SandboxStrength.Weak, unavailableStrong?.LastRequestedStrength);
+        }
+        else
+            await fixture.WaitForReceiptExecutionAsync(invocationId, "completed");
+
+        var expectedExit = askThenWeak ? 0 : 7;
+        var sourceReceipt = fixture.ReadReceipt(invocationId);
+        Assert.Equal("completed", sourceReceipt?.ExecutionState);
+        Assert.Equal(askThenWeak ? "native_shell_completed" : "native_shell_exit_nonzero", sourceReceipt?.ExecutionCode);
+        if (weakResponseId is not null)
+        {
+            var responseReceipt = fixture.ReadReceipt(weakResponseId);
+            Assert.Equal("completed", responseReceipt?.ExecutionState);
+            Assert.Equal("native_shell_completed", responseReceipt?.ExecutionCode);
+        }
+        Assert.Equal("FRAMED_NATIVE_SHELL_EFFECT", File.ReadAllText(markerPath).Trim());
+        Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
+        var completedEvents = fixture.ReadEvents(sessionId);
+        var shellCall = Assert.Single(completedEvents, item => item.Payload is ToolCallRequested call
+            && call.ToolName == "shell.exec");
+        var toolCall = Assert.IsType<ToolCallRequested>(shellCall.Payload);
+        Assert.Single(completedEvents, item => item.Payload is ToolCallSucceeded succeeded
+            && succeeded.ToolCallId == toolCall.ToolCallId);
+        Assert.Single(completedEvents, item => item.Payload is NativeCommandInvocationStarted started
+            && started.InvocationId.ToString() == invocationId);
+        var nativeFinish = Assert.IsType<NativeCommandInvocationFinished>(Assert.Single(completedEvents,
+            item => item.Payload is NativeCommandInvocationFinished finished
+                && finished.InvocationId.ToString() == invocationId).Payload);
+        Assert.Equal("completed", nativeFinish.OutcomeCode);
+        var processStates = completedEvents.Count(item => item.Payload is ProcessSessionStateRecorded state
+            && state.SourceToolId == HumanShellProcessTool.ProcessOwnerSource
+            && state.SourceCallId == toolCall.ToolCallId.ToString());
+        Assert.True(processStates > 0);
+        var processHandles = completedEvents.Select(item => item.Payload).OfType<ProcessSessionStateRecorded>()
+            .Where(state => state.SourceToolId == HumanShellProcessTool.ProcessOwnerSource
+                && state.SourceCallId == toolCall.ToolCallId.ToString())
+            .Select(state => state.HandleId).Distinct(StringComparer.Ordinal).ToArray();
+        Assert.Single(processHandles);
+
+        var stableSequence = completedEvents.Max(item => item.Envelope.Sequence);
+        var invocationReplay = Ack(fixture.ExchangeTrusted(invocation, sessionId, null));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, invocationReplay.Outcome?.Kind);
+        Assert.Equal(stableSequence, fixture.ReadEvents(sessionId).Max(item => item.Envelope.Sequence));
+        Assert.Equal("completed", fixture.ReadReceipt(invocationId)?.ExecutionState);
+        if (weakResponseId is not null && weakResponsePayload is not null)
+        {
+            var replay = Ack(fixture.ExchangeTrusted(WireEnvelope.Command(weakResponseId, weakResponsePayload),
+                sessionId, fixture.QueryJson("humanActionScope").GetProperty("runId").GetString()));
+            Assert.Equal(weakResponseId, replay.CommandId);
+            Assert.Equal(stableSequence, fixture.ReadEvents(sessionId).Max(item => item.Envelope.Sequence));
+        }
+        await fixture.RestartHostAsync();
+        var reopenedSequence = fixture.ReadEvents(sessionId).Max(item => item.Envelope.Sequence);
+        var reopenedInvocationReplay = Ack(fixture.ExchangeTrusted(invocation, sessionId, null));
+        Assert.Equal(RuntimeCommandOutcomeKind.Accepted, reopenedInvocationReplay.Outcome?.Kind);
+        Assert.Equal(reopenedSequence, fixture.ReadEvents(sessionId).Max(item => item.Envelope.Sequence));
+        Assert.Equal("completed", fixture.ReadReceipt(invocationId)?.ExecutionState);
+        if (weakResponseId is not null && weakResponsePayload is not null)
+        {
+            await fixture.RestartHostAsync();
+            reopenedSequence = fixture.ReadEvents(sessionId).Max(item => item.Envelope.Sequence);
+            var afterReopen = Ack(fixture.ExchangeTrusted(WireEnvelope.Command(weakResponseId, weakResponsePayload),
+                sessionId, fixture.QueryJson("humanActionScope").GetProperty("runId").GetString()));
+            Assert.Equal(weakResponseId, afterReopen.CommandId);
+            Assert.Equal(reopenedSequence, fixture.ReadEvents(sessionId).Max(item => item.Envelope.Sequence));
+            Assert.Equal("completed", fixture.ReadReceipt(invocationId)?.ExecutionState);
+            Assert.Equal("completed", fixture.ReadReceipt(weakResponseId)?.ExecutionState);
+            Assert.Equal(processStates, fixture.ReadEvents(sessionId).Count(item => item.Payload is ProcessSessionStateRecorded state
+                && state.SourceToolId == HumanShellProcessTool.ProcessOwnerSource
+                && state.SourceCallId == toolCall.ToolCallId.ToString()));
+            Assert.Equal(providerRequestsBefore, fixture.Provider.RequestCount);
+        }
+    }
+
+    private static async Task<(DomainEvent Envelope, DomainEventPayload Payload)> WaitForNativeShellInteractionAsync(
+        NativeCommandHandoffFixture fixture, string sessionId, InteractionKind kind)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+            var found = fixture.ReadEvents(sessionId).LastOrDefault(item => item.Payload is InteractionRequested request
+                && request.Kind == kind);
+            if (found.Payload is not null) return found;
+            await Task.Delay(25, TestContext.Current.CancellationToken);
+        }
+        throw new TimeoutException($"The framed human shell did not reach {kind}.");
+    }
+
+    private static void AssertWeakNativeShellResumeProjectionRejectsUnboundHistory(
+        DomainEvent[] events, IEventCodecRegistry codecs, SessionId session, RunId run)
+    {
+        Assert.Equal(RunState.Running, RunProjection.Replay(session, run, codecs, events).State);
+        var nativeCallEvent = Assert.Single(events, item => codecs.Decode(item) is ToolCallRequested call
+            && call.ToolName == "shell.exec");
+        var nativeCall = Assert.IsType<ToolCallRequested>(codecs.Decode(nativeCallEvent));
+        var invocationText = nativeCall.ProviderCallId["native-action-".Length..];
+        var invocation = new CommandId(Guid.ParseExact(invocationText, "D"));
+        var resumeEvent = Assert.Single(events, item => codecs.Decode(item) is RunInteractionResumed);
+        var resume = Assert.IsType<RunInteractionResumed>(codecs.Decode(resumeEvent));
+        var responseEvent = Assert.Single(events, item => codecs.Decode(item) is InteractionResolved resolved
+            && resolved.InteractionId == resume.InteractionId);
+        var admissionEvent = Assert.Single(events, item => codecs.Decode(item) is NativeCommandInvocationAdmitted admitted
+            && admitted.InvocationId == invocation);
+        var startedEvent = Assert.Single(events, item => codecs.Decode(item) is NativeCommandInvocationStarted started
+            && started.InvocationId == invocation);
+
+        void Reject(string label, IEnumerable<DomainEvent> candidate)
+        {
+            var failure = Assert.Throws<InvalidStateTransitionException>(() =>
+                RunProjection.Replay(session, run, codecs, candidate.OrderBy(item => item.Sequence).ToArray()));
+            Assert.Contains("interaction resume", failure.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        Reject("native admission missing", events.Where(item => item != admissionEvent));
+        Reject("native start missing", events.Where(item => item != startedEvent));
+        Reject("different invocation", events.Select(item => item == nativeCallEvent
+            ? ReplaceNativeEvent(item, nativeCall with { ProviderCallId = "native-action-" + Guid.NewGuid().ToString("D") }, codecs)
+            : item));
+        Reject("different tool call", events.Select(item => item == nativeCallEvent
+            ? ReplaceNativeEvent(item, nativeCall with { ToolCallId = new ToolCallId(Guid.NewGuid()) }, codecs)
+            : item));
+        Reject("different lane", events.Select(item => item == resumeEvent
+            ? ReplaceNativeEventEnvelope(item, laneId: new LaneId(Guid.NewGuid())) : item));
+        Reject("different response command", events.Select(item => item == resumeEvent
+            ? ReplaceNativeEvent(item, resume with { CommandId = Guid.NewGuid().ToString("D") }, codecs) : item));
+        var response = Assert.IsType<InteractionResolved>(codecs.Decode(responseEvent));
+        Reject("non-human response", events.Select(item => item == responseEvent
+            ? ReplaceNativeEvent(item, response with { Cause = InteractionCause.NoClient }, codecs) : item));
+
+        var started = new ToolCallStarted(nativeCall.ToolCallId, EffectClass.NonIdempotent, null);
+        var syntheticStart = DomainEvent.Stored(EventId.New(), session, resumeEvent.Sequence,
+            started.Type(), started.SchemaVersion(), DateTimeOffset.UtcNow, null, run, run,
+            resumeEvent.TaskId, resumeEvent.LaneId, resumeEvent.TurnId, null, nativeCall.ToolCallId,
+            resumeEvent.ArtifactRefs, codecs.CodecFor(started.Type()).Encode(started), resumeEvent.ExecutionId,
+            resumeEvent.Source);
+        Reject("effect started before resume", events.Where(item => item.Sequence < resumeEvent.Sequence)
+            .Concat([syntheticStart])
+            .Concat(events.Where(item => item.Sequence >= resumeEvent.Sequence)
+                .Select(item => ResequenceNativeEvent(item, item.Sequence + 1))));
+    }
+
+    private static DomainEvent ReplaceNativeEvent(DomainEvent source, DomainEventPayload payload,
+        IEventCodecRegistry codecs) => DomainEvent.Stored(source.EventId, source.SessionId, source.Sequence,
+        source.Type, source.SchemaVersion, source.Timestamp, source.Causation, source.CorrelationId, source.RunId,
+        source.TaskId, source.LaneId, source.TurnId, source.PlanItemId, source.ToolCallId, source.ArtifactRefs,
+        codecs.CodecFor(source.Type).Encode(payload), source.ExecutionId, source.Source);
+
+    private static DomainEvent ReplaceNativeEventEnvelope(DomainEvent source, LaneId? laneId = null) =>
+        DomainEvent.Stored(source.EventId, source.SessionId, source.Sequence, source.Type, source.SchemaVersion,
+            source.Timestamp, source.Causation, source.CorrelationId, source.RunId, source.TaskId,
+            laneId ?? source.LaneId, source.TurnId, source.PlanItemId, source.ToolCallId, source.ArtifactRefs,
+            source.PayloadJson, source.ExecutionId, source.Source);
+
+    private static DomainEvent ResequenceNativeEvent(DomainEvent source, long sequence) =>
+        DomainEvent.Stored(source.EventId, source.SessionId, sequence, source.Type, source.SchemaVersion,
+            source.Timestamp, source.Causation, source.CorrelationId, source.RunId, source.TaskId,
+            source.LaneId, source.TurnId, source.PlanItemId, source.ToolCallId, source.ArtifactRefs,
+            source.PayloadJson, source.ExecutionId, source.Source);
+
+    private static bool IsProcessAlive(int processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return !process.HasExited;
+        }
+        catch (ArgumentException) { return false; }
     }
 
     [Fact]
@@ -1116,6 +1884,7 @@ public sealed partial class StdioTransportTests
         }
 
         public string Workspace { get; }
+        public OmniCliRuntime Runtime => _runtime ?? throw new InvalidOperationException("The native Host runtime is not connected.");
         public OmniServer Server => _server ?? throw new InvalidOperationException("The native Host is not connected.");
         public CliEndToEndTests.ScriptedHttpProvider Provider { get; }
         public ConcurrentQueue<string> ProviderBodies { get; }
@@ -1171,6 +1940,12 @@ public sealed partial class StdioTransportTests
             CancellationToken cancellationToken) => (_runtime
                 ?? throw new InvalidOperationException("The native Host runtime is not connected."))
             .DelegationAsync(delegationId, diagnostics, cancellationToken);
+
+        public Task<int> ExecuteHumanShellCommandAsync(string command, Action<string> output,
+            Action<string> diagnostics, CancellationToken cancellationToken, bool allowDeferredPermission = false) =>
+            (_runtime ?? throw new InvalidOperationException("The native Host runtime is not connected."))
+            .ExecuteHumanShellCommandAsync(command, output, diagnostics, cancellationToken,
+                allowDeferredPermission: allowDeferredPermission);
 
         public void ObserveChildTurnResultsForTests(Action<ExplorerTurn.TurnResult> observer) =>
             (_runtime ?? throw new InvalidOperationException("The native Host runtime is not connected."))

@@ -1466,6 +1466,8 @@ public sealed class ToolRuntime
                 intent.EffectiveMutationHistoryRevision, intent.EffectiveMutationProposal);
             return boundary.Evaluate(stagedIntent);
         }
+        if (tool is INativeUserActionOnlyTool && boundary is INativeUserActionIntentBoundary nativeUserActionBoundary)
+            return nativeUserActionBoundary.EvaluateNativeUserAction(intent);
         return boundary.Evaluate(intent);
     }
 

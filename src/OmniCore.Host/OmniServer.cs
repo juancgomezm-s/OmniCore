@@ -2438,6 +2438,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
 
     public RunId? LastRunId() => _lastRunId;
 
+    internal RunId? ActiveRunId() => _lastSessionId is { } session
+        ? new RunControlService(_store, _codecs).ActiveRun(session) : null;
+
     /// <summary>
     /// Motivo (o null) de un bloqueo de la recuperación del Run real al arrancar. Visible para que
     /// el cliente/CLI pueda reflejar que el run NO es continua automáticamente y pida intervención.

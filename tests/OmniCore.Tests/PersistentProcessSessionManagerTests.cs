@@ -107,6 +107,48 @@ public sealed class PersistentProcessSessionManagerTests
     }
 
     [Fact]
+    public async Task Recovered_human_shell_is_passive_unknown_and_never_enters_agent_process_views()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "OmniHumanShellRecovery-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var session = SessionId.New();
+        var run = RunId.New().ToString();
+        var lane = LaneId.New().ToString();
+        var store = new InMemoryEventStore();
+        var codecs = EventCodecs.Create();
+        var manager = new PersistentProcessSessionManager(session, store, codecs, Guid.NewGuid().ToString("N"),
+            root, null, static () => true);
+        try
+        {
+            var started = await manager.StartAsync(run, lane, Spec(root, TimeSpan.FromSeconds(10)),
+                new AmbiguousLauncher(), null, TestContext.Current.CancellationToken,
+                workspaceRoot: root, sourceCall: ToolCallId.New(),
+                sourceTool: new ToolId(HumanShellProcessTool.ProcessOwnerSource), turn: TurnId.New().ToString());
+            Assert.Equal("unknown", started.State);
+            var handle = Assert.IsType<string>(started.Handle);
+            var latest = store.ReadFrom(session, 1).Select(codecs.Decode)
+                .OfType<ProcessSessionStateRecorded>().Last();
+            var recovered = new PersistentProcessSessionManager(session, store, codecs, Guid.NewGuid().ToString("N"),
+                root, null, static () => true);
+            recovered.RestoreUnknown(new Dictionary<string, ProcessSessionStateRecorded>(StringComparer.Ordinal)
+                { [latest.HandleId] = latest });
+
+            Assert.DoesNotContain(recovered.Snapshot(run), item => item.Handle == handle);
+            Assert.False(recovered.HasRootLaneControlCandidate(run, lane));
+            Assert.True(recovered.HasUnresolvedForRun(run));
+            Assert.Throws<KeyNotFoundException>(() => recovered.Read(handle, run, lane, 0, 8,
+                out _, out _, out _, out _, out _));
+            var output = recovered.ReadHumanShell(handle, run, lane, 0, 8,
+                out _, out var highWater, out var gap, out var state, out _);
+            Assert.Empty(output);
+            Assert.Equal(latest.LastOutputSequence, highWater);
+            Assert.True(gap);
+            Assert.Equal("unknown", state);
+        }
+        finally { try { Directory.Delete(root, recursive: true); } catch (IOException) { } }
+    }
+
+    [Fact]
     public async Task Partial_stdin_failure_is_recorded_as_unknown_effect()
     {
         var root = Path.Combine(Path.GetTempPath(), "OmniProcessInputUnknown-" + Guid.NewGuid().ToString("N"));

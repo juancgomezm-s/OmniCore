@@ -47,6 +47,18 @@ public interface ITuiTurnHost
         CancellationToken cancellationToken) => System.Threading.Tasks.Task.FromResult(1);
     Task<int> ExecuteExtensionCommandAsync(string prompt, string toolName, Action<string> diagnostics,
         CancellationToken cancellationToken) => System.Threading.Tasks.Task.FromResult(1);
+    Task<int> ExecuteHumanShellAsync(string command, Action<string> output, Action<string> diagnostics,
+        CancellationToken cancellationToken) => System.Threading.Tasks.Task.FromResult(1);
+    bool IsHumanShellPermission(string interactionId) => false;
+    bool IsHumanShellWeakSandboxConsent(string interactionId) => false;
+    CommandAck DispatchHumanShellInteractionResponse(WireEnvelope command) =>
+        new(command.MessageId, "error", "shell.trusted_client", RuntimeCommandOutcome.Rejected());
+    Task<int> ResumeHumanShellPermissionAsync(string interactionId, string optionId, CommandAck responseAck,
+        Action<string> output, Action<string> diagnostics, CancellationToken cancellationToken) =>
+        System.Threading.Tasks.Task.FromResult(1);
+    Task<int> ResumeHumanShellWeakSandboxConsentAsync(string interactionId, string optionId, CommandAck responseAck,
+        Action<string> output, Action<string> diagnostics, CancellationToken cancellationToken) =>
+        System.Threading.Tasks.Task.FromResult(1);
     Task<int> ExecuteActAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken) => ExecuteAsync(input, diagnostics, cancellationToken);
     Task<int> ExecuteActAsync(string input, IReadOnlyList<TuiAttachmentReference> attachments,
         Action<string> diagnostics, CancellationToken cancellationToken) => attachments.Count == 0
@@ -94,6 +106,19 @@ public sealed class TuiTurnHost : ITuiTurnHost
         CancellationToken token) => _runtime.ExecuteWorkflowAsync(request, commandId, diagnostics, token);
     public Task<int> ExecuteExtensionCommandAsync(string prompt, string toolName, Action<string> diagnostics,
         CancellationToken token) => _runtime.ExecuteExtensionCommandAsync(prompt, toolName, diagnostics, token);
+    public Task<int> ExecuteHumanShellAsync(string command, Action<string> output, Action<string> diagnostics,
+        CancellationToken token) => _runtime.ExecuteHumanShellCommandAsync(command, output, diagnostics, token,
+            allowDeferredPermission: true);
+    public bool IsHumanShellPermission(string interactionId) => _runtime.IsHumanShellPermission(interactionId);
+    public bool IsHumanShellWeakSandboxConsent(string interactionId) => _runtime.IsHumanShellWeakSandboxConsent(interactionId);
+    public CommandAck DispatchHumanShellInteractionResponse(WireEnvelope command) =>
+        _runtime.DispatchHumanShellInteractionResponse(command);
+    public Task<int> ResumeHumanShellPermissionAsync(string interactionId, string optionId, CommandAck responseAck,
+        Action<string> output, Action<string> diagnostics, CancellationToken token) =>
+        _runtime.ResumeHumanShellPermissionAsync(interactionId, optionId, responseAck, output, diagnostics, token);
+    public Task<int> ResumeHumanShellWeakSandboxConsentAsync(string interactionId, string optionId, CommandAck responseAck,
+        Action<string> output, Action<string> diagnostics, CancellationToken token) =>
+        _runtime.ResumeHumanShellWeakSandboxConsentAsync(interactionId, optionId, responseAck, output, diagnostics, token);
     public async Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken)
         => await ExecuteAsync(input, Array.Empty<TuiAttachmentReference>(), diagnostics, cancellationToken).ConfigureAwait(false);
 

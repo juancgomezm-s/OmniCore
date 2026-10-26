@@ -988,7 +988,8 @@ public sealed partial class StdioTransportTests
     private static CommandAck Ack(WireEnvelope response)
     {
         using var document = JsonDocument.Parse(response.PayloadJson);
-        var ack = document.RootElement.GetProperty("ack");
+        if (!document.RootElement.TryGetProperty("ack", out var ack))
+            throw new InvalidOperationException($"Expected an ACK response but received {response.MessageType}: {response.PayloadJson}");
         var kind = ack.GetProperty("outcome").GetProperty("kind").GetString();
         return new CommandAck(ack.GetProperty("commandId").GetString()!, ack.GetProperty("status").GetString()!,
             ack.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String ? error.GetString() : null,

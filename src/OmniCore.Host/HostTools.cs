@@ -30,11 +30,13 @@ public sealed class HostTools
         MediaReadTool? mediaReadTool = null,
         PersistentProcessSessionManager? processSessionManager = null,
         IWorktreeDispositionCoordinator? worktreeDispositionCoordinator = null,
-        IWorktreeRetentionCoordinator? worktreeRetentionCoordinator = null)
+        IWorktreeRetentionCoordinator? worktreeRetentionCoordinator = null,
+        bool humanShellAction = false, Action<string>? humanShellOutput = null)
         : this(boundary, planService, includeSimulationTools, includeMutationTools, includeProcessTools,
             processSandboxStrength, artifactReadTool, includeControlTools, includeMailboxReceive, includeShellTool,
             processRuntime: null, worktreeIntegrationCoordinator, mediaReadTool, processSessionManager,
-            worktreeDispositionCoordinator, worktreeRetentionCoordinator, processLauncherOverride: null)
+            worktreeDispositionCoordinator, worktreeRetentionCoordinator, processLauncherOverride: null,
+            humanShellAction: humanShellAction, humanShellOutput: humanShellOutput)
     {
     }
 
@@ -46,7 +48,8 @@ public sealed class HostTools
         MediaReadTool? mediaReadTool = null, PersistentProcessSessionManager? processSessionManager = null,
         IWorktreeDispositionCoordinator? worktreeDispositionCoordinator = null,
         IWorktreeRetentionCoordinator? worktreeRetentionCoordinator = null,
-        ISandboxProcessLauncher? processLauncherOverride = null)
+        ISandboxProcessLauncher? processLauncherOverride = null, bool humanShellAction = false,
+        Action<string>? humanShellOutput = null)
     {
         _planPropose = new PlanProposeTool(planService);
         _extensionBatchCoordinator = worktreeIntegrationCoordinator as WorktreeIntegrationHostCoordinator;
@@ -94,8 +97,11 @@ public sealed class HostTools
                 catalog = catalog.Add(new ProcessExecBatchTool("process.exec", processSessionManager,
                     processLauncher, boundary, executableResolver, canPublish));
                 if (includeShellTool)
-                    catalog = catalog.Add(new ProcessExecBatchTool("shell.exec", processSessionManager,
-                        processLauncher, boundary, executableResolver, canPublish));
+                    catalog = humanShellAction
+                        ? catalog.Add(new HumanShellProcessTool(processSessionManager, processLauncher,
+                            processSandboxStrength, boundary, humanShellOutput))
+                        : catalog.Add(new ProcessExecBatchTool("shell.exec", processSessionManager,
+                            processLauncher, boundary, executableResolver, canPublish));
                 catalog = catalog.Add(new ProcessStartTool(processSessionManager, processLauncher, processSandboxStrength,
                         boundary, new SystemExecutableResolver(allowWorkspaceRelativePaths: true)))
                     .Add(new ProcessReadTool(processSessionManager))
@@ -132,6 +138,25 @@ public sealed class HostTools
         var boundary = new PathBoundaryValidator();
         var planService = new PlanService();
         return new HostTools(boundary, planService, includeSimulationTools: true, includeMutationTools: true);
+    }
+
+    internal static HostTools CreateActToolsWithProcessLauncherForTests(ISandboxProcessLauncher processLauncher,
+        ArtifactReadTool? artifactReadTool, IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator,
+        MediaReadTool? mediaReadTool, PersistentProcessSessionManager? processSessionManager,
+        IWorktreeDispositionCoordinator? worktreeDispositionCoordinator,
+        IWorktreeRetentionCoordinator? worktreeRetentionCoordinator,
+        bool humanShellAction, Action<string>? humanShellOutput)
+    {
+        ArgumentNullException.ThrowIfNull(processLauncher);
+        return new HostTools(boundary: new PathBoundaryValidator(), planService: new PlanService(),
+            includeSimulationTools: false, includeMutationTools: true, includeProcessTools: true,
+            processSandboxStrength: SandboxStrength.Strong, artifactReadTool: artifactReadTool,
+            includeControlTools: true, includeMailboxReceive: false, includeShellTool: true,
+            processRuntime: null, worktreeIntegrationCoordinator: worktreeIntegrationCoordinator,
+            mediaReadTool: mediaReadTool, processSessionManager: processSessionManager,
+            worktreeDispositionCoordinator: worktreeDispositionCoordinator,
+            worktreeRetentionCoordinator: worktreeRetentionCoordinator, processLauncherOverride: processLauncher,
+            humanShellAction: humanShellAction, humanShellOutput: humanShellOutput);
     }
 
     public static HostTools DelegatedReader(ArtifactReadTool? artifactReadTool = null) =>

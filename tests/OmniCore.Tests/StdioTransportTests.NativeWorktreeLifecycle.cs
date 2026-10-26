@@ -429,6 +429,12 @@ public sealed partial class StdioTransportTests
         Assert.True(receipt is { State: CommandReceiptState.Completed, OutcomeKind: "Accepted",
             ExecutionState: "completed", ExecutionCode: "native_tool_completed" },
             $"Worktree receipt was not terminal: {receipt?.State}/{receipt?.OutcomeKind}/{receipt?.ExecutionState}/{receipt?.ExecutionCode}.");
+        await fixture.WaitForReceiptExecutionAsync(approval.MessageId, "completed");
+        var responseReceipt = fixture.ReadReceipt(approval.MessageId);
+        Assert.True(responseReceipt is { State: CommandReceiptState.Completed, OutcomeKind: "Accepted",
+            ExecutionState: "completed" },
+            $"Worktree Ask response receipt was not terminal: {responseReceipt?.State}/{responseReceipt?.OutcomeKind}/"
+            + $"{responseReceipt?.ExecutionState}/{responseReceipt?.ExecutionCode}.");
         var terminalReceipt = receipt ?? throw new InvalidOperationException("Native worktree receipt disappeared.");
         fixture.Server.ReceiptStore?.CompleteDeferredCommandExecution(invocationId, terminalReceipt.RequestHash,
             "completed", "native_tool_completed", sessionId, runId);

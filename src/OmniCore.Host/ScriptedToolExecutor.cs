@@ -284,7 +284,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     }
 
     internal ToolOutcome ResumeWeakSandboxConsent(EventStream stream, IEventCodecRegistry codecs,
-        InteractionId interaction, string optionId, CancellationToken cancellationToken)
+        InteractionId interaction, string optionId, CancellationToken cancellationToken,
+        bool isNativeUserAction = false)
     {
         ArgumentNullException.ThrowIfNull(stream);
         var scope = ExecutionScope.Current;
@@ -338,9 +339,14 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         var candidate = candidates[0];
         var validated = new ValidatedToolCall(candidate.Call.ToolCallId, new ToolId(candidate.Call.ToolName),
             candidate.Call.ProviderCallId, candidate.Call.ArgumentsJson);
+        var permissionPolicy = isNativeUserAction && candidate.Call.ToolName == "shell.exec"
+            && HasPriorNativeOnceApproval(events, codecs, candidate.Call.ToolCallId,
+                candidate.Request, candidate.Fingerprint)
+            ? new PriorNativeOnceApprovalPolicy(_policy) : _policy;
         var outcome = Run(validated, userApprovesAsk: false, cancellationToken, stream,
             approvedWeakSandboxInteraction: interaction, approvedWeakSandboxOption: optionId,
-            expectedPreparedArguments: candidate.Prepared, expectedIntentFingerprint: candidate.Fingerprint);
+            expectedPreparedArguments: candidate.Prepared, expectedIntentFingerprint: candidate.Fingerprint,
+            isNativeUserAction: isNativeUserAction, permissionPolicyOverride: permissionPolicy);
         if (outcome.Events.Count > 0) stream.AppendBatch(outcome.Events, DurabilityClass.Standard);
         return outcome;
     }
@@ -428,7 +434,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         string? approvedOption = null, string? expectedPreparedArguments = null,
         string? expectedIntentFingerprint = null, InteractionId? approvedWeakSandboxInteraction = null,
         string? approvedWeakSandboxOption = null, bool? allowDeferredInteractionOverride = null,
-        bool isNativeUserAction = false)
+        bool isNativeUserAction = false, IPermissionPolicy? permissionPolicyOverride = null)
     {
         // Buffer local a la llamada (evita estado compartido entre Runs). Sin flush, contiene
         // todos los eventos emitidos; tras un flush contiene solo los outcomes.
@@ -525,7 +531,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             return VoidBox.Instance;
         };
 
-        var runtime = new ToolRuntime(_catalog, _policy, emit, _boundary, _executableResolver, _additionalBoundaries);
+        var runtime = new ToolRuntime(_catalog, permissionPolicyOverride ?? _policy, emit, _boundary,
+            _executableResolver, _additionalBoundaries);
         var prepContext = new ToolPreparationContext(_workspaceRoot, DateTimeOffset.Now, isNativeUserAction);
         // ADR-0044 §5: cuando hay frontera de capacidad (política del modelo), el registro de
         // lecturas efectivas por-Run viaja en el contexto para que las tools exijan lectura previa.
@@ -577,6 +584,129 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             : new ToolOutcome(false, outcome.Summary ?? "fallo", outcome.Preview,
                 outcome.Effect == EffectOutcome.None ? null : outcome.Effect, outcome.FinalState,
                 events, outcome.PendingInteractionId);
+    }
+
+    private static bool HasPriorNativeOnceApproval(IReadOnlyList<DomainEvent> events,
+        IEventCodecRegistry codecs, ToolCallId toolCallId, DomainEvent weakRequestEvent, string fingerprint)
+    {
+        if (weakRequestEvent.RunId is not { } weakRun || weakRequestEvent.TaskId is not { } weakTask
+            || weakRequestEvent.LaneId is not { } weakLane || weakRequestEvent.TurnId is not { } weakTurn)
+            return false;
+        var weakRequestSequence = weakRequestEvent.Sequence;
+        var priorPermissionRequests = events.Where(evt => evt.SessionId == weakRequestEvent.SessionId
+                && evt.ToolCallId == toolCallId
+                && evt.RunId == weakRun && evt.TaskId == weakTask && evt.LaneId == weakLane && evt.TurnId == weakTurn
+                && evt.Sequence < weakRequestSequence && codecs.Decode(evt) is PermissionRequested)
+            .Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
+            .Where(item => item.Payload is PermissionRequested requested && requested.ToolCallId == toolCallId)
+            .ToArray();
+        if (priorPermissionRequests.Length != 1
+            || priorPermissionRequests[0].Payload is not PermissionRequested permission
+            || priorPermissionRequests[0].Event.TaskId is not { } task
+            || priorPermissionRequests[0].Event.LaneId is not { } lane
+            || priorPermissionRequests[0].Event.TurnId is not { } turn) return false;
+        var interaction = permission.InteractionId;
+        var interactionRequests = events.Where(evt => evt.SessionId == weakRequestEvent.SessionId
+                && evt.RunId == weakRun
+                && evt.TaskId == task && evt.LaneId == lane && evt.TurnId == turn
+                && evt.ToolCallId == toolCallId && evt.Sequence < weakRequestSequence
+                && codecs.Decode(evt) is InteractionRequested requested
+                && requested.InteractionId == interaction && requested.Kind == InteractionKind.Permission)
+            .ToArray();
+        var resolutions = events.Where(evt => evt.SessionId == weakRequestEvent.SessionId
+                && HasCompatibleNativeResumeScope(evt, weakRequestEvent)
+                && evt.Sequence < weakRequestSequence
+                && codecs.Decode(evt) is InteractionResolved resolved && resolved.InteractionId == interaction)
+            .Select(evt => (Event: evt, Payload: codecs.Decode(evt))).ToArray();
+        var resumes = events.Where(evt => evt.SessionId == weakRequestEvent.SessionId
+                && HasCompatibleNativeResumeScope(evt, weakRequestEvent)
+                && evt.Sequence < weakRequestSequence
+                && codecs.Decode(evt) is UserInputReceived input
+                && input.RunId == weakRun && input.Origin == "InteractionResponse(Permission)")
+            .ToArray();
+        var grants = events.Where(evt => evt.SessionId == weakRequestEvent.SessionId
+                && evt.RunId == weakRun
+                && evt.TaskId == task && evt.LaneId == lane && evt.TurnId == turn
+                && evt.ToolCallId == toolCallId && evt.Sequence < weakRequestSequence
+                && codecs.Decode(evt) is PermissionGranted granted && granted.ToolCallId == toolCallId)
+            .Select(evt => (Event: evt, Payload: codecs.Decode(evt))).ToArray();
+        var authorized = events.Where(evt => evt.SessionId == weakRequestEvent.SessionId
+                && evt.RunId == weakRun
+                && evt.TaskId == task && evt.LaneId == lane && evt.TurnId == turn
+                && evt.ToolCallId == toolCallId && evt.Sequence < weakRequestSequence
+                && codecs.Decode(evt) is ToolCallAuthorized)
+            .ToArray();
+        if (interactionRequests.Length != 1 || resolutions.Length != 1 || resumes.Length == 0 || grants.Length != 1
+            || authorized.Length == 0 || codecs.Decode(interactionRequests[0]) is not InteractionRequested request
+            || resolutions[0].Payload is not InteractionResolved resolved
+            || grants[0].Payload is not PermissionGranted grantedPayload
+            || resolved.IsQuestionnaire || resolved.Cause != InteractionCause.User
+            || resolved.OptionId != "allow_once"
+            || grantedPayload.Lifetime != GrantLifetime.Once || grantedPayload.GrantId is not null
+            || interactionRequests[0].Sequence >= resolutions[0].Event.Sequence
+            || resolutions[0].Event.Sequence >= grants[0].Event.Sequence
+            || grants[0].Event.Sequence >= authorized[0].Sequence
+            || authorized[0].Sequence >= weakRequestSequence
+            || !resumes.Any(evt => evt.Sequence > resolutions[0].Event.Sequence
+                && evt.Sequence < grants[0].Event.Sequence)
+            || !PermissionOptionsContain(request.OptionsJson, "allow_once")) return false;
+        try
+        {
+            using var subject = System.Text.Json.JsonDocument.Parse(request.SubjectJson);
+            return subject.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                && subject.RootElement.TryGetProperty("intentFingerprint", out var value)
+                && value.ValueKind == System.Text.Json.JsonValueKind.String
+                && string.Equals(value.GetString(), fingerprint, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (System.Text.Json.JsonException) { return false; }
+    }
+
+    private static bool HasCompatibleNativeResumeScope(DomainEvent evt, DomainEvent weakRequestEvent) =>
+        (evt.RunId is null || evt.RunId == weakRequestEvent.RunId)
+        && (evt.TaskId is null || evt.TaskId == weakRequestEvent.TaskId)
+        && (evt.LaneId is null || evt.LaneId == weakRequestEvent.LaneId)
+        && (evt.TurnId is null || evt.TurnId == weakRequestEvent.TurnId)
+        && (evt.ToolCallId is null || evt.ToolCallId == weakRequestEvent.ToolCallId);
+
+    private static bool PermissionOptionsContain(string? optionsJson, string optionId)
+    {
+        if (optionsJson is null) return false;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(optionsJson);
+            return document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array
+                && document.RootElement.EnumerateArray().Any(item => item.ValueKind == System.Text.Json.JsonValueKind.Object
+                    && item.TryGetProperty("id", out var id) && id.ValueKind == System.Text.Json.JsonValueKind.String
+                    && id.GetString() == optionId);
+        }
+        catch (System.Text.Json.JsonException) { return false; }
+    }
+
+    private sealed class PriorNativeOnceApprovalPolicy(IPermissionPolicy inner) : IPermissionPolicy
+    {
+        public PermissionDecisionRecord Evaluate(ToolIntent intent)
+        {
+            var current = inner.Evaluate(intent);
+            var asks = current.Layers.Where(layer => layer.Decision == PermissionDecision.Ask).ToArray();
+            if (current.Final != PermissionDecision.Ask || asks.Length == 0
+                || asks.Any(layer => layer.Layer is not ("UserPolicy" or "user-policy" or "profile" or "mode-defaults")))
+                return current;
+            return new PermissionDecisionRecord(PermissionDecision.Allow,
+                current.Layers.Append(new LayerDecision("interaction", PermissionDecision.Allow,
+                    "prior-native-allow-once")).ToArray(), null);
+        }
+
+        public AuthorizedToolIntent Authorize(ToolIntent intent)
+        {
+            var current = Evaluate(intent);
+            return current.Final == PermissionDecision.Allow
+                && current.Layers.Any(layer => layer.Layer == "interaction" && layer.Rule == "prior-native-allow-once")
+                ? inner.AuthorizeApproved(intent, null)
+                : inner.Authorize(intent);
+        }
+
+        public AuthorizedToolIntent AuthorizeApproved(ToolIntent intent, GrantId? approvedGrant) =>
+            inner.AuthorizeApproved(intent, approvedGrant);
     }
 
     private void RestoreVisibleReadCoverage(EventStream? stream, bool enabled)

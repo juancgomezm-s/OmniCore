@@ -16,6 +16,9 @@ public sealed partial class OmniServer
     private const string NativeProcessControlCommandId = "core:process.control";
     private static readonly string NativeProcessControlFingerprint = Convert.ToHexString(
         SHA256.HashData(Encoding.UTF8.GetBytes("omnicore-native-process-control-v1")));
+    private const string NativeHumanShellCommandId = "core:shell.exec";
+    private static readonly string NativeHumanShellFingerprint = Convert.ToHexString(
+        SHA256.HashData(Encoding.UTF8.GetBytes("omnicore-native-human-shell-v1")));
     private const string NativeWorktreeIntegrationCommandId = "core:worktree.integrate";
     private static readonly string NativeWorktreeIntegrationFingerprint = Convert.ToHexString(
         SHA256.HashData(Encoding.UTF8.GetBytes("omnicore-native-worktree-integration-v1")));
@@ -1089,6 +1092,16 @@ public sealed partial class OmniServer
     internal sealed record NativeCommandPayload(string CanonicalCommandId, string Kind, string[] Arguments,
         string? Prompt, string? Origin, string? ForcedToolName, string? WorkflowId, string? WorkflowVersion);
 
+    private static bool NativeCommandPayloadEquals(NativeCommandPayload left, NativeCommandPayload right) =>
+        string.Equals(left.CanonicalCommandId, right.CanonicalCommandId, StringComparison.Ordinal)
+        && string.Equals(left.Kind, right.Kind, StringComparison.Ordinal)
+        && left.Arguments.SequenceEqual(right.Arguments, StringComparer.Ordinal)
+        && string.Equals(left.Prompt, right.Prompt, StringComparison.Ordinal)
+        && string.Equals(left.Origin, right.Origin, StringComparison.Ordinal)
+        && string.Equals(left.ForcedToolName, right.ForcedToolName, StringComparison.Ordinal)
+        && string.Equals(left.WorkflowId, right.WorkflowId, StringComparison.Ordinal)
+        && string.Equals(left.WorkflowVersion, right.WorkflowVersion, StringComparison.Ordinal);
+
     private static string NativeCommandPurpose(SessionId session, CommandId invocation) =>
         "native-command:" + session + ":" + invocation;
 
@@ -1249,6 +1262,19 @@ public sealed partial class OmniServer
                 || new RunControlService(_store, _codecs).ActiveRun(session) != run)
                 throw new SessionSecurityRevisionConflictException();
             var history = _store.ReadFrom(session, 1);
+            if (TryReadNativeCommandPayload(invocation, out var nativeAdmission, out var nativePayloadJson)
+                && nativeAdmission.SessionId == session && nativeAdmission.RunId == run
+                && nativeAdmission.Kind == "nativeTool"
+                && TryDecodeNativeCommandPayload(nativePayloadJson, out var nativePayload)
+                && nativePayload.Kind == "nativeTool")
+            {
+                if (!CanResolveNativeHumanShellWeakSandboxConsent(history, nativeAdmission, nativePayload,
+                        session, run, task, lane, turn, toolCall, interaction, invocation, optionId))
+                    throw new InteractionNotPendingException(interaction);
+                new RunControlService(_store, _codecs).RespondNativeWeakSandboxConsent(session, run,
+                    task, lane, turn, toolCall, interaction, optionId, responseCommandId);
+                return;
+            }
             var admittedEvent = history.LastOrDefault(evt => _codecs.Decode(evt) is NativeCommandInvocationAdmitted item
                 && item.InvocationId == invocation && item.SessionId == session && item.RunId == run
                 && item.Kind == "compiledWorkflow");
@@ -1308,6 +1334,12 @@ public sealed partial class OmniServer
             || ReadSessionSecurityPolicy(session)?.PolicyRevision != expectedPolicyRevision
             || new RunControlService(_store, _codecs).ActiveRun(session) != run) return false;
         var history = _store.ReadFrom(session, 1);
+        if (TryReadNativeCommandPayload(invocation, out var nativeAdmission, out var nativePayloadJson)
+            && nativeAdmission.RunId == run && nativeAdmission.SessionId == session
+            && TryDecodeNativeCommandPayload(nativePayloadJson, out var nativePayload)
+            && nativeAdmission.Kind == "nativeTool" && nativePayload.Kind == "nativeTool")
+            return CanResolveNativeHumanShellWeakSandboxConsent(history, nativeAdmission, nativePayload,
+                session, run, task, lane, turn, toolCall, interaction, invocation, optionId);
         var admittedEvent = history.LastOrDefault(evt => _codecs.Decode(evt) is NativeCommandInvocationAdmitted item
             && item.InvocationId == invocation && item.SessionId == session && item.RunId == run
             && item.Kind == "compiledWorkflow");
@@ -1367,6 +1399,60 @@ public sealed partial class OmniServer
         {
             return false;
         }
+    }
+
+    private bool CanResolveNativeHumanShellWeakSandboxConsent(IReadOnlyList<DomainEvent> history,
+        NativeCommandInvocationAdmitted admission, NativeCommandPayload payload, SessionId session, RunId run,
+        TaskId task, LaneId lane, TurnId turn, ToolCallId toolCall, InteractionId interaction,
+        CommandId invocation, string optionId)
+    {
+        var admittedEvent = history.LastOrDefault(evt => _codecs.Decode(evt) is NativeCommandInvocationAdmitted item
+            && item.InvocationId == invocation && item.SessionId == session && item.RunId == run);
+        if (admittedEvent is null) return false;
+        if (admission.Kind != "nativeTool" || admission.CanonicalCommandId != NativeHumanShellCommandId
+            || payload.Kind != "nativeTool" || payload.CanonicalCommandId != NativeHumanShellCommandId
+            || payload.Arguments is not { Length: 2 } || payload.Arguments[0] != "shell.exec"
+            || ReceiptStore?.ReadCommandReceipt(invocation.ToString()) is not
+                { State: CommandReceiptState.Completed, OutcomeKind: "Accepted", ExecutionState: "deferred",
+                    ExecutionCode: "input_required", ExecutionRunId: var executionRun }
+            || !string.Equals(executionRun, run.ToString(), StringComparison.Ordinal)
+            || !history.Any(evt => evt.Sequence > admittedEvent.Sequence
+                && _codecs.Decode(evt) is NativeCommandInvocationStarted started
+                && started.InvocationId == invocation && started.Kind == "nativeTool")
+            || history.Any(evt => _codecs.Decode(evt) is NativeCommandInvocationFinished finished
+                && finished.InvocationId == invocation)
+            || !TryReadNativeCommandPayload(invocation, out var readableAdmission, out var readablePayload)
+            || readableAdmission != admission || !TryDecodeNativeCommandPayload(readablePayload, out var readable)
+            || !NativeCommandPayloadEquals(readable, payload) || !NativeToolInvocationMatches(session, run,
+                "native-action-" + invocation, "shell.exec", payload.Arguments[1])) return false;
+
+        var runEvents = history.Where(evt => evt.RunId == run).ToArray();
+        var projection = RunProjection.Replay(session, run, _codecs, runEvents);
+        var rootTask = projection.RootTask;
+        var awaitingLane = runEvents.Select(evt => _codecs.Decode(evt)).OfType<RunAwaitingInput>()
+            .LastOrDefault()?.RootLaneId;
+        if (rootTask != task || awaitingLane != lane || projection.State != RunState.AwaitingInput) return false;
+        var call = runEvents.Where(evt => evt.TaskId == task && evt.LaneId == lane && evt.TurnId == turn
+                && evt.ToolCallId == toolCall)
+            .Select(evt => (Event: evt, Payload: _codecs.Decode(evt))).ToArray();
+        var request = call.SingleOrDefault(item => item.Payload is InteractionRequested asked
+            && asked.InteractionId == interaction && asked.Kind == InteractionKind.WeakSandboxConsent);
+        var toolRequest = call.SingleOrDefault(item => item.Payload is ToolCallRequested asked
+            && asked.ToolName == "shell.exec" && asked.ProviderCallId == "native-action-" + invocation);
+        var prepared = call.SingleOrDefault(item => item.Payload is ToolCallPrepared);
+        var authorized = call.SingleOrDefault(item => item.Payload is ToolCallAuthorized);
+        return request.Event is not null && request.Payload is InteractionRequested weakRequest
+            && ProtocolMapper.OptionIds(weakRequest.OptionsJson).Contains(optionId, StringComparer.Ordinal)
+            && toolRequest.Event is not null && prepared.Event is not null && authorized.Event is not null
+            && toolRequest.Event.Sequence < prepared.Event.Sequence && prepared.Event.Sequence < request.Event.Sequence
+            && authorized.Event.Sequence < request.Event.Sequence
+            && !call.Any(item => item.Event.Sequence > request.Event.Sequence
+                && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallFailed
+                    or ToolCallEffectUnknown or ToolCallReconciled)
+            && !runEvents.Any(evt => _codecs.Decode(evt) is InteractionResolved resolved
+                && resolved.InteractionId == interaction)
+            && !runEvents.Any(evt => _codecs.Decode(evt) is InteractionExpired expired
+                && expired.InteractionId == interaction);
     }
 
     private bool NativeWeakConsentScopeMatches(SessionId session, RunId run,
@@ -1508,6 +1594,7 @@ public sealed partial class OmniServer
             arguments.Add(value);
         }
         var nativeWorktreeIntegration = canonicalId == NativeWorktreeIntegrationCommandId;
+        var nativeHumanShell = canonicalId == NativeHumanShellCommandId;
         var dispositionTool = NativeWorktreeDispositionTool(canonicalId);
         var dispositionFingerprint = NativeWorktreeDispositionFingerprint(canonicalId);
         var nativeWorktreeRetention = IsNativeWorktreeRetentionCommand(canonicalId);
@@ -1516,6 +1603,9 @@ public sealed partial class OmniServer
             || arguments[0] is not ("process.read" or "process.send_input" or "process.stop")
             || !IsJsonObject(arguments[1])))
             return NativeCommandRejected(command.MessageId, "process.control.invalid_request");
+        if (nativeHumanShell && (expectedSource != NativeHumanShellFingerprint
+            || arguments.Count != 2 || arguments[0] != "shell.exec" || !IsJsonObject(arguments[1])))
+            return NativeCommandRejected(command.MessageId, "shell.invalid_request");
         if (nativeWorktreeIntegration && (expectedRun is null
             || expectedSource != NativeWorktreeIntegrationFingerprint || arguments.Count != 2
             || arguments[0] != "worktree.integrate" || !IsJsonObject(arguments[1])))
@@ -1566,6 +1656,17 @@ public sealed partial class OmniServer
                     if (!CanExecuteNativeProcessControl(session, expectedRun,
                             arguments[0], arguments[1]))
                         return NativeCommandRejected(command.MessageId, "process.control.scope_changed");
+                }
+                else if (nativeHumanShell)
+                {
+                    var nativeEntry = nativeSnapshot.Commands.SingleOrDefault(entry =>
+                        entry.CanonicalCommandId == NativeHumanShellCommandId);
+                    if (nativeEntry is not { Enabled: true }
+                        || !FixedHashEquals(expectedSource, nativeEntry.SourceFingerprint))
+                        return NativeCommandRejected(command.MessageId, nativeEntry?.DisabledReason ?? "command.source_changed");
+                    fingerprint = NativeHumanShellFingerprint;
+                    payload = new NativeCommandPayload(canonicalId, "nativeTool", arguments.ToArray(),
+                        null, null, null, null, null);
                 }
                 else if (nativeWorktreeIntegration)
                 {
@@ -1649,15 +1750,20 @@ public sealed partial class OmniServer
                     return NativeCommandRejected(command.MessageId, "command.policy_changed");
                 if (expectedRun is null)
                 {
-                    // A blank Session may start only the built-in explanatory prompt. Create the
-                    // canonical Run graph and its admission in one journal transaction; no synthetic
-                    // user-input event, new Session, or mode/capability elevation is introduced.
-                    if (canonicalId != "core:explain" || payload.Kind != "prompt")
+                    // A blank Session may start a canonical Run for the selected native shell
+                    // action. It uses the persisted Act preference, creates no user-input event,
+                    // and never sends the command text to a model.
+                    var runlessShell = nativeHumanShell && payload.Kind == "nativeTool"
+                        && ReadModePreference().Mode == RunMode.Act;
+                    if (!(canonicalId == "core:explain" && payload.Kind == "prompt") && !runlessShell)
                         return NativeCommandRejected(command.MessageId, "command.run_required");
                     var modePreference = ReadModePreference();
+                    if (runlessShell && modePreference.Mode != RunMode.Act)
+                        return NativeCommandRejected(command.MessageId, "shell.act_mode_required");
                     if (!FixedHashEquals(expectedCatalog, CurrentNativeCommandCatalog(modePreference).CatalogRevision))
                         return NativeCommandRejected(command.MessageId, "command.catalog_changed");
-                    var safeObjective = new PiiRedactor().Redact(payload.Prompt ?? "");
+                    var safeObjective = runlessShell ? "Human shell action"
+                        : new PiiRedactor().Redact(payload.Prompt ?? "");
                     if (string.IsNullOrWhiteSpace(safeObjective)) safeObjective = "Native prompt command: core:explain";
                     var profile = _agentProfiles.DefaultProfile;
                     var runControl = new RunControlService(_store, _codecs,
@@ -1945,6 +2051,9 @@ public sealed partial class OmniServer
         if (admitted.CanonicalCommandId == NativeProcessControlCommandId)
             return FixedHashEquals(admitted.SourceFingerprint, NativeProcessControlFingerprint)
                 && payload.Arguments[0] is "process.read" or "process.send_input" or "process.stop";
+        if (admitted.CanonicalCommandId == NativeHumanShellCommandId)
+            return FixedHashEquals(admitted.SourceFingerprint, NativeHumanShellFingerprint)
+                && payload.Arguments[0] == "shell.exec";
         if (admitted.CanonicalCommandId == NativeWorktreeIntegrationCommandId)
             return FixedHashEquals(admitted.SourceFingerprint, NativeWorktreeIntegrationFingerprint)
                 && payload.Arguments[0] == "worktree.integrate";
@@ -2575,6 +2684,13 @@ public sealed partial class OmniServer
         AppendRevisionPart(revisionInput, "worktree.retention");
         AppendRevisionPart(revisionInput, "argumentsJson");
         AppendRevisionPart(revisionInput, "command-end");
+        AppendRevisionPart(revisionInput, NativeHumanShellCommandId);
+        AppendRevisionPart(revisionInput, "nativeTool");
+        AppendRevisionPart(revisionInput, NativeHumanShellFingerprint);
+        AppendRevisionPart(revisionInput, "Run a human-origin shell command through the current Session policy and sandbox.");
+        AppendRevisionPart(revisionInput, "shell.exec");
+        AppendRevisionPart(revisionInput, "argumentsJson");
+        AppendRevisionPart(revisionInput, "command-end");
         AppendRevisionPart(revisionInput, session?.ToString() ?? "");
         AppendRevisionPart(revisionInput, modePreference.Mode.ToString());
         AppendRevisionPart(revisionInput, modePreference.Revision.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -2589,6 +2705,9 @@ public sealed partial class OmniServer
                 && new RunControlService(_store, _codecs).UnreconciledEffects(current).Count == 0);
         var effectiveMode = mode?.Mode ?? modePreference.Mode;
         var worktreeModeCompatible = effectiveMode is RunMode.Act or RunMode.Orchestrate;
+        var humanShellModeCompatible = run is null
+            ? modePreference.Mode == RunMode.Act
+            : effectiveMode is RunMode.Act or RunMode.Orchestrate;
         var workflowRootReady = session is { } workflowSession && run is { } workflowRun
             && mode?.Mode == RunMode.Orchestrate && HasNativeWorkflowRootContext(workflowSession, workflowRun);
         var commands = catalog.Commands.Select(command =>
@@ -2653,6 +2772,17 @@ public sealed partial class OmniServer
                         ? "A physical workspace root is required." : null,
                 NativeWorktreeRetentionFingerprint,
                 "Prune exact expired private snapshot refs owned by one terminal historical Run in this Session.",
+                ["toolName", "argumentsJson"]))
+            .Append(new NativeCommandCatalogEntry(NativeHumanShellCommandId, "nativeTool",
+                hasQuiescentScope && humanShellModeCompatible
+                    && _workspaceRoot is { Length: > 0 },
+                run is null && modePreference.Mode != RunMode.Act
+                    ? "Human shell execution requires the selected Act default." : !hasQuiescentScope
+                    ? "The Session Run must be quiescent." : !humanShellModeCompatible
+                        ? "Human shell execution requires Act or Orchestrate mode." : _workspaceRoot is not { Length: > 0 }
+                        ? "A physical workspace root is required." : null,
+                NativeHumanShellFingerprint,
+                "Run one human-origin shell command through the current Session policy and sandbox.",
                 ["toolName", "argumentsJson"])).ToArray();
         return new NativeCommandCatalogSnapshot(session?.ToString(), run?.ToString(), mode?.Revision,
             policy?.PolicyRevision, selection?.Revision ?? 0, routing?.Revision, catalogRevision, commands);

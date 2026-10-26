@@ -44,7 +44,7 @@ public sealed class ModelCapabilityDecision
 /// una categoría nunca otorga permisos por sí sola (spec §20, ADR-0044 §10.4).
 /// Vive junto a IPathBoundaryValidator en Abstractions (ADR-0009 §2.2) y es pura.
 /// </summary>
-public sealed class ModelCapabilityBoundary : IToolIntentBoundary
+public sealed class ModelCapabilityBoundary : INativeUserActionIntentBoundary
 {
     /// <summary>Clasificación de tools Core por capacidad (ADR-0044 §3). Versionable y
     /// reemplazable en composición; la frontera no la inventa por nombre de modelo.</summary>
@@ -171,11 +171,16 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
     /// 5. red: exige la capacidad Network del techo;
     /// 6. ObserveOnly no permite ningún efecto de escritura aunque la tool esté clasificada.
     /// </summary>
-    public ModelCapabilityDecision Evaluate(ToolIntent intent)
+    public ModelCapabilityDecision Evaluate(ToolIntent intent) => EvaluateCore(intent, nativeUserAction: false);
+
+    public ModelCapabilityDecision EvaluateNativeUserAction(ToolIntent intent) =>
+        EvaluateCore(intent, nativeUserAction: true);
+
+    private ModelCapabilityDecision EvaluateCore(ToolIntent intent, bool nativeUserAction)
     {
         var toolName = intent.ToolId.ToString();
         var privateExtensionStage = IsPrivateExtensionStageIntent(intent, toolName);
-        var sessionDecision = EvaluateSessionSecurityCeiling(intent, toolName);
+        var sessionDecision = EvaluateSessionSecurityCeiling(intent, toolName, nativeUserAction);
         if (sessionDecision is { Allowed: false }) return sessionDecision;
         if (intent.Claims.WorktreeDisposition is { } disposition
             && (!IsValidWorktreeDisposition(disposition)
@@ -302,7 +307,8 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         }
 
         // 2/6. Mutación: cualquier claim de escritura exige mutación permitida por el techo.
-        if (intent.Claims.Writes.Count > 0 && !privateExtensionStage && !MutationAllowed(capability)
+        if (intent.Claims.Writes.Count > 0 && !privateExtensionStage
+            && !MutationClaimsAllowed(_policy.MutationPolicy.Mode, capability, intent, toolName, nativeUserAction)
             && !IsBoundValidationProcess(capability, intent))
         {
             return ModelCapabilityDecision.Reject(
@@ -334,7 +340,8 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         return sessionDecision is { RequiresAsk: true } ? sessionDecision : ModelCapabilityDecision.Allow();
     }
 
-    private ModelCapabilityDecision? EvaluateSessionSecurityCeiling(ToolIntent intent, string toolName)
+    private ModelCapabilityDecision? EvaluateSessionSecurityCeiling(ToolIntent intent, string toolName,
+        bool nativeUserAction)
     {
         if (_sessionSecurityPolicy is null) return null;
         var requiresAsk = false;
@@ -419,7 +426,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             && string.Equals(intent.Claims.Writes.Single(), cwd,
                 OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
         if (intent.Claims.Writes.Count > 0 && !IsPrivateExtensionStageIntent(intent, toolName)
-            && !MutationAllowed(ceiling.FileMutationMode, capability)
+            && !MutationClaimsAllowed(ceiling.FileMutationMode, capability, intent, toolName, nativeUserAction)
             && !(boundedValidation && ceiling.FileMutationMode is FileMutationMode.PatchAndCreate or FileMutationMode.Full))
             return ModelCapabilityDecision.Reject("file mutation is outside the current Session security ceiling", capability);
         if (capability is ModelToolCapability.DeleteFile or ModelToolCapability.MoveOrRename)
@@ -533,6 +540,14 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             or ModelToolCapability.ReplaceFile or ModelToolCapability.DeleteFile or ModelToolCapability.MoveOrRename,
         _ => false,
     };
+
+    private static bool MutationClaimsAllowed(FileMutationMode mode, ModelToolCapability capability,
+        ToolIntent intent, string toolName, bool nativeUserAction) =>
+        nativeUserAction && toolName == "shell.exec"
+            && capability == ModelToolCapability.Shell
+            && mode == FileMutationMode.Full
+            && intent.Claims.Process is { NetworkRequired: false, EffectClass: "External" }
+        || MutationAllowed(mode, capability);
 
     private static int Rank(DestructiveActionPolicy policy) => policy switch
     {

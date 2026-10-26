@@ -124,6 +124,12 @@ public sealed partial class CliApp
         var userAliasApplied = !ReferenceEquals(withUserAlias, args);
         args = HumanCommandAliases.NormalizeCli(withUserAlias);
         var command = args[0];
+        if (command.StartsWith('!'))
+        {
+            var shellCommand = command[1..] + (args.Length > 1 ? " " + string.Join(" ", args.Skip(1)) : "");
+            return ExecuteHumanShellCliAsync(shellCommand,
+                allowDeferredPermission: !Console.IsInputRedirected && !Console.IsOutputRedirected);
+        }
         if (command is "pet" or "/pet")
         {
             try
@@ -205,6 +211,24 @@ public sealed partial class CliApp
 
         Console.WriteLine(Loc().Resolve("cli.ask_assumed", "command", command));
         return RunAsk(new[] { "ask", string.Join(" ", args) });
+    }
+
+    private static async Task<int> ExecuteHumanShellCliAsync(string command, bool allowDeferredPermission)
+    {
+        using var cancellation = new CancellationTokenSource();
+        ConsoleCancelEventHandler handler = (_, eventArgs) =>
+        {
+            eventArgs.Cancel = true;
+            cancellation.Cancel();
+        };
+        Console.CancelKeyPress += handler;
+        try
+        {
+            return await Runtime.ExecuteHumanShellCommandAsync(command, Console.Write,
+                line => Console.Error.WriteLine(OmniCliRuntime.RedactSensitive(line)), cancellation.Token,
+                allowDeferredPermission).ConfigureAwait(false);
+        }
+        finally { Console.CancelKeyPress -= handler; }
     }
 
     private static Task<int> RunStdioClientAsync(string[] args)

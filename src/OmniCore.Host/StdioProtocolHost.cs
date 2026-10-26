@@ -662,12 +662,12 @@ public static class StdioProtocolHost
                 : new[] { "cmd", "invocationId", "expectedSessionId", "expectedRunId", "expectedModeRevision",
                     "expectedPolicyRevision", "expectedSelectionRevision", "expectedRoutingPolicyRevision",
                     "catalogRevision", "sourceFingerprint" };
-            var runlessExplain = commandName == "command.invoke.user"
+            var runlessNativeCommand = commandName == "command.invoke.user"
                 && RequiredString("canonicalCommandId", 256, out var runlessCommandId)
-                && string.Equals(runlessCommandId, "core:explain", StringComparison.Ordinal);
+                && runlessCommandId is "core:explain" or "core:shell.exec";
             var runScopeMatches = payload.RootElement.TryGetProperty("expectedRunId", out var commandRunNode)
                 && (expectedRun.Value is null
-                    ? commandName == "command.invoke.user" && runlessExplain
+                    ? commandName == "command.invoke.user" && runlessNativeCommand
                         && commandRunNode.ValueKind == JsonValueKind.Null
                     : commandRunNode.ValueKind == JsonValueKind.String
                         && string.Equals(commandRunNode.GetString(), expectedRun.Value, StringComparison.Ordinal));
@@ -1224,6 +1224,85 @@ public static class StdioProtocolHost
         long? ExpectedRevision, bool CheckRevision, bool RequirePlanRun, string? RequestedMode,
         bool RequireCurrentAct = false, long? ExpectedPolicyRevision = null);
 
+    /// <summary>
+    /// Routes the in-process CLI/TUI human-shell action through the same receipt reservation
+    /// and trusted-user dispatcher used by framed stdio commands. The native command handler
+    /// still validates the catalog, mode, policy and selection revisions carried by the request.
+    /// </summary>
+    internal static CommandAck DispatchNativeHumanShellAction(OmniServer server, WireEnvelope command,
+        string expectedSessionId, string? expectedRunId, long expectedPolicyRevision)
+    {
+        ArgumentNullException.ThrowIfNull(server);
+        ArgumentNullException.ThrowIfNull(command);
+        try
+        {
+            using var payload = JsonDocument.Parse(command.PayloadJson);
+            var root = payload.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("cmd", out var name) || name.ValueKind != JsonValueKind.String
+                || name.GetString() != "command.invoke.user"
+                || !root.TryGetProperty("canonicalCommandId", out var canonical)
+                || canonical.ValueKind != JsonValueKind.String || canonical.GetString() != "core:shell.exec"
+                || !root.TryGetProperty("expectedSessionId", out var session)
+                || session.ValueKind != JsonValueKind.String || session.GetString() != expectedSessionId
+                || !root.TryGetProperty("expectedRunId", out var run)
+                || (expectedRunId is null ? run.ValueKind != JsonValueKind.Null
+                    : run.ValueKind != JsonValueKind.String || run.GetString() != expectedRunId)
+                || !TryGetWorkspaceHash(out var workspaceHash))
+                return new CommandAck(command.MessageId, "error", "shell.native_dispatch_invalid",
+                    RuntimeCommandOutcome.Rejected());
+            var scope = new TrustedActionScope(expectedSessionId, expectedRunId, workspaceHash,
+                ExpectedRevision: null, CheckRevision: false, RequirePlanRun: false, RequestedMode: null,
+                ExpectedPolicyRevision: expectedPolicyRevision);
+            return DispatchCommand(server, command, scope, out _);
+        }
+        catch (JsonException)
+        {
+            return new CommandAck(command.MessageId, "error", "shell.native_dispatch_invalid",
+                RuntimeCommandOutcome.Rejected());
+        }
+    }
+
+    /// <summary>Reserves a durable receipt for the TUI's in-process response to a native human
+    /// shell interaction. The TUI owns the matching Runtime continuation; this dispatcher only
+    /// records the signed user choice and never starts a second runner.</summary>
+    internal static CommandAck DispatchNativeHumanShellInteractionResponse(OmniServer server,
+        WireEnvelope command, string expectedSessionId, string expectedRunId, long expectedPolicyRevision)
+    {
+        ArgumentNullException.ThrowIfNull(server);
+        ArgumentNullException.ThrowIfNull(command);
+        try
+        {
+            using var payload = JsonDocument.Parse(command.PayloadJson);
+            var root = payload.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("cmd", out var name) || name.ValueKind != JsonValueKind.String
+                || name.GetString() != "interaction.respond"
+                || !root.TryGetProperty("responseType", out var responseType) || responseType.ValueKind != JsonValueKind.String
+                || responseType.GetString() is not ("choice" or "weakSandboxConsent")
+                || !root.TryGetProperty("interactionId", out var interaction) || interaction.ValueKind != JsonValueKind.String
+                || !Guid.TryParseExact(interaction.GetString(), "D", out var parsedInteraction)
+                || interaction.GetString() != parsedInteraction.ToString("D")
+                || !root.TryGetProperty("optionId", out var option) || option.ValueKind != JsonValueKind.String
+                || !root.TryGetProperty("expectedRunId", out var run) || run.ValueKind != JsonValueKind.String
+                || run.GetString() != expectedRunId
+                || !root.TryGetProperty("expectedPolicyRevision", out var revision)
+                || !revision.TryGetInt64(out var actualRevision) || actualRevision != expectedPolicyRevision
+                || !TryGetWorkspaceHash(out var workspaceHash))
+                return new CommandAck(command.MessageId, "error", "shell.interaction_dispatch_invalid",
+                    RuntimeCommandOutcome.Rejected());
+            var scope = new TrustedActionScope(expectedSessionId, expectedRunId, workspaceHash,
+                ExpectedRevision: null, CheckRevision: false, RequirePlanRun: false, RequestedMode: null,
+                ExpectedPolicyRevision: expectedPolicyRevision);
+            return DispatchCommand(server, command, scope, out _);
+        }
+        catch (JsonException)
+        {
+            return new CommandAck(command.MessageId, "error", "shell.interaction_dispatch_invalid",
+                RuntimeCommandOutcome.Rejected());
+        }
+    }
+
     private static CommandAck DispatchCommand(IOmniClient client, WireEnvelope command, TrustedActionScope? trustedScope,
         out bool executed, string? executionPayloadJson = null)
     {
@@ -1514,7 +1593,9 @@ public static class StdioProtocolHost
 
             var invocationCandidates = events.Where(evt => evt.RunId == run
                     && codecs.Decode(evt) is NativeCommandInvocationAdmitted admitted
-                    && admitted.SessionId == session && admitted.RunId == run && admitted.Kind == "compiledWorkflow")
+                    && admitted.SessionId == session && admitted.RunId == run
+                    && (admitted.Kind == "compiledWorkflow"
+                        || admitted.Kind == "nativeTool" && admitted.CanonicalCommandId == "core:shell.exec"))
                 .Select(evt => ((NativeCommandInvocationAdmitted)codecs.Decode(evt)).InvocationId)
                 .Distinct().Where(invocation => server.CanResolveNativeWeakSandboxConsent(session, run, task, lane, turn,
                     toolCall, request.InteractionId, invocation, "consent_once", revision.Value))
@@ -1742,6 +1823,18 @@ public static class StdioProtocolHost
                                 .Select(evt => ((ToolCallRequested)codecs.Decode(evt)).ProviderCallId["native-action-".Length..])
                                 .Distinct(StringComparer.Ordinal).ToArray()
                             : Array.Empty<string>();
+                        var nativeShellCalls = request.Kind == InteractionKind.Permission
+                            && targetTask is not null && targetLane is not null && targetToolCall is not null
+                            && _nativeChoiceCapability
+                            ? events.Where(evt => evt.RunId == run && evt.TaskId == targetTask
+                                && evt.LaneId == targetLane && evt.TurnId == sourceTurnId
+                                && evt.ToolCallId == targetToolCall
+                                && codecs.Decode(evt) is ToolCallRequested call
+                                && call.ToolName == "shell.exec"
+                                && call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal))
+                                .Select(evt => ((ToolCallRequested)codecs.Decode(evt)).ProviderCallId["native-action-".Length..])
+                                .Distinct(StringComparer.Ordinal).ToArray()
+                            : Array.Empty<string>();
                         var nativeControlId = nativeControlCalls.Length == 1
                             && Guid.TryParseExact(nativeControlCalls[0], "D", out var controlGuid)
                             && nativeControlCalls[0] == controlGuid.ToString("D")
@@ -1752,6 +1845,23 @@ public static class StdioProtocolHost
                             { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
                                 OutcomeKind: "Accepted", ExecutionState: "deferred", ExecutionCode: "input_required" };
                         if (nativeControlCalls.Length > 0 && !nativeProcessControl) break;
+                        var nativeShellId = nativeShellCalls.Length == 1
+                            && Guid.TryParseExact(nativeShellCalls[0], "D", out var shellGuid)
+                            && nativeShellCalls[0] == shellGuid.ToString("D") ? nativeShellCalls[0] : null;
+                        var nativeShellReceipt = nativeShellId is null ? null
+                            : server.ReceiptStore?.ReadCommandReceipt(nativeShellId);
+                        var nativeShellAction = nativeShellReceipt is
+                            { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                                OutcomeKind: "Accepted", ExecutionState: "deferred", ExecutionCode: "input_required" }
+                            && nativeShellCalls.Length == 1
+                            && events.Any(evt => evt.RunId == run && evt.TaskId == targetTask && evt.LaneId == targetLane
+                                && evt.TurnId == sourceTurnId && evt.ToolCallId == targetToolCall
+                                && codecs.Decode(evt) is ToolCallRequested shellCall
+                                && shellCall.ToolName == "shell.exec"
+                                && shellCall.ProviderCallId == "native-action-" + nativeShellId
+                                && server.NativeToolInvocationMatches(sessionId, run, shellCall.ProviderCallId,
+                                    shellCall.ToolName, shellCall.ArgumentsJson));
+                        if (nativeShellCalls.Length > 0 && !nativeShellAction) break;
                         string? turnId = null;
                         if (request.Kind == InteractionKind.Permission)
                         {
@@ -1772,8 +1882,9 @@ public static class StdioProtocolHost
                             ContinuationLaneId: request.Kind == InteractionKind.Permission ? targetLane?.ToString() : null,
                             ContinuationToolCallId: request.Kind == InteractionKind.Permission ? targetToolCall?.ToString() : null,
                             NativeChoiceCapability: _nativeChoiceCapability, ExplicitChoiceRecovery: true,
-                            NativeInvocationId: nativeProcessControl ? nativeControlId : null,
-                            NativeCommandKind: nativeProcessControl ? "nativeTool" : null,
+                            NativeInvocationId: nativeProcessControl ? nativeControlId : nativeShellAction ? nativeShellId : null,
+                            NativeCommandKind: nativeProcessControl || nativeShellAction ? "nativeTool" : null,
+                            NativeWeakSandboxCapability: nativeShellAction && _nativeWeakSandboxCapability,
                             NativeProcessControlContinuation: nativeProcessControl,
                             NativeProcessControlRequestHash: nativeProcessControl ? nativeControlReceipt!.RequestHash : null);
                         var chosenOption = resolved.OptionId;
@@ -1989,7 +2100,7 @@ public static class StdioProtocolHost
                 && codecs.Decode(evt) is TurnStarted);
             if (turnStart is null || !IsOpenTurn(events, codecs, runId, turnId)) return false;
             var admitted = FindDeferredConversationBinding(server, events, codecs, sessionId, runId,
-                turnStart.Sequence, _nativeChoiceCapability);
+                turnStart.Sequence, _nativeChoiceCapability, _nativeWeakSandboxCapability);
             if (admitted is null) return false;
             // Bind the answer to the exact child turn and user.ask call. The runner may resume
             // an accepted child delegation, but it must never infer that target from the UI.
@@ -2125,7 +2236,7 @@ public static class StdioProtocolHost
             }
             var admitted = nativeChildProcessControl
                 ?? FindDeferredConversationBinding(server, events, codecs, session, run, turnStart.Sequence,
-                    _nativeChoiceCapability);
+                    _nativeChoiceCapability, _nativeWeakSandboxCapability);
             if (admitted is null)
             {
                 _choiceResumeFailure = "choice_deferred_binding_missing";
@@ -2266,7 +2377,7 @@ public static class StdioProtocolHost
 
         private static PersistedConversationCommand? FindDeferredConversationBinding(OmniServer server,
             IReadOnlyList<DomainEvent> events, IEventCodecRegistry codecs, SessionId sessionId, RunId runId,
-            long turnStartSequence, bool nativeChoiceCapability)
+            long turnStartSequence, bool nativeChoiceCapability, bool nativeWeakSandboxCapability)
         {
             var store = server.ReceiptStore;
             if (store is null) return null;
@@ -2331,7 +2442,7 @@ public static class StdioProtocolHost
                     && evt.TurnId == currentTurn.TurnId && evt.Sequence > turnStartSequence
                     && codecs.Decode(evt) is ToolCallRequested)
                 .Select(evt => (Event: evt, Call: (ToolCallRequested)codecs.Decode(evt)))
-                .Where(item => item.Call.ToolName is "worktree.integrate" or "worktree.cleanup" or "worktree.discard" or "worktree.retention"
+                .Where(item => item.Call.ToolName is "shell.exec" or "worktree.integrate" or "worktree.cleanup" or "worktree.discard" or "worktree.retention"
                     && item.Call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal))
                 .ToArray();
             foreach (var item in currentTurnCalls)
@@ -2370,6 +2481,17 @@ public static class StdioProtocolHost
                     || events.Any(evt => evt.RunId == runId && evt.Sequence > invocationStarted.Sequence
                         && codecs.Decode(evt) is NativeCommandInvocationFinished finished
                         && finished.InvocationId == invocation)) continue;
+                var nativeShellAction = false;
+                if (item.Call.ToolName == "shell.exec"
+                    && server.TryReadNativeCommandPayload(invocation, out var protectedAdmission,
+                        out var protectedPayloadJson)
+                    && protectedAdmission.SessionId == sessionId && protectedAdmission.RunId == runId
+                    && protectedAdmission.Kind == "nativeTool"
+                    && protectedAdmission.CanonicalCommandId == "core:shell.exec"
+                    && OmniServer.TryDecodeNativeCommandPayload(protectedPayloadJson, out var protectedPayload)
+                    && protectedPayload.Kind == "nativeTool"
+                    && protectedPayload.CanonicalCommandId == "core:shell.exec")
+                    nativeShellAction = true;
                 var permission = events.SingleOrDefault(evt => evt.RunId == runId
                     && evt.TaskId == startEvent.TaskId && evt.LaneId == currentTurn.LaneId
                     && evt.TurnId == currentTurn.TurnId && evt.ToolCallId == item.Call.ToolCallId
@@ -2384,7 +2506,8 @@ public static class StdioProtocolHost
                 candidates.Add(new PersistedConversationCommand(receipt.CommandId, receipt.RequestHash,
                     sessionId.ToString(), runId.ToString(), receipt.FirstSequence, receipt.LastSequence,
                     NativeInvocationId: invocation.ToString(), NativeCommandKind: "nativeTool",
-                    NativeChoiceCapability: nativeChoiceCapability));
+                    NativeChoiceCapability: nativeChoiceCapability,
+                    NativeWeakSandboxCapability: nativeShellAction && nativeWeakSandboxCapability));
             }
             var uniqueCandidates = candidates.DistinctBy(item => item.CommandId, StringComparer.Ordinal).ToArray();
             return uniqueCandidates.Length == 1 ? uniqueCandidates[0] : null;
@@ -2581,13 +2704,21 @@ public static class StdioProtocolHost
                     FirstSequence: not null, LastSequence: not null }
                 || !string.Equals(sourceReceipt.SessionId, sessionId, StringComparison.Ordinal)
                 || !string.Equals(sourceReceipt.ExecutionRunId, runId, StringComparison.Ordinal)) return acknowledgement;
+            var sourceInvocation = new CommandId(Guid.ParseExact(invocationId, "D"));
+            if (!server.TryReadNativeCommandPayload(sourceInvocation, out var sourceAdmission, out var sourcePayloadJson)
+                || sourceAdmission.SessionId.ToString() != sessionId || sourceAdmission.RunId?.ToString() != runId
+                || sourceAdmission.Kind is not ("nativeTool" or "compiledWorkflow")
+                || !OmniServer.TryDecodeNativeCommandPayload(sourcePayloadJson, out var sourcePayload)
+                || sourcePayload.Kind != sourceAdmission.Kind
+                || sourceAdmission.Kind == "nativeTool" && sourceAdmission.CanonicalCommandId != "core:shell.exec")
+                return acknowledgement;
             var binding = new PersistedConversationCommand(invocationId, sourceReceipt.RequestHash!, sessionId,
                 runId, sourceReceipt.FirstSequence, sourceReceipt.LastSequence,
                 ContinuationInteractionId: interactionId, ContinuationCommandId: command.MessageId,
                 ContinuationRequestHash: hash, ContinuationFirstSequence: first, ContinuationLastSequence: last,
                 ContinuationResponseType: "weakSandboxConsent", ContinuationOptionId: optionId,
                 ContinuationTurnId: turnId, NativeChoiceCapability: _nativeChoiceCapability,
-                NativeInvocationId: invocationId, NativeCommandKind: "compiledWorkflow",
+                NativeInvocationId: invocationId, NativeCommandKind: sourceAdmission.Kind,
                 ContinuationTaskId: taskId, ContinuationLaneId: laneId, ContinuationToolCallId: toolCallId,
                 ContinuationInvocationId: invocationId, NativeWeakSandboxCapability: _nativeWeakSandboxCapability);
             lock (_gate)
@@ -2670,25 +2801,64 @@ public static class StdioProtocolHost
                         }
                         catch (Exception) { /* Keep an unproven original action deferred for reconciliation. */ }
                     }
+                    var nativeHumanShell = false;
                     if (!pending.Binding.NativeProcessControlContinuation
                         && pending.Binding.NativeCommandKind == "nativeTool"
-                        && pending.Binding.NativeInvocationId is { } nativeInvocation && code != 3)
+                        && pending.Binding.NativeInvocationId is { } nativeInvocation
+                        && Guid.TryParseExact(nativeInvocation, "D", out var invocationGuid)
+                        && pending.Server.TryReadNativeCommandPayload(new CommandId(invocationGuid),
+                            out var invocationAdmission, out var invocationPayloadJson)
+                        && invocationAdmission.SessionId.ToString() == pending.Binding.SessionId
+                        && invocationAdmission.RunId?.ToString() == pending.Binding.RunId
+                        && OmniServer.TryDecodeNativeCommandPayload(invocationPayloadJson, out var invocationPayload)
+                        && invocationPayload.Kind == invocationAdmission.Kind)
                     {
-                        try
+                        if (invocationAdmission.CanonicalCommandId == "core:shell.exec"
+                            && invocationPayload.CanonicalCommandId == "core:shell.exec")
                         {
-                            pending.Server.CompleteNativeWorktreeExecutionReceipt(nativeInvocation,
-                                pending.Binding.RequestHash);
+                            nativeHumanShell = true;
+                            if (code != 3)
+                            {
+                                try
+                                {
+                                    OmniCliRuntime.CompleteHumanShellExecutionReceipt(pending.Server, nativeInvocation,
+                                        pending.Binding.RequestHash, new SessionId(Guid.Parse(pending.Binding.SessionId)),
+                                        new RunId(Guid.Parse(pending.Binding.RunId)), code, _ => { });
+                                }
+                                catch (Exception) { /* Keep an unproven shell result deferred/unknown. */ }
+                            }
                         }
-                        catch (Exception) { /* Unproven terminal worktree outcome stays deferred/unknown. */ }
+                        else if (invocationAdmission.CanonicalCommandId is "core:worktree.integrate"
+                                or "core:worktree.cleanup" or "core:worktree.discard" or "core:worktree.retention"
+                            && invocationPayload.CanonicalCommandId == invocationAdmission.CanonicalCommandId
+                            && code != 3)
+                        {
+                            try
+                            {
+                                pending.Server.CompleteNativeWorktreeExecutionReceipt(nativeInvocation,
+                                    pending.Binding.RequestHash);
+                            }
+                            catch (Exception) { /* Unproven terminal worktree outcome stays deferred/unknown. */ }
+                        }
+                    }
+                    var responseExecutionState = code == 0 ? "completed" : code == 130 ? "cancelled"
+                        : code == 3 ? "deferred" : "failed";
+                    var responseExecutionCode = code == 0 ? "turn_completed" : code == 130 ? "turn_cancelled"
+                        : code == 3 ? "input_required" : code == 4 ? "model_tools_unsupported" : "runtime_failed";
+                    if (nativeHumanShell && code != 3
+                        && pending.Binding.NativeInvocationId is { } shellInvocationId)
+                    {
+                        var sourceReceipt = pending.Server.ReceiptStore?.ReadCommandReceipt(shellInvocationId);
+                        responseExecutionState = sourceReceipt?.ExecutionState ?? "unknown";
+                        responseExecutionCode = sourceReceipt?.ExecutionCode ?? "effect_outcome_unknown";
                     }
                     try
                     {
-                        pending.Server.ReceiptStore?.CompleteCommandExecution(pending.ReceiptCommandId,
-                            pending.ReceiptRequestHash,
-                            code == 0 ? "completed" : code == 130 ? "cancelled" : code == 3 ? "deferred" : "failed",
-                            code == 0 ? "turn_completed" : code == 130 ? "turn_cancelled" : code == 3 ? "input_required"
-                                : code == 4 ? "model_tools_unsupported" : "runtime_failed",
-                            pending.Binding.SessionId, pending.Binding.RunId);
+                        if (!nativeHumanShell || code == 3
+                            || pending.ReceiptCommandId != pending.Binding.NativeInvocationId)
+                            pending.Server.ReceiptStore?.CompleteCommandExecution(pending.ReceiptCommandId,
+                                pending.ReceiptRequestHash, responseExecutionState, responseExecutionCode,
+                                pending.Binding.SessionId, pending.Binding.RunId);
                     }
                     catch (Exception) { /* Accepted input is never resent when continuation status is unknown. */ }
                     finally

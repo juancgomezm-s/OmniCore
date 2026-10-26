@@ -548,7 +548,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader, IDi
     public void CompleteCommandExecution(string commandId, string requestHash, string state, string code,
         string sessionId, string runId, string? scope = null)
     {
-        if (state is not ("completed" or "failed" or "cancelled" or "deferred")) throw new ArgumentOutOfRangeException(nameof(state));
+        if (state is not ("completed" or "failed" or "cancelled" or "deferred" or "unknown")) throw new ArgumentOutOfRangeException(nameof(state));
         if (code.Length is 0 or > 96 || !code.All(character => char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-'))
             throw new ArgumentException("Execution code must be a short canonical code.", nameof(code));
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
