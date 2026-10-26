@@ -62,3 +62,30 @@ Logs y frames RGB sintéticos en `%TEMP%/omnicore-openrouter-grid-frames-2026102
 Trabajo aislado en `codex/openrouter-catalog-grid` desde `916c392`. El checkout
 principal y el worktree M9 se conservan; no se atribuye esta prueba al cierre M9/M10
 ni a una ejecución nueva de CI remoto.
+
+## Seguimiento: mantenimiento de modelos visibles
+
+La solicitud posterior señala que falta el acceso para escoger qué modelos se
+muestran en el menú. El mantenimiento previo existía bajo «Activar modelos», pero
+el nuevo catálogo no lo exponía. Ahora se llama «Modelos visibles en F3» y aparece
+en Preferencias → Modelos y perfiles y desde el catálogo OpenRouter. F3 ofrece
+«Mostrar/ocultar modelos · Ctrl+M».
+
+El grid incorpora una columna F3 con `[✓]`/`[ ]`, un botón para mostrar/ocultar el
+seleccionado y Espacio sobre su fila. Los modelos con salida exclusivamente no
+textual muestran `—` y no ofrecen activar su visibilidad en el selector de texto.
+El mantenimiento incluye Mostrar resultados/Ocultar resultados sobre la búsqueda
+actual, incluso para modelos OpenRouter todavía no registrados. Guarda una sola
+transacción atómica por lote en las preferencias User existentes; las identidades
+incluyen proveedor y modelo. No registra modelos, elige una ruta, cambia el modelo
+activo, altera permisos ni envía inferencias.
+
+Se verificaron 33 casos únicos de visibilidad, catálogo y selector: la primera serie
+tuvo 32 PASS y un fallo en el tipo de excepción esperado por el fixture de rollback;
+se corrigió esa expectativa y el caso pasó aislado. Tras ajustar geometría y
+excluir salida no textual, los 16 recorridos afectados pasaron sin omisiones.
+Incluyen persistencia/reapertura, rollback de un lote fallido, aislamiento por
+proveedor, edición individual y filtrada, F3, borrador/modelo activo/eventos intactos,
+80×25/120×40 y recursos es/en/fr/it. Build Release sin errores ni advertencias.
+Los frames RGB sintéticos y logs están en `%TEMP%/omnicore-model-visibility-frames-20261026/`
+y `omnicore-model-visibility-{tests,atomic,layout,build}.log`.

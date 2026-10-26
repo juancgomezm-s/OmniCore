@@ -128,6 +128,8 @@ public sealed class ModelPolicyHost : IDisposable
     public bool IsVisibleInPicker(string providerId, string modelId) => _pickerPreferences.IsVisible(providerId, modelId);
     public void SetVisibleInPicker(string providerId, string modelId, bool visible, CancellationToken ct) =>
         _pickerPreferences.SetVisible(providerId, modelId, visible, ct);
+    public void SetVisibleInPicker(IReadOnlyList<ModelRegistryModelDescriptor> models, bool visible, CancellationToken ct) =>
+        _pickerPreferences.SetVisibleMany(models.Select(model => (model.ProviderId, model.Id)).ToArray(), visible, ct);
     public void Dispose() { _pickerPreferences.Dispose(); _service.Dispose(); GC.SuppressFinalize(this); }
 
     /// <summary>Crea una fachada respaldada por el almacén de políticas y el registro de modelos del usuario.</summary>

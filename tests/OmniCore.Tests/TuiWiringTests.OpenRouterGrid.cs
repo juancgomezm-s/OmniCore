@@ -67,11 +67,11 @@ public sealed partial class TuiWiringTests
         ClickId(fx, "provider-discover");
         fx.Wait(() => fx.App.Overlay?.Id == "openrouter-catalog", "catalog grid");
         var table = Descendants(fx.App.Overlay!).OfType<TableView>().Single();
-        Assert.Equal("Anthropic", table.Table![0, 0]);
-        Assert.Equal("OpenAI", table.Table[1, 0]);
-        Assert.Equal("0.10/10.00 USD", table.Table[1, 3]);
-        Assert.Equal("0.00/— USD", table.Table[0, 3]);
-        Assert.Equal(new Localization(locale).Resolve("openrouter.catalog.cost"), table.Table.ColumnNames[3]);
+        Assert.Equal("Anthropic", table.Table![0, 1]);
+        Assert.Equal("OpenAI", table.Table[1, 1]);
+        Assert.Equal("0.10/10.00 USD", table.Table[1, 4]);
+        Assert.Equal("0.00/— USD", table.Table[0, 4]);
+        Assert.Equal(new Localization(locale).Resolve("openrouter.catalog.cost"), table.Table.ColumnNames[4]);
         Assert.DoesNotContain("openrouter.catalog.title", OverlayText(fx.App.Overlay!));
         fx.Invoke(() => { table.SetSelection(0, 1, false); table.SetFocus(); });
         ExportPreferenceFrame(fx, width, height, "openrouter-grid-" + locale, "0.10/10.00 USD");

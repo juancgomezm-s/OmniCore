@@ -6,19 +6,21 @@ using Terminal.Gui.Views;
 namespace OmniCore.Cli;
 
 /// <summary>Read-only catalog presentation. Prices are USD per million tokens, input/output.</summary>
-internal sealed class OpenRouterCatalogGrid(IReadOnlyList<OpenRouterModel> models, Localization text) : ITableSource
+internal sealed class OpenRouterCatalogGrid(IReadOnlyList<OpenRouterModel> models, Localization text,
+    Func<OpenRouterModel, bool>? isVisible = null) : ITableSource
 {
     public int Rows => models.Count;
-    public int Columns => 4;
-    public string[] ColumnNames => [text.Resolve("openrouter.catalog.company"), text.Resolve("openrouter.catalog.model"),
+    public int Columns => 5;
+    public string[] ColumnNames => ["F3", text.Resolve("openrouter.catalog.company"), text.Resolve("openrouter.catalog.model"),
         text.Resolve("openrouter.catalog.context"), text.Resolve("openrouter.catalog.cost")];
 
     public object this[int row, int column] => column switch
     {
-        0 => Company(models[row]),
-        1 => Safe(models[row].Id.Split('/', 2).Last()),
-        2 => models[row].ContextLength?.ToString("N0", CultureInfo.InvariantCulture) ?? "—",
-        3 => Cost(models[row]),
+        0 => !CanShowInPicker(models[row]) ? "—" : (isVisible?.Invoke(models[row]) ?? true) ? "[✓]" : "[ ]",
+        1 => Company(models[row]),
+        2 => Safe(models[row].Id.Split('/', 2).Last()),
+        3 => models[row].ContextLength?.ToString("N0", CultureInfo.InvariantCulture) ?? "—",
+        4 => Cost(models[row]),
         _ => throw new ArgumentOutOfRangeException(nameof(column)),
     };
 
@@ -30,6 +32,8 @@ internal sealed class OpenRouterCatalogGrid(IReadOnlyList<OpenRouterModel> model
     }
 
     internal static string Safe(string value) => new(value.Where(c => !char.IsControl(c)).Take(160).ToArray());
+    internal static bool CanShowInPicker(OpenRouterModel model) => model.OutputModalities.Count == 0
+        || model.OutputModalities.Contains("text", StringComparer.Ordinal);
     internal static string Cost(OpenRouterModel model) => PerMillion(model.PromptPricePerToken) + "/"
         + PerMillion(model.CompletionPricePerToken) + " USD";
 

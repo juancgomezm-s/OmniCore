@@ -3,6 +3,7 @@ using OmniCore.Host;
 using OmniCore.Client;
 using OmniCore.Protocol;
 using Terminal.Gui.Drawing;
+using Terminal.Gui.Drivers;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 
@@ -456,16 +457,19 @@ public sealed partial class TuiApp
         var filter = new TextField { Id = "openrouter-catalog-search", X = 14, Y = 3,
             Width = Dim.Fill(4), Text = search ?? string.Empty };
         frame.Add(new Label { X = 2, Y = 3, Width = 11, Text = _localization.Resolve("openrouter.catalog.search") });
-        var list = new TableView(new OpenRouterCatalogGrid(page.Models, _localization))
+        var list = new TableView(new OpenRouterCatalogGrid(page.Models, _localization,
+            model => _policies.IsVisibleInPicker(providerId, model.Id)))
         { Id = "openrouter-catalog-models", X = 2, Y = 5, Width = Dim.Fill(4), Height = height - 12,
             CanFocus = page.Models.Count > 0, FullRowSelect = true, MultiSelect = false };
         list.Style.AlwaysShowHeaders = true;
         list.Style.ShowVerticalCellLines = true;
         list.Style.ExpandLastColumn = true;
-        list.Style.GetOrCreateColumnStyle(0).MaxWidth = 16;
-        list.Style.GetOrCreateColumnStyle(1).MaxWidth = Math.Clamp(_window.Frame.Width - 66, 12, 60);
-        list.Style.GetOrCreateColumnStyle(2).MinWidth = 10;
-        list.Style.GetOrCreateColumnStyle(3).MinWidth = 20;
+        list.Style.GetOrCreateColumnStyle(0).MinWidth = 4;
+        list.Style.GetOrCreateColumnStyle(0).MaxWidth = 4;
+        list.Style.GetOrCreateColumnStyle(1).MaxWidth = 14;
+        list.Style.GetOrCreateColumnStyle(2).MaxWidth = Math.Clamp(_window.Frame.Width - 72, 12, 60);
+        list.Style.GetOrCreateColumnStyle(3).MinWidth = 10;
+        list.Style.GetOrCreateColumnStyle(4).MinWidth = 20;
         if (page.Models.Count > 0) list.SetSelection(0, 0, false);
         var details = new Label { Id = "openrouter-catalog-details", X = 2, Y = height - 7,
             Width = Dim.Fill(4), Height = 1, Text = "" };
@@ -475,11 +479,24 @@ public sealed partial class TuiApp
             : page.Truncated ? _localization.Resolve("openrouter.catalog.truncated") : "");
         var status = new Label { Id = "openrouter-catalog-status", X = 2, Y = height - 5,
             Width = Dim.Fill(4), Height = 1, Text = statusText };
+        var visibility = new Button { Id = "openrouter-catalog-visibility", X = 2, Y = height - 2,
+            Enabled = page.Models.Count > 0 };
+        var manageVisibility = new Button { Id = "openrouter-catalog-manage-visibility", X = Pos.Right(visibility) + 3,
+            Y = height - 2, Text = _localization.Resolve("shell.models.enable") };
+        manageVisibility.Accepted += (_, args) =>
+        {
+            args.Handled = true;
+            CloseOverlay(); ShowModelToggles(query: providerId);
+        };
         void ShowDetails()
         {
             var selected = list.Value?.SelectedCell.Y;
             if (selected is not { } index || index < 0 || index >= page.Models.Count) { details.Text = ""; return; }
             var model = page.Models[index];
+            visibility.Enabled = OpenRouterCatalogGrid.CanShowInPicker(model);
+            visibility.Text = _localization.Resolve(!visibility.Enabled ? "openrouter.catalog.notText"
+                : _policies.IsVisibleInPicker(providerId, model.Id)
+                ? "openrouter.catalog.hideInPicker" : "openrouter.catalog.showInPicker");
             var parts = new List<string> { CatalogDisplay(model.Id, 120) };
             if (model.MaxCompletionTokens is { } output) parts.Add(_localization.Resolve("openrouter.catalog.max") + " " + output.ToString(CultureInfo.InvariantCulture));
             parts.Add(OpenRouterCatalogGrid.Cost(model));
@@ -488,6 +505,25 @@ public sealed partial class TuiApp
             details.Text = string.Join(" · ", parts);
         }
         list.ValueChanged += (_, _) => ShowDetails();
+        void ToggleVisibility()
+        {
+            if (list.Value?.SelectedCell.Y is not { } selected || selected < 0 || selected >= page.Models.Count) return;
+            var model = page.Models[selected];
+            if (!OpenRouterCatalogGrid.CanShowInPicker(model)) return;
+            try
+            {
+                _policies.SetVisibleInPicker(providerId, model.Id, !_policies.IsVisibleInPicker(providerId, model.Id), CancellationToken.None);
+                list.Update(); ShowDetails();
+                status.Text = _localization.Resolve("shell.models.visibilitySaved");
+            }
+            catch (Exception) { status.Text = _localization.Resolve("shell.models.saveFailed"); }
+        }
+        visibility.Accepted += (_, args) => { args.Handled = true; ToggleVisibility(); };
+        list.KeyDown += (_, key) =>
+        {
+            if (key.KeyCode != KeyCode.Space) return;
+            key.Handled = true; ToggleVisibility();
+        };
         var refresh = new Button { Id = "openrouter-catalog-refresh", X = 2, Y = height - 3,
             Width = Dim.Percent(30), Text = _localization.Resolve("openrouter.catalog.refresh") };
         var register = new Button { Id = "openrouter-catalog-register", X = Pos.Right(refresh) + 1,
@@ -538,7 +574,7 @@ public sealed partial class TuiApp
             Y = height - 3, Width = Dim.Percent(15), Text = _localization.Resolve("openrouter.catalog.previous"), Enabled = offset > 0 };
         previous.Accepted += (_, _) => Reload(filter.Text?.ToString(), Math.Max(0, offset - 30));
         back.Accepted += (_, _) => { CloseOverlay(); ShowProviderConnections(selectedProviderId: providerId); };
-        frame.Add(filter, list, details, status, refresh, register, previous, next, back);
+        frame.Add(filter, list, details, status, refresh, register, previous, next, visibility, manageVisibility, back);
         ApplyTheme(frame);
         var focus = Environment.GetEnvironmentVariable("NO_COLOR") is not null
             ? new Terminal.Gui.Drawing.Attribute(Color.None, Color.None, TextStyle.Reverse)

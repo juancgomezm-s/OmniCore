@@ -38,6 +38,7 @@ public sealed partial class TuiApp
         var models = all;
         var frame = OverlayFrame(_localization.Resolve("shell.models.enable"), 20);
         frame.Id = "model-toggles";
+        frame.Width = Dim.Fill(2);
         var feedback = new Label { Id = "omni-palette-feedback", X = 2, Y = 1, Width = Dim.Fill(4) };
         var search = new TextField { Id = "model-toggle-search", X = 10, Y = 2, Width = Dim.Fill(4), Text = query };
         var rows = new FrameView { Id = "model-toggle-rows", X = 1, Y = 4, Width = Dim.Fill(2),
@@ -63,6 +64,17 @@ public sealed partial class TuiApp
                 _policies.SetVisibleInPicker(model.ProviderId, model.Id, !visible, CancellationToken.None);
                 buttons[index].Text = ToggleText(model);
                 error = null;
+            }
+            catch (Exception) { error = _localization.Resolve("shell.models.saveFailed"); }
+            UpdateFeedback();
+        }
+        void SetFilteredVisibility(bool visible)
+        {
+            try
+            {
+                _policies.SetVisibleInPicker(models, visible, CancellationToken.None);
+                error = null;
+                RenderRows();
             }
             catch (Exception) { error = _localization.Resolve("shell.models.saveFailed"); }
             UpdateFeedback();
@@ -130,13 +142,20 @@ public sealed partial class TuiApp
             if (key.KeyCode is KeyCode.Enter or KeyCode.CursorDown or KeyCode.CursorUp)
             { FocusRow(key.KeyCode == KeyCode.CursorUp ? models.Length - 1 : position); key.Handled = true; }
         };
-        var help = new Label { Id = "omni-help", X = 2, Y = Pos.AnchorEnd(3), Width = Dim.Fill(4),
+        var help = new Label { Id = "omni-help", X = 2, Y = Pos.AnchorEnd(3), Width = Dim.Fill(4), Height = 1,
             Text = _localization.Resolve("shell.models.toggleHelp", "command", "/" + HumanCommandAliases.DisplayName("model", _locale)) };
         var back = new Button { Id = "model-toggles-back", X = Pos.AnchorEnd(14), Y = Pos.AnchorEnd(1),
             Text = _localization.Resolve("shell.close") };
         back.Accepted += (_, args) => { args.Handled = true; ReturnFromPreferencesSubpage(); };
+        var showFiltered = new Button { Id = "model-toggles-show-filtered", X = 2, Y = Pos.AnchorEnd(2),
+            Text = _localization.Resolve("shell.models.showFiltered") };
+        var hideFiltered = new Button { Id = "model-toggles-hide-filtered", X = Pos.Right(showFiltered) + 2, Y = Pos.AnchorEnd(2),
+            Text = _localization.Resolve("shell.models.hideFiltered") };
+        showFiltered.Accepted += (_, args) => { args.Handled = true; SetFilteredVisibility(true); };
+        hideFiltered.Accepted += (_, args) => { args.Handled = true; SetFilteredVisibility(false); };
         frame.Add(feedback, new Label { Id = "omni-heading", X = 2, Y = 2, Width = 8,
             Text = _localization.Resolve("shell.search") }, search, rows, help, back);
+        frame.Add(showFiltered, hideFiltered);
         if (providers.Length > 0)
         {
             var refresh = new Button { Id = "omni-palette-openrouter-refresh", X = 2, Y = Pos.AnchorEnd(1),
