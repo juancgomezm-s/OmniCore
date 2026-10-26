@@ -35,6 +35,130 @@ public sealed partial class StdioTransportTests
         }
     }
 
+    private sealed record WorkflowProcessBoundaryObservation(int Launch, string Operation, long ElapsedMs,
+        string? RequestedStrength = null, string? Result = null, string? ExceptionType = null,
+        int? ExitCode = null, bool? TimedOut = null, int? OutputChunks = null, int? OutputCharacters = null);
+
+    private sealed class RecordingWorkflowSandboxLauncher(ISandboxProcessLauncher inner,
+        ConcurrentQueue<WorkflowProcessBoundaryObservation> observations) : ISandboxProcessLauncher, IStrongSandboxPreflight
+    {
+        private int _launchNumber;
+        private int _observationCount;
+
+        public StrongSandboxPreflightResult CheckStrongAvailability(SandboxLaunchSpec launch)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                var result = inner is IStrongSandboxPreflight preflight
+                    ? preflight.CheckStrongAvailability(launch)
+                    : StrongSandboxPreflightResult.Unknown;
+                Record(new WorkflowProcessBoundaryObservation(Math.Max(1, Volatile.Read(ref _launchNumber) + 1),
+                    "preflight.return", stopwatch.ElapsedMilliseconds, launch.RequestedStrength.ToString(), result.ToString()));
+                return result;
+            }
+            catch (Exception exception)
+            {
+                Record(new WorkflowProcessBoundaryObservation(Math.Max(1, Volatile.Read(ref _launchNumber) + 1),
+                    "preflight.throw", stopwatch.ElapsedMilliseconds, launch.RequestedStrength.ToString(),
+                    ExceptionType: exception.GetType().Name));
+                throw;
+            }
+        }
+
+        public async ValueTask<ISandboxProcessControl> StartAsync(SandboxLaunchSpec launch,
+            CancellationToken cancellationToken)
+        {
+            var number = Interlocked.Increment(ref _launchNumber);
+            var stopwatch = Stopwatch.StartNew();
+            Record(new WorkflowProcessBoundaryObservation(number, "start.begin", 0,
+                launch.RequestedStrength.ToString()));
+            try
+            {
+                var control = await inner.StartAsync(launch, cancellationToken).ConfigureAwait(false);
+                Record(new WorkflowProcessBoundaryObservation(number, "start.return", stopwatch.ElapsedMilliseconds,
+                    launch.RequestedStrength.ToString()));
+                return new RecordingWorkflowSandboxControl(control, number, launch.RequestedStrength.ToString(), Record);
+            }
+            catch (Exception exception)
+            {
+                Record(new WorkflowProcessBoundaryObservation(number, "start.throw", stopwatch.ElapsedMilliseconds,
+                    launch.RequestedStrength.ToString(), ExceptionType: exception.GetType().Name));
+                throw;
+            }
+        }
+
+        private void Record(WorkflowProcessBoundaryObservation observation)
+        {
+            if (Interlocked.Increment(ref _observationCount) <= 64) observations.Enqueue(observation);
+        }
+
+        private sealed class RecordingWorkflowSandboxControl(ISandboxProcessControl inner, int launch,
+            string requestedStrength,
+            Action<WorkflowProcessBoundaryObservation> record) : ISandboxProcessControl
+        {
+            public async ValueTask<SandboxProcessOutput> WaitForExitAsync(CancellationToken cancellationToken)
+            {
+                var stopwatch = Stopwatch.StartNew();
+                record(new WorkflowProcessBoundaryObservation(launch, "wait.begin", 0, requestedStrength));
+                try
+                {
+                    var output = await inner.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+                    record(new WorkflowProcessBoundaryObservation(launch, "wait.return", stopwatch.ElapsedMilliseconds,
+                        requestedStrength,
+                        ExitCode: output.ExitCode, TimedOut: output.TimedOut,
+                        OutputChunks: output.Chunks.Count, OutputCharacters: output.Chunks.Sum(chunk => chunk.Text.Length)));
+                    return output;
+                }
+                catch (Exception exception)
+                {
+                    record(new WorkflowProcessBoundaryObservation(launch, "wait.throw", stopwatch.ElapsedMilliseconds,
+                        requestedStrength,
+                        ExceptionType: exception.GetType().Name));
+                    throw;
+                }
+            }
+
+            public async ValueTask TerminateAsync(CancellationToken cancellationToken)
+            {
+                var stopwatch = Stopwatch.StartNew();
+                record(new WorkflowProcessBoundaryObservation(launch, "terminate.begin", 0, requestedStrength));
+                try
+                {
+                    await inner.TerminateAsync(cancellationToken).ConfigureAwait(false);
+                    record(new WorkflowProcessBoundaryObservation(launch, "terminate.return", stopwatch.ElapsedMilliseconds,
+                        requestedStrength));
+                }
+                catch (Exception exception)
+                {
+                    record(new WorkflowProcessBoundaryObservation(launch, "terminate.throw", stopwatch.ElapsedMilliseconds,
+                        requestedStrength,
+                        ExceptionType: exception.GetType().Name));
+                    throw;
+                }
+            }
+
+            public async ValueTask DisposeAsync()
+            {
+                var stopwatch = Stopwatch.StartNew();
+                record(new WorkflowProcessBoundaryObservation(launch, "dispose.begin", 0, requestedStrength));
+                try
+                {
+                    await inner.DisposeAsync().ConfigureAwait(false);
+                    record(new WorkflowProcessBoundaryObservation(launch, "dispose.return", stopwatch.ElapsedMilliseconds,
+                        requestedStrength));
+                }
+                catch (Exception exception)
+                {
+                    record(new WorkflowProcessBoundaryObservation(launch, "dispose.throw", stopwatch.ElapsedMilliseconds,
+                        requestedStrength,
+                        ExceptionType: exception.GetType().Name));
+                    throw;
+                }
+            }
+        }
+    }
+
     private sealed class UnavailableStrongProcessLauncherForHumanShellTest(ISandboxProcessLauncher inner)
         : ISandboxProcessLauncher, IStrongSandboxPreflight
     {
@@ -71,6 +195,7 @@ public sealed partial class StdioTransportTests
         var releaseInvocationReceipt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var controlledProviderHoldEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var sandboxCapabilityObservations = new ConcurrentQueue<string>();
+        var processLauncherObservations = new ConcurrentQueue<WorkflowProcessBoundaryObservation>();
         Func<ISandboxCapabilitiesProbe>? workflowSandboxProbe = forceStrongUnavailableBeforeLaunch
             ? static () => new UnavailableStrongProbeForWorkflowTest()
             : () => new RecordingSandboxCapabilitiesProbeForWorkflowTest(
@@ -130,6 +255,8 @@ public sealed partial class StdioTransportTests
             includeZeroModelPricing: true, isolateAgentRoots: true, workflowModel: true,
             includeNativeWeakSandboxCapability: true,
             workflowSandboxCapabilitiesProbeForTests: workflowSandboxProbe,
+            workflowProcessLauncherDecoratorForTests: inner =>
+                new RecordingWorkflowSandboxLauncher(inner, processLauncherObservations),
             afterCommandExecutionReceiptForTests: HoldInvocationAfterReceiptAsync);
         try
         {
@@ -241,7 +368,7 @@ public sealed partial class StdioTransportTests
             var controlledTimeout = await Assert.ThrowsAsync<TimeoutException>(() =>
                 WaitForWorkflowInvocationAsync(fixture, sessionId, runId, invocationId,
                     invocationReceiptHeld.Task, releaseInvocationReceipt, sandboxCapabilityObservations,
-                    TimeSpan.FromMilliseconds(100)));
+                    processLauncherObservations, TimeSpan.FromMilliseconds(100)));
             Assert.Contains("runnerQuiesced=true", controlledTimeout.Message, StringComparison.Ordinal);
             Assert.Contains("timeoutSnapshotJson=", controlledTimeout.Message, StringComparison.Ordinal);
             Assert.Contains("\"recentEvents\"", controlledTimeout.Message, StringComparison.Ordinal);
@@ -254,7 +381,8 @@ public sealed partial class StdioTransportTests
         }
 
         var weakConsentResponded = await WaitForWorkflowInvocationAsync(fixture, sessionId, runId, invocationId,
-            invocationReceiptHeld.Task, releaseInvocationReceipt, sandboxCapabilityObservations);
+            invocationReceiptHeld.Task, releaseInvocationReceipt, sandboxCapabilityObservations,
+            processLauncherObservations);
         if (forceStrongUnavailableBeforeLaunch) Assert.True(weakConsentResponded);
 
         var eventsAfterWorkflow = fixture.ReadEvents(sessionId);
@@ -386,6 +514,30 @@ public sealed partial class StdioTransportTests
             && item.Payload is NativeCommandInvocationFinished finished && finished.InvocationId.ToString() == invocationId));
         Assert.Equal(10, fixture.Provider.RequestCount);
 
+        var processBoundaries = processLauncherObservations.ToArray();
+        var successfulStarts = processBoundaries.Where(item => item.Operation == "start.return").ToArray();
+        Assert.Single(successfulStarts);
+        if (!forceStrongUnavailableBeforeLaunch) Assert.NotEmpty(sandboxCapabilityObservations);
+        var expectedStrength = weakConsentResponded ? nameof(SandboxStrength.Weak) : nameof(SandboxStrength.Strong);
+        Assert.Equal(expectedStrength, successfulStarts[0].RequestedStrength);
+        if (weakConsentResponded)
+            Assert.Contains(processBoundaries, item => item.Operation == "preflight.return"
+                && item.Result == nameof(StrongSandboxPreflightResult.UnavailableBeforeLaunch));
+        else
+            Assert.Contains(processBoundaries, item => item.Operation == "preflight.return"
+                && item.Result == nameof(StrongSandboxPreflightResult.Available));
+        Assert.Contains(processBoundaries, item => item.Operation == "wait.return" && item.ExitCode == 0
+            && item.TimedOut == false);
+        var boundaryJson = JsonSerializer.Serialize(new
+        {
+            fixtureForcedStrongUnavailableBeforeLaunch = forceStrongUnavailableBeforeLaunch,
+            sandboxCapabilities = sandboxCapabilityObservations.ToArray(),
+            processBoundaries,
+        });
+        Assert.InRange(Encoding.UTF8.GetByteCount(boundaryJson), 1, 12 * 1024);
+        fixture.RecordProtocolAudit("workflow verifier launcher boundaries", sessionId, runId,
+            "scope=invocation:" + invocationId + "; observations=" + boundaryJson);
+
         fixture.RecordProtocolAudit("worktree.preview", sessionId, runId, "passive; no journal delta");
         await fixture.StopHostAsync();
         var captureStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -425,6 +577,7 @@ public sealed partial class StdioTransportTests
     private static async Task<bool> WaitForWorkflowInvocationAsync(NativeCommandHandoffFixture fixture,
         string sessionId, string runId, string invocationId, Task<PersistedConversationCommand> invocationReceiptHeld,
         TaskCompletionSource releaseInvocationReceipt, ConcurrentQueue<string> sandboxCapabilityObservations,
+        ConcurrentQueue<WorkflowProcessBoundaryObservation> processLauncherObservations,
         TimeSpan? timeoutForTest = null)
     {
         var deadline = DateTimeOffset.UtcNow + (timeoutForTest ?? TimeSpan.FromMinutes(2));
@@ -442,7 +595,7 @@ public sealed partial class StdioTransportTests
             releaseInvocationReceipt.TrySetResult();
             var missingReceipt = fixture.ReadReceipt(invocationId);
             var timeoutSnapshot = fixture.CaptureWorkflowTimeoutSnapshot(sessionId, invocationId,
-                sandboxCapabilityObservations);
+                sandboxCapabilityObservations, processLauncherObservations);
             var cancellation = await fixture.CancelOwnedWorkflowAndWaitAsync(sessionId, runId, invocationId,
                     releaseInvocationReceipt).ConfigureAwait(false);
             if (!cancellation.Quiesced)
@@ -2024,6 +2177,7 @@ public sealed partial class StdioTransportTests
         public Action<string>? NativeProcessControlStageForTests { get; set; }
         public Func<PersistedConversationCommand, Task>? AfterCommandExecutionReceiptForTests { get; set; }
         public Func<ISandboxCapabilitiesProbe>? WorkflowSandboxCapabilitiesProbeForTests { get; set; }
+        public Func<ISandboxProcessLauncher, ISandboxProcessLauncher>? WorkflowProcessLauncherDecoratorForTests { get; set; }
         public Action? ArtifactSnapshotLeaseContendedForTests { get; set; }
         public AckDeliveryCutStream CutStream { get; private set; }
         public string RootDirectory => _root;
@@ -2091,7 +2245,8 @@ public sealed partial class StdioTransportTests
             bool workflowModel = false,
             bool includeNativeWeakSandboxCapability = false,
             Func<PersistedConversationCommand, Task>? afterCommandExecutionReceiptForTests = null,
-            Func<ISandboxCapabilitiesProbe>? workflowSandboxCapabilitiesProbeForTests = null)
+            Func<ISandboxCapabilitiesProbe>? workflowSandboxCapabilitiesProbeForTests = null,
+            Func<ISandboxProcessLauncher, ISandboxProcessLauncher>? workflowProcessLauncherDecoratorForTests = null)
         {
             var root = Path.Combine(Path.GetTempPath(), "omni-native-command-handoff-" + Guid.NewGuid().ToString("N"));
             var workspace = Path.Combine(root, "workspace");
@@ -2122,6 +2277,7 @@ public sealed partial class StdioTransportTests
             fixture.NativeProcessControlStageForTests = nativeProcessControlStageForTests;
             fixture.AfterCommandExecutionReceiptForTests = afterCommandExecutionReceiptForTests;
             fixture.WorkflowSandboxCapabilitiesProbeForTests = workflowSandboxCapabilitiesProbeForTests;
+            fixture.WorkflowProcessLauncherDecoratorForTests = workflowProcessLauncherDecoratorForTests;
             void RecordProviderBody(string body)
             {
                 fixture.ProviderBodies.Enqueue(body);
@@ -2300,7 +2456,8 @@ public sealed partial class StdioTransportTests
         public sealed record WorkflowCancellationObservation(bool Quiesced, string SendStatus, string AckOutcome);
 
         public WorkflowTimeoutSnapshot CaptureWorkflowTimeoutSnapshot(string sessionId, string invocationId,
-            ConcurrentQueue<string> capabilityObservations)
+            ConcurrentQueue<string> capabilityObservations,
+            ConcurrentQueue<WorkflowProcessBoundaryObservation> processLauncherObservations)
         {
             string json;
             try
@@ -2315,7 +2472,8 @@ public sealed partial class StdioTransportTests
                     providerRequests = Provider.RequestCount,
                     sandboxCapabilityProbeResults = capabilityObservations.TakeLast(8)
                         .Select(value => ClipDiagnostic(value, 96)).ToArray(),
-                    recentEvents = events.TakeLast(24).Select(item => new
+                    processLauncherObservations = processLauncherObservations.TakeLast(32).ToArray(),
+                    recentEvents = events.TakeLast(16).Select(item => new
                     {
                         sequence = item.Envelope.Sequence,
                         type = item.Payload.GetType().Name,
@@ -2339,18 +2497,34 @@ public sealed partial class StdioTransportTests
                             _ => string.Empty,
                         },
                     }).ToArray(),
-                    diagnostics = Diagnostics.TakeLast(8).Select(value => ClipDiagnostic(value, 96)).ToArray(),
+                    diagnostics = Diagnostics.TakeLast(6).Select(value => ClipDiagnostic(value, 96)).ToArray(),
                 };
                 json = JsonSerializer.Serialize(snapshot);
                 if (Encoding.UTF8.GetByteCount(json) > 12 * 1024)
                 {
-                    json = JsonSerializer.Serialize(new
+                    var compact = JsonSerializer.Serialize(new
+                    {
+                        invocationId,
+                        receipt = new { receipt?.State, receipt?.OutcomeKind, receipt?.ExecutionState,
+                            receipt?.ExecutionCode, receipt?.ExecutionRunId },
+                        providerRequests = Provider.RequestCount,
+                        sandboxCapabilityProbeResults = capabilityObservations.TakeLast(4)
+                            .Select(value => ClipDiagnostic(value, 96)).ToArray(),
+                        processLauncherObservations = processLauncherObservations.TakeLast(16).ToArray(),
+                        recentEvents = events.TakeLast(8).Select(item => new
+                        {
+                            sequence = item.Envelope.Sequence,
+                            type = item.Payload.GetType().Name,
+                            toolCallId = item.Envelope.ToolCallId?.ToString(),
+                        }).ToArray(),
+                        diagnostics = Diagnostics.TakeLast(4).Select(value => ClipDiagnostic(value, 96)).ToArray(),
+                        snapshotTruncated = true,
+                    });
+                    json = Encoding.UTF8.GetByteCount(compact) <= 12 * 1024 ? compact : JsonSerializer.Serialize(new
                     {
                         invocationId,
                         providerRequests = Provider.RequestCount,
-                        capabilityProbeCount = capabilityObservations.Count,
-                        recentEventCount = events.Count,
-                        diagnosticsCount = Diagnostics.Count,
+                        processLauncherObservations = processLauncherObservations.TakeLast(8).ToArray(),
                         snapshotTruncated = true,
                     });
                 }
@@ -2787,6 +2961,7 @@ public sealed partial class StdioTransportTests
             var runtime = OmniCliRuntime.Create(Workspace);
             runtime.ProcessSandboxStrengthForTests = _processSandboxStrength;
             runtime.WorkflowSandboxCapabilitiesProbeForTests = WorkflowSandboxCapabilitiesProbeForTests;
+            runtime.WorkflowProcessLauncherDecoratorForTests = WorkflowProcessLauncherDecoratorForTests;
             runtime.UseConsoleInput = false;
             runtime.QuestionnaireInput = null;
             runtime.PrepareConversationSessionPolicy();

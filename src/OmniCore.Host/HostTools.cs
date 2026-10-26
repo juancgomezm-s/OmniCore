@@ -187,10 +187,21 @@ public sealed class HostTools
     internal static HostTools WorkflowStageForTests(WorkflowStage stage, AgentProfile profile,
         ArtifactReadTool? artifactReadTool, SandboxStrength processSandboxStrength,
         OmniCore.Abstractions.IProcessRuntime processRuntime,
-        ISandboxCapabilitiesProbe? capabilities = null) =>
-        WorkflowStageCore(stage, profile, artifactReadTool, processSandboxStrength,
-            processRuntime ?? throw new ArgumentNullException(nameof(processRuntime)),
-            capabilities is null ? null : OmniHost.CreateProcessSandboxLauncher(processRuntime, capabilities));
+        ISandboxCapabilitiesProbe? capabilities = null,
+        Func<ISandboxProcessLauncher, ISandboxProcessLauncher>? processLauncherDecorator = null)
+    {
+        ArgumentNullException.ThrowIfNull(processRuntime);
+        ISandboxProcessLauncher? processLauncher = null;
+        if (capabilities is not null || processLauncherDecorator is not null)
+        {
+            processLauncher = OmniHost.CreateProcessSandboxLauncher(processRuntime, capabilities);
+            if (processLauncherDecorator is not null)
+                processLauncher = processLauncherDecorator(processLauncher)
+                    ?? throw new InvalidOperationException("The test process-launcher decorator returned null.");
+        }
+        return WorkflowStageCore(stage, profile, artifactReadTool, processSandboxStrength,
+            processRuntime, processLauncher);
+    }
 
     private static HostTools WorkflowStageCore(WorkflowStage stage, AgentProfile profile,
         ArtifactReadTool? artifactReadTool, SandboxStrength processSandboxStrength,

@@ -50,6 +50,7 @@ public sealed class OmniCliRuntime : IDisposable
     internal Func<ISandboxProcessLauncher>? HumanShellProcessLauncherFactoryForTests { get; set; }
     internal Func<OmniCore.Abstractions.IProcessRuntime>? ProcessRuntimeFactoryForTests { get; set; }
     internal Func<ISandboxCapabilitiesProbe>? WorkflowSandboxCapabilitiesProbeForTests { get; set; }
+    internal Func<ISandboxProcessLauncher, ISandboxProcessLauncher>? WorkflowProcessLauncherDecoratorForTests { get; set; }
     internal Action<ExplorerTurn.TurnResult>? ChildTurnResultObserverForTests { get; set; }
     internal Func<ISandboxProcessLauncher>? McpSandboxLauncherFactoryForTests { get; set; }
     internal Func<string?>? ClaudeExecutableLocatorForTests { get; set; }
@@ -1727,10 +1728,11 @@ public sealed class OmniCliRuntime : IDisposable
     {
         var runtimeFactory = ProcessRuntimeFactoryForTests;
         var capabilitiesFactory = WorkflowSandboxCapabilitiesProbeForTests;
-        if (runtimeFactory is null && capabilitiesFactory is null)
+        var launcherDecorator = WorkflowProcessLauncherDecoratorForTests;
+        if (runtimeFactory is null && capabilitiesFactory is null && launcherDecorator is null)
             return HostTools.WorkflowStage(stage, profile, artifactReadTool, ProcessSandboxStrengthForTests);
         return HostTools.WorkflowStageForTests(stage, profile, artifactReadTool, ProcessSandboxStrengthForTests,
-            runtimeFactory?.Invoke() ?? SystemProcessRuntime.Instance(), capabilitiesFactory?.Invoke());
+            runtimeFactory?.Invoke() ?? SystemProcessRuntime.Instance(), capabilitiesFactory?.Invoke(), launcherDecorator);
     }
 
     public Task<int> DelegationAsync(string delegationId, Action<string> diagnostics, CancellationToken token) =>
