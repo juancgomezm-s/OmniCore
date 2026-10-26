@@ -332,7 +332,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     private void ReconcileObsoleteMonetaryBudget()
     {
         if (_lastSessionId is { } session)
-            ObsoleteMonetaryBudgetRecovery.Reconcile(_store, _codecs, session);
+            ObsoleteMonetaryBudgetRecovery.Reconcile(_store, _codecs, session, _platformPathsFactory());
     }
 
     internal SqliteEventStore? ReceiptStore => _store as SqliteEventStore;

@@ -440,7 +440,7 @@ public sealed partial class TuiApp
     }
 
     private void ShowOpenRouterCatalog(string providerId, string? search = null, int offset = 0,
-        OpenRouterCatalogPage? loadedPage = null, string? activity = null)
+        string? activity = null)
     {
         if (_window is null || _overlay is not null
             || _providerConnectionHost is not ITuiOpenRouterCatalogHost catalogHost) return;
@@ -453,8 +453,9 @@ public sealed partial class TuiApp
         frame.Width = Dim.Fill(2);
         frame.Add(new Label { X = 2, Y = 1, Width = Dim.Fill(4), Height = 2,
             Text = _localization.Resolve("openrouter.catalog.help") });
-        var filter = new TextField { Id = "openrouter-catalog-search", X = 2, Y = 3,
+        var filter = new TextField { Id = "openrouter-catalog-search", X = 14, Y = 3,
             Width = Dim.Fill(4), Text = search ?? string.Empty };
+        frame.Add(new Label { X = 2, Y = 3, Width = 11, Text = _localization.Resolve("openrouter.catalog.search") });
         var list = new TableView(new OpenRouterCatalogGrid(page.Models, _localization))
         { Id = "openrouter-catalog-models", X = 2, Y = 5, Width = Dim.Fill(4), Height = height - 12,
             CanFocus = page.Models.Count > 0, FullRowSelect = true, MultiSelect = false };
@@ -495,9 +496,9 @@ public sealed partial class TuiApp
             Y = height - 3, Width = Dim.Percent(15), Text = _localization.Resolve("openrouter.catalog.next") };
         var back = new Button { Id = "openrouter-catalog-back", X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(1),
             Text = AccountUi("action.back") };
-        void Reload(string? term, int start, OpenRouterCatalogPage? newPage = null, string? message = null)
+        void Reload(string? term, int start, string? message = null)
         {
-            CloseOverlay(); ShowOpenRouterCatalog(providerId, term, start, newPage, message);
+            CloseOverlay(); ShowOpenRouterCatalog(providerId, term, start, message);
         }
         filter.ValueChanged += (_, _) =>
         {
@@ -511,7 +512,7 @@ public sealed partial class TuiApp
         refresh.Accepted += (_, _) => RunOpenRouterCatalogOperation(frame, status, providerId,
             AccountUi("result.connecting"), async token => await catalogHost.RefreshOpenRouterCatalogAsync(providerId,
                 filter.Text?.ToString(), 0, 30, token).ConfigureAwait(false),
-            refreshed => Reload(filter.Text?.ToString(), 0, refreshed, refreshed.Stale
+            refreshed => Reload(filter.Text?.ToString(), 0, refreshed.Stale
                 ? _localization.Resolve("openrouter.catalog.stale") : refreshed.Truncated ? _localization.Resolve("openrouter.catalog.truncated") : ""));
         register.Enabled = page.Models.Count > 0;
         register.Accepted += (_, _) =>
