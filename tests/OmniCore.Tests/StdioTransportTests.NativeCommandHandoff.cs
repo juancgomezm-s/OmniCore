@@ -84,6 +84,8 @@ public sealed partial class StdioTransportTests
             includeNativeWeakSandboxCapability: true,
             workflowSandboxCapabilitiesProbeForTests: workflowSandboxProbe,
             afterCommandExecutionReceiptForTests: HoldInvocationAfterReceiptAsync);
+        try
+        {
         fixtureWorkspace = fixture.Workspace;
         responseAuditFixture = fixture;
         fixture.PreserveRootOnDispose = true;
@@ -340,6 +342,12 @@ public sealed partial class StdioTransportTests
             Assert.Empty(File.ReadAllBytes(Path.Combine(artifactDirectory, "fixture", ordinaryEmptyLockBasenamePath)));
             fixture.PreserveRootOnDispose = false;
             Assert.True(Directory.Exists(Path.Combine(artifactDirectory, "fixture", "workspace", ".git")));
+        }
+        }
+        catch (Exception testFailure)
+        {
+            fixture.RecordPrimaryTestFailure(testFailure);
+            throw;
         }
     }
 
@@ -1087,6 +1095,7 @@ public sealed partial class StdioTransportTests
         private bool _includeRetentionQueryCapability;
         private SandboxStrength _processSandboxStrength = SandboxStrength.Strong;
         private bool _evidenceCaptureAttempted;
+        private Exception? _primaryTestFailure;
 
         private NativeCommandHandoffFixture(string root, string workspace,
             string? oldData, string? oldConfig, string oldDirectory, byte[] key,
@@ -1383,6 +1392,8 @@ public sealed partial class StdioTransportTests
             {
                 operation, sessionId, runId, result, actionProof = "<redacted>",
             }));
+
+        public void RecordPrimaryTestFailure(Exception failure) => _primaryTestFailure ??= failure;
 
         public void RecordProviderResponse(int requestIndex, string response) =>
             ProviderResponses.Enqueue(JsonSerializer.Serialize(new { requestIndex, response }));
@@ -1746,12 +1757,12 @@ public sealed partial class StdioTransportTests
         {
             if (_disposed) return;
             _disposed = true;
-            Exception? cleanupFailure = null;
+            var cleanupFailures = new List<Exception>();
             var hostStopped = _hostTask is null;
             void Capture(Action action)
             {
                 try { action(); }
-                catch (Exception exception) { cleanupFailure ??= exception; }
+                catch (Exception exception) { cleanupFailures.Add(exception); }
             }
             try
             {
@@ -1763,10 +1774,10 @@ public sealed partial class StdioTransportTests
                         var exitCode = await _hostTask.WaitAsync(TimeSpan.FromSeconds(20), CancellationToken.None);
                         hostStopped = true;
                         _hostTask = null;
-                        if (exitCode != 0) cleanupFailure ??= new InvalidOperationException(
-                            "Owned stdio Host exited with code " + exitCode + ".");
+                        if (exitCode != 0) cleanupFailures.Add(new InvalidOperationException(
+                            "Owned stdio Host exited with code " + exitCode + "."));
                     }
-                    catch (Exception exception) { cleanupFailure ??= exception; }
+                    catch (Exception exception) { cleanupFailures.Add(exception); }
                 }
                 Capture(() => CutStream?.Dispose());
                 Capture(() => _duplex?.Dispose());
@@ -1782,10 +1793,10 @@ public sealed partial class StdioTransportTests
                         PreserveEvidence("workflow-provision-cleanup");
                         PreserveRootOnDispose = false;
                     }
-                    catch (Exception exception) { cleanupFailure ??= exception; }
+                    catch (Exception exception) { cleanupFailures.Add(exception); }
                 }
                 try { await Provider.DisposeAsync(); }
-                catch (Exception exception) { cleanupFailure ??= exception; }
+                catch (Exception exception) { cleanupFailures.Add(exception); }
             }
             finally
             {
@@ -1796,16 +1807,26 @@ public sealed partial class StdioTransportTests
                 foreach (var value in _oldExternalRoots)
                     Capture(() => Environment.SetEnvironmentVariable(value.Key, value.Value));
                 Capture(() => Environment.CurrentDirectory = _oldDirectory);
-                if (!PreserveRootOnDispose && cleanupFailure is null)
+                if (!PreserveRootOnDispose && cleanupFailures.Count == 0)
                 {
                     Capture(DeleteOwnedRoot);
-                    if (cleanupFailure is not null) PreserveRootOnDispose = true;
+                    if (cleanupFailures.Count > 0) PreserveRootOnDispose = true;
                 }
-                else if (cleanupFailure is not null)
+                else if (cleanupFailures.Count > 0)
                     PreserveRootOnDispose = true;
             }
-            if (cleanupFailure is not null)
-                throw new InvalidOperationException("Native command fixture cleanup failed after attempting all owned-resource restorations.", cleanupFailure);
+            if (_primaryTestFailure is not null && cleanupFailures.Count > 0)
+                throw new AggregateException(
+                    "The native command test body and fixture cleanup both failed; the first inner exception is the test-body failure.",
+                    new[] { _primaryTestFailure }.Concat(cleanupFailures));
+            if (cleanupFailures.Count == 1)
+                throw new InvalidOperationException(
+                    "Native command fixture cleanup failed after attempting all owned-resource restorations.",
+                    cleanupFailures[0]);
+            if (cleanupFailures.Count > 1)
+                throw new AggregateException(
+                    "Native command fixture cleanup had multiple failures after attempting all owned-resource restorations.",
+                    cleanupFailures);
 
             void DeleteOwnedRoot()
             {
