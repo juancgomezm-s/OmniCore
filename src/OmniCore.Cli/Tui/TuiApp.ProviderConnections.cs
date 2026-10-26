@@ -445,23 +445,27 @@ public sealed partial class TuiApp
         if (_window is null || _overlay is not null
             || _providerConnectionHost is not ITuiOpenRouterCatalogHost catalogHost) return;
         OpenRouterCatalogPage page;
-        try { page = loadedPage ?? catalogHost.BrowseOpenRouterCatalog(providerId, search, offset, 30, CancellationToken.None); }
+        try { page = OpenRouterCatalogGrid.Browse(catalogHost, providerId, search, offset); }
         catch (Exception) { ShowMessage(_localization.Resolve("openrouter.catalog.failed")); return; }
         var height = Math.Clamp(_window.Frame.Height - 4, 17, 30);
         var frame = OverlayFrame(_localization.Resolve("openrouter.catalog.title"), height);
+        frame.Id = "openrouter-catalog";
+        frame.Width = Dim.Fill(2);
         frame.Add(new Label { X = 2, Y = 1, Width = Dim.Fill(4), Height = 2,
             Text = _localization.Resolve("openrouter.catalog.help") });
         var filter = new TextField { Id = "openrouter-catalog-search", X = 2, Y = 3,
             Width = Dim.Fill(4), Text = search ?? string.Empty };
-        var rows = page.Models.Select(model => CatalogDisplay(model.Id, 160) + " · " + CatalogDisplay(model.Name, 80)
-            + (model.ContextLength is { } context ? " · " + context.ToString(CultureInfo.InvariantCulture) : "")
-            + " · USD " + CatalogDisplay(model.PromptPricePerToken, 32) + " "
-            + _localization.Resolve("openrouter.catalog.perToken") + " "
-            + _localization.Resolve("openrouter.catalog.input")).ToArray();
-        var list = new ListView { Id = "openrouter-catalog-models", X = 2, Y = 5,
-            Width = Dim.Fill(4), Height = height - 12, CanFocus = rows.Length > 0, ShowMarks = false };
-        list.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(rows));
-        if (rows.Length > 0) list.SelectedItem = 0;
+        var list = new TableView(new OpenRouterCatalogGrid(page.Models, _localization))
+        { Id = "openrouter-catalog-models", X = 2, Y = 5, Width = Dim.Fill(4), Height = height - 12,
+            CanFocus = page.Models.Count > 0, FullRowSelect = true, MultiSelect = false };
+        list.Style.AlwaysShowHeaders = true;
+        list.Style.ShowVerticalCellLines = true;
+        list.Style.ExpandLastColumn = true;
+        list.Style.GetOrCreateColumnStyle(0).MaxWidth = 16;
+        list.Style.GetOrCreateColumnStyle(1).MaxWidth = Math.Clamp(_window.Frame.Width - 66, 12, 60);
+        list.Style.GetOrCreateColumnStyle(2).MinWidth = 10;
+        list.Style.GetOrCreateColumnStyle(3).MinWidth = 20;
+        if (page.Models.Count > 0) list.SetSelection(0, 0, false);
         var details = new Label { Id = "openrouter-catalog-details", X = 2, Y = height - 7,
             Width = Dim.Fill(4), Height = 1, Text = "" };
         var statusText = activity ?? (page.Stale ? _localization.Resolve("openrouter.catalog.stale")
@@ -472,13 +476,12 @@ public sealed partial class TuiApp
             Width = Dim.Fill(4), Height = 1, Text = statusText };
         void ShowDetails()
         {
-            var selected = list.SelectedItem;
+            var selected = list.Value?.SelectedCell.Y;
             if (selected is not { } index || index < 0 || index >= page.Models.Count) { details.Text = ""; return; }
             var model = page.Models[index];
             var parts = new List<string> { CatalogDisplay(model.Id, 120) };
             if (model.MaxCompletionTokens is { } output) parts.Add(_localization.Resolve("openrouter.catalog.max") + " " + output.ToString(CultureInfo.InvariantCulture));
-            if (model.CompletionPricePerToken is { } completion) parts.Add("USD " + CatalogDisplay(completion, 32) + " "
-                + _localization.Resolve("openrouter.catalog.perToken") + " " + _localization.Resolve("openrouter.catalog.output"));
+            parts.Add(OpenRouterCatalogGrid.Cost(model));
             if (model.InputModalities.Count > 0) parts.Add(_localization.Resolve("openrouter.catalog.input") + " " + CatalogDisplay(string.Join(",", model.InputModalities), 80));
             if (model.OutputModalities.Count > 0) parts.Add(_localization.Resolve("openrouter.catalog.output") + " " + CatalogDisplay(string.Join(",", model.OutputModalities), 80));
             details.Text = string.Join(" · ", parts);
@@ -501,7 +504,7 @@ public sealed partial class TuiApp
             var term = filter.Text?.ToString() ?? string.Empty;
             if (term.Length <= 100)
             {
-                try { Reload(term, 0, catalogHost.BrowseOpenRouterCatalog(providerId, term, 0, 30, CancellationToken.None)); }
+                try { Reload(term, 0); }
                 catch (Exception) { status.Text = _localization.Resolve("openrouter.catalog.failed"); }
             }
         };
@@ -513,7 +516,7 @@ public sealed partial class TuiApp
         register.Enabled = page.Models.Count > 0;
         register.Accepted += (_, _) =>
         {
-            if (list.SelectedItem is not { } selected || selected < 0 || selected >= page.Models.Count)
+            if (list.Value?.SelectedCell.Y is not { } selected || selected < 0 || selected >= page.Models.Count)
             { status.Text = _localization.Resolve("openrouter.catalog.select"); return; }
             var model = page.Models[selected];
             RunOpenRouterCatalogOperation(frame, status, providerId, AccountUi("result.connecting"),
@@ -535,7 +538,14 @@ public sealed partial class TuiApp
         previous.Accepted += (_, _) => Reload(filter.Text?.ToString(), Math.Max(0, offset - 30));
         back.Accepted += (_, _) => { CloseOverlay(); ShowProviderConnections(selectedProviderId: providerId); };
         frame.Add(filter, list, details, status, refresh, register, previous, next, back);
-        ApplyTheme(frame); _overlay = frame; _window.Add(frame); _preferencesReturnToCategory = true;
+        ApplyTheme(frame);
+        var focus = Environment.GetEnvironmentVariable("NO_COLOR") is not null
+            ? new Terminal.Gui.Drawing.Attribute(Color.None, Color.None, TextStyle.Reverse)
+            : new Terminal.Gui.Drawing.Attribute(TuiTheme.On(_theme.Selection), new Color(_theme.Selection));
+        var scheme = list.GetScheme() with { Focus = focus };
+        list.SetScheme(scheme);
+        list.Style.HeaderScheme = new Scheme { Normal = scheme.HotNormal };
+        _overlay = frame; _window.Add(frame); _preferencesReturnToCategory = true;
         ShowDetails();
         filter.SetFocus();
     }
