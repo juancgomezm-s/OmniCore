@@ -4,6 +4,10 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.RegularExpressions;
+using System.Security.AccessControl;
+using System.Security.Principal;
+using System.Security.Cryptography;
+using System.Text;
 using OmniCore.Abstractions;
 using OmniCore.Context;
 using OmniCore.Domain;
@@ -19,6 +23,156 @@ using Task = System.Threading.Tasks.Task;
 
 public sealed class WindowsAppContainerSandboxTests
 {
+    [Fact]
+    public async Task Strong_launch_cancels_while_waiting_for_a_shared_sdk_acl_lock_and_releases_its_profile()
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("AppContainer integration tests run only on Windows."); return; }
+        var capabilities = new WindowsAppContainerCapabilitiesProbe().Probe();
+        if (!capabilities.StrongAvailable) { Assert.Skip("AppContainer is unavailable: " + capabilities.StrongUnavailableReason); return; }
+        var root = Path.Combine(Path.GetTempPath(), "OmniSdkAclContention-" + Guid.NewGuid().ToString("N"));
+        var package = Path.Combine(root, "sdk");
+        var workspace = Path.Combine(root, "workspace");
+        Directory.CreateDirectory(package);
+        Directory.CreateDirectory(workspace);
+        var executable = Path.Combine(package, "cmd.exe");
+        // This owned SDK needs an explicit profile grant, unlike the inherited-readable case.
+        var packageInfo = new DirectoryInfo(package);
+        var packageSecurity = packageInfo.GetAccessControl(AccessControlSections.Access);
+        packageSecurity.SetAccessRuleProtection(true, true);
+        var packagesSid = new SecurityIdentifier("S-1-15-2-1");
+        foreach (FileSystemAccessRule rule in packageSecurity.GetAccessRules(true, true, typeof(SecurityIdentifier)))
+            if (rule.IdentityReference.Equals(packagesSid)) packageSecurity.RemoveAccessRuleAll(rule);
+        packageInfo.SetAccessControl(packageSecurity);
+        File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), executable);
+        var mutexName = "Local\\OmniCore-AppContainerAcl-" + Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(package).ToUpperInvariant())));
+        using var lockHeld = new ManualResetEventSlim();
+        using var releaseLock = new ManualResetEventSlim();
+        Exception? holderFailure = null;
+        var holder = new Thread(() =>
+        {
+            try
+            {
+                using var mutex = new Mutex(false, mutexName);
+                mutex.WaitOne();
+                try { lockHeld.Set(); releaseLock.Wait(); }
+                finally { mutex.ReleaseMutex(); }
+            }
+            catch (Exception failure) { holderFailure = failure; lockHeld.Set(); }
+        }) { IsBackground = true };
+        holder.Start();
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var entered = new TaskCompletionSource<Thread>(TaskCreationOptions.RunContinuationsAsynchronously);
+        ISandboxProcessControl? unexpectedProcess = null;
+        var launch = new SandboxLaunchSpec(SandboxStrength.Strong, executable,
+            ["/d", "/c", "echo ACL_LOCK_RECOVERY"], workspace, new Dictionary<string, string>(),
+            [new SandboxAllowedPath(workspace, SandboxPathAccess.Read | SandboxPathAccess.Write)],
+            new SandboxNetworkPolicy(SandboxNetworkMode.Deny, []), TimeSpan.FromSeconds(8));
+        Task<ISandboxProcessControl>? starting = null;
+        try
+        {
+            Assert.True(lockHeld.Wait(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+            Assert.Null(holderFailure);
+            starting = Task.Run(async () =>
+            {
+                if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+                entered.TrySetResult(Thread.CurrentThread);
+                unexpectedProcess = await new WindowsAppContainerProcessLauncher().StartAsync(launch, cancel.Token);
+                return unexpectedProcess;
+            }, TestContext.Current.CancellationToken);
+            var launcherThread = await entered.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            var wait = Stopwatch.StartNew();
+            while (!starting.IsCompleted && (launcherThread.ThreadState & System.Threading.ThreadState.WaitSleepJoin) == 0
+                && wait.Elapsed < TimeSpan.FromSeconds(5))
+                await Task.Delay(10, TestContext.Current.CancellationToken);
+            Assert.False(starting.IsCompleted, "The real launcher must remain behind the owned SDK ACL mutex.");
+            cancel.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+                await starting.WaitAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken));
+            Assert.False(releaseLock.IsSet, "Cancellation must complete while the conflicting SDK lock is still held.");
+        }
+        finally
+        {
+            cancel.Cancel();
+            releaseLock.Set();
+            Assert.True(holder.Join(TimeSpan.FromSeconds(5)), "The owned SDK mutex holder must exit.");
+            if (starting is not null)
+            {
+                try { await starting.WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None); }
+                catch (OperationCanceledException) { }
+            }
+            if (unexpectedProcess is not null) await unexpectedProcess.DisposeAsync();
+        }
+        try
+        {
+            // A second real Strong launch in the same workspace proves cancellation released
+            // its profile semaphore and rolled back any grants made before the contended SDK.
+            await using var recovered = await new WindowsAppContainerProcessLauncher()
+                .StartAsync(launch, TestContext.Current.CancellationToken);
+            var output = await recovered.WaitForExitAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(0, output.ExitCode);
+            Assert.Contains("ACL_LOCK_RECOVERY", OutputText(output), StringComparison.Ordinal);
+        }
+        finally { TryDelete(root); }
+    }
+
+    [Fact]
+    public async Task Strong_process_preserves_inherited_sdk_read_permissions_without_rewriting_its_acl()
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("AppContainer integration tests run only on Windows."); return; }
+        var capabilities = new WindowsAppContainerCapabilitiesProbe().Probe();
+        if (!capabilities.StrongAvailable) { Assert.Skip("AppContainer is unavailable: " + capabilities.StrongUnavailableReason); return; }
+
+        var root = Path.Combine(Path.GetTempPath(), "OmniInheritedSdk-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var package = Path.Combine(root, "sdk");
+        var workspace = Path.Combine(root, "workspace");
+        try
+        {
+            var packagesSid = new SecurityIdentifier("S-1-15-2-1");
+            var rootInfo = new DirectoryInfo(root);
+            var security = rootInfo.GetAccessControl(AccessControlSections.Access);
+            security.AddAccessRule(new FileSystemAccessRule(packagesSid, FileSystemRights.ReadAndExecute,
+                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                PropagationFlags.None, AccessControlType.Allow));
+            rootInfo.SetAccessControl(security);
+            Directory.CreateDirectory(package);
+            Directory.CreateDirectory(workspace);
+            var executable = Path.Combine(package, "cmd.exe");
+            File.Copy(Path.Combine(Environment.SystemDirectory, "cmd.exe"), executable);
+            var packageInfo = new DirectoryInfo(package);
+            var executableInfo = new FileInfo(executable);
+            var packageSecurity = packageInfo.GetAccessControl(AccessControlSections.Access);
+            var inheritedReadable = false;
+            foreach (FileSystemAccessRule rule in packageSecurity.GetAccessRules(true, true, typeof(SecurityIdentifier)))
+                inheritedReadable |= rule.IsInherited && rule.IdentityReference.Equals(packagesSid)
+                    && rule.AccessControlType == AccessControlType.Allow
+                    && (rule.FileSystemRights & FileSystemRights.ReadAndExecute) == FileSystemRights.ReadAndExecute;
+            Assert.True(inheritedReadable, "The SDK fixture must genuinely inherit its AppContainer read/execute access.");
+            var beforeDirectory = packageSecurity.GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+            var beforeExecutable = executableInfo.GetAccessControl(AccessControlSections.Access)
+                .GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+            var launch = new SandboxLaunchSpec(SandboxStrength.Strong, executable,
+                ["/d", "/c", "echo INHERITED_SDK_OK"], workspace, new Dictionary<string, string>(),
+                [new SandboxAllowedPath(workspace, SandboxPathAccess.Read | SandboxPathAccess.Write)],
+                new SandboxNetworkPolicy(SandboxNetworkMode.Deny, []), TimeSpan.FromSeconds(8));
+            await using var process = await new WindowsAppContainerProcessLauncher()
+                .StartAsync(launch, TestContext.Current.CancellationToken);
+            // Observe while the launch's ACL lease is still held, before disposal could hide
+            // an unnecessary grant/revoke across an entire shared SDK installation.
+            var duringDirectory = packageInfo.GetAccessControl(AccessControlSections.Access)
+                .GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+            var duringExecutable = executableInfo.GetAccessControl(AccessControlSections.Access)
+                .GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+            var result = await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("INHERITED_SDK_OK", OutputText(result), StringComparison.Ordinal);
+            Assert.Equal(beforeDirectory, duringDirectory);
+            Assert.Equal(beforeExecutable, duringExecutable);
+        }
+        finally { TryDelete(root); }
+    }
+
     [Fact]
     public async Task Strong_terminal_uses_ConPTY_for_real_duplex_input_resize_and_output()
     {

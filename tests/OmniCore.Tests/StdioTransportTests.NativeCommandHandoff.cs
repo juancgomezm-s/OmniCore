@@ -175,6 +175,15 @@ public sealed partial class StdioTransportTests
         }
     }
 
+    [Fact]
+    public async Task Native_workflow_weak_then_natural_launch_preserves_process_and_publication_cleanup()
+    {
+        await Native_stdio_orq_workflow_publishes_real_owned_implementation_worktree_and_passive_queries_resolve_it(
+            forceStrongUnavailableBeforeLaunch: true, exerciseTimeoutCleanup: false);
+        await Native_stdio_orq_workflow_publishes_real_owned_implementation_worktree_and_passive_queries_resolve_it(
+            forceStrongUnavailableBeforeLaunch: false, exerciseTimeoutCleanup: false);
+    }
+
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]

@@ -127,11 +127,16 @@ public sealed class WindowsAppContainerProcessLauncher : ISandboxProcessLauncher
         {
             AuthorizationRuleCollection rules = isDirectory
                 ? new DirectoryInfo(path).GetAccessControl(AccessControlSections.Access)
-                    .GetAccessRules(true, false, typeof(SecurityIdentifier))
+                    .GetAccessRules(true, true, typeof(SecurityIdentifier))
                 : new FileInfo(path).GetAccessControl(AccessControlSections.Access)
-                    .GetAccessRules(true, false, typeof(SecurityIdentifier));
+                    .GetAccessRules(true, true, typeof(SecurityIdentifier));
+            // Installed SDKs normally inherit ALL APPLICATION PACKAGES read/execute access.
+            // Ignoring those effective ACEs needlessly grants/revokes an inheritable profile
+            // ACE across the shared SDK tree, and may wait on its cross-process ACL mutex.
+            // An inherit-only ACE grants descendants access, not this directory itself.
             var packageRules = rules.Cast<FileSystemAccessRule>()
-                .Where(rule => rule.IdentityReference.Equals(AllApplicationPackagesSid)).ToArray();
+                .Where(rule => rule.IdentityReference.Equals(AllApplicationPackagesSid)
+                    && (rule.PropagationFlags & PropagationFlags.InheritOnly) == 0).ToArray();
             var required = FileSystemRights.ReadAndExecute;
             if (packageRules.Any(rule => rule.AccessControlType == AccessControlType.Deny
                 && (rule.FileSystemRights & required) != 0))
@@ -217,7 +222,7 @@ public sealed class WindowsAppContainerProcessLauncher : ISandboxProcessLauncher
         try
         {
             var sid = AppContainerNative.GetOrCreateProfileSid(profileName);
-            aclLease = new AppContainerAclLease(sid);
+            aclLease = new AppContainerAclLease(sid, cancellationToken);
             Directory.CreateDirectory(tempDirectory);
             aclLease.GrantDirectory(tempDirectory, FileSystemRights.Modify);
             var executableDirectory = Path.GetDirectoryName(executable)!;
@@ -426,10 +431,15 @@ public sealed class WindowsAppContainerCapabilitiesProbe : ISandboxCapabilitiesP
 internal sealed class AppContainerAclLease : IDisposable
 {
     private readonly SecurityIdentifier _sid;
+    private readonly CancellationToken _grantCancellation;
     private readonly List<(string Path, bool IsDirectory, FileSystemAccessRule Rule)> _added = new();
     private bool _disposed;
 
-    public AppContainerAclLease(SecurityIdentifier sid) => _sid = sid;
+    public AppContainerAclLease(SecurityIdentifier sid, CancellationToken grantCancellation = default)
+    {
+        _sid = sid;
+        _grantCancellation = grantCancellation;
+    }
 
     public void GrantDirectory(string path, FileSystemRights rights) => Grant(path, true, rights);
     public void GrantFile(string path, FileSystemRights rights) => Grant(path, false, rights);
@@ -481,10 +491,10 @@ internal sealed class AppContainerAclLease : IDisposable
                     _added.Add((path, false, rule));
                 }
             }
-        });
+        }, _grantCancellation);
     }
 
-    private static void WithAclPathLock(string path, Action action)
+    private static void WithAclPathLock(string path, Action action, CancellationToken cancellationToken = default)
     {
         // ACL updates are read/modify/write operations. Distinct workspace profiles still update
         // shared paths (notably the test/helper executable directory), so per-profile locks alone
@@ -494,10 +504,19 @@ internal sealed class AppContainerAclLease : IDisposable
         var lockName = "Local\\OmniCore-AppContainerAcl-" + Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(fullPath.ToUpperInvariant())));
         using var mutex = new Mutex(false, lockName);
-        try { mutex.WaitOne(); }
-        catch (AbandonedMutexException) { /* The abandoned mutex is acquired by this thread. */ }
-        try { action(); }
-        finally { mutex.ReleaseMutex(); }
+        var acquired = false;
+        try
+        {
+            while (!acquired)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try { acquired = mutex.WaitOne(50); }
+                catch (AbandonedMutexException) { acquired = true; }
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            action();
+        }
+        finally { if (acquired) mutex.ReleaseMutex(); }
     }
 
     public void Dispose()
