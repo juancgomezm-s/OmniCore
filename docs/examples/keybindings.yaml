@@ -1,0 +1,21 @@
+# M10-A engine example. User scope only; live TUI capture is a separate integration.
+# Copying this file does not yet replace the current TUI's fixed shortcuts.
+version: 1
+bindings:
+  - keys: Ctrl+K Ctrl+P
+    action: view.plan
+    when: input && !paletteOpen
+    priority: 100
+  - keys: Ctrl+K Ctrl+T
+    command: tasks
+    when: input && !paletteOpen
+    priority: 100
+  - keys: F1
+    action: help.show
+
+# Optional reassignment: remove the default and provide a reachable replacement.
+# A missing or conflicting interrupt/cancel replacement restores the safe default.
+#  - action: -run.cancel
+#  - keys: Ctrl+Alt+X
+#    action: run.cancel
+#    when: runActive

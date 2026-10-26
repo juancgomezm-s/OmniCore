@@ -86,6 +86,34 @@ public sealed record KeyBinding(
 
 ## Clasificación
 
+### Corte M10-A — motor construido, captura TUI pendiente (2026-10-26)
+
+`OmniCore.Client/Input/` incorpora KeyChord, condiciones booleanas acotadas,
+KeyBindingService, estado de secuencias y dispatcher hacia IClientActionHandler.
+Es independiente de Terminal.Gui y compila para net8/net10. El Host lee DTOs YAML
+tipados mediante generador estático; un adaptador CLI consume sólo contratos Host
+y Client. El schema y ejemplo User están incluidos. No se añade una dependencia
+CLI → Abstractions ni se cambia el grafo.
+
+La resolución usa Priority y después User > Extension > Default; un empate entre
+targets distintos es Conflict y no se despacha. Las secuencias completas resuelven
+inmediatamente; un prefijo de una secuencia más larga no retrasa interrupt/cancel,
+y la secuencia sombreada recibe diagnóstico. Timeout, contexto diferente o una
+secuencia fallida descartan el prefijo; la última tecla se reconsidera sola para
+no perder una interrupción.
+
+El registro comprueba cobertura de interrupt/cancel en los contextos publicados.
+Una eliminación, condición imposible o colisión que los deje inaccesibles restaura
+los defaults y lo diagnostica. Se admiten reasignaciones válidas, incluidas las
+superficies command que resuelven a la misma acción. La fuente de extensión queda
+limitada al ownership de su registro; aliases de commands Core no permiten eludirlo.
+
+Este corte **no intercepta todavía el teclado de la TUI**, no activa una paleta
+global ni `/keybindings`. El adaptador de captura, la presentación localizada de
+diagnósticos y la integración de esos consumidores quedan para M10-B, coordinados
+con los cambios de TuiApp en M9. El ejemplo `docs/examples/keybindings.yaml` no
+activa atajos nuevos en la instalación actual. Ver el acta M10-A.
+
 | Elemento | Categoría |
 |---|---|
 | `ClientAction` y `IClientActionHandler`; bindings por defecto de `run.interrupt` y `run.cancel`; los `ClientCommand`s de M1 resolviendo a acciones | **Necesario desde M1** (mínimo; lo usa la interrupción del CLI) |
