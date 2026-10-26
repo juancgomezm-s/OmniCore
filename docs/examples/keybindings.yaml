@@ -1,5 +1,7 @@
-# M10-A engine example. User scope only; live TUI capture is a separate integration.
-# Copying this file does not yet replace the current TUI's fixed shortcuts.
+# M10-B: copy to the User config directory shown by /keybindings.
+# Reload with /keybindings reload (or its Reload button), or restart the TUI.
+# Sequences expire after 1 second and reset on focus/session/run changes.
+# Esc is reserved for default/deny and closing overlays; Meta is unavailable.
 version: 1
 bindings:
   - keys: Ctrl+K Ctrl+P

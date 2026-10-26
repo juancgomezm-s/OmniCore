@@ -27,7 +27,8 @@ public readonly record struct KeyChord(string Key, KeyModifiers Modifiers = KeyM
             modifiers |= modifier;
         }
         var key = parts[^1];
-        if (key.Length == 1 && !char.IsWhiteSpace(key[0]) && !char.IsControl(key[0])) key = key.ToUpperInvariant();
+        if (key.Length == 1 && !char.IsWhiteSpace(key[0]) && !char.IsControl(key[0]))
+            key = key == "-" ? "Minus" : key.ToUpperInvariant();
         else
         {
             key = key.ToLowerInvariant() switch
@@ -134,5 +135,5 @@ public static class KeyBindingDefaults
     public static ImmutableArray<KeyBindingDefinition> All { get; } = Safety.AddRange(new KeyBindingDefinition[] {
         new("F2", new(KeyBindingTargetKind.Action, "sidebar.toggle")),
         new("F3", new(KeyBindingTargetKind.Action, "model.select"), "!overlayOpen"),
-        new("F4", new(KeyBindingTargetKind.Action, "preferences.open"), "!overlayOpen") });
+        new("F4", new(KeyBindingTargetKind.Action, "preferences.open")) });
 }

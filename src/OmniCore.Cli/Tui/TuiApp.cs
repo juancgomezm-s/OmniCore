@@ -131,13 +131,14 @@ public sealed partial class TuiApp
         ITuiLocalEngineHost? localEngines = null, Action<string>? localeChanged = null,
         ITuiClaudeAccountHost? claudeAccounts = null, ITuiLocalEngineSupervisor? localEngineSupervisor = null,
         IPolicyPreferencesFacade? policyPreferences = null, ISecurityPreferencesFacade? securityPreferences = null,
-        IDiagnosticsPreferencesFacade? diagnosticsPreferences = null)
+        IDiagnosticsPreferencesFacade? diagnosticsPreferences = null, string? keyBindingsConfigDirectory = null)
     {
         _client = client;
         _localeSelection = localeSelection;
         _localeChanged = localeChanged;
         _locale = UiLocaleCodes.NormalizeOrDefault(localeSelection?.Locale ?? locale);
         _localization = new Localization(_locale);
+        InitializeKeyBindings(keyBindingsConfigDirectory);
         _projection = new ClientProjection(_localization);
         _policies = policies ?? ModelPolicyHost.Create();
         _ownsPolicies = policies is null;
@@ -357,18 +358,12 @@ public sealed partial class TuiApp
     internal void OnApplicationKeyDown(object? sender, Key key)
     {
         PrioritizeInput();
+        if (HandleKeyBinding(key)) return;
         // Esc es la tecla Command.Quit POR DEFECTO en Terminal.Gui 2.6 (Application.DefaultKeyBindings):
         // si no se marca Handled tras consumirla, el framework además cierra toda la aplicación
         // (un Esc para cerrar un overlay mataría la TUI entera). F2/F3 igual: consumidas aquí.
         var code = key.KeyCode.ToString();
-        if (code == "F2") { ToggleSidebar(); key.Handled = true; }
-        else if (code == "F3") { ShowModelPicker(); key.Handled = true; }
-        else if (code == "F4")
-        {
-            if (_overlay?.Id == "theme-preferences") ReturnFromPreferencesSubpage();
-            else ShowPreferences();
-            key.Handled = true;
-        }
+        if (code is "F2" or "F3" or "F4") { key.Handled = true; }
         else if (code == "F6") { ShowConversations(); key.Handled = true; }
         else if (key.KeyCode == (KeyCode.Tab | KeyCode.ShiftMask) && _overlay is null && _activeInteraction is null)
         { CycleMode(); key.Handled = true; }
@@ -596,7 +591,7 @@ public sealed partial class TuiApp
                 var names = ReadStringArray(commandCatalogJson, "commands")
                     .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode", "reasoning",
                         "cancel", "interrupt", "preferences", "model", "models", "sidebar", "agents", "delegate", "agent", "join", "fanout", "animation", "images",
-                        "new", "sessions", "resume-session", "rename-session", "clear", "compact" })
+                        "new", "sessions", "resume-session", "rename-session", "clear", "compact", "keybindings" })
                     .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name))
                     .Where(name => !TuiMenuCommands.IsMenuOwned(name, aliases));
                 _slashAutocompleteNames = aliases.CompletionNames(names)
@@ -677,6 +672,7 @@ public sealed partial class TuiApp
         "/model" or "/models" => _localization.Resolve("shell.select_model"),
         "/preferences" => _localization.Resolve("shell.open_settings"),
         "/animation" => _localization.Resolve("shell.activity_and_preview"),
+        "/keybindings" => KeyBindingText("title"),
         "/login" => _localization.Resolve("shell.chatgpt_account_and_connection"),
         "/sidebar" => _localization.Resolve("shell.toggle_workspace_panel"),
         "/fuente" => _localization.Resolve("shell.show_or_hide_original_markdown_examples"),
@@ -754,6 +750,7 @@ public sealed partial class TuiApp
         // Whitespace is grammar for commands, but remains literal in a conversation prompt.
         var input = HumanCommandAliases.NormalizeSlashSyntax(aliases.NormalizeSlashHead(rawInput.Trim()));
         if (HandleConversationSlash(input)) return;
+        if (HandleKeyBindingsSlash(input)) return;
         if (input == "/attach" || input.StartsWith("/attach ", StringComparison.Ordinal))
         {
             if (input.Length == 7) PickAttachments();
@@ -1274,20 +1271,21 @@ public sealed partial class TuiApp
 
     private void RunClientAction(ClientActionInvocation action)
     {
-        _composer!.Text = "";
+        if (!action.Origin.StartsWith("KeyBinding:", StringComparison.Ordinal)) _composer!.Text = "";
         if (OpenClientView(action)) return;
         // La TUI lleva su propio Turn: cancelar o interrumpir detiene primero ese Turn (misma ruta que antes).
-        if (action.ActionId is ClientActionIds.RunCancel or ClientActionIds.RunInterrupt && _turnBusy)
+        if (action.ActionId is ClientActionIds.RunCancel or ClientActionIds.RunInterrupt
+            && _turnBusy && _localActivitySession == _cursorSession)
         {
             _turnCancellation?.Cancel();
             PollEvents();
-            return;
+            if (action.ActionId == ClientActionIds.RunInterrupt) return;
         }
         var context = new ClientContext(_client, _localization, CliApp.PermissionsListing);
         var result = new ClientActionHandler().ExecuteAsync(action, context, CancellationToken.None)
             .AsTask().GetAwaiter().GetResult();
         if (result.Tools is { } tools) ShowTools(tools);
-        else if (result.Text.Length > 0) ShowMessage(result.Text);
+        else if (result.Text.Length > 0) { ShowMessage(result.Text); MarkKeyboardView(action.ActionId); }
         if (result.ExitRequested) _application?.RequestStop();
         PollEvents();
     }
@@ -1651,7 +1649,7 @@ public sealed partial class TuiApp
         var width = Math.Max(1, (_window?.Frame.Width ?? 80) - _mainColumnInset - 4);
         var normal = _conversation?.HasFocus == true ? _localization.Resolve("links.help")
             : CompactHelp(CurrentModeCode(), _locale, width, PermissionLevelLabel());
-        return FitText(normal + " · " + _localization.Resolve("shell.attachment.help"), width);
+        return FitText(KeyboardHelp(normal) + " · " + _localization.Resolve("shell.attachment.help"), width);
     }
 
     internal static string CompactHelp(string mode, string locale, int width, string? permissionLevel = null)

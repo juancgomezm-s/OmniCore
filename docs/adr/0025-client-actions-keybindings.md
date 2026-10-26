@@ -112,11 +112,44 @@ Este corte **no intercepta todavía el teclado de la TUI**, no activa una paleta
 global ni `/keybindings`. El adaptador de captura, la presentación localizada de
 diagnósticos y la integración de esos consumidores quedan para M10-B, coordinados
 con los cambios de TuiApp en M9. El ejemplo `docs/examples/keybindings.yaml` no
-activa atajos nuevos en la instalación actual. Ver el acta M10-A.
+activaba atajos nuevos por sí solo en M10-A. Ver el acta M10-A y la integración siguiente.
+
+### Corte M10-B — captura TUI y configuración User conectadas (2026-10-26)
+
+`TerminalKeyChord` traduce únicamente en CLI los eventos de Terminal.Gui; el motor
+portable conserva su independencia. La TUI carga `keybindings.yaml` User al abrir,
+publica los contextos reales de foco, Run, interacción, overlay y vistas, y despacha
+mediante `KeyBindingDispatcher` y las acciones ya utilizadas por los comandos.
+Los atajos conservan el borrador y las secuencias caducan tras un segundo; cambiar
+foco, Session o Run descarta el prefijo. F2/F3/F4 pasan por el motor. Los demás
+gestos de edición/navegación existentes siguen siendo locales al renderer.
+
+`/keybindings` inspecciona teclas, destinos, fuente, condición y prioridad, además
+de diagnósticos con archivo/línea/columna en es/en/fr/it. Su botón Recargar y
+`/keybindings reload` vuelven a leer User sin escribir el archivo. Los conflictos
+abren esta inspección y no ejecutan ninguna candidata. Los errores se anuncian
+también en la ayuda del chat. La ayuda de F2/F3/F4 refleja sus reasignaciones.
+
+La primera interrupción de un Turn local cancela su generación mediante el token
+que ya posee la TUI. La segunda o `run.cancel` explícito alcanzan además la acción
+canónica; la cancelación no retorna prematuramente por existir un Turn local.
+Sin Turn local, ambas superficies utilizan los comandos tipados existentes. Una
+interacción pendiente conserva su opción predeterminada/denegar con Esc; los
+atajos de navegación no la sustituyen. Esc y Meta no se ofrecen como reemplazos
+capturables: se diagnostican antes de comprobar/restaurar cobertura protegida.
+
+Los DTOs de keybindings comparten `OmniYamlStaticContext` con el resto del Host:
+el generador estático fijado no generaba el contexto anterior al añadir uno
+independiente. La prueba de arranque completo detectó esa regresión de M10-A.
+Las posiciones usan la numeración de YamlDotNet sin sumar otra unidad.
+
+La paleta global y el descubrimiento de contribuciones de extensiones en la TUI
+continúan pendientes. No se declara M10 cerrado. Evidencia y coordinación con M9:
+[acta M10-B](../validation/m10-keybindings-tui-20261026.md).
 
 | Elemento | Categoría |
 |---|---|
 | `ClientAction` y `IClientActionHandler`; bindings por defecto de `run.interrupt` y `run.cancel`; los `ClientCommand`s de M1 resolviendo a acciones | **Necesario desde M1** (mínimo; lo usa la interrupción del CLI) |
-| `KeyBindingService` configurable, contextos, `keybindings.yaml`, `/keybindings` | **Contract now / implementation later** (M10) |
-| Command Palette y TUI | **Contract now / implementation later** (M10+) |
+| `KeyBindingService` configurable, contextos, `keybindings.yaml`, `/keybindings` | **Implementado en TUI, cortes M10-A/B** |
+| Command Palette global | **Contract now / implementation later** (M10+) |
 | Combinaciones concretas de teclas más allá de interrupt y cancel | **Fully deferable** |

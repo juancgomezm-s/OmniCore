@@ -7,12 +7,13 @@ public sealed record KeyBindingSourceDiagnostic(string Code, string Source, int 
 public sealed record ConfiguredKeyBindings(KeyBindingService Service, KeyBindingConfigurationSnapshot Configuration,
     IReadOnlyList<KeyBindingSourceDiagnostic> Diagnostics);
 
-/// <summary>Typed User-configuration adapter. Does not intercept TUI input or change existing shortcuts.</summary>
+/// <summary>Typed User-configuration adapter; renderers may reject keys they cannot capture.</summary>
 public static class KeyBindingConfiguration
 {
     public static ConfiguredKeyBindings Load(CancellationToken cancellationToken,
         string? dataDirectoryOverride = null, string? configDirectoryOverride = null,
-        IEnumerable<KeyBindingDefinition>? extensions = null, KeyBindingTargetCatalog? catalog = null)
+        IEnumerable<KeyBindingDefinition>? extensions = null, KeyBindingTargetCatalog? catalog = null,
+        Func<KeyBindingDefinition, bool>? bindingSupported = null)
     {
         var snapshot = KeyBindingConfigurationReader.LoadUser(dataDirectoryOverride, configDirectoryOverride, cancellationToken);
         var bindings = snapshot.Bindings.Select(binding =>
@@ -24,11 +25,14 @@ public static class KeyBindingConfiguration
                 KeyBindingSource.User, "User", remove);
         });
         cancellationToken.ThrowIfCancellationRequested();
-        var service = new KeyBindingService((extensions ?? []).Select(binding => binding with { Source = KeyBindingSource.Extension })
-            .Concat(bindings), catalog);
+        var contributions = (extensions ?? []).Select(binding => binding with { Source = KeyBindingSource.Extension })
+            .Concat(bindings).ToArray();
+        var rejected = bindingSupported is null ? [] : contributions.Where(binding => !binding.RemoveDefault && !bindingSupported(binding)).ToArray();
+        var service = new KeyBindingService(contributions.Except(rejected), catalog);
         var diagnostics = snapshot.Issues.Select(issue => new KeyBindingSourceDiagnostic(issue.Code, snapshot.Path,
             issue.Line, issue.Column, issue.Field ?? snapshot.Path)).ToList();
-        foreach (var issue in service.Diagnostics)
+        foreach (var issue in service.Diagnostics.Concat(rejected.Select(binding => new KeyBindingDiagnostic(
+            "unsupported_terminal_binding", binding.Keys + " → " + binding.Target.Id, SourceId: binding.SourceId))))
         {
             var entry = issue.SourceId == "User" || issue.Code == "protected_restored"
                 ? snapshot.Bindings.FirstOrDefault(binding => issue.Subject == binding.Keys

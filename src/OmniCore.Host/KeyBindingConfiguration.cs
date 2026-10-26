@@ -32,7 +32,7 @@ public sealed record KeyBindingConfigurationSnapshot(string Path, IReadOnlyList<
 public static class KeyBindingConfigurationReader
 {
     public const int MaximumCharacters = 65_536;
-    private static readonly IDeserializer Reader = new StaticDeserializerBuilder(new KeyBindingYamlContext())
+    private static readonly IDeserializer Reader = new StaticDeserializerBuilder(new OmniYamlStaticContext())
         .WithNamingConvention(CamelCaseNamingConvention.Instance).WithDuplicateKeyChecking().Build();
 
     public static KeyBindingConfigurationSnapshot LoadUser(string? dataDirectoryOverride, string? configDirectoryOverride,
@@ -74,8 +74,8 @@ public static class KeyBindingConfigurationReader
             for (var index = 0; index < file.Bindings.Count; index++)
             {
                 var binding = file.Bindings[index]; var item = items.Children[index];
-                if (binding is null) { issues.Add(new("invalid_binding", (int)item.Start.Line + 1, (int)item.Start.Column + 1)); continue; }
-                binding.Line = (int)item.Start.Line + 1; binding.Column = (int)item.Start.Column + 1;
+                if (binding is null) { issues.Add(new("invalid_binding", (int)item.Start.Line, (int)item.Start.Column)); continue; }
+                binding.Line = (int)item.Start.Line; binding.Column = (int)item.Start.Column;
                 var action = !string.IsNullOrWhiteSpace(binding.Action); var command = !string.IsNullOrWhiteSpace(binding.Command);
                 var remove = binding.Action?.StartsWith('-') == true;
                 if (action == command || binding.Action?.Length > 160 || binding.Command?.Length > 160
@@ -89,11 +89,6 @@ public static class KeyBindingConfigurationReader
             return issues.Count == 0 ? new(path, file.Bindings.AsReadOnly(), []) : new(path, [], issues.AsReadOnly());
         }
         catch (YamlException error)
-        { return new(path, [], [new("invalid_yaml", (int)error.Start.Line + 1, (int)error.Start.Column + 1)]); }
+        { return new(path, [], [new("invalid_yaml", (int)error.Start.Line, (int)error.Start.Column)]); }
     }
 }
-
-[YamlStaticContext]
-[YamlSerializable(typeof(KeyBindingsFileYaml))]
-[YamlSerializable(typeof(KeyBindingEntryYaml))]
-public sealed partial class KeyBindingYamlContext : StaticContext { }

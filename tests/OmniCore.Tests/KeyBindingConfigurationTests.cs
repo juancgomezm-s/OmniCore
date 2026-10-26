@@ -6,6 +6,15 @@ namespace OmniCore.Tests;
 
 public sealed class KeyBindingConfigurationTests
 {
+    [Fact]
+    public void Diagnostic_positions_match_the_actual_user_file()
+    {
+        var parsed = KeyBindingConfigurationReader.Parse("version: 1\nbindings:\n  - keys: F7\n    action: unknown\n");
+        var entry = Assert.Single(parsed.Bindings);
+        Assert.Equal(3, entry.Line);
+        Assert.Equal(5, entry.Column);
+    }
+
     [Theory]
     [InlineData("version: 2\nbindings: []")]
     [InlineData("bindings: []")]
