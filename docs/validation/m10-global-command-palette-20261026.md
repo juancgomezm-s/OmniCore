@@ -97,3 +97,23 @@ No se presenta esa pasada fallida como aceptación del árbol final.
 Actualización local mediante `npm run install:cli`, con smoke `--help` y comparación
 SHA-256 de publicación frente a instalación. Una TUI ya abierta conserva su binario
 hasta que el usuario vuelva a abrirla; no se termina su proceso desde esta tarea.
+
+### Instalación Windows observada
+
+Código instalado: `f068ace`. El instalador global estándar y su reintento con el
+mismo paquete fallaron con EBUSY al retirar DLL cargadas por una TUI existente.
+No se cerró ese proceso ni se eliminaron archivos bloqueados.
+
+Se instaló el mismo archivo validado (SHA-1 de paquete
+`af7cf6f186d27aaecb320e91cb218b8930c768fc`) en un prefijo de versión separado:
+`%LOCALAPPDATA%/OmniCore/cli/releases/f068ace/`. Tras verificarlo, los tres accesos
+existentes omni/omni.cmd/omni.ps1 se regeneraron con el cmd-shim que incluye npm
+para apuntar al nuevo launcher. Sus copias previas quedan en `previous-launchers/`
+dentro de ese prefijo; la carpeta antigua del paquete permanece intacta.
+Es una recuperación local de esta instalación, no una función nueva del instalador
+del repositorio ni una migración de datos/configuración.
+
+Los **138 archivos publicados coinciden por SHA-256** con la instalación de versión.
+`omni.cmd --help` usando el acceso público termina con código 0. Manifiesto de
+verificación: `%TEMP%/omni-global-palette-install-verification.json`. El ProductVersion
+del binario seleccionado es `0.1.0+f068ace2ba81fe56362c3aeacd682b547ca470a8`.
