@@ -13,6 +13,7 @@ public sealed partial class CliApp
     private static Localization _localization = Localization.Spanish();
     internal static LocaleSelection ActiveLocaleSelection => _localeSelection;
     internal static string ActiveEffectiveLocale => _localization.Locale;
+    internal static Func<ReleaseUpdateCheckRequest, CancellationToken, Task<ReleaseUpdateCheckResult>>? ReleaseUpdateCheckOverride { get; set; }
 
     // Internal injection point for end-to-end tests. Production always uses CreateRuntime().
     internal static OmniCliRuntime UseRuntimeForTests(OmniCliRuntime runtime)
@@ -122,6 +123,7 @@ public sealed partial class CliApp
         var userAliasApplied = !ReferenceEquals(withUserAlias, args);
         args = HumanCommandAliases.NormalizeCli(withUserAlias);
         var command = args[0];
+        if (command == "update") return RunUpdateAsync(args);
         if (command is "pet" or "/pet")
         {
             try

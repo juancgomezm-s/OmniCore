@@ -341,6 +341,9 @@ public sealed partial class TuiApp
                 AddNamedAction("preferences-theme-open", _localization.Resolve("shell.theme.open"), y, () =>
                 { CloseOverlay(); ShowThemePreferences(); _preferencesReturnToCategory = true; });
                 y += 2;
+                AddNamedAction("preferences-updates-open", _localization.Resolve("updates.open"), y, () =>
+                { CloseOverlay(); ShowReleaseUpdates(returnToPreferences: true); });
+                y += 2;
                 var actions = new View { Id = "preferences-category-actions", X = MenuIndent.Level1, Y = y,
                     Width = Dim.Fill(3), Height = 2, CanFocus = true, Visible = !wide };
                 _preferencesReload = new Button { Id = "preferences-reload", X = 0, Y = 0,
