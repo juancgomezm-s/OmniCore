@@ -180,6 +180,7 @@ public sealed partial class TuiApp
                 case "session.search": app.ShowConversationSearch(); break;
                 case "agent.inspect": app.ShowAgentInspector(); break;
                 case "keybindings.open": app.ShowKeyBindings(); break;
+                case "updates.open": app.ShowReleaseUpdates(); break;
                 case "sidebar.toggle": app.ToggleSidebar(); break;
                 case "model.select": if (app._overlay is null) app.ShowModelPicker(); break;
                 case "preferences.open":

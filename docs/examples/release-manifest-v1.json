@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "repository": "juancgomezm-s/OmniCore",
+  "version": "0.2.0",
+  "tag": "v0.2.0",
+  "commitSha": "0123456789abcdef0123456789abcdef01234567",
+  "assets": [
+    {
+      "rid": "win-x64",
+      "name": "omnicore-cli-0.2.0-win-x64.tgz",
+      "size": 123456,
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "requirements": {
+        "dotnetMin": "10.0.0",
+        "dotnetMax": "10.999.999",
+        "nodeMin": "20.0.0",
+        "nodeMax": "24.999.999",
+        "protocolMin": "1.0",
+        "protocolMax": "1.0",
+        "configurationMin": "1.0",
+        "configurationMax": "1.0"
+      }
+    }
+  ]
+}

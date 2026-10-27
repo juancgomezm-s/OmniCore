@@ -95,6 +95,8 @@ public sealed class Localization
             return new(searchText, Locale, Locale, false);
         if (CommandPaletteResources.TryTranslate(Locale, key, out var paletteText))
             return new(paletteText, Locale, Locale, false);
+        if (ReleaseUpdateResources.TryTranslate(Locale, key, out var updateText))
+            return new(updateText, Locale, Locale, false);
         if (ModelPickerResources.TryTranslate(Locale, key, out var modelPickerText))
             return new(modelPickerText, Locale, Locale, false);
         if (KeyBindingUiResources.TryTranslate(Locale, key, out var keyBindingText))

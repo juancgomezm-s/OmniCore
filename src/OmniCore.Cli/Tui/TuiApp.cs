@@ -88,6 +88,10 @@ public sealed partial class TuiApp
     private readonly List<View> _overlaysReadyForDisposal = new();
     private readonly bool _ownsPolicies;
     private readonly ITuiTurnHost? _turnHost;
+    private CancellationTokenSource? _releaseUpdateCancellation;
+    private int _releaseUpdateGeneration;
+    private bool _releaseUpdateReturnToPreferences;
+    internal Func<ReleaseUpdateCheckRequest, CancellationToken, Task<ReleaseUpdateCheckResult>>? ReleaseUpdateCheckOverride { get; set; }
     private CancellationTokenSource? _turnCancellation;
     private long _humanShellGeneration;
     private Task? _turnTask;
@@ -244,6 +248,7 @@ public sealed partial class TuiApp
             _petProbeGeneration++; _petAssets.Clear();
             application.LayoutAndDrawComplete -= AfterDraw;
             CancelExtensionViewRefresh();
+            CancelReleaseUpdateCheck();
             try { _loginCancellation?.Cancel(); } catch (ObjectDisposedException) { }
             try { _catalogCancellation?.Cancel(); } catch (ObjectDisposedException) { }
             ClearProviderApiKey();
@@ -390,6 +395,8 @@ public sealed partial class TuiApp
     {
         switch (_overlay?.Id)
         {
+            case "release-updates":
+                CloseReleaseUpdates(); return true;
             case "animation-picker":
                 ReturnFromAnimationPicker(); return true;
             case "about-screen":
@@ -1595,6 +1602,8 @@ public sealed partial class TuiApp
             _state = _projection.ApplyQuery(_state, statusQuery);
         RefreshSidebarData();
         RenderState();
+        if (_overlay?.Id == "release-updates" && _state.Overlays.Count > 0)
+            CloseOverlay();
         ShowCurrentInteraction();
     }
 
@@ -3151,6 +3160,7 @@ public sealed partial class TuiApp
     {
         _petDetail = null;
         if (_overlay is null || _window is null) return;
+        if (_overlay.Id == "release-updates") { CancelReleaseUpdateCheck(); _releaseUpdateReturnToPreferences = false; }
         InvalidateAutocompleteCache();
         CancelExtensionViewRefresh();
         if (_themeBeforePreview is { } originalTheme) { _theme = originalTheme; _themeBeforePreview = null; }
