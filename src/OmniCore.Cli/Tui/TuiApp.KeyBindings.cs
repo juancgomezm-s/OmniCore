@@ -131,6 +131,7 @@ public sealed partial class TuiApp
             switch (action.ActionId)
             {
                 case "palette.open": app.ShowCommandPalette(); break;
+                case "session.search": app.ShowConversationSearch(); break;
                 case "keybindings.open": app.ShowKeyBindings(); break;
                 case "sidebar.toggle": app.ToggleSidebar(); break;
                 case "model.select": if (app._overlay is null) app.ShowModelPicker(); break;

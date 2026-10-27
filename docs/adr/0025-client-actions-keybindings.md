@@ -208,3 +208,18 @@ criterio de misma invocación completa: un preset con argumentos no se anuncia c
 atajo de una invocación con argumentos diferentes. Ctrl+P y F3 se conservan.
 Las contribuciones automáticas de bindings de extensiones siguen pendientes.
 Evidencia: [M10-D](../validation/m10-host-command-keybindings-20261026.md).
+
+### Corte M10-E — búsqueda en la conversación cargada (2026-10-26)
+
+La acción local `session.search`, incluida en la paleta global y asignada a Ctrl+F
+por defecto, busca literalmente en la captura de conversación que ya recibió el
+cliente. El motor portable no hace IO ni recupera contenido oculto u otras sesiones.
+Fragmentos originales, roles y procedencia permanecen separados de una afirmación
+de verificación. Consulta, resultados y recorrido están acotados con aviso visible.
+
+Enter revalida identidad y texto del bloque, Session/Run e interacción antes de
+navegar al mensaje en el lector existente. No cambia journal, borrador ni adjuntos.
+La TUI conserva sus overlays, aprobaciones, lectura y motor de keybindings. No se
+añaden endpoints Host o Protocol ni cambios al contrato de M9. La búsqueda entre
+sesiones y el cierre de diagnósticos M10 siguen pendientes. Evidencia y límites:
+[M10-E](../validation/m10-conversation-search-20261026.md).

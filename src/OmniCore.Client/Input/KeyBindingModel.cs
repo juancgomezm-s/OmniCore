@@ -120,7 +120,7 @@ public sealed class KeyBindingTargetCatalog
     public static KeyBindingTargetCatalog Core { get; } = new(
         ClientCommandRegistry.Default.Actions.Select(action => "Action:" + action.Id)
             .Concat(ClientCommandRegistry.Default.Commands.Select(command => "Command:" + command.Name))
-            .Concat(new[] { "sidebar.toggle", "model.select", "preferences.open", "palette.open", "overlay.close", "keybindings.open" }.Select(id => "Action:" + id))
+            .Concat(new[] { "sidebar.toggle", "model.select", "preferences.open", "palette.open", "overlay.close", "keybindings.open", "session.search" }.Select(id => "Action:" + id))
             .Distinct(StringComparer.Ordinal).Select(key => new KeyValuePair<string, string>(key, "Core")));
 }
 
@@ -136,5 +136,6 @@ public static class KeyBindingDefaults
         new("F2", new(KeyBindingTargetKind.Action, "sidebar.toggle")),
         new("F3", new(KeyBindingTargetKind.Action, "model.select"), "!overlayOpen"),
         new("F4", new(KeyBindingTargetKind.Action, "preferences.open")),
-        new("Ctrl+P", new(KeyBindingTargetKind.Action, "palette.open"), "!overlayOpen && !awaitingPermission") });
+        new("Ctrl+P", new(KeyBindingTargetKind.Action, "palette.open"), "!overlayOpen && !awaitingPermission"),
+        new("Ctrl+F", new(KeyBindingTargetKind.Action, "session.search"), "!overlayOpen && !awaitingPermission") });
 }

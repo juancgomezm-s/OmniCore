@@ -22,6 +22,13 @@ bindings:
 #    action: palette.open
 #    when: input && !overlayOpen && !awaitingPermission
 
+# Search the loaded conversation with Ctrl+F, or choose session.search in the palette.
+# It does not retrieve other Sessions or send the composer draft.
+#  - action: -session.search
+#  - keys: Ctrl+Alt+F
+#    action: session.search
+#    when: !overlayOpen && !awaitingPermission
+
 # Optional Host command: use the exact qualified ID from /palette or /commands.
 # Arguments stay literal argv. Reload /keybindings after editing or changing the command source.
 #  - keys: Ctrl+Alt+E
