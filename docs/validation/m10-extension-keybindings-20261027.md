@@ -105,7 +105,27 @@ incluido el único hunk nuevo de OmniServer.Query, pasa en M9 `0f90367`. No se a
 el patch ni se alteraron sus archivos. Esto comprueba compatibilidad de hunks,
 no integración ni aceptación de los pendientes de M9.
 
-La instalación versionada se registra tras verificar el paquete.
+## Instalación local verificada
+
+ZEPHYRUSG14, `2026-10-27T00:54:01-06:00`:
+`0.1.0+786bf2c6962cb9dbd9a1b3fd33983462cfcfe799`, instalado desde este worktree en
+`%LOCALAPPDATA%/OmniCore/cli/releases/786bf2c6/node_modules/omnicore-cli`.
+Los 138 archivos de `dist/npm` coinciden por SHA-256 sin faltantes ni diferencias;
+ProductVersion corresponde al commit fuente. `--help` termina con exit 0 tanto
+en publish y assembly instalado como en los launchers públicos CMD/PowerShell.
+
+Paquete `%TEMP%/omnicore-m10g-86ed4253f57d40e3ab73fed4c4e3530c/omnicore-cli-0.1.0.tgz`,
+SHA-256 `A2884D02BBBCB600548CB62DB6E5CE3E89930097A1B70A3C29C23C23BC8164A8`.
+La raíz de release conserva `installation-verification.json`, `package-manifest.json`
+y `publish-hashes.json`. Se verificó que los launchers aún apuntaban a `d2fde0b`
+antes de cambiarlos; backups en
+`%LOCALAPPDATA%/OmniCore/cli/releases/786bf2c6/previous-launchers`.
+
+Se generaron los launchers con `cmd-shim` oficial de npm, sin sobrescribir DLL en
+uso ni cerrar ventanas. La versión nueva se usa al abrir otra ejecución de `omni`.
+La instalación terminó y libera el turno sobre launchers compartidos; no altera
+las instalaciones o artefactos de M9. El commit posterior de documentación no
+cambia el commit fuente realmente instalado.
 
 ## Límites del hito
 
