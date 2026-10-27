@@ -45,3 +45,17 @@ persistentes ni tareas de soporte; no se publica, hace push o merge. La instalac
 conserva el procedimiento de prefijo de versión y backups de launchers que dejó
 M10-C, sin cerrar ventanas/procesos y verificando publicación antes de cambiar
 los accesos. Las pruebas de driver no sustituyen aceptación humana de terminal.
+
+## Instalación verificada
+
+Código `8868313`; ProductVersion
+`0.1.0+886831317186e07cda14890b553944d557eea9cc`.
+Prefijo `%LOCALAPPDATA%/OmniCore/cli/releases/8868313/`. Antes de cambiar accesos
+se verificaron los **138 archivos** de la publicación por SHA-256 (cero diferencias)
+y `--help` del binario de versión. Se preservaron los accesos anteriores en
+`previous-launchers/` y se regeneraron omni/omni.cmd/omni.ps1 con cmd-shim de npm.
+Los accesos públicos CMD y PowerShell pasan `--help`, código 0. El paquete activo
+anterior y sus copias no se eliminaron; no se cerró ninguna ventana/proceso.
+Manifest `%TEMP%/omni-palette-ctrl-p-install-verification.json`; paquete local y
+SHA-256 registrados en `%TEMP%/omni-palette-ctrl-p-package.json`. Sin publicación
+remota. Se requiere reabrir omni para cargar el atajo nuevo.
