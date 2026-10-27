@@ -87,7 +87,27 @@ final indicada arriba es limpia. No se declara una suite full ni aceptación man
 con M9 pasa en su checkout actual, sin aplicar cambios. Acredita compatibilidad de
 hunks, no integración ni aceptación de sus contratos/pruebas.
 
-La instalación versionada se registra al terminar su verificación.
+## Instalación local verificada
+
+ZEPHYRUSG14, `2026-10-26T22:06:56-06:00`:
+`0.1.0+d2fde0b7513eccf53a580c30dd881f560607908d`, instalado desde este worktree en
+`%LOCALAPPDATA%/OmniCore/cli/releases/d2fde0b/node_modules/omnicore-cli`.
+Los 138 archivos de `dist/npm` coinciden por SHA-256, sin faltantes ni diferencias;
+ProductVersion corresponde al commit fuente. `--help` termina con exit 0 tanto
+en el publish y el assembly instalado como en los launchers públicos CMD/PowerShell.
+
+Paquete `%TEMP%/omnicore-m10f-9e011d5553724dfe8961bc6cf07ec95f/omnicore-cli-0.1.0.tgz`,
+SHA-256 `2DDE615C94077E9A50D2B4C1B46D3E12EB3E1EA0BBA9E74B8FE65301454EB79F`.
+Manifiestos `installation-verification.json`, `package-manifest.json` y
+`publish-hashes.json` en la raíz de la release. Antes de cambiar los tres launchers
+se comprobó que aún apuntaban a `d4713d3`; sus backups están en
+`%LOCALAPPDATA%/OmniCore/cli/releases/d2fde0b/previous-launchers`.
+
+Los launchers públicos apuntan a esta release mediante `cmd-shim` oficial de npm.
+No se sobrescriben DLL cargadas ni se cierran ventanas del usuario. Se usa al abrir
+otra ejecución de `omni`. La operación terminó y libera el turno sobre launchers
+compartidos. No se cambia ninguna instalación de M9; la documentación posterior
+conserva identificado el commit fuente realmente instalado.
 
 Capturas RGB del driver real en `%TEMP%/omni-m10f-frames`, escenas
 `agent-inspector-{es,en,fr,it}`, 80×25 y 130×38. Rasterización con
