@@ -58,7 +58,14 @@ release: no establecen por sí mismos el esquema/configuración observados del u
 
 ## Entrega y validación
 
-Pendiente del diff final, pruebas y manifiesto de instalación.
+Integrado en `main` por el merge `754559b` (rama `codex/m10-keybindings`, commit
+`7ca860f`). `dotnet build OmniCore.slnx` terminó con 0 advertencias y 0 errores.
+Pasaron 37/37 focales de la consulta (26 de checker/CLI y 11 de wiring TUI) y
+62/62 de arquitectura. `omni update check` responde con su uso sin contactar la
+red; una comprobación real depende del canal y de los límites de GitHub ya
+descritos. El paquete npm local se reinstaló y `omni --help` lista el comando
+(`c9ea25d`). No se publicó release, no se descargó ni aplicó paquete y no se
+verificó firma de publicador.
 
 ## Pendientes del hito
 
