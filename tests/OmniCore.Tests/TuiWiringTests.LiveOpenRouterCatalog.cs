@@ -70,7 +70,7 @@ public sealed partial class TuiWiringTests
             fx.Invoke(() =>
             {
                 var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
-                list.SelectedItem = Array.FindIndex(PickerItems(fx), row => row.Contains(selected.Id));
+                list.SelectedItem = PickerRowIndex(fx, selected.Id);
                 list.EnsureSelectedItemVisible(); list.SetFocus();
             });
             ExportPreferenceFrame(fx, 120, 40, "live-openrouter-picker", selected.Id);

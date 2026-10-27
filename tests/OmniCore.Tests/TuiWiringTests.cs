@@ -2830,20 +2830,20 @@ public sealed partial class TuiWiringTests
         fx.StartTui(policies);
         KeyWithEffect(fx, KeyCode.F3, () => fx.App.Overlay is not null, "modelos visibles");
         var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
-        Assert.Equal(30, list.Source!.Count);
+        Assert.Equal(30, PickerItems(fx).Length);
         Assert.True(list.HasFocus);
         Assert.Equal(Terminal.Gui.Drawing.LineStyle.None, fx.App.Overlay.BorderStyle);
         Assert.True(fx.App.Overlay.SubViews.Single(v => v.Id == "omni-menu-title").Visible);
-        Assert.True(fx.App.Overlay.ViewportSettings.HasFlag(ViewportSettingsFlags.Transparent));
-        KeyWithEffect(fx, KeyCode.CursorUp, () => list.SelectedItem == 29, "arriba desde primero vuelve al último");
+        Assert.False(fx.App.Overlay.ViewportSettings.HasFlag(ViewportSettingsFlags.Transparent));
+        KeyWithEffect(fx, KeyCode.CursorUp, () => list.SelectedItem == PickerRowIndex(fx, "model29"), "arriba desde primero vuelve al último");
         Assert.True(list.Viewport.Y > 0);
         Assert.Null(policies.CurrentSelection(ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory), default));
-        KeyWithEffect(fx, KeyCode.CursorDown, () => list.SelectedItem == 0, "abajo desde último vuelve al primero");
+        KeyWithEffect(fx, KeyCode.CursorDown, () => list.SelectedItem == PickerRowIndex(fx, "model00"), "abajo desde último vuelve al primero");
         Assert.Equal(0, list.Viewport.Y);
         for (var index = 1; index < 30; index++)
         {
             var expected = index;
-            KeyWithEffect(fx, KeyCode.CursorDown, () => list.SelectedItem == expected, "desplazar lista");
+            KeyWithEffect(fx, KeyCode.CursorDown, () => list.SelectedItem == PickerRowIndex(fx, $"model{expected:00}"), "desplazar lista");
         }
         Assert.True(list.Viewport.Y > 0);
         fx.InjectKey(new Key(KeyCode.Enter));
@@ -2950,9 +2950,13 @@ public sealed partial class TuiWiringTests
         // Catalog discovery replaces the overlay on the UI loop. Read the complete
         // snapshot on that same loop, not while its SubViews collection is mutating.
         fx.Invoke(() => items = fx.App.Overlay?.SubViews.OfType<ListView>().SingleOrDefault()
-            ?.Source?.ToList().Cast<object>().Select(item => item.ToString() ?? "").ToArray() ?? []);
+            ?.Source?.ToList().Cast<object>().OfType<ModelPickerListRow>().Where(row => row.Model is not null)
+            .Select(row => row.Text + " " + row.Model!.Id).ToArray() ?? []);
         return items;
     }
+
+    private static int PickerRowIndex(TuiFixture fx, string id) => fx.Read(() => fx.App.Overlay!.SubViews.OfType<ListView>().Single()
+        .Source!.ToList().Cast<object>().OfType<ModelPickerListRow>().ToList().FindIndex(row => row.Model?.Id == id));
 
     [Fact]
     public void Model_palette_search_filters_safely_and_shortcuts_open_toggles() => RunTuiTest(fx =>
@@ -2976,7 +2980,7 @@ public sealed partial class TuiWiringTests
         fx.Invoke(() => search.Text = "");
         fx.Wait(() => PickerItems(fx).Length == 2, "limpiar recupera lista completa");
         KeyWithEffect(fx, KeyCode.M | KeyCode.CtrlMask, () => fx.App.Overlay?.Id == "model-toggles", "Ctrl+M abre interruptores");
-        Assert.Contains("Activar modelos", fx.App.Overlay!.Title);
+        Assert.Contains(new Localization("es").Resolve("shell.models.enable"), fx.App.Overlay!.Title);
         Assert.Contains(Descendants(fx.App.Overlay).OfType<Button>(), button => button.Id == "model-toggle-local/alpha");
         Assert.False(fx.App.Conversation!.Dimmed);
     });
@@ -3319,7 +3323,7 @@ public sealed partial class TuiWiringTests
             ITuiLocalEngineSupervisor? localEngineSupervisor = null,
             IPolicyPreferencesFacade? policyPreferences = null, ISecurityPreferencesFacade? securityPreferences = null,
             IDiagnosticsPreferencesFacade? diagnosticsPreferences = null,
-            IModelCatalogPreferencesHost? modelCatalogPreferences = null)
+            IModelCatalogPreferencesHost? modelCatalogPreferences = null, string? keyBindingsConfigDirectory = null)
         {
             if (initialColumns.HasValue != initialRows.HasValue)
                 throw new ArgumentException("Initial screen columns and rows must be provided together.");
@@ -3343,7 +3347,8 @@ public sealed partial class TuiWiringTests
                     localEngineSupervisor: localEngineSupervisor,
                     policyPreferences: policyPreferences ?? PolicyPreferencesHost.Create(Root, Path.Combine(Root, "prefs-data"), Path.Combine(Root, "prefs-config")),
                     securityPreferences: securityPreferences ?? SecurityPreferencesHost.Create(Root, Path.Combine(Root, "prefs-data"), Path.Combine(Root, "prefs-config")),
-                    diagnosticsPreferences: diagnosticsPreferences ?? DiagnosticsPreferencesHost.Create(Root, Path.Combine(Root, "prefs-data"), Path.Combine(Root, "prefs-config")));
+                    diagnosticsPreferences: diagnosticsPreferences ?? DiagnosticsPreferencesHost.Create(Root, Path.Combine(Root, "prefs-data"), Path.Combine(Root, "prefs-config")),
+                    keyBindingsConfigDirectory: keyBindingsConfigDirectory ?? Path.Combine(Root, "keyboard-config"));
                 App.SetModelCatalogPreferencesHost(modelCatalogPreferences ?? ModelCatalogPreferencesHost.Create(
                     Path.Combine(Root, "fixture-model-catalog"), Workspace, Path.Combine(Root, "fixture-model-catalog-data")));
                 App.CompanionInteractiveOverride = true; // The controlled DOTNET surface emulates an interactive UTF-8 terminal.

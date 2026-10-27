@@ -36,7 +36,7 @@ public sealed class ExtensionManifestLoader
             OmnicoreApi = ManifestYamlAst.OptionalString(root, "omnicoreApi", "omnicoreApi"),
         };
         if (ManifestYamlAst.OptionalMap(root, "provides", "provides", "tools", "commands", "skills", "hooks",
-            "contextContributors", "validators", "completionGates", "views") is { } provides)
+            "contextContributors", "validators", "completionGates", "views", "keyBindings") is { } provides)
         {
             manifest.Provides = new ExtensionProvidesManifest
             {
@@ -46,8 +46,10 @@ public sealed class ExtensionManifestLoader
                 ContextContributors = ManifestYamlAst.OptionalStringList(provides, "contextContributors", "provides.contextContributors"),
                 Validators = ManifestYamlAst.OptionalStringList(provides, "validators", "provides.validators"),
                 CompletionGates = ManifestYamlAst.OptionalStringList(provides, "completionGates", "provides.completionGates"),
+                KeyBindings = MapKeyBindings(provides),
             };
         }
+
         if (ManifestYamlAst.OptionalMap(root, "requests", "requests", "capabilities", "permissions") is { } requests)
         {
             var result = new ExtensionRequestsManifest
@@ -100,7 +102,7 @@ public sealed class ExtensionManifestLoader
         manifest.Configuration = ManifestYamlAst.OptionalStringList(root, "configuration", "configuration");
         manifest.ExecutionMode = ManifestYamlAst.OptionalString(root, "executionMode", "executionMode");
         if (manifest.ManifestVersion == 2 && ManifestYamlAst.OptionalMap(root, "provides", "provides",
-            "tools", "commands", "skills", "hooks", "contextContributors", "validators", "completionGates", "views") is { } viewProvides
+            "tools", "commands", "skills", "hooks", "contextContributors", "validators", "completionGates", "views", "keyBindings") is { } viewProvides
             && ManifestYamlAst.Optional(viewProvides, "views") is { } viewNode)
         {
             if (viewNode is not YamlSequenceNode views) throw ManifestYamlAst.WrongType("provides.views");
@@ -116,6 +118,24 @@ public sealed class ExtensionManifestLoader
         }
         manifest.UiResources = MapUiResources(root, manifest);
         return manifest;
+    }
+
+    private static List<ExtensionKeyBindingManifest>? MapKeyBindings(YamlMappingNode provides)
+    {
+        if (ManifestYamlAst.Optional(provides, "keyBindings") is not { } node) return null;
+        if (node is not YamlSequenceNode sequence) throw ManifestYamlAst.WrongType("provides.keyBindings");
+        return sequence.Select(item =>
+        {
+            var map = item as YamlMappingNode ?? throw ManifestYamlAst.WrongType("extension key binding");
+            ManifestYamlAst.CheckKeys(map, "extension key binding", "keys", "command", "arguments", "when");
+            return new ExtensionKeyBindingManifest
+            {
+                Keys = ManifestYamlAst.OptionalString(map, "keys", "keyBinding.keys"),
+                Command = ManifestYamlAst.OptionalString(map, "command", "keyBinding.command"),
+                Arguments = ManifestYamlAst.OptionalStringList(map, "arguments", "keyBinding.arguments"),
+                When = ManifestYamlAst.OptionalString(map, "when", "keyBinding.when"),
+            };
+        }).ToList();
     }
 
     private static Dictionary<string, Dictionary<string, string>>? MapUiResources(YamlMappingNode root, ExtensionManifest manifest)
@@ -355,6 +375,16 @@ public sealed class ExtensionManifestLoader
             || command.Kind != "Extension" || string.IsNullOrWhiteSpace(command.Tool)) == true
             || manifest.Provides?.Commands?.Any(command => !declaredTools.Any(tool => tool.Name == command.Tool)) == true)
             throw new InvalidDataException("Each extension command must bind to a declared extension tool.");
+        var keyBindings = manifest.Provides?.KeyBindings ?? [];
+        if (keyBindings.Count > 16 || keyBindings.Any(binding => string.IsNullOrWhiteSpace(binding.Keys)
+            || binding.Keys.Length > 256 || string.IsNullOrWhiteSpace(binding.Command) || binding.Command.Length > 160
+            || binding.Arguments?.Count > 16 || binding.Arguments?.Any(argument => argument is null || argument.Length > 4096) == true
+            || binding.When?.Length > 512)
+            || keyBindings.Select(binding => (binding.Keys, binding.Command, string.Join("\0", binding.Arguments ?? []), binding.When ?? "true"))
+                .Distinct().Count() != keyBindings.Count
+            || keyBindings.Any(binding => !(manifest.Provides?.Commands ?? []).Any(command =>
+                binding.Command == manifest.Id + ":" + command.Name)))
+            throw new InvalidDataException("Extension key bindings must be bounded and target unique commands owned by the extension.");
         if (manifest.Provides?.Skills is { } skills && (skills.Count > 16
             || skills.Any(path => string.IsNullOrWhiteSpace(path) || path.Length > 240 || UnsafeRelativePattern(path))
             || skills.Distinct(StringComparer.Ordinal).Count() != skills.Count))
@@ -370,6 +400,7 @@ public sealed class ExtensionManifestLoader
         var requiredCapabilities = new List<string>();
         if (manifest.Provides?.Tools?.Count > 0) requiredCapabilities.Add("tool.register");
         if (manifest.Provides?.Commands?.Count > 0) requiredCapabilities.Add("command.register");
+        if (keyBindings.Count > 0) requiredCapabilities.Add("keybinding.register");
         if (manifest.Provides?.Skills?.Count > 0) requiredCapabilities.Add("skill.register");
         if (manifest.Provides?.Hooks?.Count > 0) requiredCapabilities.Add("hook.register");
         if (manifest.Provides?.ContextContributors?.Count > 0) requiredCapabilities.Add("context.contribute");

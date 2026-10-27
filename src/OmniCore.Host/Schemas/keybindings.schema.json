@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OmniCore User keybindings v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "bindings"],
+  "properties": {
+    "version": { "const": 1 },
+    "bindings": {
+      "type": "array", "maxItems": 256,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "properties": {
+          "keys": { "type": "string", "maxLength": 256 },
+          "action": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "command": { "type": "string", "minLength": 1, "maxLength": 160 },
+          "arguments": { "type": "array", "maxItems": 16, "items": { "type": "string", "maxLength": 4096 } },
+          "when": { "type": "string", "maxLength": 512 },
+          "priority": { "type": "integer", "minimum": -1000, "maximum": 1000 }
+        },
+        "oneOf": [
+          { "required": ["keys", "action"], "properties": { "keys": { "minLength": 1 }, "action": { "pattern": "^[^-]" } }, "not": { "anyOf": [{ "required": ["command"] }, { "required": ["arguments"] }] } },
+          { "required": ["keys", "command"], "properties": { "keys": { "minLength": 1 } }, "not": { "required": ["action"] } },
+          { "required": ["action"], "properties": { "action": { "pattern": "^-.+" }, "keys": { "maxLength": 0 }, "when": { "const": "true" }, "priority": { "const": 0 } }, "not": { "anyOf": [{ "required": ["command"] }, { "required": ["arguments"] }] } }
+        ]
+      }
+    }
+  }
+}

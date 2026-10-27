@@ -89,6 +89,16 @@ public sealed class Localization
     /// <summary>Resolves a key and reports whether a legacy key used a fallback resource.</summary>
     public LocalizationResolution ResolveDetailed(string key)
     {
+        if (AgentInspectorResources.TryTranslate(Locale, key, out var inspectorText))
+            return new(inspectorText, Locale, Locale, false);
+        if (ConversationSearchResources.TryTranslate(Locale, key, out var searchText))
+            return new(searchText, Locale, Locale, false);
+        if (CommandPaletteResources.TryTranslate(Locale, key, out var paletteText))
+            return new(paletteText, Locale, Locale, false);
+        if (ModelPickerResources.TryTranslate(Locale, key, out var modelPickerText))
+            return new(modelPickerText, Locale, Locale, false);
+        if (KeyBindingUiResources.TryTranslate(Locale, key, out var keyBindingText))
+            return new(keyBindingText, Locale, Locale, false);
         if (ExtensionResources.TryTranslate(Locale, key, out var extensionText))
             return new(extensionText, Locale, Locale, false);
         if (LinkResources.TryTranslate(Locale, key, out var linkText))

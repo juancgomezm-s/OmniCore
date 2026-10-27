@@ -35,6 +35,16 @@ public sealed class ExtensionProvidesManifest
     public List<string>? Validators { get; set; }
     public List<string>? CompletionGates { get; set; }
     public List<ExtensionViewManifest>? Views { get; set; }
+    /// <summary>Declarative shortcuts for commands owned by this extension; never actions or removals.</summary>
+    public List<ExtensionKeyBindingManifest>? KeyBindings { get; set; }
+}
+
+public sealed class ExtensionKeyBindingManifest
+{
+    public string? Keys { get; set; }
+    public string? Command { get; set; }
+    public List<string>? Arguments { get; set; }
+    public string? When { get; set; }
 }
 
 public sealed class ExtensionViewManifest

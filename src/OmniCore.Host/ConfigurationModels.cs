@@ -225,6 +225,8 @@ public sealed class TrustEntryYaml
 [YamlSerializable(typeof(WorkspaceGatesYaml))]
 [YamlSerializable(typeof(TrustFileYaml))]
 [YamlSerializable(typeof(TrustEntryYaml))]
+[YamlSerializable(typeof(KeyBindingsFileYaml))]
+[YamlSerializable(typeof(KeyBindingEntryYaml))]
 public sealed partial class OmniYamlStaticContext : StaticContext
 {
 }

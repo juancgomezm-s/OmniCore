@@ -52,6 +52,7 @@ public sealed class CommandRegistryTests
         Assert.All(catalog.Commands, item =>
         {
             Assert.False(item.Enabled);
+            Assert.True(item.CanonicalEnabled);
             Assert.Contains("ambiguous", item.DisabledReason, StringComparison.OrdinalIgnoreCase);
         });
     }

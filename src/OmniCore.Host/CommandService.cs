@@ -127,6 +127,7 @@ public sealed class CommandService
     {
         var handler = _registry.Resolve(descriptor.Id);
         var enabled = handler.IsEnabled(context ?? new CommandContext(null, null, null, null), out var reason);
+        var canonicalEnabled = enabled;
         try
         {
             if (!ReferenceEquals(_registry.Resolve(descriptor.Name), handler))
@@ -144,7 +145,7 @@ public sealed class CommandService
             descriptor.Kind.ToString(), descriptor.Description, descriptor.Arguments,
             descriptor.Source.Kind + ":" + descriptor.Source.Owner + "@" + descriptor.Source.Version,
             enabled, enabled ? null : reason)
-        { UiDescriptions = descriptor.UiDescriptions, SourceFingerprint = Fingerprint(descriptor) };
+        { UiDescriptions = descriptor.UiDescriptions, SourceFingerprint = Fingerprint(descriptor), CanonicalEnabled = canonicalEnabled };
     }).ToArray());
 
     private static CommandRegistry CreateDefaultRegistry()

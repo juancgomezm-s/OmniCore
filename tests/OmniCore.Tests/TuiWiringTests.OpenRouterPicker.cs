@@ -47,7 +47,7 @@ public sealed partial class TuiWiringTests
         fx.Invoke(() =>
         {
             var list = fx.App.Overlay!.SubViews.OfType<ListView>().Single();
-            list.SelectedItem = Array.FindIndex(PickerItems(fx), item => item.Contains("org/second"));
+            list.SelectedItem = PickerRowIndex(fx, "org/second");
             list.SetFocus();
         });
         fx.InjectKey(new Key(KeyCode.Enter));

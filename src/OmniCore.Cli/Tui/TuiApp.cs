@@ -133,13 +133,14 @@ public sealed partial class TuiApp
         ITuiLocalEngineHost? localEngines = null, Action<string>? localeChanged = null,
         ITuiClaudeAccountHost? claudeAccounts = null, ITuiLocalEngineSupervisor? localEngineSupervisor = null,
         IPolicyPreferencesFacade? policyPreferences = null, ISecurityPreferencesFacade? securityPreferences = null,
-        IDiagnosticsPreferencesFacade? diagnosticsPreferences = null)
+        IDiagnosticsPreferencesFacade? diagnosticsPreferences = null, string? keyBindingsConfigDirectory = null)
     {
         _client = client;
         _localeSelection = localeSelection;
         _localeChanged = localeChanged;
         _locale = UiLocaleCodes.NormalizeOrDefault(localeSelection?.Locale ?? locale);
         _localization = new Localization(_locale);
+        InitializeKeyBindings(keyBindingsConfigDirectory);
         _projection = new ClientProjection(_localization);
         _policies = policies ?? ModelPolicyHost.Create();
         _ownsPolicies = policies is null;
@@ -359,18 +360,12 @@ public sealed partial class TuiApp
     internal void OnApplicationKeyDown(object? sender, Key key)
     {
         PrioritizeInput();
+        if (HandleKeyBinding(key)) return;
         // Esc es la tecla Command.Quit POR DEFECTO en Terminal.Gui 2.6 (Application.DefaultKeyBindings):
         // si no se marca Handled tras consumirla, el framework además cierra toda la aplicación
         // (un Esc para cerrar un overlay mataría la TUI entera). F2/F3 igual: consumidas aquí.
         var code = key.KeyCode.ToString();
-        if (code == "F2") { ToggleSidebar(); key.Handled = true; }
-        else if (code == "F3") { ShowModelPicker(); key.Handled = true; }
-        else if (code == "F4")
-        {
-            if (_overlay?.Id == "theme-preferences") ReturnFromPreferencesSubpage();
-            else ShowPreferences();
-            key.Handled = true;
-        }
+        if (code is "F2" or "F3" or "F4") { key.Handled = true; }
         else if (code == "F6") { ShowConversations(); key.Handled = true; }
         else if (key.KeyCode == (KeyCode.Tab | KeyCode.ShiftMask) && _overlay is null && _activeInteraction is null)
         { CycleMode(); key.Handled = true; }
@@ -598,7 +593,7 @@ public sealed partial class TuiApp
                 var names = ReadStringArray(commandCatalogJson, "commands")
                     .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode", "reasoning",
                         "cancel", "interrupt", "preferences", "model", "models", "sidebar", "agents", "delegate", "agent", "join", "fanout", "animation", "images",
-                        "new", "sessions", "resume-session", "rename-session", "clear", "compact" })
+                        "new", "sessions", "resume-session", "rename-session", "clear", "compact", "keybindings", "palette" })
                     .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name))
                     .Where(name => !TuiMenuCommands.IsMenuOwned(name, aliases));
                 _slashAutocompleteNames = aliases.CompletionNames(names)
@@ -679,6 +674,8 @@ public sealed partial class TuiApp
         "/model" or "/models" => _localization.Resolve("shell.select_model"),
         "/preferences" => _localization.Resolve("shell.open_settings"),
         "/animation" => _localization.Resolve("shell.activity_and_preview"),
+        "/keybindings" => KeyBindingText("title"),
+        "/palette" => PaletteText("title"),
         "/login" => _localization.Resolve("shell.chatgpt_account_and_connection"),
         "/sidebar" => _localization.Resolve("shell.toggle_workspace_panel"),
         "/fuente" => _localization.Resolve("shell.show_or_hide_original_markdown_examples"),
@@ -756,6 +753,8 @@ public sealed partial class TuiApp
         // Whitespace is grammar for commands, but remains literal in a conversation prompt.
         var input = HumanCommandAliases.NormalizeSlashSyntax(aliases.NormalizeSlashHead(rawInput.Trim()));
         if (HandleConversationSlash(input)) return;
+        if (HandleKeyBindingsSlash(input)) return;
+        if (input == "/palette") { _composer!.Text = ""; ShowCommandPalette(); return; }
         if (input == "/attach" || input.StartsWith("/attach ", StringComparison.Ordinal))
         {
             if (input.Length == 7) PickAttachments();
@@ -1140,40 +1139,7 @@ public sealed partial class TuiApp
         if (input[0] == '/')
         {
             if (!CommandLineParser.TryParse(input, out var invocation) || invocation is null) return;
-            var ack = _client.Send(WireEnvelope.Command(Ids.NewV7(), CommandInvocationJson.Encode(invocation)), CancellationToken.None);
-            if (ack.Status == "ok" && ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Rejected)
-            {
-                var outcome = _client.Query("commandOutcome", CancellationToken.None)?.Json ?? "{}";
-                var text = JsonObj.Parse(outcome);
-                if (text.TryGetValue("outcome", out var _)
-                    && TryReadWorkflowOutcome(outcome, out var workflow, out var workflowCommandId))
-                {
-                    if (_turnHost is not null)
-                    {
-                        if (!StartModelTurn("", workflow: workflow, workflowCommandId: workflowCommandId)) return;
-                    }
-                    else
-                    {
-                        ShowMessage(_localization.Resolve("shell.this_workflow_command_requires_the_local_host"));
-                        return;
-                    }
-                }
-                else if (text.TryGetValue("outcome", out _)
-                    && TryReadOutcome(outcome, out var expanded))
-                {
-                    string? forcedToolName = null;
-                    using (var outcomeDocument = System.Text.Json.JsonDocument.Parse(outcome))
-                        if (outcomeDocument.RootElement.GetProperty("outcome").TryGetProperty("toolName", out var toolName)
-                            && toolName.GetString() is { Length: > 0 } selectedTool) forcedToolName = selectedTool;
-                    if (_turnHost is not null) { if (!StartModelTurn(expanded, extensionToolName: forcedToolName)) return; }
-                    else if (!SubmitSessionInput(expanded)) return;
-                }
-            }
-            else
-            {
-                ShowMessage("/" + invocation.Name + ": " + CommandError(ack.Error));
-                return;
-            }
+            if (!RunHostCommand(invocation)) return;
         }
         else if (input[0] == '@')
         {
@@ -1281,20 +1247,21 @@ public sealed partial class TuiApp
 
     private void RunClientAction(ClientActionInvocation action)
     {
-        _composer!.Text = "";
+        if (!action.Origin.StartsWith("KeyBinding:", StringComparison.Ordinal) && action.Origin != "Palette") _composer!.Text = "";
         if (OpenClientView(action)) return;
         // La TUI lleva su propio Turn: cancelar o interrumpir detiene primero ese Turn (misma ruta que antes).
-        if (action.ActionId is ClientActionIds.RunCancel or ClientActionIds.RunInterrupt && _turnBusy)
+        if (action.ActionId is ClientActionIds.RunCancel or ClientActionIds.RunInterrupt
+            && _turnBusy && _localActivitySession == _cursorSession)
         {
             _turnCancellation?.Cancel();
             PollEvents();
-            return;
+            if (action.ActionId == ClientActionIds.RunInterrupt) return;
         }
         var context = new ClientContext(_client, _localization, CliApp.PermissionsListing);
         var result = new ClientActionHandler().ExecuteAsync(action, context, CancellationToken.None)
             .AsTask().GetAwaiter().GetResult();
         if (result.Tools is { } tools) ShowTools(tools);
-        else if (result.Text.Length > 0) ShowMessage(result.Text);
+        else if (result.Text.Length > 0) { ShowMessage(result.Text); MarkKeyboardView(action.ActionId); }
         if (result.ExitRequested) _application?.RequestStop();
         PollEvents();
     }
@@ -1832,7 +1799,7 @@ public sealed partial class TuiApp
         var width = Math.Max(1, (_window?.Frame.Width ?? 80) - _mainColumnInset - 4);
         var normal = _conversation?.HasFocus == true ? _localization.Resolve("links.help")
             : CompactHelp(CurrentModeCode(), _locale, width, PermissionLevelLabel());
-        return FitText(normal + " · " + _localization.Resolve("shell.attachment.help"), width);
+        return FitText(KeyboardHelp(normal) + " · " + _localization.Resolve("shell.attachment.help"), width);
     }
 
     internal static string CompactHelp(string mode, string locale, int width, string? permissionLevel = null)
@@ -2476,13 +2443,26 @@ public sealed partial class TuiApp
             routerProviders.Any(row => row.ProviderId == model.ProviderId)
                 ? model.ProviderId == "openrouter" ? "OpenRouter" : "OpenRouter · " + CatalogDisplay(model.ProviderId, 80)
                 : CatalogDisplay(model.ProviderId, 80);
-        string ModelRow(ModelRegistryModelDescriptor model) => (_selectedModel == model.Id ? " ✓  " : "    ")
-            + CatalogDisplay(_policies.DisplayName(model.Id) ?? model.Id, 160) + "   ·   " + ProviderLabel(model);
-        var models = available;
+        var metadata = routerModels.DistinctBy(model => (model.ProviderId, model.Id)).ToDictionary(model => (model.ProviderId, model.Id));
+        var entries = ModelPickerList.Order(available.Select(model =>
+        {
+            var catalog = metadata.GetValueOrDefault((model.ProviderId, model.Id));
+            return new ModelPickerList.Entry(model, ProviderLabel(model),
+                ModelPickerList.Manufacturer(model.Id, catalog?.Name, "—"),
+                CatalogDisplay(_policies.DisplayName(model.Id) ?? model.Id, 160),
+                catalog?.ContextLength ?? (model.ContextWindow > 0 ? model.ContextWindow : null),
+                catalog?.PromptPricePerToken, catalog?.CompletionPricePerToken);
+        }));
+        var filtered = entries;
+        var models = entries.Select(entry => entry.Model).ToArray();
+        ModelPickerListRow[] rows = [];
+        int[] modelRows = [];
+        var rebuilding = false;
         var frame = OverlayFrame(_localization.Resolve("shell.select_model"), Math.Clamp(available.Length + 9, 12, 20));
         frame.Id = "omni-model-palette";
-        frame.Width = Dim.Percent(66);
-        frame.ViewportSettings |= ViewportSettingsFlags.Transparent;
+        frame.Width = Dim.Percent(94);
+        frame.Height = Dim.Fill(2);
+        frame.ViewportSettings &= ~ViewportSettingsFlags.Transparent;
         frame.SubViews.Single(view => view.Id == "omni-menu-title").Width = Dim.Fill(10);
         var feedback = new Label { Id = "omni-palette-feedback", X = 2, Y = 1, Width = Dim.Fill(4),
             Text = routerError ?? (routerProviders.Length > 0 && routerModels.Count == 0
@@ -2492,23 +2472,76 @@ public sealed partial class TuiApp
         var searchLabel = new Label { Id = "omni-heading", X = 2, Y = 2, Width = 8, Text = _localization.Resolve("shell.search") };
         var search = new TextField { Id = "omni-palette-search", X = 10, Y = 2, Width = Dim.Fill(15), Text = query };
         var searchHint = new Label { Id = "omni-help", X = Pos.AnchorEnd(12), Y = 2, Width = 10, Text = "Ctrl+F" };
-        var list = new ListView { Id = "omni-model-list", X = 2, Y = 4, Width = Dim.Fill(4), Height = Dim.Fill(4),
-            CanFocus = models.Length > 0, ShowMarks = false };
-        list.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(models.Select(ModelRow)));
+        var columns = new Label { Id = "omni-picker-columns", X = 2, Y = 3, Width = Dim.Fill(4), Height = 1 };
+        var list = new ListView { Id = "omni-model-list", X = 2, Y = 4, Width = Dim.Fill(4), Height = Dim.Fill(6),
+            CanFocus = models.Length > 0, ShowMarks = false, ViewportSettings = ViewportSettingsFlags.HasVerticalScrollBar };
+        var details = new Label { Id = "omni-picker-details", X = 2, Y = Pos.AnchorEnd(5), Width = Dim.Fill(4), Height = 1 };
+        var units = new Label { Id = "omni-help", X = 2, Y = Pos.AnchorEnd(4), Width = Dim.Fill(4), Height = 1,
+            Text = _localization.Resolve("openrouter.catalog.cost") + ": " + _localization.Resolve("openrouter.catalog.input") + "/"
+                + _localization.Resolve("openrouter.catalog.output") };
         var position = new Label { Id = "omni-heading", X = 2, Y = Pos.AnchorEnd(3), Width = Dim.Fill(4) };
-        void UpdatePosition() => position.Text = models.Length == 0 ? _localization.Resolve("shell.no_matches_check_search_or_f4")
-            : $"{(list.SelectedItem ?? 0) + 1} / {models.Length}  ·  " + _localization.Resolve("shell.navigate_enter_select");
-        list.ValueChanged += (_, _) => UpdatePosition();
+        ModelRegistryModelDescriptor? Selection() => list.SelectedItem is int at && at >= 0 && at < rows.Length ? rows[at].Model : null;
+        int ListWidth() => Math.Max(24, list.Viewport.Width > 0 ? list.Viewport.Width - 1
+            : (int)(_window.Frame.Width * .94) - 7);
+        void EnsureVisible()
+        {
+            list.EnsureSelectedItemVisible();
+            if (modelRows.Length > 0 && list.SelectedItem == modelRows[0]) list.ScrollVertical(-list.Viewport.Y);
+        }
+        void UpdatePosition()
+        {
+            var model = Selection();
+            var ordinal = Array.FindIndex(models, item => item == model);
+            position.Text = models.Length == 0 ? _localization.Resolve("shell.no_matches_check_search_or_f4")
+                : $"{ordinal + 1} / {models.Length}  ·  " + _localization.Resolve("shell.navigate_enter_select");
+            details.Text = model is null ? "" : CatalogDisplay(model.ProviderId + " · " + model.Id, 240);
+        }
+        void RebuildRows(ModelRegistryModelDescriptor? keep = null)
+        {
+            rebuilding = true;
+            rows = ModelPickerList.Rows(filtered, ListWidth(), _selectedModel, _localization);
+            modelRows = Enumerable.Range(0, rows.Length).Where(index => rows[index].Model is not null).ToArray();
+            list.SetSource(new System.Collections.ObjectModel.ObservableCollection<ModelPickerListRow>(rows));
+            columns.Text = ModelPickerList.Heading(filtered, ListWidth(), _localization);
+            list.CanFocus = modelRows.Length > 0;
+            if (modelRows.Length > 0) list.SelectedItem = modelRows.FirstOrDefault(index => rows[index].Model == keep, modelRows[0]);
+            rebuilding = false;
+            EnsureVisible(); UpdatePosition();
+        }
+        list.ValueChanged += (_, _) =>
+        {
+            if (rebuilding) return;
+            if (Selection() is null && modelRows.Length > 0)
+                list.SelectedItem = modelRows.FirstOrDefault(index => index > (list.SelectedItem ?? -1), modelRows[^1]);
+            UpdatePosition();
+        };
+        list.RowRender += (_, row) =>
+        {
+            if (row.Row < 0 || row.Row >= rows.Length || Environment.GetEnvironmentVariable("NO_COLOR") is not null) return;
+            var entry = rows[row.Row];
+            var scheme = list.GetScheme();
+            if (entry.Kind != ModelPickerRowKind.Model)
+                row.RowAttribute = _theme.Map(new Terminal.Gui.Drawing.Attribute(new Color(entry.IsFree ? "#39FF14"
+                    : entry.Kind is ModelPickerRowKind.PriceGroup or ModelPickerRowKind.Provider ? "#85E6DF" : "#B9CBDF"),
+                    scheme.Normal.Background, entry.Kind is ModelPickerRowKind.PriceGroup or ModelPickerRowKind.Provider ? TextStyle.Bold : TextStyle.None));
+            else if (entry.IsFree)
+                row.RowAttribute = new Terminal.Gui.Drawing.Attribute(new Color("#39FF14"),
+                    row.Row == list.SelectedItem ? _theme.Map(new Color("#315E73")) : scheme.Normal.Background);
+        };
+        var renderedWidth = 0;
+        list.SubViewsLaidOut += (_, _) =>
+        {
+            var width = ListWidth();
+            if (renderedWidth == width || rebuilding) return;
+            renderedWidth = width; RebuildRows(Selection());
+        };
         void FilterModels()
         {
             var text = search.Text.ToString().Trim();
-            models = available.Where(model => (model.Id + " " + ModelName(model) + " " + ProviderLabel(model))
+            filtered = entries.Where(entry => (entry.Model.Id + " " + ModelName(entry.Model) + " " + entry.Provider + " " + entry.Manufacturer)
                 .Contains(text, StringComparison.OrdinalIgnoreCase)).ToArray();
-            list.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(models.Select(ModelRow)));
-            list.CanFocus = models.Length > 0;
-            if (models.Length > 0) list.SelectedItem = 0;
-            list.EnsureSelectedItemVisible();
-            UpdatePosition();
+            models = filtered.Select(entry => entry.Model).ToArray();
+            RebuildRows();
             if (models.Length == 0) position.Text = available.Length == 0
                 ? _localization.Resolve("shell.no_visible_models_f4_to_configure")
                 : _localization.Resolve("shell.no_matches_change_the_search");
@@ -2522,14 +2555,22 @@ public sealed partial class TuiApp
         void MoveSelection(int delta)
         {
             if (models.Length == 0) return;
-            list.SelectedItem = ((list.SelectedItem ?? 0) + delta + models.Length) % models.Length;
-            list.EnsureSelectedItemVisible();
+            var ordinal = Array.IndexOf(modelRows, list.SelectedItem ?? -1);
+            list.SelectedItem = modelRows[((ordinal + delta) % modelRows.Length + modelRows.Length) % modelRows.Length];
+            EnsureVisible();
         }
         list.KeyDown += (_, key) =>
         {
             HandlePaletteShortcut(key);
             if (key.Handled) return;
             if (models.Length == 0) return;
+            if (key.KeyCode is KeyCode.Home or KeyCode.End)
+            {
+                list.SelectedItem = key.KeyCode == KeyCode.Home ? modelRows[0] : modelRows[^1];
+                EnsureVisible(); key.Handled = true; return;
+            }
+            if (key.KeyCode is KeyCode.PageDown or KeyCode.PageUp)
+            { MoveSelection((key.KeyCode == KeyCode.PageDown ? 1 : -1) * Math.Max(1, list.Viewport.Height - 2)); key.Handled = true; return; }
             var delta = key.KeyCode == KeyCode.CursorDown ? 1 : key.KeyCode == KeyCode.CursorUp ? -1 : 0;
             if (delta == 0) return;
             MoveSelection(delta);
@@ -2555,8 +2596,7 @@ public sealed partial class TuiApp
         list.Accepted += (_, args) =>
         {
             args.Handled = true;
-            if (list.SelectedItem is not int index || index < 0 || index >= models.Length) return;
-            var model = models[index];
+            if (Selection() is not { } model) return;
             var key = new ModelPolicyKeyDto(model.ProviderId, model.Id);
             try
             {
@@ -2573,13 +2613,12 @@ public sealed partial class TuiApp
             }
             catch (Exception) { feedback.Text = _localization.Resolve("shell.could_not_select_model"); }
         };
-        ModelPolicyKeyDto? HighlightedModel() => list.SelectedItem is int at && at >= 0 && at < models.Length
-            ? new(models[at].ProviderId, models[at].Id) : null;
+        ModelPolicyKeyDto? HighlightedModel() => Selection() is { } model ? new(model.ProviderId, model.Id) : null;
         FilterModels();
         var initial = Array.FindIndex(models, model => highlighted is null ? model.Id == _selectedModel
             : model.Id == highlighted.ModelId && model.ProviderId == highlighted.ProviderId);
         if (initial < 0) initial = Array.FindIndex(models, model => model.Id == _selectedModel);
-        if (models.Length > 0) list.SelectedItem = Math.Max(0, initial);
+        if (models.Length > 0) list.SelectedItem = modelRows[Math.Max(0, initial)];
         UpdatePosition();
         var close = new Button { Id = "omni-palette-action", X = Pos.AnchorEnd(8), Y = 0, Width = 6, Text = "Esc" };
         close.Accepted += (_, _) => CloseOverlay();
@@ -2587,11 +2626,11 @@ public sealed partial class TuiApp
         manage.Accepted += (_, _) => { CloseOverlay(); ShowModelToggles(); };
         var refresh = new Button { Id = "omni-palette-refresh", X = 2, Y = Pos.AnchorEnd(2),
             Text = _localization.Resolve(routerProviders.Length > 0 ? "openrouter.picker.refreshChatGpt" : "shell.refresh_models"),
-            Enabled = _policies.SupportsDiscovery };
+            Enabled = _policies.SupportsDiscovery, Visible = _policies.SupportsDiscovery };
         refresh.Accepted += (_, _) => RefreshAccountModels(frame, feedback, page, picker: true, highlighted: HighlightedModel);
         if (routerProviders.Length > 0)
         {
-            var routerRefresh = new Button { Id = "omni-palette-openrouter-refresh", X = Pos.Right(refresh) + 1,
+            var routerRefresh = new Button { Id = "omni-palette-openrouter-refresh", X = refresh.Visible ? Pos.Right(refresh) + 1 : 2,
                 Y = Pos.AnchorEnd(2), Text = _localization.Resolve("openrouter.picker.refresh") };
             routerRefresh.Accepted += (_, args) =>
             {
@@ -2602,7 +2641,7 @@ public sealed partial class TuiApp
         }
         ApplyTheme(_window, dimmed: true);
         if (_conversation is not null) _conversation.Dimmed = true;
-        frame.Add(searchLabel, search, searchHint, list, position, close, manage, refresh); ApplyTheme(frame); _overlay = frame; _window.Add(frame);
+        frame.Add(searchLabel, search, searchHint, columns, list, details, units, position, close, manage, refresh); ApplyTheme(frame); _overlay = frame; _window.Add(frame);
         if (models.Length > 0) list.SetFocus(); else search.SetFocus();
         var refreshSubscription = refreshCatalog && _policies.SupportsDiscovery;
         if (refreshSubscription && routerProviders.Length > 0)

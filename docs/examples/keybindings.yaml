@@ -1,0 +1,50 @@
+# M10-C: copy to the User config directory shown by /keybindings.
+# Reload with /keybindings reload (or its Reload button), or restart the TUI.
+# Sequences expire after 1 second and reset on focus/session/run changes.
+# Esc is reserved for default/deny and closing overlays; Meta is unavailable.
+version: 1
+bindings:
+  - keys: Ctrl+K Ctrl+P
+    action: view.plan
+    when: input && !paletteOpen
+    priority: 100
+  - keys: Ctrl+K Ctrl+T
+    command: tasks
+    when: input && !paletteOpen
+    priority: 100
+  - keys: F1
+    action: help.show
+
+# The global command palette defaults to Ctrl+P from the chat.
+# Optional reassignment; /palette also remains available.
+#  - action: -palette.open
+#  - keys: F9
+#    action: palette.open
+#    when: input && !overlayOpen && !awaitingPermission
+
+# Search the loaded conversation with Ctrl+F, or choose session.search in the palette.
+# It does not retrieve other Sessions or send the composer draft.
+#  - action: -session.search
+#  - keys: Ctrl+Alt+F
+#    action: session.search
+#    when: !overlayOpen && !awaitingPermission
+
+# Agent diagnostics are available as agent.inspect in the palette (no default key).
+# This reads the current Session/Run; refresh inside the view to update its capture.
+#  - keys: F9
+#    action: agent.inspect
+#    when: !overlayOpen && !awaitingPermission
+
+# Optional Host command: use the exact qualified ID from /palette or /commands.
+# Arguments stay literal argv. Reload /keybindings after editing or changing the command source.
+#  - keys: Ctrl+Alt+E
+#    command: core:explain
+#    arguments: ["src/Example.cs"]
+#    when: input && !overlayOpen && !awaitingPermission
+
+# Optional reassignment: remove the default and provide a reachable replacement.
+# A missing or conflicting interrupt/cancel replacement restores the safe default.
+#  - action: -run.cancel
+#  - keys: Ctrl+Alt+X
+#    action: run.cancel
+#    when: runActive
