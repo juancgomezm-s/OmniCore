@@ -4,7 +4,8 @@
 
 OmniCore TUI, sobre `9e2ca9d` en `codex/m10-keybindings`.
 
-- Ctrl+Shift+P desde el chat abre `palette.open`. Se admite reasignación User y
+- Ctrl+P desde el chat abre `palette.open` (revisión posterior solicitada por Juan;
+  el corte original f068ace usaba Ctrl+Shift+P). Se admite reasignación User y
   apertura por `/palette`, `/paleta` o `/tavolozza`, según aliases existentes.
   El ejemplo YAML documenta una reasignación F9; no se escribe configuración User.
 - Proyección portable en Client, sin Terminal.Gui: acciones/comandos cliente,

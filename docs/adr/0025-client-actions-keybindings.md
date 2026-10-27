@@ -156,7 +156,7 @@ continúan pendientes. No se declara M10 cerrado. Evidencia y coordinación con 
 
 ### Corte M10-C — paleta global y keybindings (2026-10-26)
 
-La paleta TUI se abre desde el chat con Ctrl+Shift+P, acción canónica `palette.open`,
+La paleta TUI se abre desde el chat con Ctrl+P, acción canónica `palette.open`,
 reasignable en User; `/palette`, `/paleta` y `/tavolozza` conservan los aliases
 humanos y se reservan frente a extensiones. `paletteOpen` ahora identifica esta
 paleta global; el selector de modelos conserva su identidad y usa `overlayOpen`.

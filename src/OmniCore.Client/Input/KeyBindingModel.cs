@@ -136,5 +136,5 @@ public static class KeyBindingDefaults
         new("F2", new(KeyBindingTargetKind.Action, "sidebar.toggle")),
         new("F3", new(KeyBindingTargetKind.Action, "model.select"), "!overlayOpen"),
         new("F4", new(KeyBindingTargetKind.Action, "preferences.open")),
-        new("Ctrl+Shift+P", new(KeyBindingTargetKind.Action, "palette.open"), "!overlayOpen && !awaitingPermission") });
+        new("Ctrl+P", new(KeyBindingTargetKind.Action, "palette.open"), "!overlayOpen && !awaitingPermission") });
 }

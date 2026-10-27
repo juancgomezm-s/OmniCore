@@ -15,7 +15,7 @@ bindings:
   - keys: F1
     action: help.show
 
-# The global command palette defaults to Ctrl+Shift+P from the chat.
+# The global command palette defaults to Ctrl+P from the chat.
 # Optional reassignment; /palette also remains available.
 #  - action: -palette.open
 #  - keys: F9

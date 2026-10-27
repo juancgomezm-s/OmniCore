@@ -12,7 +12,7 @@ public sealed partial class TuiWiringTests
 {
     private static void OpenGlobalPalette(TuiFixture fx)
     {
-        fx.InjectKey(new Key(KeyCode.P | KeyCode.CtrlMask | KeyCode.ShiftMask));
+        fx.InjectKey(new Key(KeyCode.P | KeyCode.CtrlMask));
         fx.Wait(() => fx.App.Overlay?.Id == "global-command-palette", "atajo abre paleta global");
     }
     private static void PaletteSearch(TuiFixture fx, string text) => fx.Invoke(() =>
@@ -29,6 +29,8 @@ public sealed partial class TuiWiringTests
         fx.StartTui(client: recorded, initialColumns: width, initialRows: height,
             localeSelection: new(locale, LocaleSelectionSource.CommandLine));
         Type(fx, "borrador sin enviar");
+        fx.InjectKey(new Key(KeyCode.P | KeyCode.CtrlMask | KeyCode.ShiftMask));
+        Assert.Null(fx.Read(() => fx.App.Overlay));
         OpenGlobalPalette(fx);
         fx.Read(() => Assert.Contains(title, fx.App.Overlay!.Title));
         PaletteSearch(fx, "model.select");
@@ -69,7 +71,7 @@ public sealed partial class TuiWiringTests
                 when: input
             """);
         fx.StartTui();
-        fx.InjectKey(new Key(KeyCode.P | KeyCode.CtrlMask | KeyCode.ShiftMask));
+        fx.InjectKey(new Key(KeyCode.P | KeyCode.CtrlMask));
         Assert.Null(fx.Read(() => fx.App.Overlay));
         fx.InjectKey(new Key(KeyCode.F9));
         fx.Wait(() => fx.App.Overlay?.Id == "global-command-palette", "reasignación User abre paleta");
@@ -119,7 +121,7 @@ public sealed partial class TuiWiringTests
             fx.App.PollOnce();
         });
         var overlay = fx.Read(() => fx.App.Overlay);
-        fx.InjectKey(new Key(KeyCode.P | KeyCode.CtrlMask | KeyCode.ShiftMask));
+        fx.InjectKey(new Key(KeyCode.P | KeyCode.CtrlMask));
         Assert.Same(overlay, fx.Read(() => fx.App.Overlay));
         Assert.Empty(fx.Decoded<InteractionResolved>());
         fx.InjectKey(new Key(KeyCode.Esc));
@@ -176,6 +178,56 @@ public sealed partial class TuiWiringTests
         fx.InjectKey(new Key(KeyCode.Enter));
         Assert.Empty(recorded.Commands);
         fx.Read(() => Assert.Contains("comillas", OverlayText(fx.App.Overlay!)));
+    });
+
+    [Fact]
+    public void Global_palette_Ctrl_P_preserves_existing_User_binding() => RunTuiTest(fx =>
+    {
+        var file = KeyboardFile(fx, """
+            version: 1
+            bindings:
+              - keys: Ctrl+P
+                action: sidebar.toggle
+                when: input
+            """);
+        var before = File.ReadAllBytes(file);
+        fx.StartTui(); Type(fx, "borrador personalizado");
+        var visible = fx.Read(() => fx.App.SidebarOpen);
+        fx.InjectKey(new Key(KeyCode.P | KeyCode.CtrlMask));
+        fx.Wait(() => fx.App.SidebarOpen != visible, "Ctrl+P conserva la acción User");
+        Assert.Null(fx.Read(() => fx.App.Overlay));
+        Assert.Equal("borrador personalizado", fx.Read(() => fx.App.Composer!.Text));
+        Assert.Equal(before, File.ReadAllBytes(file));
+        Type(fx, "/paleta");
+        fx.InjectKey(new Key(KeyCode.Enter));
+        fx.Wait(() => fx.App.Overlay?.Id == "global-command-palette", "/paleta sigue disponible con atajo personalizado");
+    });
+
+    [Fact]
+    public void Global_palette_Ctrl_P_keeps_pending_attachment_and_draft_without_submitting() => RunTuiTest(fx =>
+    {
+        var file = Path.Combine(fx.Root, "palette-note.txt");
+        File.WriteAllText(file, "attachment fixture");
+        var client = new PaletteRecordingClient(fx.Server);
+        fx.StartTui(client: client, turnHost: new AttachmentLayoutTurn(fx));
+        Type(fx, "/attach \"" + file + "\"");
+        fx.InjectKey(new Key(KeyCode.Enter));
+        fx.Wait(() => fx.App.Overlay is not null, "adjunto preparado");
+        fx.InjectKey(new Key(KeyCode.Esc));
+        Type(fx, "conservar texto y adjunto");
+        var inputs = fx.Decoded<UserInputReceived>().Count();
+        var chipText = fx.Read(() => Descendants(fx.App.MainWindow!).Single(view => view.Id == "omni-attachments").Text.ToString());
+        OpenGlobalPalette(fx);
+        fx.InjectKey(new Key(KeyCode.Esc));
+        fx.Wait(() => fx.App.Overlay is null && fx.App.Composer!.HasFocus, "volver desde paleta");
+        Assert.Equal("conservar texto y adjunto", fx.Read(() => fx.App.Composer!.Text));
+        fx.Read(() =>
+        {
+            var chips = Descendants(fx.App.MainWindow!).Single(view => view.Id == "omni-attachments");
+            Assert.True(chips.Visible); Assert.Equal(chipText, chips.Text.ToString()); Assert.Contains("palette-note.txt", chips.Text.ToString());
+        });
+        Assert.Equal(inputs, fx.Decoded<UserInputReceived>().Count());
+        Assert.Empty(client.Commands);
     });
 
     private sealed class PaletteRecordingClient(IOmniClient inner) : IOmniClient, ITrustedUserActionClient

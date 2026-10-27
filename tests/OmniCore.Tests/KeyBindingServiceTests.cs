@@ -38,8 +38,8 @@ public sealed class KeyBindingServiceTests
     [InlineData("!input || awaitingPermission", false)]
     public void Boolean_contexts_have_explicit_precedence_and_missing_keys_are_false(string when, bool matched)
     {
-        var service = new KeyBindingService([User("Ctrl+P", ClientActionIds.ViewPlan, when)]);
-        Assert.Equal(matched ? KeyBindingResolutionStatus.Matched : KeyBindingResolutionStatus.None, Resolve(service, "Ctrl+P", "input").Status);
+        var service = new KeyBindingService([User("F8", ClientActionIds.ViewPlan, when)]);
+        Assert.Equal(matched ? KeyBindingResolutionStatus.Matched : KeyBindingResolutionStatus.None, Resolve(service, "F8", "input").Status);
     }
 
     [Theory]
@@ -49,9 +49,9 @@ public sealed class KeyBindingServiceTests
     [InlineData("System.IO.File.Delete")]
     public void Invalid_or_unpublished_contexts_are_diagnosed_and_never_executed(string when)
     {
-        var service = new KeyBindingService([User("Ctrl+P", ClientActionIds.ViewPlan, when)]);
+        var service = new KeyBindingService([User("F8", ClientActionIds.ViewPlan, when)]);
         Assert.Contains(service.Diagnostics, issue => issue.Code is "invalid_when" or "unknown_context");
-        Assert.Equal(KeyBindingResolutionStatus.None, Resolve(service, "Ctrl+P", "input").Status);
+        Assert.Equal(KeyBindingResolutionStatus.None, Resolve(service, "F8", "input").Status);
     }
 
     [Fact]
@@ -156,15 +156,15 @@ public sealed class KeyBindingServiceTests
     [Fact]
     public void Chord_sessions_reset_on_timeout_context_change_and_failed_prefix_without_swallowing_interrupt()
     {
-        var service = new KeyBindingService([User("Ctrl+K Ctrl+P", ClientActionIds.ViewPlan, "input")]);
+        var service = new KeyBindingService([User("Ctrl+K F8", ClientActionIds.ViewPlan, "input")]);
         var now = DateTimeOffset.UtcNow;
         var session = new KeyBindingSession(service, TimeSpan.FromSeconds(1));
         Assert.Equal(KeyBindingResolutionStatus.Pending, session.Push(Key("Ctrl+K"), Context("input"), now).Status);
-        Assert.Equal(ClientActionIds.ViewPlan, session.Push(Key("Ctrl+P"), Context("input"), now.AddMilliseconds(10)).Binding!.Definition.Target.Id);
+        Assert.Equal(ClientActionIds.ViewPlan, session.Push(Key("F8"), Context("input"), now.AddMilliseconds(10)).Binding!.Definition.Target.Id);
         session.Push(Key("Ctrl+K"), Context("input"), now);
-        Assert.Equal(KeyBindingResolutionStatus.None, session.Push(Key("Ctrl+P"), Context("input"), now.AddSeconds(2)).Status);
+        Assert.Equal(KeyBindingResolutionStatus.None, session.Push(Key("F8"), Context("input"), now.AddSeconds(2)).Status);
         session.Push(Key("Ctrl+K"), Context("input"), now);
-        Assert.Equal(KeyBindingResolutionStatus.None, session.Push(Key("Ctrl+P"), Context("input", "paletteOpen"), now).Status);
+        Assert.Equal(KeyBindingResolutionStatus.None, session.Push(Key("F8"), Context("input", "paletteOpen"), now).Status);
         session.Push(Key("Ctrl+K"), Context("input", "runActive"), now);
         Assert.Equal(ClientActionIds.RunInterrupt, session.Push(Key("Ctrl+C"), Context("input", "runActive"), now).Binding!.Definition.Target.Id);
     }
@@ -174,12 +174,12 @@ public sealed class KeyBindingServiceTests
     [InlineData(2000, KeyBindingResolutionStatus.Matched)]
     public void Configured_chord_timeout_changes_resolution_and_explicit_false_equals_missing_context(int milliseconds, KeyBindingResolutionStatus expected)
     {
-        var service = new KeyBindingService([User("Ctrl+K Ctrl+P", ClientActionIds.ViewPlan, "input")]);
+        var service = new KeyBindingService([User("Ctrl+K F8", ClientActionIds.ViewPlan, "input")]);
         var session = new KeyBindingSession(service, TimeSpan.FromMilliseconds(milliseconds));
         var now = DateTimeOffset.UtcNow;
         session.Push(Key("Ctrl+K"), Context("input"), now);
         var context = new KeyBindingContext([new("input", true), new("paletteOpen", false)]);
-        Assert.Equal(expected, session.Push(Key("Ctrl+P"), context, now.AddSeconds(1)).Status);
+        Assert.Equal(expected, session.Push(Key("F8"), context, now.AddSeconds(1)).Status);
     }
 
     [Theory]
