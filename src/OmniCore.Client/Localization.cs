@@ -809,6 +809,7 @@ public sealed class Localization
         ["cli.usage.session_purge"] = "  omni session purge <id>             Purga una sesión; conserva auditoría (M4)",
         ["cli.usage.gc"] = "  omni gc [--dry-run]                 Recoge blobs huérfanos con gracia (M4)",
         ["cli.usage.audit_purge"] = "  omni audit purge [--before fecha]   Aplica retención de auditoría (M4)",
+        ["cli.usage.update"] = "  omni update check [--channel stable|preview]  Consulta releases sin descargar ni aplicar",
         ["cli.usage.help"] = "  omni --help                          Esta ayuda",
     };
 
@@ -1409,6 +1410,7 @@ public sealed class Localization
         ["cli.usage.session_purge"] = "  omni session purge <id>             Purge a session; audit is kept (M4)",
         ["cli.usage.gc"] = "  omni gc [--dry-run]                 Collect orphan blobs with grace (M4)",
         ["cli.usage.audit_purge"] = "  omni audit purge [--before date]   Apply audit retention (M4)",
+        ["cli.usage.update"] = "  omni update check [--channel stable|preview]  Check releases without downloading or applying",
         ["cli.usage.help"] = "  omni --help                          This help",
     };
 }

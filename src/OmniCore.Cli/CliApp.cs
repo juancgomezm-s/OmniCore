@@ -1429,6 +1429,7 @@ public sealed partial class CliApp
         Console.WriteLine(Loc().Resolve("cli.usage.audit_purge"));
         Console.WriteLine(Loc().Resolve("permissions.help"));
         Console.WriteLine(Loc().Resolve("interaction.resolve.usage"));
+        Console.WriteLine(Loc().Resolve("cli.usage.update"));
         Console.WriteLine(Loc().Resolve("cli.usage.help"));
     }
 }
