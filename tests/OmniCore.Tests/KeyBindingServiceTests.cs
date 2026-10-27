@@ -68,6 +68,24 @@ public sealed class KeyBindingServiceTests
     }
 
     [Fact]
+    public void User_shortcut_precedes_an_exactly_owned_extension_contribution()
+    {
+        var target = new KeyBindingTarget(KeyBindingTargetKind.Command, "acme.shortcut:run", ["literal"]);
+        var owner = "Extension:acme.shortcut@1.0.0";
+        var catalog = KeyBindingTargetCatalog.Core.WithTargets([new(target.CatalogKey, owner)]);
+        var service = new KeyBindingService([
+            new("F8", target, "input && !overlayOpen && !awaitingPermission", 0, KeyBindingSource.Extension, owner),
+            new("F8", new(KeyBindingTargetKind.Action, ClientActionIds.HelpShow), "input", 0, KeyBindingSource.User, "User")], catalog);
+        var resolution = Resolve(service, "F8", "input");
+        Assert.Equal(KeyBindingSource.User, resolution.Binding!.Definition.Source);
+        Assert.Equal(ClientActionIds.HelpShow, resolution.Binding.Definition.Target.Id);
+        var extensionOnly = new KeyBindingService([
+            new("F8", target, "input && !overlayOpen && !awaitingPermission", 0, KeyBindingSource.Extension, owner)], catalog);
+        Assert.Equal(KeyBindingResolutionStatus.None, extensionOnly.Resolve(resolution.Binding.Sequence,
+            new KeyBindingContext([new("input", true), new("awaitingPermission", true)])).Status);
+    }
+
+    [Fact]
     public void Equal_rank_conflicts_are_reported_instead_of_choosing_by_registration_order()
     {
         var definitions = new[] { User("Ctrl+P", ClientActionIds.ViewPlan), User("Ctrl+P", ClientActionIds.ViewTasks) };

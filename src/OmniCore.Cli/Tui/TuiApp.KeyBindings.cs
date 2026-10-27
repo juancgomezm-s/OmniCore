@@ -1,5 +1,6 @@
 using System.Text;
 using OmniCore.Client;
+using OmniCore.Protocol;
 using Terminal.Gui.Drivers;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
@@ -13,6 +14,7 @@ public sealed partial class TuiApp
     private ConfiguredKeyBindings _keyBindings = null!;
     private KeyBindingSession _keyBindingSession = null!;
     private string? _keyBindingsConfigDirectory;
+    private ExtensionKeyBindingSnapshot _extensionKeyBindingSnapshot = new([], []);
     private (string? Session, string? Run, View? Focus) _keyBindingScope;
     private CancellationTokenSource? _keyBindingTurn;
     private bool _keyBindingInterruptPending;
@@ -28,10 +30,46 @@ public sealed partial class TuiApp
 
     private void ReloadKeyBindings()
     {
-        _keyBindings = KeyBindingConfiguration.Load(CancellationToken.None,
+        var extensionDefinitions = new List<KeyBindingDefinition>();
+        var extensionDiagnostics = new List<KeyBindingSourceDiagnostic>();
+        ExtensionKeyBindingSnapshot? extensionSnapshot = null;
+        try
+        {
+            var query = _client.Query("keybindings.extensions", CancellationToken.None)?.Json;
+            if (query is not null) extensionSnapshot = ExtensionKeyBindingProtocol.Decode(query);
+            _extensionKeyBindingSnapshot = extensionSnapshot ?? new([], []);
+            if (extensionSnapshot is not null)
+            {
+                foreach (var binding in extensionSnapshot.Bindings)
+                {
+                    if (KeyChord.TryParseSequence(binding.Keys, out var sequence) && sequence.Length > 0
+                        && (sequence[0].Modifiers & (KeyModifiers.Control | KeyModifiers.Alt)) == 0
+                        && !(sequence[0].Key.StartsWith('F') && int.TryParse(sequence[0].Key.AsSpan(1), out var functionKey)
+                            && functionKey is >= 1 and <= 24))
+                    {
+                        extensionDiagnostics.Add(new("extension_reserved_prefix", binding.Source, 0, 0, binding.Keys));
+                        continue;
+                    }
+                    extensionDefinitions.Add(new(binding.Keys,
+                        new(KeyBindingTargetKind.Command, binding.Command, binding.Arguments),
+                        "input && !overlayOpen && !awaitingPermission && (" + binding.When + ")", 0,
+                        KeyBindingSource.Extension, binding.Source));
+                }
+                extensionDiagnostics.AddRange(extensionSnapshot.Diagnostics.Select(issue => new KeyBindingSourceDiagnostic(
+                    "extension_" + issue.Code, issue.Source, 0, 0, issue.ExtensionId)));
+            }
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or UnauthorizedAccessException
+            or System.Text.Json.JsonException)
+        {
+            extensionDiagnostics.Add(new("extension_catalog_unavailable", "Host", 0, 0, "keybindings.extensions"));
+        }
+        var initial = KeyBindingConfiguration.Load(CancellationToken.None,
             configDirectoryOverride: _keyBindingsConfigDirectory, bindingSupported: TerminalKeyChord.Supports);
+        _keyBindings = initial with { Diagnostics = initial.Diagnostics.Concat(extensionDiagnostics).ToArray() };
         _hostKeyBindingCommands = new Dictionary<string, CommandPaletteEntry>(StringComparer.Ordinal);
-        if (_keyBindings.Configuration.Bindings.Any(binding => binding.Command?.Contains(':') == true))
+        if (_keyBindings.Configuration.Bindings.Any(binding => binding.Command?.Contains(':') == true)
+            || extensionDefinitions.Count > 0)
         {
             try
             {
@@ -39,8 +77,16 @@ public sealed partial class TuiApp
                 var catalog = KeyBindingTargetCatalog.Core.WithTargets(_hostKeyBindingCommands.Values.Select(entry =>
                     new KeyValuePair<string, string>(entry.Target.CatalogKey,
                         entry.Source.StartsWith("BuiltIn:", StringComparison.Ordinal) ? "Core" : entry.Source)));
-                _keyBindings = KeyBindingConfiguration.Load(CancellationToken.None, configDirectoryOverride: _keyBindingsConfigDirectory,
-                    catalog: catalog, bindingSupported: TerminalKeyChord.Supports);
+                var ownedDefinitions = extensionDefinitions.Where(binding =>
+                {
+                    if (_hostKeyBindingCommands.TryGetValue(binding.Target.Id, out var entry)
+                        && entry.Source == binding.SourceId) return true;
+                    extensionDiagnostics.Add(new("extension_command_not_owned", binding.SourceId, 0, 0, binding.Target.Id));
+                    return false;
+                }).ToArray();
+                var loaded = KeyBindingConfiguration.Load(CancellationToken.None, configDirectoryOverride: _keyBindingsConfigDirectory,
+                    extensions: ownedDefinitions, catalog: catalog, bindingSupported: TerminalKeyChord.Supports);
+                _keyBindings = loaded with { Diagnostics = loaded.Diagnostics.Concat(extensionDiagnostics).ToArray() };
             }
             catch (Exception error) when (error is IOException or InvalidOperationException or UnauthorizedAccessException)
             {
@@ -201,8 +247,11 @@ public sealed partial class TuiApp
         report.AppendLine().AppendLine(KeyBindingText("diagnostics"));
         if (_keyBindings.Diagnostics.Count == 0) report.AppendLine(KeyBindingText("none"));
         foreach (var issue in _keyBindings.Diagnostics)
-            report.AppendLine($"{issue.Source}:{issue.Line}:{issue.Column} · {KeyBindingText("error." + issue.Code)} [{issue.Code}]")
+        {
+            var localized = KeyBindingText("error." + issue.Code);
+            report.AppendLine($"{issue.Source}:{issue.Line}:{issue.Column} · {localized} [{issue.Code}]")
                 .AppendLine("    " + issue.Subject + (issue.Detail is null ? "" : " · " + issue.Detail));
+        }
         return report.ToString();
     }
 

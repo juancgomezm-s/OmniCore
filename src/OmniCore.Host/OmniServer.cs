@@ -2967,6 +2967,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         cancellationToken.ThrowIfCancellationRequested();
         if (name == CompanionPetProtocol.Query || name.StartsWith("companion.pet:", StringComparison.Ordinal)
             || name.StartsWith("companion.pet.events:", StringComparison.Ordinal)) return QueryCompanion(name);
+        if (name == "keybindings.extensions") return QueryExtensionKeyBindings(name);
         if (name is "extensions.packages" or "extensions.views" or "extensions.context" or "extensions.context.catalog" || name.StartsWith("extensions.view:", StringComparison.Ordinal)
             || name.StartsWith("extensions.configuration:", StringComparison.Ordinal) || name.StartsWith("extensions.notifications:", StringComparison.Ordinal))
             return QueryExtensionPlatform(name, cancellationToken);

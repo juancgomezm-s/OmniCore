@@ -223,3 +223,27 @@ La TUI conserva sus overlays, aprobaciones, lectura y motor de keybindings. No s
 añaden endpoints Host o Protocol ni cambios al contrato de M9. La búsqueda entre
 sesiones y el cierre de diagnósticos M10 siguen pendientes. Evidencia y límites:
 [M10-E](../validation/m10-conversation-search-20261026.md).
+
+### Corte M10-G — contribuciones de extensiones (2026-10-27)
+
+El manifiesto de extensión incorpora `provides.keyBindings` como declaraciones
+acotadas de `keys`, `command` calificado propio, `arguments` literales y `when`.
+La extensión solicita `keybinding.register` mediante el consentimiento existente;
+no puede declarar fuente, acción Core, eliminación de defaults o prioridad arbitraria.
+La prioridad de contribución es 0 y, a igual prioridad, se conserva User > Extension
+> Default. La cobertura protegida de interrupt/cancel sigue siendo obligatoria.
+
+La consulta in-process `keybindings.extensions` proyecta sólo paquetes actuales
+y habilitados admitidos por el catálogo existente, con identidad del manifiesto,
+paquete y declaración. No activa procesos. La TUI combina las contribuciones con
+User y obtiene el ownership exclusivamente del catálogo de comandos Host. Los
+defaults de extensión se limitan al foco de entrada del chat sin overlays ni
+interacciones; un default no puede consumir teclas de un formulario o aprobación.
+Su primera pulsación exige Ctrl, Alt o F1–F24: Enter, Tab y escritura/navegación
+ordinarias no se reservan desde un paquete. Esta regla no restringe la configuración User.
+
+Al despachar se vuelve a comprobar la contribución y el comando actuales. Abrir
+la paleta recarga los bindings para que sus hints correspondan al catálogo vigente.
+El consumidor de comandos Host permanece compartido, con argv literal. Esta
+consulta no se añade al transporte/allowlist de M9. Evidencia y alcance final:
+[M10-G](../validation/m10-extension-keybindings-20261027.md).

@@ -20,6 +20,7 @@ public sealed partial class TuiApp
     {
         // Editing overlays and server-provided approvals keep their focus and unsaved state.
         if (_window is null || _overlay is not null || _activeInteraction is not null) return;
+        ReloadKeyBindings();
         var originContext = KeyboardContext();
         var session = _cursorSession; var run = _sidebarProjection.Snapshot?.RunId;
         var entries = PaletteEntries(originContext);

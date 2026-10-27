@@ -163,6 +163,37 @@ public sealed class ExtensionManifestTests
         Assert.Throws<InvalidDataException>(() => new ExtensionManifestLoader().Load(commandManifest.Replace("tool: compile", "tool: missing", StringComparison.Ordinal)));
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void Extension_keybindings_are_bounded_consented_and_owned_by_qualified_commands(int version)
+    {
+        var yaml = Manifest.Replace("requests:",
+            "  keyBindings:\n    - keys: F8\n      command: acme.progress:prowin-compile\n      arguments: [\"src/a.p\"]\n      when: input\nrequests:", StringComparison.Ordinal)
+            .Replace("capabilities: [tool.register]", "capabilities: [tool.register, command.register, keybinding.register]", StringComparison.Ordinal);
+        // Add the paired command under provides and keep its tool declaration unchanged.
+        yaml = yaml.Replace("requests:", "  commands:\n    - name: prowin-compile\n      kind: Extension\n      tool: compile\nrequests:", StringComparison.Ordinal);
+        if (version == 2) yaml = yaml.Replace("manifestVersion: 1", "manifestVersion: 2", StringComparison.Ordinal) + "\nexecutionMode: trusted\n";
+        var binding = Assert.Single(new ExtensionManifestLoader().Load(yaml).Provides!.KeyBindings!);
+        Assert.Equal("acme.progress:prowin-compile", binding.Command);
+        Assert.Equal(["src/a.p"], binding.Arguments);
+        Assert.Equal("input", binding.When);
+        Assert.Throws<InvalidDataException>(() => new ExtensionManifestLoader().Load(yaml.Replace(
+            "acme.progress:prowin-compile", "other.owner:prowin-compile", StringComparison.Ordinal)));
+        Assert.Throws<InvalidDataException>(() => new ExtensionManifestLoader().Load(yaml.Replace(
+            "keyBindings:\n    - keys: F8", "keyBindings:\n    - keys: F8\n      priority: 999", StringComparison.Ordinal)));
+        Assert.Throws<InvalidDataException>(() => new ExtensionManifestLoader().Load(yaml.Replace(
+            ", keybinding.register", "", StringComparison.Ordinal)));
+        Assert.Throws<InvalidDataException>(() => new ExtensionManifestLoader().Load(yaml.Replace(
+            "command: acme.progress:prowin-compile", "action: run.cancel", StringComparison.Ordinal)));
+        Assert.Throws<InvalidDataException>(() => new ExtensionManifestLoader().Load(yaml.Replace(
+            "arguments: [\"src/a.p\"]", "arguments: [" + string.Join(",", Enumerable.Repeat("\"literal\"", 17)) + "]", StringComparison.Ordinal)));
+        var declarations = string.Join("\n", Enumerable.Range(1, 17).Select(index =>
+            "    - keys: F" + index + "\n      command: acme.progress:prowin-compile\n      when: input"));
+        Assert.Throws<InvalidDataException>(() => new ExtensionManifestLoader().Load(yaml.Replace(
+            "    - keys: F8\n      command: acme.progress:prowin-compile\n      arguments: [\"src/a.p\"]\n      when: input", declarations, StringComparison.Ordinal)));
+    }
+
     [Fact]
     public async Task Extension_command_returns_a_forced_tool_turn_intent_without_starting_a_process()
     {

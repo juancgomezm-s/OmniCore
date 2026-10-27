@@ -27,7 +27,7 @@ public sealed class KeyBindingService
             var subject = definition.Keys + " → " + definition.Target.Id;
             KeyBindingDiagnostic Issue(string code, string? detail = null) => new(code, subject, detail, definition.SourceId);
             if (!Enum.IsDefined(definition.Source) || !Enum.IsDefined(definition.Target.Kind)
-                || string.IsNullOrWhiteSpace(definition.SourceId) || definition.SourceId.Length > 128
+                || string.IsNullOrWhiteSpace(definition.SourceId) || definition.SourceId.Length > 512
                 || definition.Target.Arguments.Length > 16 || definition.Target.Arguments.Any(arg => arg is null || arg.Length > 4096))
             { issues.Add(Issue("invalid_binding")); return null; }
             var owner = catalog.Owner(definition.Target);
