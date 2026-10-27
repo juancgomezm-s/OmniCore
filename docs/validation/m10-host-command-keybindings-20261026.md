@@ -70,3 +70,15 @@ dispatcher Client y parciales TUI propios; no cambia Host/Protocol ni el shell M
 La instalación usa el flujo de prefijo de versión separado, verifica publicación
 antes de cambiar accesos y preserva sus copias previas; no termina procesos del
 usuario ni modifica datos/permisos persistentes. Sin push, merge o publicación.
+
+## Instalación observada
+
+Código `78acf07`; ProductVersion
+`0.1.0+78acf07efc3512e024920566aedfc0cb27d22bbe`, instalado en
+`%LOCALAPPDATA%/OmniCore/cli/releases/78acf07/` en `ZEPHYRUSG14`.
+Los **138 archivos** coinciden por SHA-256 con la publicación; se comprueba versión
+y `--help` antes de cambiar accesos. Backups de los tres launchers en
+`previous-launchers/`; los accesos CMD y PowerShell terminan `--help` con código 0.
+Manifiesto `%TEMP%/omni-m10d-install-verification.json`, paquete/hash en
+`%TEMP%/omni-m10d-package.json`. No se cerraron procesos. Reabrir omni para cargar
+esta versión; el archivo User permanece a cargo del usuario, sin escrituras nuevas.
