@@ -30,6 +30,24 @@ public sealed partial class TuiApp
     {
         _keyBindings = KeyBindingConfiguration.Load(CancellationToken.None,
             configDirectoryOverride: _keyBindingsConfigDirectory, bindingSupported: TerminalKeyChord.Supports);
+        _hostKeyBindingCommands = new Dictionary<string, CommandPaletteEntry>(StringComparer.Ordinal);
+        if (_keyBindings.Configuration.Bindings.Any(binding => binding.Command?.Contains(':') == true))
+        {
+            try
+            {
+                _hostKeyBindingCommands = ReadHostKeyBindingCommands(CancellationToken.None);
+                var catalog = KeyBindingTargetCatalog.Core.WithTargets(_hostKeyBindingCommands.Values.Select(entry =>
+                    new KeyValuePair<string, string>(entry.Target.CatalogKey,
+                        entry.Source.StartsWith("BuiltIn:", StringComparison.Ordinal) ? "Core" : entry.Source)));
+                _keyBindings = KeyBindingConfiguration.Load(CancellationToken.None, configDirectoryOverride: _keyBindingsConfigDirectory,
+                    catalog: catalog, bindingSupported: TerminalKeyChord.Supports);
+            }
+            catch (Exception error) when (error is IOException or InvalidOperationException or UnauthorizedAccessException)
+            {
+                _keyBindings = _keyBindings with { Diagnostics = _keyBindings.Diagnostics.Append(new KeyBindingSourceDiagnostic(
+                    "host_catalog_unavailable", _keyBindings.Configuration.Path, 0, 0, "commands")).ToArray() };
+            }
+        }
         _keyBindingSession = new(_keyBindings.Service, TimeSpan.FromSeconds(1));
         if (_help is not null) _help.Text = HelpText();
     }
@@ -92,7 +110,7 @@ public sealed partial class TuiApp
             return true;
         }
         if (resolution.Status == KeyBindingResolutionStatus.Pending) return true;
-        var dispatcher = new KeyBindingDispatcher(new TuiActionHandler(this));
+        var dispatcher = new KeyBindingDispatcher(new TuiActionHandler(this), hostCommands: new TuiHostCommandHandler(this, resolution));
         dispatcher.ExecuteAsync(resolution, new(_client, _localization, CliApp.PermissionsListing), CancellationToken.None)
             .GetAwaiter().GetResult();
         return true;

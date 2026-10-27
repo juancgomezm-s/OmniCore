@@ -22,6 +22,13 @@ bindings:
 #    action: palette.open
 #    when: input && !overlayOpen && !awaitingPermission
 
+# Optional Host command: use the exact qualified ID from /palette or /commands.
+# Arguments stay literal argv. Reload /keybindings after editing or changing the command source.
+#  - keys: Ctrl+Alt+E
+#    command: core:explain
+#    arguments: ["src/Example.cs"]
+#    when: input && !overlayOpen && !awaitingPermission
+
 # Optional reassignment: remove the default and provide a reachable replacement.
 # A missing or conflicting interrupt/cancel replacement restores the safe default.
 #  - action: -run.cancel

@@ -5,12 +5,13 @@ namespace OmniCore.Cli;
 public sealed partial class TuiApp
 {
     // Shared by typed commands and the palette. No composer mutation or alternate authority path.
-    private bool RunHostCommand(CommandInvocation invocation)
+    private bool RunHostCommand(CommandInvocation invocation, CancellationToken cancellationToken = default)
     {
-        var ack = _client.Send(WireEnvelope.Command(Ids.NewV7(), CommandInvocationJson.Encode(invocation)), CancellationToken.None);
+        cancellationToken.ThrowIfCancellationRequested();
+        var ack = _client.Send(WireEnvelope.Command(Ids.NewV7(), CommandInvocationJson.Encode(invocation)), cancellationToken);
         if (ack.Status != "ok" || ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Rejected)
         { ShowMessage("/" + invocation.Name + ": " + CommandError(ack.Error)); return false; }
-        var outcome = _client.Query("commandOutcome", CancellationToken.None)?.Json ?? "{}";
+        var outcome = _client.Query("commandOutcome", cancellationToken)?.Json ?? "{}";
         var text = JsonObj.Parse(outcome);
         if (text.TryGetValue("outcome", out _) && TryReadWorkflowOutcome(outcome, out var workflow, out var workflowCommandId))
         {

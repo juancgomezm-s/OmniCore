@@ -183,7 +183,28 @@ adjuntos no se sustituyen ni se envían al elegir una acción.
 
 La paleta se abre sólo cuando no existe un overlay ni una interacción pendiente.
 No descarta formularios o aprobaciones; Esc vuelve al composer, y en una interacción
-sigue aplicando su opción predeterminada/denegar. Las contribuciones de atajos de
-extensiones y la asignación directa de teclas a comandos Host siguen siendo un
-corte posterior; los comandos Host ya se pueden elegir/ejecutar por la paleta.
+sigue aplicando su opción predeterminada/denegar. En este checkpoint las contribuciones
+de extensiones y los atajos directos a comandos Host quedaban pendientes; estos
+últimos se conectan en M10-D. Los comandos Host ya se podían elegir por la paleta.
 Acta: [M10-C](../validation/m10-global-command-palette-20261026.md). No cierra M10.
+
+### Corte M10-D — atajos User a comandos Host calificados (2026-10-26)
+
+La TUI amplía el catálogo de targets con IDs calificados publicados por el Host
+sólo cuando el archivo User los solicita. La compilación YAML conserva diagnósticos,
+precedencia y cobertura protegida. El nuevo IClientCommandHandler del dispatcher
+es un adaptador explícito: los comandos cliente continúan por su handler original.
+
+Cada pulsación revalida foco/contexto, Session/Run, disponibilidad, fuente,
+fingerprint y contrato de argumentos contra el catálogo actual. Un cambio exige
+recarga, y una aprobación/formulario pendiente nunca se sustituye por un comando.
+El despacho conserva argv y origen KeyBinding:User, y usa el consumidor Host ya
+compartido por slash y paleta. No añade autoridad, transporte o mutadores de M9.
+Las huellas informadas evitan invalidar un binding sólo por cambiar el idioma UI;
+sin huella se usa comparación conservadora de descripción además del contrato.
+
+La inspección muestra argumentos predefinidos. Los hints de paleta mantienen su
+criterio de misma invocación completa: un preset con argumentos no se anuncia como
+atajo de una invocación con argumentos diferentes. Ctrl+P y F3 se conservan.
+Las contribuciones automáticas de bindings de extensiones siguen pendientes.
+Evidencia: [M10-D](../validation/m10-host-command-keybindings-20261026.md).
