@@ -1,4 +1,4 @@
-# M10-B: copy to the User config directory shown by /keybindings.
+# M10-C: copy to the User config directory shown by /keybindings.
 # Reload with /keybindings reload (or its Reload button), or restart the TUI.
 # Sequences expire after 1 second and reset on focus/session/run changes.
 # Esc is reserved for default/deny and closing overlays; Meta is unavailable.
@@ -14,6 +14,13 @@ bindings:
     priority: 100
   - keys: F1
     action: help.show
+
+# The global command palette defaults to Ctrl+Shift+P from the chat.
+# Optional reassignment; /palette also remains available.
+#  - action: -palette.open
+#  - keys: F9
+#    action: palette.open
+#    when: input && !overlayOpen && !awaitingPermission
 
 # Optional reassignment: remove the default and provide a reachable replacement.
 # A missing or conflicting interrupt/cancel replacement restores the safe default.

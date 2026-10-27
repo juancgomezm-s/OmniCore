@@ -63,7 +63,7 @@ public sealed partial class TuiApp
             ["interruptPending"] = _keyBindingInterruptPending || (_turnBusy && _localActivitySession == _cursorSession
                 ? _turnCancellation?.IsCancellationRequested == true : snapshot?.RunState == "AwaitingInput"),
             ["awaitingPermission"] = _activeInteraction is not null,
-            ["paletteOpen"] = _overlay?.Id == "omni-model-palette",
+            ["paletteOpen"] = _overlay?.Id == "global-command-palette",
             ["overlayOpen"] = _overlay is not null,
             ["view.plan"] = _overlay?.Id == "keybindings-view-plan" || _sidebarOpen && _sidebarComposition?.SelectedId == "core.plan",
             ["view.tasks"] = _overlay?.Id == "keybindings-view-tasks",
@@ -92,13 +92,13 @@ public sealed partial class TuiApp
             return true;
         }
         if (resolution.Status == KeyBindingResolutionStatus.Pending) return true;
-        var dispatcher = new KeyBindingDispatcher(new TuiKeyBindingActionHandler(this));
+        var dispatcher = new KeyBindingDispatcher(new TuiActionHandler(this));
         dispatcher.ExecuteAsync(resolution, new(_client, _localization, CliApp.PermissionsListing), CancellationToken.None)
             .GetAwaiter().GetResult();
         return true;
     }
 
-    private sealed class TuiKeyBindingActionHandler(TuiApp app) : IClientActionHandler
+    private sealed class TuiActionHandler(TuiApp app) : IClientActionHandler
     {
         public ValueTask<ClientActionResult> ExecuteAsync(ClientActionInvocation action, ClientContext context, CancellationToken cancellationToken)
         {
@@ -112,6 +112,8 @@ public sealed partial class TuiApp
             }
             switch (action.ActionId)
             {
+                case "palette.open": app.ShowCommandPalette(); break;
+                case "keybindings.open": app.ShowKeyBindings(); break;
                 case "sidebar.toggle": app.ToggleSidebar(); break;
                 case "model.select": if (app._overlay is null) app.ShowModelPicker(); break;
                 case "preferences.open":

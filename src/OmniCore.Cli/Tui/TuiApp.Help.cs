@@ -10,7 +10,8 @@ public sealed partial class TuiApp
 
     private void ShowHelp()
     {
-        ShowPreferenceText(_localization.Resolve("shell.help_title"), KeyboardHelp(TuiHelpSection()) + "\n/keybindings — " + KeyBindingText("title"));
+        ShowPreferenceText(_localization.Resolve("shell.help_title"), KeyboardHelp(TuiHelpSection()) + "\n/keybindings — " + KeyBindingText("title")
+            + "\n/palette — " + PaletteText("title"));
         if (_overlay is not { } frame) return;
         frame.Id = "help-screen";
         var about = new Button { Id = "help-about", X = Pos.AnchorEnd(22), Y = Pos.AnchorEnd(2),

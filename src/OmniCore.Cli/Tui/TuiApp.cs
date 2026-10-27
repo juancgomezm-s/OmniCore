@@ -591,7 +591,7 @@ public sealed partial class TuiApp
                 var names = ReadStringArray(commandCatalogJson, "commands")
                     .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode", "reasoning",
                         "cancel", "interrupt", "preferences", "model", "models", "sidebar", "agents", "delegate", "agent", "join", "fanout", "animation", "images",
-                        "new", "sessions", "resume-session", "rename-session", "clear", "compact", "keybindings" })
+                        "new", "sessions", "resume-session", "rename-session", "clear", "compact", "keybindings", "palette" })
                     .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name))
                     .Where(name => !TuiMenuCommands.IsMenuOwned(name, aliases));
                 _slashAutocompleteNames = aliases.CompletionNames(names)
@@ -673,6 +673,7 @@ public sealed partial class TuiApp
         "/preferences" => _localization.Resolve("shell.open_settings"),
         "/animation" => _localization.Resolve("shell.activity_and_preview"),
         "/keybindings" => KeyBindingText("title"),
+        "/palette" => PaletteText("title"),
         "/login" => _localization.Resolve("shell.chatgpt_account_and_connection"),
         "/sidebar" => _localization.Resolve("shell.toggle_workspace_panel"),
         "/fuente" => _localization.Resolve("shell.show_or_hide_original_markdown_examples"),
@@ -751,6 +752,7 @@ public sealed partial class TuiApp
         var input = HumanCommandAliases.NormalizeSlashSyntax(aliases.NormalizeSlashHead(rawInput.Trim()));
         if (HandleConversationSlash(input)) return;
         if (HandleKeyBindingsSlash(input)) return;
+        if (input == "/palette") { _composer!.Text = ""; ShowCommandPalette(); return; }
         if (input == "/attach" || input.StartsWith("/attach ", StringComparison.Ordinal))
         {
             if (input.Length == 7) PickAttachments();
@@ -1130,40 +1132,7 @@ public sealed partial class TuiApp
         if (input[0] == '/')
         {
             if (!CommandLineParser.TryParse(input, out var invocation) || invocation is null) return;
-            var ack = _client.Send(WireEnvelope.Command(Ids.NewV7(), CommandInvocationJson.Encode(invocation)), CancellationToken.None);
-            if (ack.Status == "ok" && ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Rejected)
-            {
-                var outcome = _client.Query("commandOutcome", CancellationToken.None)?.Json ?? "{}";
-                var text = JsonObj.Parse(outcome);
-                if (text.TryGetValue("outcome", out var _)
-                    && TryReadWorkflowOutcome(outcome, out var workflow, out var workflowCommandId))
-                {
-                    if (_turnHost is not null)
-                    {
-                        if (!StartModelTurn("", workflow: workflow, workflowCommandId: workflowCommandId)) return;
-                    }
-                    else
-                    {
-                        ShowMessage(_localization.Resolve("shell.this_workflow_command_requires_the_local_host"));
-                        return;
-                    }
-                }
-                else if (text.TryGetValue("outcome", out _)
-                    && TryReadOutcome(outcome, out var expanded))
-                {
-                    string? forcedToolName = null;
-                    using (var outcomeDocument = System.Text.Json.JsonDocument.Parse(outcome))
-                        if (outcomeDocument.RootElement.GetProperty("outcome").TryGetProperty("toolName", out var toolName)
-                            && toolName.GetString() is { Length: > 0 } selectedTool) forcedToolName = selectedTool;
-                    if (_turnHost is not null) { if (!StartModelTurn(expanded, extensionToolName: forcedToolName)) return; }
-                    else if (!SubmitSessionInput(expanded)) return;
-                }
-            }
-            else
-            {
-                ShowMessage("/" + invocation.Name + ": " + CommandError(ack.Error));
-                return;
-            }
+            if (!RunHostCommand(invocation)) return;
         }
         else if (input[0] == '@')
         {
@@ -1271,7 +1240,7 @@ public sealed partial class TuiApp
 
     private void RunClientAction(ClientActionInvocation action)
     {
-        if (!action.Origin.StartsWith("KeyBinding:", StringComparison.Ordinal)) _composer!.Text = "";
+        if (!action.Origin.StartsWith("KeyBinding:", StringComparison.Ordinal) && action.Origin != "Palette") _composer!.Text = "";
         if (OpenClientView(action)) return;
         // La TUI lleva su propio Turn: cancelar o interrumpir detiene primero ese Turn (misma ruta que antes).
         if (action.ActionId is ClientActionIds.RunCancel or ClientActionIds.RunInterrupt

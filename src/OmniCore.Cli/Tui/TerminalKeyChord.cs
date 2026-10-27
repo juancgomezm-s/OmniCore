@@ -31,7 +31,6 @@ internal static class TerminalKeyChord
 
     internal static bool Supports(KeyBindingDefinition binding)
     {
-        if (binding.Target.Id == "palette.open") return false; // Global command palette is a later cut.
         if (!KeyChord.TryParseSequence(binding.Keys, out var sequence)) return true; // Keep the resolver's precise error.
         // Esc belongs to the interaction's default/deny and the overlay stack. Meta is not delivered by this driver.
         return sequence.All(key => key.Key != "Esc" && !key.Modifiers.HasFlag(KeyModifiers.Meta));

@@ -12,6 +12,10 @@ public sealed record CommandCatalogEntry(string Id, string Name, IReadOnlyList<s
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? SourceFingerprint { get; init; }
+
+    /// <summary>Availability of the qualified ID before short-name precedence is applied.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? CanonicalEnabled { get; init; }
 }
 
 public sealed record CommandCatalogSnapshot(IReadOnlyList<CommandCatalogEntry> Commands);

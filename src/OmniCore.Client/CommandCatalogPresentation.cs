@@ -5,7 +5,11 @@ namespace OmniCore.Client;
 
 public sealed record CommandMenuRow(string Id, string Name, string DisplayName, string Description,
     string Source, bool Enabled, string? DisabledReason, IReadOnlyList<string> Arguments,
-    bool ExternalDescription);
+    bool ExternalDescription)
+{
+    public bool? CanonicalEnabled { get; init; }
+    public string? SourceFingerprint { get; init; }
+}
 
 /// <summary>Human command catalog. Browsing and composing never invokes a command.</summary>
 public static class CommandCatalogPresentation
@@ -46,7 +50,12 @@ public static class CommandCatalogPresentation
                 var args = command.TryGetProperty("arguments", out var a) && a.ValueKind == JsonValueKind.Array
                     ? a.EnumerateArray().Where(v => v.ValueKind == JsonValueKind.String).Select(v => Clean(v.GetString() ?? "")).ToArray() : [];
                 rows.Add(new(id, name, builtin ? HumanCommandAliases.DisplayName(name, text.Locale) : name, description, String(command, "source"), enabled,
-                    DescribeReason(String(command, "disabledReason"), text), args, !builtin && localized.Length == 0));
+                    DescribeReason(String(command, "disabledReason"), text), args, !builtin && localized.Length == 0)
+                {
+                    CanonicalEnabled = command.TryGetProperty("canonicalEnabled", out var canonical) && canonical.ValueKind is JsonValueKind.True or JsonValueKind.False
+                        ? canonical.GetBoolean() : null,
+                    SourceFingerprint = String(command, "sourceFingerprint")
+                });
             }
         }
         catch (JsonException) { }

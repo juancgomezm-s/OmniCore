@@ -151,5 +151,39 @@ continúan pendientes. No se declara M10 cerrado. Evidencia y coordinación con 
 |---|---|
 | `ClientAction` y `IClientActionHandler`; bindings por defecto de `run.interrupt` y `run.cancel`; los `ClientCommand`s de M1 resolviendo a acciones | **Necesario desde M1** (mínimo; lo usa la interrupción del CLI) |
 | `KeyBindingService` configurable, contextos, `keybindings.yaml`, `/keybindings` | **Implementado en TUI, cortes M10-A/B** |
-| Command Palette global | **Contract now / implementation later** (M10+) |
+| Command Palette global | **Implementada en TUI, corte M10-C** |
 | Combinaciones concretas de teclas más allá de interrupt y cancel | **Fully deferable** |
+
+### Corte M10-C — paleta global y keybindings (2026-10-26)
+
+La paleta TUI se abre desde el chat con Ctrl+Shift+P, acción canónica `palette.open`,
+reasignable en User; `/palette`, `/paleta` y `/tavolozza` conservan los aliases
+humanos y se reservan frente a extensiones. `paletteOpen` ahora identifica esta
+paleta global; el selector de modelos conserva su identidad y usa `overlayOpen`.
+
+`CommandPalette` en Client construye una proyección pura de las acciones existentes
+y el catálogo Host. La búsqueda fuzzy ignora mayúsculas/diacríticos y mantiene IDs,
+argumentos y fuentes literales. Se muestran nombre, atajo efectivo, fuente y la
+razón de indisponibilidad. Los atajos se obtienen resolviendo el motor en el contexto
+de origen, no enumerando bindings que hayan quedado ocultos o en conflicto.
+
+El catálogo añade `CanonicalEnabled` opcional: captura `IsEnabled` del handler
+antes de aplicar precedencia del nombre corto. `Enabled` conserva su semántica
+anterior. Esto permite ofrecer ambas opciones de un nombre ambiguo con su ID
+calificado, sin habilitar comandos cuyo handler no cumple disponibilidad. No se
+cambian revisiones, autoridad ni admisión nativa de M9.
+
+Buscar, seleccionar filas y abrir la paleta sólo consultan; Enter despacha una
+acción tipada o un `CommandInvocation` con origen Palette e ID calificado. TUI
+reutiliza el handler de acciones y el mismo consumidor de resultados Host que los
+comandos escritos. Se comprueban de nuevo Session/Run, disponibilidad, identidad,
+fingerprint y argumentos declarados antes del despacho; el Host revalida autoridad.
+Los argumentos se analizan como argv, sin shell ni interpolación. El borrador y
+adjuntos no se sustituyen ni se envían al elegir una acción.
+
+La paleta se abre sólo cuando no existe un overlay ni una interacción pendiente.
+No descarta formularios o aprobaciones; Esc vuelve al composer, y en una interacción
+sigue aplicando su opción predeterminada/denegar. Las contribuciones de atajos de
+extensiones y la asignación directa de teclas a comandos Host siguen siendo un
+corte posterior; los comandos Host ya se pueden elegir/ejecutar por la paleta.
+Acta: [M10-C](../validation/m10-global-command-palette-20261026.md). No cierra M10.

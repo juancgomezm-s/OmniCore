@@ -19,6 +19,7 @@ public static class HumanCommandAliases
         new Entry("clear", "limpiar", "effacer", "pulisci"),
         new Entry("compact", "compactar", "condenser", "compatta"),
         new Entry("preferences", "preferencias", "préférences", "preferenze"),
+        new Entry("palette", "paleta", "palette", "tavolozza"),
         new Entry("tools", "herramientas", "outils", "strumenti"),
         new Entry("models", "modelos", "modèles", "modelli"),
         new Entry("model", "modelo", "modèle", "modello"),
