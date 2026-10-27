@@ -108,6 +108,22 @@ CI del SHA exacto y aceptación visual del usuario.
   Electron/Host reales y perfiles aislados; capturas comparables y aceptación del
   usuario para cambios visuales. Un fixture prueba cableado, no proveedor live.
 
+## Incremento local de cierre M9 y consumidor vigente (2026-10-26)
+
+La petición posterior del usuario autoriza el cableado técnico sobre la copia
+vigente de OmniCoder, conservando su GUI y usando `!` en el composer. Este corte
+conecta shell/salida real, catálogo nativeTool, importación Imported/ObserveOnly,
+permisos de hijos, inspección de worktrees y controles tipados de delegación;
+completa WebP y verifica clipboard del sistema y visión real con Luna. No cambia
+JSX/CSS ni instala/publica. [Acta, matriz completa de cableado y límites de
+aceptación](../validation/m9-consumer-final-wiring-20261026.md).
+
+M9 global sigue abierto: generación live pendiente de autorización de gasto,
+aceptaciones positivas del consumidor y matriz transversal según sus límites,
+revisión de Dot, CI de esta nueva candidata y promoción de main. M8 manual permanece
+separado. CI 5/5 de f21 acredita esa revisión exacta; no se atribuye al incremento
+local. Los checkpoints antiguos siguientes se conservan como evidencia histórica.
+
 ## Corte vigente del núcleo (2026-10-23)
 
 El candidato de Core incorpora por merge las mejoras de rendimiento de TUI de

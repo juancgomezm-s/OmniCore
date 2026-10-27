@@ -182,7 +182,7 @@ internal sealed class HumanShellProcessTool : ITool, INativeUserActionOnlyTool,
         if (text.Length > 0 && context.Artifacts is { } artifacts)
             outputArtifact = artifacts.PutText(text, "text/plain; charset=utf-8", ArtifactKind.ProcessOutput,
                 Sensitivity.Sensitive);
-        var preview = Preview(state, exitCode, cursor, highWater, gap);
+        var preview = DisplayPreview(state, exitCode, cursor, highWater, gap, text);
         _writeOutput?.Invoke($"\n[exit code {exitCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "unknown"}; state {state}{(gap ? "; output gap" : "")}]\n");
         var summary = "{" + JsonObj.Field("state", state)
             + ",\"exitCode\":" + (exitCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null")
@@ -281,4 +281,23 @@ internal sealed class HumanShellProcessTool : ITool, INativeUserActionOnlyTool,
         + ",\"lastSequence\":" + last.ToString(System.Globalization.CultureInfo.InvariantCulture)
         + ",\"highWater\":" + highWater.ToString(System.Globalization.CultureInfo.InvariantCulture)
         + ",\"gap\":" + (gap ? "true" : "false") + "}";
+
+    // The existing displayOutput wire field is human-facing, bounded and redacted by
+    // ProtocolMapper. Keep the complete output in CAS, never in the model transcript.
+    private static string DisplayPreview(string state, int? exitCode, long last, long highWater,
+        bool gap, string text)
+    {
+        var length = Math.Min(text.Length, 8192);
+        string encoded;
+        while (true)
+        {
+            if (length > 0 && char.IsHighSurrogate(text[length - 1])) length--;
+            encoded = JsonObj.Field("output", text[..length]);
+            if (encoded.Length <= 12000) break;
+            length /= 2;
+        }
+        var metadata = Preview(state, exitCode, last, highWater, gap);
+        return metadata[..^1] + "," + encoded + ",\"outputTruncated\":"
+            + (length < text.Length ? "true" : "false") + "}";
+    }
 }

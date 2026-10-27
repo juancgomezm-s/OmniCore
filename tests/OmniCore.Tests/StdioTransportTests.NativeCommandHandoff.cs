@@ -995,6 +995,15 @@ public sealed partial class StdioTransportTests
         Assert.Equal(runId, shellReceipt?.ExecutionRunId);
         Assert.Contains(journal, item => item.Envelope.RunId?.ToString() == runId && item.Envelope.ToolCallId == shellCall.Envelope.ToolCallId
             && item.Payload is ToolCallSucceeded);
+        var shellResult = Assert.IsType<ToolCallSucceeded>(Assert.Single(journal,
+            item => item.Envelope.ToolCallId == shellCall.Envelope.ToolCallId && item.Payload is ToolCallSucceeded).Payload);
+        using (var display = JsonDocument.Parse(Assert.IsType<string>(shellResult.DisplayOutput)))
+        {
+            Assert.Equal(0, display.RootElement.GetProperty("exitCode").GetInt32());
+            Assert.Contains("NATIVE_HUMAN_SHELL_MARKER", display.RootElement.GetProperty("output").GetString());
+            Assert.Contains("NATIVE_HUMAN_SHELL_STDERR", display.RootElement.GetProperty("output").GetString());
+            Assert.False(display.RootElement.GetProperty("outputTruncated").GetBoolean());
+        }
         var shellState = Assert.Single(journal, item => item.Payload is ProcessSessionStateRecorded state
             && state.SourceToolId == HumanShellProcessTool.ProcessOwnerSource
             && state.SourceCallId == shellCall.Envelope.ToolCallId?.ToString() && state.State == "exited");

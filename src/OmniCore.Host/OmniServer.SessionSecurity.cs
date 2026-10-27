@@ -112,6 +112,11 @@ public sealed partial class OmniServer
                 var next = SessionSecurityPolicySet.FromPreset(active, checked(current.PolicyRevision + 1), category,
                     current.Provenance, SessionSecurityPolicySource.UserSelection, DateTimeOffset.UtcNow);
                 var activeRun = new RunControlService(_store, _codecs).ActiveRun(active);
+                // Revoking mutation capability must not drop validation debt from earlier
+                // edits in this Run. Retain the stricter obligation when selecting read-only.
+                if (activeRun is not null && next.FileMutationMode == FileMutationMode.None
+                    && current.RequirePostEditValidation)
+                    next = next with { RequirePostEditValidation = true };
                 if (activeRun is not null && !current.IsMonotonicTightening(next))
                     return CommandOutcomeAck(command.MessageId, "error", "session_security.run_requires_tightening",
                         RuntimeCommandOutcome.Deferred("ActiveRunPolicyMustTighten"), active, before, commandId);

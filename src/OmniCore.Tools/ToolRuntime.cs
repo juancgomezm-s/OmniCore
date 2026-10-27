@@ -1233,7 +1233,9 @@ public sealed class ToolRuntime
                 ? FilesystemPreimage.CaptureAfter(execContext.Artifacts, bytes) : null,
             ResultArtifact = result.Artifact, ActivityEvidence = result.ActivityEvidence,
             DisplayOutput = tool.Descriptor.Id.ToString() == "process.read"
-                ? BoundedProcessDisplayOutput(result.Preview) : null });
+                ? BoundedProcessDisplayOutput(result.Preview)
+                : tool is INativeUserActionOnlyTool && tool.Descriptor.Id.ToString() == "shell.exec"
+                    && result.Preview is { Length: <= 16 * 1024 } ? result.Preview : null });
         // Preview: contenido real de la herramienta (p. ej. el archivo leído) → vuelve al modelo.
         return new Outcome(true, result.Summary, result.Preview, ToolCallState.Succeeded, effect,
             artifact: result.Artifact);
