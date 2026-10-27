@@ -53,7 +53,7 @@ public sealed partial class TuiWiringTests
         fx.InjectKey(new Key(KeyCode.Enter));
         fx.Wait(() => !policies.IsVisibleInPicker("openrouter", "org/first"), "Enter apaga catálogo una sola vez");
         Assert.StartsWith("[█   ]", Toggle("openrouter/org/first").Text.ToString());
-        Assert.Contains("Activados: 29/32", OverlayText(fx.App.Overlay!));
+        Assert.Contains("Visibles en F3: 29/32", OverlayText(fx.App.Overlay!));
         Assert.Equal("local00", policies.CurrentSelection(workspace, default)!.ModelId);
         Assert.Contains("local00", fx.App.Header!.Text);
         Assert.Equal("conservar este borrador", fx.App.Composer!.Text.ToString());

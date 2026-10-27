@@ -71,12 +71,44 @@ public sealed class ObsoleteMonetaryBudgetRecoveryTests
     public void Non_monetary_recovery_keeps_non_monetary_limits(string detail)
         => Reopen(BillingMode.Local, detail, false);
 
-    private static void Reopen(BillingMode mode, string detail, bool retired)
+    [Theory]
+    [InlineData("0", false, true)]
+    [InlineData("0", true, false)]
+    [InlineData("1", false, false)]
+    public void Reopening_retires_zero_tariff_prompt_only_for_the_exact_still_free_authorized_route(
+        string price, bool changedEndpoint, bool retired)
+        => Reopen(BillingMode.MeteredCurrency, "uso histórico incompleto: no se puede hacer cumplir el tope",
+            retired, price, changedEndpoint);
+
+    private static void Reopen(BillingMode mode, string detail, bool retired, string? price = null, bool changedEndpoint = false)
     {
         var root = Path.Combine(Path.GetTempPath(), "omni-obsolete-budget-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var db = Path.Combine(root, "journal.db");
         var state = Path.Combine(root, "lastsession.txt");
+        var config = Path.Combine(root, "config");
+        Directory.CreateDirectory(config);
+        var paths = new DefaultPlatformPaths(root, config);
+        if (price is not null)
+        {
+            File.WriteAllText(Path.Combine(config, "providers.yaml"), $$"""
+                providers:
+                  provider:
+                    family: OpenAiChatCompatible
+                    baseUrl: https://{{(changedEndpoint ? "changed" : "provider")}}.example/v1
+                    auth: none
+                    billingMode: MeteredCurrency
+                """);
+            File.WriteAllText(Path.Combine(config, "models.yaml"), $$"""
+                models:
+                  probe:
+                    provider: provider
+                    context: 8192
+                    maxOutput: 100
+                    inputPricePerMillionUsd: {{price}}
+                    outputPricePerMillionUsd: {{price}}
+                """);
+        }
         var codecs = EventCodecs.Create();
         var session = SessionId.New();
         var run = RunId.New();
@@ -103,7 +135,8 @@ public sealed class ObsoleteMonetaryBudgetRecoveryTests
         store.Close();
 
         using var reopened = new SqliteEventStore(db);
-        _ = new OmniServer(reopened, codecs, new InMemoryAuditSink(), state, new FileArtifactStore(root));
+        _ = new OmniServer(reopened, codecs, new InMemoryAuditSink(), state, new FileArtifactStore(root),
+            platformPathsFactory: () => paths);
         var events = reopened.ReadFrom(session, 1).ToArray();
         Assert.Equal(original.Select(evt => (evt.EventId, evt.Sequence, evt.PayloadJson)),
             events.Take(original.Length).Select(evt => (evt.EventId, evt.Sequence, evt.PayloadJson)));

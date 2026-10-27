@@ -41,6 +41,7 @@ public sealed partial class TuiWiringTests
         public int ListCalls { get; private set; }
         public int OperationCalls { get; private set; }
         public string? LastProviderId { get; private set; }
+        public IReadOnlyList<OpenRouterModel>? CatalogModels { get; init; }
         public int CatalogBrowseCalls { get; private set; }
         public int CatalogRefreshCalls { get; private set; }
         public int CreditCalls { get; private set; }
@@ -70,9 +71,10 @@ public sealed partial class TuiWiringTests
             CatalogBrowseCalls++;
             IReadOnlyList<OpenRouterModel> models = [new("openai/fixture-model", "Fixture model", "", 8000, 2000,
                 "0.0000001", "0.0000002", ["text"], ["text"], ["tools"], "{\"id\":\"openai/fixture-model\"}")];
-            return search is not null && !"openai/fixture-model".Contains(search, StringComparison.OrdinalIgnoreCase)
-                ? new([], 0, null, false, false, null)
-                : new(models.Skip(offset).Take(limit).ToArray(), 1, null, false, false, null);
+            models = CatalogModels ?? models;
+            var filtered = models.Where(model => string.IsNullOrEmpty(search) || model.Id.Contains(search, StringComparison.OrdinalIgnoreCase)).ToArray();
+            var page = filtered.Skip(offset).Take(limit).ToArray();
+            return new(page, filtered.Length, offset + page.Length < filtered.Length ? offset + page.Length : null, false, false, null);
         }
         public Task<OpenRouterCatalogPage> RefreshOpenRouterCatalogAsync(string providerId, string? search,
             int offset, int limit, CancellationToken cancellationToken)

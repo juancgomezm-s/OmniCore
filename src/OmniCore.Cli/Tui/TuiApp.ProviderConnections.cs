@@ -3,6 +3,7 @@ using OmniCore.Host;
 using OmniCore.Client;
 using OmniCore.Protocol;
 using Terminal.Gui.Drawing;
+using Terminal.Gui.Drivers;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 
@@ -440,50 +441,106 @@ public sealed partial class TuiApp
     }
 
     private void ShowOpenRouterCatalog(string providerId, string? search = null, int offset = 0,
-        OpenRouterCatalogPage? loadedPage = null, string? activity = null)
+        string? activity = null)
     {
         if (_window is null || _overlay is not null
             || _providerConnectionHost is not ITuiOpenRouterCatalogHost catalogHost) return;
         OpenRouterCatalogPage page;
-        try { page = loadedPage ?? catalogHost.BrowseOpenRouterCatalog(providerId, search, offset, 30, CancellationToken.None); }
+        try { page = OpenRouterCatalogGrid.Browse(catalogHost, providerId, search, offset); }
         catch (Exception) { ShowMessage(_localization.Resolve("openrouter.catalog.failed")); return; }
         var height = Math.Clamp(_window.Frame.Height - 4, 17, 30);
         var frame = OverlayFrame(_localization.Resolve("openrouter.catalog.title"), height);
+        frame.Id = "openrouter-catalog";
+        frame.Width = Dim.Fill(2);
         frame.Add(new Label { X = 2, Y = 1, Width = Dim.Fill(4), Height = 2,
             Text = _localization.Resolve("openrouter.catalog.help") });
-        var filter = new TextField { Id = "openrouter-catalog-search", X = 2, Y = 3,
+        var filter = new TextField { Id = "openrouter-catalog-search", X = 14, Y = 3,
             Width = Dim.Fill(4), Text = search ?? string.Empty };
-        var rows = page.Models.Select(model => CatalogDisplay(model.Id, 160) + " · " + CatalogDisplay(model.Name, 80)
-            + (model.ContextLength is { } context ? " · " + context.ToString(CultureInfo.InvariantCulture) : "")
-            + " · USD " + CatalogDisplay(model.PromptPricePerToken, 32) + " "
-            + _localization.Resolve("openrouter.catalog.perToken") + " "
-            + _localization.Resolve("openrouter.catalog.input")).ToArray();
-        var list = new ListView { Id = "openrouter-catalog-models", X = 2, Y = 5,
-            Width = Dim.Fill(4), Height = height - 12, CanFocus = rows.Length > 0, ShowMarks = false };
-        list.SetSource(new System.Collections.ObjectModel.ObservableCollection<string>(rows));
-        if (rows.Length > 0) list.SelectedItem = 0;
+        frame.Add(new Label { X = 2, Y = 3, Width = 11, Text = _localization.Resolve("openrouter.catalog.search") });
+        var list = new TableView(new OpenRouterCatalogGrid(page.Models, _localization,
+            model => _policies.IsVisibleInPicker(providerId, model.Id)))
+        { Id = "openrouter-catalog-models", X = 2, Y = 5, Width = Dim.Fill(4), Height = height - 12,
+            CanFocus = page.Models.Count > 0, FullRowSelect = true, MultiSelect = false, MaxCellWidth = int.MaxValue };
+        list.Style.AlwaysShowHeaders = true;
+        list.Style.ShowVerticalCellLines = true;
+        list.Style.ExpandLastColumn = false;
+        list.Style.GetOrCreateColumnStyle(0).MinWidth = 4;
+        list.Style.GetOrCreateColumnStyle(0).MaxWidth = 4;
+        var lastGridWidth = -1;
+        void SizeGridColumns()
+        {
+            var width = list.Viewport.Width > 0 ? list.Viewport.Width : _window.Frame.Width - 8;
+            if (width == lastGridWidth) return;
+            lastGridWidth = width;
+            var companyWidth = Math.Clamp(width / 7, 8, 16);
+            var costWidth = Math.Clamp(page.Models.Select(model => OpenRouterCatalogGrid.CompactCost(model).Length)
+                .DefaultIfEmpty(8).Max(), 8, 14);
+            var modelWidth = Math.Max(12, width - companyWidth - costWidth - 17);
+            foreach (var (column, size) in new[] { (1, companyWidth), (2, modelWidth), (3, 7), (4, costWidth) })
+            {
+                var style = list.Style.GetOrCreateColumnStyle(column);
+                style.MinWidth = style.MaxWidth = size;
+            }
+            list.SetNeedsDraw();
+        }
+        list.ViewportChanged += (_, _) => SizeGridColumns();
+        SizeGridColumns();
+        if (page.Models.Count > 0) list.SetSelection(0, 0, false);
         var details = new Label { Id = "openrouter-catalog-details", X = 2, Y = height - 7,
-            Width = Dim.Fill(4), Height = 1, Text = "" };
+            Width = Dim.Fill(4), Height = 2, Text = "" };
         var statusText = activity ?? (page.Stale ? _localization.Resolve("openrouter.catalog.stale")
             : page.Error is not null ? _localization.Resolve("openrouter.catalog.failed")
             : page.Models.Count == 0 ? _localization.Resolve("openrouter.catalog.notLoaded")
             : page.Truncated ? _localization.Resolve("openrouter.catalog.truncated") : "");
         var status = new Label { Id = "openrouter-catalog-status", X = 2, Y = height - 5,
             Width = Dim.Fill(4), Height = 1, Text = statusText };
+        var visibility = new Button { Id = "openrouter-catalog-visibility", X = 2, Y = height - 2,
+            Enabled = page.Models.Count > 0 };
+        var manageVisibility = new Button { Id = "openrouter-catalog-manage-visibility", X = Pos.Right(visibility) + 3,
+            Y = height - 2, Text = _localization.Resolve("shell.models.enable") };
+        manageVisibility.Accepted += (_, args) =>
+        {
+            args.Handled = true;
+            CloseOverlay(); ShowModelToggles(query: providerId);
+        };
         void ShowDetails()
         {
-            var selected = list.SelectedItem;
+            var selected = list.Value?.SelectedCell.Y;
             if (selected is not { } index || index < 0 || index >= page.Models.Count) { details.Text = ""; return; }
             var model = page.Models[index];
+            visibility.Enabled = OpenRouterCatalogGrid.CanShowInPicker(model);
+            visibility.Text = _localization.Resolve(!visibility.Enabled ? "openrouter.catalog.notText"
+                : _policies.IsVisibleInPicker(providerId, model.Id)
+                ? "openrouter.catalog.hideInPicker" : "openrouter.catalog.showInPicker");
             var parts = new List<string> { CatalogDisplay(model.Id, 120) };
+            if (model.ContextLength is { } context) parts.Add(_localization.Resolve("openrouter.catalog.contextFull")
+                + " " + context.ToString("N0", CultureInfo.InvariantCulture));
             if (model.MaxCompletionTokens is { } output) parts.Add(_localization.Resolve("openrouter.catalog.max") + " " + output.ToString(CultureInfo.InvariantCulture));
-            if (model.CompletionPricePerToken is { } completion) parts.Add("USD " + CatalogDisplay(completion, 32) + " "
-                + _localization.Resolve("openrouter.catalog.perToken") + " " + _localization.Resolve("openrouter.catalog.output"));
+            parts.Add(OpenRouterCatalogGrid.Cost(model));
             if (model.InputModalities.Count > 0) parts.Add(_localization.Resolve("openrouter.catalog.input") + " " + CatalogDisplay(string.Join(",", model.InputModalities), 80));
             if (model.OutputModalities.Count > 0) parts.Add(_localization.Resolve("openrouter.catalog.output") + " " + CatalogDisplay(string.Join(",", model.OutputModalities), 80));
             details.Text = string.Join(" · ", parts);
         }
         list.ValueChanged += (_, _) => ShowDetails();
+        void ToggleVisibility()
+        {
+            if (list.Value?.SelectedCell.Y is not { } selected || selected < 0 || selected >= page.Models.Count) return;
+            var model = page.Models[selected];
+            if (!OpenRouterCatalogGrid.CanShowInPicker(model)) return;
+            try
+            {
+                _policies.SetVisibleInPicker(providerId, model.Id, !_policies.IsVisibleInPicker(providerId, model.Id), CancellationToken.None);
+                list.Update(); ShowDetails();
+                status.Text = _localization.Resolve("shell.models.visibilitySaved");
+            }
+            catch (Exception) { status.Text = _localization.Resolve("shell.models.saveFailed"); }
+        }
+        visibility.Accepted += (_, args) => { args.Handled = true; ToggleVisibility(); };
+        list.KeyDown += (_, key) =>
+        {
+            if (key.KeyCode != KeyCode.Space) return;
+            key.Handled = true; ToggleVisibility();
+        };
         var refresh = new Button { Id = "openrouter-catalog-refresh", X = 2, Y = height - 3,
             Width = Dim.Percent(30), Text = _localization.Resolve("openrouter.catalog.refresh") };
         var register = new Button { Id = "openrouter-catalog-register", X = Pos.Right(refresh) + 1,
@@ -492,28 +549,28 @@ public sealed partial class TuiApp
             Y = height - 3, Width = Dim.Percent(15), Text = _localization.Resolve("openrouter.catalog.next") };
         var back = new Button { Id = "openrouter-catalog-back", X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(1),
             Text = AccountUi("action.back") };
-        void Reload(string? term, int start, OpenRouterCatalogPage? newPage = null, string? message = null)
+        void Reload(string? term, int start, string? message = null)
         {
-            CloseOverlay(); ShowOpenRouterCatalog(providerId, term, start, newPage, message);
+            CloseOverlay(); ShowOpenRouterCatalog(providerId, term, start, message);
         }
         filter.ValueChanged += (_, _) =>
         {
             var term = filter.Text?.ToString() ?? string.Empty;
             if (term.Length <= 100)
             {
-                try { Reload(term, 0, catalogHost.BrowseOpenRouterCatalog(providerId, term, 0, 30, CancellationToken.None)); }
+                try { Reload(term, 0); }
                 catch (Exception) { status.Text = _localization.Resolve("openrouter.catalog.failed"); }
             }
         };
         refresh.Accepted += (_, _) => RunOpenRouterCatalogOperation(frame, status, providerId,
             AccountUi("result.connecting"), async token => await catalogHost.RefreshOpenRouterCatalogAsync(providerId,
                 filter.Text?.ToString(), 0, 30, token).ConfigureAwait(false),
-            refreshed => Reload(filter.Text?.ToString(), 0, refreshed, refreshed.Stale
+            refreshed => Reload(filter.Text?.ToString(), 0, refreshed.Stale
                 ? _localization.Resolve("openrouter.catalog.stale") : refreshed.Truncated ? _localization.Resolve("openrouter.catalog.truncated") : ""));
         register.Enabled = page.Models.Count > 0;
         register.Accepted += (_, _) =>
         {
-            if (list.SelectedItem is not { } selected || selected < 0 || selected >= page.Models.Count)
+            if (list.Value?.SelectedCell.Y is not { } selected || selected < 0 || selected >= page.Models.Count)
             { status.Text = _localization.Resolve("openrouter.catalog.select"); return; }
             var model = page.Models[selected];
             RunOpenRouterCatalogOperation(frame, status, providerId, AccountUi("result.connecting"),
@@ -534,8 +591,29 @@ public sealed partial class TuiApp
             Y = height - 3, Width = Dim.Percent(15), Text = _localization.Resolve("openrouter.catalog.previous"), Enabled = offset > 0 };
         previous.Accepted += (_, _) => Reload(filter.Text?.ToString(), Math.Max(0, offset - 30));
         back.Accepted += (_, _) => { CloseOverlay(); ShowProviderConnections(selectedProviderId: providerId); };
-        frame.Add(filter, list, details, status, refresh, register, previous, next, back);
-        ApplyTheme(frame); _overlay = frame; _window.Add(frame); _preferencesReturnToCategory = true;
+        frame.Add(filter, list, details, status, refresh, register, previous, next, visibility, manageVisibility, back);
+        ApplyTheme(frame);
+        var focus = Environment.GetEnvironmentVariable("NO_COLOR") is not null
+            ? new Terminal.Gui.Drawing.Attribute(Color.None, Color.None, TextStyle.Reverse)
+            : new Terminal.Gui.Drawing.Attribute(TuiTheme.On(_theme.Selection), new Color(_theme.Selection));
+        var scheme = list.GetScheme() with { Focus = focus };
+        list.SetScheme(scheme);
+        list.Style.HeaderScheme = new Scheme { Normal = scheme.HotNormal };
+        list.Style.RowColorGetter = args =>
+        {
+            if (Environment.GetEnvironmentVariable("NO_COLOR") is not null || args.RowIndex < 0
+                || args.RowIndex >= page.Models.Count || !OpenRouterCatalogGrid.IsFree(page.Models[args.RowIndex])) return null;
+            var current = list.GetScheme();
+            var green = new Color("#39FF14");
+            return current with
+            {
+                Normal = new Terminal.Gui.Drawing.Attribute(green, current.Normal.Background),
+                Focus = new Terminal.Gui.Drawing.Attribute(green, current.Focus.Background),
+                HotNormal = new Terminal.Gui.Drawing.Attribute(green, current.Normal.Background),
+                HotFocus = new Terminal.Gui.Drawing.Attribute(green, current.Focus.Background),
+            };
+        };
+        _overlay = frame; _window.Add(frame); _preferencesReturnToCategory = true;
         ShowDetails();
         filter.SetFocus();
     }

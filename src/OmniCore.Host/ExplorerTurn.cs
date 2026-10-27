@@ -292,6 +292,7 @@ public sealed class ExplorerTurn
 
     private readonly decimal _dailyCapUsd;
     private readonly bool _monetaryBilling;
+    private readonly bool _zeroMonetaryExposure;
 
     private readonly QuestionnaireInteractionService? _questionnaires;
 
@@ -386,6 +387,9 @@ public sealed class ExplorerTurn
         _harness = harness;
         _boundary = boundary;
         _pricing = pricing;
+        _zeroMonetaryExposure = selection.OutputModalities.All(modality => modality == "text")
+            && ModelInvocationCostBound.Quote(selection, pricing, modelContextCapacity,
+                maximumGenerationRequestAttempts) == 0m;
         // Local execution and included subscription usage have no per-invocation USD charge.
         // Old Session snapshots may still carry a monetary limit; it cannot block these routes.
         // Undeclared billing retains conservative monetary admission for explicitly capped work.
@@ -1176,7 +1180,7 @@ public sealed class ExplorerTurn
         {
             var openingSpend = CombineSpend(ReadJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps),
                 ReadMetaJournalSpend(stream, sessionId, runId, today, _enforceDefaultSpendCaps));
-            if (!recoveredImageCompletion
+            if (!recoveredImageCompletion && !_zeroMonetaryExposure
                 && (_enforceDefaultSpendCaps || budget.MaxCostUsd is not null) && openingSpend.Incomplete)
             {
                 const string detail = "uso histórico incompleto: no se puede hacer cumplir el tope";
@@ -1277,6 +1281,9 @@ public sealed class ExplorerTurn
         {
             ValidateUltraCode(invocation: true);
             ValidateTokenBudget(includeNextInvocation: true);
+            // A verified zero upper bound cannot increase monetary exposure. Keep unknown
+            // historical usage intact; it must still block a later paid invocation.
+            if (_zeroMonetaryExposure) return;
             var spend = CurrentSpend();
             var capped = budget.MaxCostUsd is not null || _enforceDefaultSpendCaps;
             if (capped && (_pricing is null || !_pricing.IsComplete))
@@ -1426,7 +1433,7 @@ public sealed class ExplorerTurn
 
         string? ReserveInvocation(string id)
         {
-            if (_spendReservations is null) return null;
+            if (_spendReservations is null || _zeroMonetaryExposure) return null;
             var admissionEvents = stream.EventsSince(1);
             var currentTask = admissionEvents.Select(_codecs.Decode).OfType<TaskCreated>()
                 .SingleOrDefault(task => task.TaskId == turnTask);
@@ -1935,9 +1942,9 @@ public sealed class ExplorerTurn
                     // This invocation is already durable, but unreported usage cannot
                     // authorize tools or another invocation within the same Ask. Checking
                     // only the history loaded at entry would defer this guard until resume.
-                    if (budgeted && recordedCost is null && !boundedImageResponse)
+                    if (budgeted && recordedCost is null && !boundedImageResponse && !_zeroMonetaryExposure)
                         throw new BudgetExceededException("uso del paso incompleto: no se puede hacer cumplir el tope");
-                    if (!boundedImageResponse)
+                    if (!boundedImageResponse && !_zeroMonetaryExposure)
                     {
                         var spend = CurrentSpend();
                         var runCost = AccumulatedSpend(spend.RunUsd, 0m, budgeted);

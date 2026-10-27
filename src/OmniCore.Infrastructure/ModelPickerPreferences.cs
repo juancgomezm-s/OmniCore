@@ -25,14 +25,27 @@ public sealed class ModelPickerPreferences : IDisposable
         return command.ExecuteScalar() is not long value || value != 0;
     }
     public void SetVisible(string provider, string model, bool visible, CancellationToken ct)
+        => SetVisibleMany([(provider, model)], visible, ct);
+
+    public void SetVisibleMany(IReadOnlyList<(string Provider, string Model)> models, bool visible, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        using var transaction = _connection.BeginTransaction();
         using var command = _connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = "INSERT INTO model_picker_preferences(provider_id,model_id,visible) VALUES($provider,$model,$visible) ON CONFLICT(provider_id,model_id) DO UPDATE SET visible=excluded.visible";
-        command.Parameters.AddWithValue("$provider", provider);
-        command.Parameters.AddWithValue("$model", model);
+        var providerParameter = command.Parameters.AddWithValue("$provider", "");
+        var modelParameter = command.Parameters.AddWithValue("$model", "");
         command.Parameters.AddWithValue("$visible", visible ? 1 : 0);
-        command.ExecuteNonQuery();
+        foreach (var model in models)
+        {
+            ct.ThrowIfCancellationRequested();
+            providerParameter.Value = model.Provider;
+            modelParameter.Value = model.Model;
+            command.ExecuteNonQuery();
+        }
+        ct.ThrowIfCancellationRequested();
+        transaction.Commit();
     }
     public void Dispose() => _connection.Dispose();
 }
