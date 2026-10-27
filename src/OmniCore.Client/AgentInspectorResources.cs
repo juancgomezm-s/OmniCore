@@ -1,0 +1,85 @@
+namespace OmniCore.Client;
+
+public static class AgentInspectorResources
+{
+    private static readonly Dictionary<string, string[]> Values = new(StringComparer.Ordinal)
+    {
+        ["title"] = ["Diagnóstico de agentes", "Agent diagnostics", "Diagnostic des agents", "Diagnostica degli agenti"],
+        ["capture"] = ["Captura #{sequence} · consulta local · Actualizar para ver cambios", "Capture #{sequence} · local query · Refresh to see changes", "Capture nº {sequence} · consultation locale · Actualiser pour voir les changements", "Istantanea n. {sequence} · consultazione locale · Aggiorna per vedere le modifiche"],
+        ["source"] = ["Procedencia de la captura", "Capture provenance", "Provenance de la capture", "Provenienza dell’istantanea"],
+        ["sequence"] = ["Secuencia", "Sequence", "Séquence", "Sequenza"],
+        ["identity"] = ["Identidad de ejecución", "Execution identity", "Identité d’exécution", "Identità dell’esecuzione"],
+        ["lane_state"] = ["Estado de Lane", "Lane state", "État de Lane", "Stato di Lane"],
+        ["execution_state"] = ["Estado de Execution", "Execution state", "État d’Execution", "Stato di Execution"],
+        ["objective"] = ["Objetivo", "Objective", "Objectif", "Obiettivo"],
+        ["model"] = ["Modelo", "Model", "Modèle", "Modello"],
+        ["capacity"] = ["Capacidad informada", "Reported capacity", "Capacité déclarée", "Capacità dichiarata"],
+        ["active_maximum"] = ["Activas / máximo", "Active / maximum", "Actives / maximum", "Attive / massimo"],
+        ["waiting"] = ["En espera", "Waiting", "En attente", "In attesa"],
+        ["writer"] = ["Escritora activa", "Active writer", "Écriture active", "Scrittura attiva"],
+        ["yes"] = ["Sí", "Yes", "Oui", "Sì"],
+        ["no"] = ["No", "No", "Non", "No"],
+        ["supervision"] = ["Supervisión y actividad observada", "Supervision and observed activity", "Supervision et activité observée", "Supervisione e attività osservata"],
+        ["state"] = ["Estado", "State", "État", "Stato"],
+        ["observation"] = ["Actividad", "Activity", "Activité", "Attività"],
+        ["observation_source"] = ["Fuente de actividad", "Activity source", "Source d’activité", "Origine dell’attività"],
+        ["last_progress"] = ["Último progreso informado", "Last reported progress", "Dernier progrès déclaré", "Ultimo avanzamento dichiarato"],
+        ["validation"] = ["Validación e integración", "Validation and integration", "Validation et intégration", "Validazione e integrazione"],
+        ["ambiguous"] = ["Identidad de Execution ambigua · no acredita verificación", "Ambiguous Execution identity · does not establish verification", "Identité d’Execution ambiguë · ne constitue pas une vérification", "Identità di Execution ambigua · non attesta una verifica"],
+        ["no_execution"] = ["Sin Execution registrada · no implica un worker activo", "No Execution recorded · does not imply an active worker", "Aucune Execution enregistrée · n’implique pas un worker actif", "Nessuna Execution registrata · non implica un worker attivo"],
+        ["debt_pending"] = ["Deuda de validación pendiente", "Validation debt pending", "Dette de validation en attente", "Debito di validazione in sospeso"],
+        ["root_validation"] = ["Lane principal · sin evaluación de integración delegada", "Principal Lane · no delegated integration assessment", "Lane principale · aucune évaluation d’intégration déléguée", "Lane principale · nessuna valutazione di integrazione delegata"],
+        ["verified"] = ["Integración verificada y validada con recibos vinculados", "Integration verified and validated with linked receipts", "Intégration vérifiée et validée avec reçus liés", "Integrazione verificata e validata con ricevute collegate"],
+        ["unverified"] = ["Integración sin verificación acreditada", "Integration verification not established", "Vérification de l’intégration non établie", "Verifica dell’integrazione non attestata"],
+        ["linked_receipts"] = ["Recibos vinculados por el Host", "Host-linked receipts", "Reçus liés par le Host", "Ricevute collegate dal Host"],
+        ["debts"] = ["Deudas pendientes", "Pending debts", "Dettes en attente", "Debiti in sospeso"],
+        ["debt_details"] = ["Comprobaciones pendientes por deuda", "Missing checks by debt", "Contrôles manquants par dette", "Controlli mancanti per debito"],
+        ["debt"] = ["Deuda", "Debt", "Dette", "Debito"],
+        ["level"] = ["Nivel requerido", "Required level", "Niveau requis", "Livello richiesto"],
+        ["missing_check"] = ["Comprobación faltante", "Missing check", "Contrôle manquant", "Controllo mancante"],
+        ["reported_result"] = ["Resultado declarado", "Reported result", "Résultat déclaré", "Risultato dichiarato"],
+        ["claim"] = ["La declaración del agente no acredita integración o validación", "The agent's report does not establish integration or validation", "La déclaration de l’agent ne prouve ni l’intégration ni la validation", "La dichiarazione dell’agente non attesta integrazione o validazione"],
+        ["result_id"] = ["Resultado", "Result", "Résultat", "Risultato"],
+        ["outcome"] = ["Desenlace declarado", "Reported outcome", "Issue déclarée", "Esito dichiarato"],
+        ["disposition"] = ["Evaluación registrada", "Recorded disposition", "Évaluation enregistrée", "Valutazione registrata"],
+        ["summary"] = ["Resumen del agente", "Agent summary", "Résumé de l’agent", "Riepilogo dell’agente"],
+        ["references"] = ["Referencias recientes del Host", "Recent Host references", "Références récentes du Host", "Riferimenti recenti del Host"],
+        ["kind"] = ["Tipo", "Kind", "Type", "Tipo"],
+        ["unknown"] = ["Sin datos informados", "No reported data", "Aucune donnée déclarée", "Nessun dato dichiarato"],
+        ["refresh"] = ["Actualizar", "Refresh", "Actualiser", "Aggiorna"],
+        ["help"] = ["↑↓ agentes · Enter detalle · Tab controles · Esc volver", "↑↓ agents · Enter details · Tab controls · Esc back", "↑↓ agents · Entrée détail · Tab contrôles · Échap retour", "↑↓ agenti · Invio dettagli · Tab controlli · Esc indietro"],
+        ["empty"] = ["Sin agentes que coincidan en esta captura", "No matching agents in this capture", "Aucun agent correspondant dans cette capture", "Nessun agente corrispondente in questa istantanea"],
+        ["query_limit"] = ["Busca con un máximo de 256 caracteres", "Search with up to 256 characters", "Recherchez avec 256 caractères maximum", "Cerca con un massimo di 256 caratteri"],
+        ["lane_limit"] = ["Vista limitada a las primeras 512 Lanes", "View limited to the first 512 Lanes", "Vue limitée aux 512 premières Lanes", "Vista limitata alle prime 512 Lane"],
+        ["detail_limited"] = ["Detalle limitado: texto, comprobaciones o referencias adicionales omitidos", "Details limited: additional text, checks or references omitted", "Détail limité : texte, contrôles ou références supplémentaires omis", "Dettagli limitati: testo, controlli o riferimenti aggiuntivi omessi"],
+        ["status.NoSession"] = ["Sin conversación activa", "No active conversation", "Aucune conversation active", "Nessuna conversazione attiva"],
+        ["status.Unavailable"] = ["Diagnóstico no disponible · vuelve a actualizar", "Diagnostics unavailable · refresh again", "Diagnostic indisponible · actualisez à nouveau", "Diagnostica non disponibile · aggiorna di nuovo"],
+        ["status.ScopeChanged"] = ["Cambió la conversación o el Run · abre el diagnóstico de nuevo", "Conversation or Run changed · reopen diagnostics", "Conversation ou Run modifié · rouvrez le diagnostic", "Conversazione o Run cambiato · riapri la diagnostica"],
+        ["status.Stale"] = ["Captura antigua · vuelve a actualizar", "Stale capture · refresh again", "Capture obsolète · actualisez à nouveau", "Istantanea obsoleta · aggiorna di nuovo"],
+        ["status.Invalid"] = ["Captura inconsistente · diagnóstico no disponible", "Inconsistent capture · diagnostics unavailable", "Capture incohérente · diagnostic indisponible", "Istantanea incoerente · diagnostica non disponibile"],
+        ["supervision.Created"] = ["Creada", "Created", "Créée", "Creata"],
+        ["supervision.Accepted"] = ["Aceptada", "Accepted", "Acceptée", "Accettata"],
+        ["supervision.Returned"] = ["Devuelta", "Returned", "Retournée", "Restituita"],
+        ["supervision.Resolved"] = ["Resuelta", "Resolved", "Résolue", "Risolta"],
+        ["supervision.Failed"] = ["Fallida", "Failed", "Échouée", "Fallita"],
+        ["supervision.Recorded"] = ["Registrada", "Recorded", "Enregistrée", "Registrata"],
+        ["supervision.SupervisorTerminal · Wait"] = ["Supervisor terminado · en espera", "Supervisor terminal · waiting", "Superviseur terminé · en attente", "Supervisore terminato · in attesa"],
+        ["supervision.Failed · Wait (subject blocked; joins unresolved)"] = ["Supervisión fallida · sujeto bloqueado, joins pendientes", "Supervision failed · subject blocked, joins unresolved", "Supervision échouée · sujet bloqué, jointures non résolues", "Supervisione fallita · soggetto bloccato, join irrisolti"],
+        ["level.Local"] = ["Local", "Local", "Local", "Locale"],
+        ["level.Integration"] = ["Integración", "Integration", "Intégration", "Integrazione"],
+        ["level.Project"] = ["Proyecto", "Project", "Projet", "Progetto"],
+        ["level.EndToEnd"] = ["De extremo a extremo", "End to end", "De bout en bout", "Da un’estremità all’altra"],
+        ["kind.user"] = ["Entrada del usuario", "User input", "Entrée utilisateur", "Input utente"],
+        ["kind.assistant"] = ["Texto del asistente", "Assistant text", "Texte de l’assistant", "Testo dell’assistente"],
+        ["kind.tool"] = ["Solicitud de herramienta", "Tool request", "Demande d’outil", "Richiesta di strumento"],
+        ["kind.tool receipt"] = ["Recibo de herramienta", "Tool receipt", "Reçu d’outil", "Ricevuta di strumento"],
+    };
+    public static IReadOnlyCollection<string> Keys => Values.Keys.Select(key => "agentInspector." + key).ToArray();
+    internal static bool ContainsKey(string key) => Values.ContainsKey(key);
+    public static bool TryTranslate(string locale, string key, out string text)
+    {
+        if (key.StartsWith("agentInspector.", StringComparison.Ordinal) && Values.TryGetValue(key[15..], out var values))
+        { text = values[locale switch { "es" => 0, "fr" => 2, "it" => 3, _ => 1 }]; return true; }
+        text = ""; return false;
+    }
+}

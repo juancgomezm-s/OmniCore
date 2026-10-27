@@ -22,7 +22,7 @@ public static class CommandPalette
                 text.Resolve(command.DescriptionKey), "Core", new(KeyBindingTargetKind.Action, command.ActionId), enabled,
                 enabled ? null : text.Resolve("palette.no_run")));
         }
-        foreach (var id in new[] { "sidebar.toggle", "model.select", "preferences.open", "keybindings.open", "session.search" })
+        foreach (var id in new[] { "sidebar.toggle", "model.select", "preferences.open", "keybindings.open", "session.search", "agent.inspect" })
             entries.Add(new("action:" + id, text.Resolve("palette.action." + id), "", "Core", new(KeyBindingTargetKind.Action, id), true));
         foreach (var row in CommandCatalogPresentation.Read(catalogJson, text).Where(row => row.Id.Contains(':')).Take(512))
         {

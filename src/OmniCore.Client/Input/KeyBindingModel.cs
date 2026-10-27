@@ -120,7 +120,7 @@ public sealed class KeyBindingTargetCatalog
     public static KeyBindingTargetCatalog Core { get; } = new(
         ClientCommandRegistry.Default.Actions.Select(action => "Action:" + action.Id)
             .Concat(ClientCommandRegistry.Default.Commands.Select(command => "Command:" + command.Name))
-            .Concat(new[] { "sidebar.toggle", "model.select", "preferences.open", "palette.open", "overlay.close", "keybindings.open", "session.search" }.Select(id => "Action:" + id))
+            .Concat(new[] { "sidebar.toggle", "model.select", "preferences.open", "palette.open", "overlay.close", "keybindings.open", "session.search", "agent.inspect" }.Select(id => "Action:" + id))
             .Distinct(StringComparer.Ordinal).Select(key => new KeyValuePair<string, string>(key, "Core")));
 }
 

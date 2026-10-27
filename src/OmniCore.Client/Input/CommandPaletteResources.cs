@@ -25,6 +25,7 @@ public static class CommandPaletteResources
         ["action.preferences.open"] = ["Abrir preferencias", "Open preferences", "Ouvrir les préférences", "Apri preferenze"],
         ["action.keybindings.open"] = ["Configurar atajos de teclado", "Keyboard shortcuts", "Raccourcis clavier", "Scorciatoie da tastiera"],
         ["action.session.search"] = ["Buscar en esta conversación", "Search this conversation", "Rechercher dans cette conversation", "Cerca in questa conversazione"],
+        ["action.agent.inspect"] = ["Inspeccionar agentes y validación", "Inspect agents and validation", "Inspecter les agents et la validation", "Ispeziona agenti e validazione"],
     };
     public static IReadOnlyCollection<string> Keys => Values.Keys.Select(key => "palette." + key).ToArray();
     public static bool TryTranslate(string locale, string key, out string text)

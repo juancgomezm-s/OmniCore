@@ -2,6 +2,18 @@
 
 - **Estado:** Aceptada (2026-09-24)
 - **Relacionado:** ADR-0030 (cliente), ADR-0031 (responsive, roles), ADR-0016 (Plan), ADR-0023 (extensiones)
+
+### Corte M10-F — diagnóstico desde la paleta (2026-10-26)
+
+`agent.inspect` permite elegir una Lane en una vista de consulta de `agents`,
+disponible desde la paleta y keybindings User. Reutiliza el read model M6 sin
+alterar scheduler, gates, mutadores o las superficies `/agents`/`/agent inspect`.
+La captura está vinculada a Session/Run y secuencia, con actualización explícita.
+La presentación separa resultado declarado, evaluación registrada, recibos/deudas
+y validación/integración informadas por el Host. Un estado terminal o una reclamación
+de éxito no constituyen prueba de verificación. Identidad y referencias conservan
+su procedencia; ambigüedad, datos antiguos/no disponibles y límites son visibles.
+Evidencia y límites: [M10-F](../validation/m10-agent-diagnostics-20261026.md).
 - **Diagrama:** [arquitectura §33](../architecture/arquitectura.md#33-sidebar-y-widgets)
 
 ## Decisión

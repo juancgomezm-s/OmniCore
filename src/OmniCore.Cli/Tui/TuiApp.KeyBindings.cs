@@ -132,6 +132,7 @@ public sealed partial class TuiApp
             {
                 case "palette.open": app.ShowCommandPalette(); break;
                 case "session.search": app.ShowConversationSearch(); break;
+                case "agent.inspect": app.ShowAgentInspector(); break;
                 case "keybindings.open": app.ShowKeyBindings(); break;
                 case "sidebar.toggle": app.ToggleSidebar(); break;
                 case "model.select": if (app._overlay is null) app.ShowModelPicker(); break;

@@ -29,6 +29,12 @@ bindings:
 #    action: session.search
 #    when: !overlayOpen && !awaitingPermission
 
+# Agent diagnostics are available as agent.inspect in the palette (no default key).
+# This reads the current Session/Run; refresh inside the view to update its capture.
+#  - keys: F9
+#    action: agent.inspect
+#    when: !overlayOpen && !awaitingPermission
+
 # Optional Host command: use the exact qualified ID from /palette or /commands.
 # Arguments stay literal argv. Reload /keybindings after editing or changing the command source.
 #  - keys: Ctrl+Alt+E
