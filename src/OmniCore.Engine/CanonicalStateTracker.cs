@@ -94,6 +94,22 @@ public sealed class CanonicalStateTracker
                 && (evt.RunId != runId || evt.CorrelationId != runId))
                 throw new InvalidStateTransitionException("run mode authority", "event envelope scope mismatch",
                     payload.Type().ToString());
+            if (payload is RunInteractionResumed resumed)
+            {
+                var requestEvent = events.Where(item => item.Sequence < evt.Sequence
+                        && codecs.Decode(item) is InteractionRequested request
+                        && request.InteractionId == resumed.InteractionId)
+                    .OrderBy(item => item.Sequence).LastOrDefault();
+                if (requestEvent is not null && codecs.Decode(requestEvent) is InteractionRequested
+                    { Kind: InteractionKind.Permission } permissionRequest
+                    && (evt.Causation is not CommandCausation resumeCause
+                        || !RunProjection.ValidNativeWorktreePermissionResume(resumed, evt, resumeCause,
+                            requestEvent, permissionRequest, codecs, events)
+                        && !RunProjection.ValidNativeProcessControlPermissionResume(resumed, evt, resumeCause,
+                            requestEvent, permissionRequest, codecs, events)))
+                    throw new InvalidStateTransitionException("run", "native Permission resume is not bound to its canonical tool call",
+                        payload.Type().ToString());
+            }
             tracker.Apply(payload);
         }
 
@@ -465,7 +481,9 @@ public sealed class CanonicalStateTracker
         InteractionCause? Cause) interaction) => interaction.Cause == InteractionCause.User
         && (interaction.Kind == InteractionKind.ModelRouteConsent && interaction.OptionId == "allow_route"
             || interaction.Kind == InteractionKind.WeakSandboxConsent
-                && interaction.OptionId is "consent_once" or "deny");
+                && interaction.OptionId is "consent_once" or "deny"
+            || interaction.Kind == InteractionKind.Permission
+                && interaction.OptionId is "deny" or "allow_once" or "allow_run" or "allow_workspace");
 
     private static void ValidateReasoningRequest(ReasoningRequest? request, DomainEventPayload payload)
     {

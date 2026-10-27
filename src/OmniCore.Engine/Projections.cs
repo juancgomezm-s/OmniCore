@@ -398,6 +398,11 @@ public sealed class RunProjection
 
         if (request.Kind == InteractionKind.WeakSandboxConsent)
             return ValidWeakSandboxConsentResume(resumed, envelope, resumeCause, requestEvent, request, registry, events);
+        if (request.Kind == InteractionKind.Permission)
+            return ValidNativeWorktreePermissionResume(resumed, envelope, resumeCause, requestEvent, request,
+                    registry, events)
+                || ValidNativeProcessControlPermissionResume(resumed, envelope, resumeCause, requestEvent,
+                    request, registry, events);
         if (request.Kind != InteractionKind.ModelRouteConsent)
             return false;
 
@@ -415,6 +420,208 @@ public sealed class RunProjection
 
         var pending = new HashSet<InteractionId>();
         foreach (var item in events.Where(item => item.Sequence < envelope.Sequence).OrderBy(item => item.Sequence))
+        {
+            switch (registry.Decode(item))
+            {
+                case InteractionRequested requested: pending.Add(requested.InteractionId); break;
+                case InteractionResolved resolved: pending.Remove(resolved.InteractionId); break;
+                case InteractionExpired expired: pending.Remove(expired.InteractionId); break;
+            }
+        }
+        return pending.Count == 0;
+    }
+
+    internal static bool ValidNativeWorktreePermissionResume(RunInteractionResumed resumed,
+        DomainEvent resumeEnvelope, CommandCausation resumeCause, DomainEvent interactionEnvelope,
+        InteractionRequested interaction, IEventCodecRegistry registry, IReadOnlyList<DomainEvent> events)
+    {
+        if (interaction.Kind != InteractionKind.Permission
+            || interactionEnvelope.SessionId != resumeEnvelope.SessionId
+            || interactionEnvelope.RunId != resumed.RunId
+            || interactionEnvelope.TaskId is not { } taskId
+            || interactionEnvelope.LaneId is not { } laneId
+            || interactionEnvelope.TurnId is not { } turnId
+            || interactionEnvelope.ExecutionId is not { } executionId
+            || resumeEnvelope.TaskId != taskId || resumeEnvelope.LaneId != laneId
+            || resumeEnvelope.TurnId != turnId
+            || resumeEnvelope.ExecutionId != executionId
+            || !OptionIds(interaction.OptionsJson).ToHashSet(StringComparer.Ordinal)
+                .IsSubsetOf(["deny", "allow_once", "allow_run", "allow_workspace"])
+            || !OptionIds(interaction.OptionsJson).Contains("deny", StringComparer.Ordinal)
+            || !OptionIds(interaction.OptionsJson).Contains("allow_once", StringComparer.Ordinal)
+            || OptionIds(interaction.OptionsJson).Distinct(StringComparer.Ordinal).Count()
+                != OptionIds(interaction.OptionsJson).Count())
+            return false;
+
+        var scoped = events.Where(item => item.SessionId == interactionEnvelope.SessionId
+            && item.Sequence < resumeEnvelope.Sequence && item.RunId == resumed.RunId
+            && item.TaskId == taskId && item.LaneId == laneId && item.TurnId == turnId
+            && item.ExecutionId == executionId).ToArray();
+        var permissionRequests = scoped.Where(item => item.Sequence < interactionEnvelope.Sequence
+            && registry.Decode(item) is PermissionRequested permission
+            && permission.InteractionId == resumed.InteractionId).ToArray();
+        if (permissionRequests.Length != 1
+            || registry.Decode(permissionRequests[0]) is not PermissionRequested permissionRequest
+            || permissionRequest.ToolCallId.Value == Guid.Empty
+            || permissionRequests[0].ToolCallId is { } permissionEnvelopeCall
+                && permissionEnvelopeCall != permissionRequest.ToolCallId
+            || interactionEnvelope.ToolCallId is { } interactionEnvelopeCall
+                && interactionEnvelopeCall != permissionRequest.ToolCallId
+            || resumeEnvelope.ToolCallId != permissionRequest.ToolCallId)
+            return false;
+        var toolCallId = permissionRequest.ToolCallId;
+        var calls = scoped.Where(item => item.ToolCallId == toolCallId
+            && registry.Decode(item) is ToolCallRequested call
+            && call.ToolCallId == toolCallId
+            && call.ToolName is ("worktree.integrate" or "worktree.cleanup" or "worktree.discard" or "worktree.retention")
+            && call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal)).ToArray();
+        if (calls.Length != 1
+            || registry.Decode(calls[0]) is not ToolCallRequested toolCall
+            || !Guid.TryParseExact(toolCall.ProviderCallId["native-action-".Length..], "D", out var invocationGuid)
+            || toolCall.ProviderCallId != "native-action-" + invocationGuid.ToString("D"))
+            return false;
+        var canonicalCommandId = toolCall.ToolName switch
+        {
+            "worktree.integrate" => "core:worktree.integrate",
+            "worktree.cleanup" => "core:worktree.cleanup",
+            "worktree.discard" => "core:worktree.discard",
+            "worktree.retention" => "core:worktree.retention",
+            _ => null,
+        };
+        if (canonicalCommandId is null) return false;
+        var preparedCalls = scoped.Where(item => item.ToolCallId == toolCallId
+            && registry.Decode(item) is ToolCallPrepared prepared && prepared.ToolCallId == toolCallId).ToArray();
+        if (preparedCalls.Length != 1 || preparedCalls[0].Sequence <= calls[0].Sequence
+            || preparedCalls[0].Sequence >= permissionRequests[0].Sequence)
+            return false;
+
+        var invocation = new CommandId(invocationGuid);
+        var admissions = events.Where(item => item.SessionId == interactionEnvelope.SessionId
+            && item.Sequence < calls[0].Sequence && item.RunId == resumed.RunId
+            && registry.Decode(item) is NativeCommandInvocationAdmitted admitted
+            && admitted.InvocationId == invocation && admitted.SessionId == interactionEnvelope.SessionId
+            && admitted.RunId == resumed.RunId && admitted.Kind == "nativeTool"
+            && admitted.CanonicalCommandId == canonicalCommandId).ToArray();
+        var starts = events.Where(item => item.SessionId == interactionEnvelope.SessionId
+            && item.Sequence < calls[0].Sequence && item.RunId == resumed.RunId
+            && registry.Decode(item) is NativeCommandInvocationStarted started
+            && started.InvocationId == invocation && started.Kind == "nativeTool"
+            && started.RunId == resumed.RunId).ToArray();
+        if (admissions.Length != 1 || starts.Length != 1 || starts[0].Sequence <= admissions[0].Sequence
+            || calls[0].Sequence <= starts[0].Sequence || permissionRequests[0].Sequence <= preparedCalls[0].Sequence
+            || permissionRequests[0].Sequence >= interactionEnvelope.Sequence)
+            return false;
+
+        var resolutions = events.Where(item => item.SessionId == interactionEnvelope.SessionId
+            && item.Sequence > interactionEnvelope.Sequence && item.Sequence < resumeEnvelope.Sequence
+            && item.RunId == resumed.RunId && item.TaskId == taskId && item.LaneId == laneId
+            && item.TurnId == turnId && item.ToolCallId == toolCallId && item.ExecutionId == executionId
+            && registry.Decode(item) is InteractionResolved resolved
+            && resolved.InteractionId == resumed.InteractionId
+            && OptionIds(interaction.OptionsJson).Contains(resolved.OptionId, StringComparer.Ordinal)
+            && resolved.Cause == InteractionCause.User).ToArray();
+        if (resolutions.Length != 1 || resolutions[0].Causation is not CommandCausation resolutionCause
+            || resolutionCause.CommandId != resumeCause.CommandId)
+            return false;
+
+        var pending = new HashSet<InteractionId>();
+        foreach (var item in events.Where(item => item.Sequence < resumeEnvelope.Sequence).OrderBy(item => item.Sequence))
+        {
+            switch (registry.Decode(item))
+            {
+                case InteractionRequested requested: pending.Add(requested.InteractionId); break;
+                case InteractionResolved resolved: pending.Remove(resolved.InteractionId); break;
+                case InteractionExpired expired: pending.Remove(expired.InteractionId); break;
+            }
+        }
+        return pending.Count == 0;
+    }
+
+    internal static bool ValidNativeProcessControlPermissionResume(RunInteractionResumed resumed,
+        DomainEvent resumeEnvelope, CommandCausation resumeCause, DomainEvent interactionEnvelope,
+        InteractionRequested interaction, IEventCodecRegistry registry, IReadOnlyList<DomainEvent> events)
+    {
+        if (interaction.Kind != InteractionKind.Permission
+            || interactionEnvelope.SessionId != resumeEnvelope.SessionId
+            || interactionEnvelope.RunId != resumed.RunId
+            || interactionEnvelope.TaskId is not { } taskId
+            || interactionEnvelope.LaneId is not { } laneId
+            || interactionEnvelope.TurnId is not { } turnId
+            || interactionEnvelope.ExecutionId is not { } executionId
+            || resumeEnvelope.TaskId != taskId || resumeEnvelope.LaneId != laneId
+            || resumeEnvelope.TurnId != turnId || resumeEnvelope.ExecutionId != executionId
+            || !OptionIds(interaction.OptionsJson).ToHashSet(StringComparer.Ordinal)
+                .IsSubsetOf(["deny", "allow_once", "allow_run", "allow_workspace"])
+            || !OptionIds(interaction.OptionsJson).Contains("deny", StringComparer.Ordinal)
+            || !OptionIds(interaction.OptionsJson).Contains("allow_once", StringComparer.Ordinal)
+            || OptionIds(interaction.OptionsJson).Distinct(StringComparer.Ordinal).Count()
+                != OptionIds(interaction.OptionsJson).Count())
+            return false;
+
+        var scoped = events.Where(item => item.SessionId == interactionEnvelope.SessionId
+            && item.Sequence < resumeEnvelope.Sequence && item.RunId == resumed.RunId
+            && item.TaskId == taskId && item.LaneId == laneId && item.TurnId == turnId
+            && item.ExecutionId == executionId).ToArray();
+        var permissions = scoped.Where(item => item.Sequence < interactionEnvelope.Sequence
+            && registry.Decode(item) is PermissionRequested permission
+            && permission.InteractionId == resumed.InteractionId).ToArray();
+        if (permissions.Length != 1 || registry.Decode(permissions[0]) is not PermissionRequested permissionRequest
+            || permissionRequest.ToolCallId.Value == Guid.Empty
+            || permissions[0].ToolCallId is { } permissionEnvelopeCall
+                && permissionEnvelopeCall != permissionRequest.ToolCallId
+            || interactionEnvelope.ToolCallId is { } interactionEnvelopeCall
+                && interactionEnvelopeCall != permissionRequest.ToolCallId
+            || resumeEnvelope.ToolCallId != permissionRequest.ToolCallId)
+            return false;
+
+        var toolCallId = permissionRequest.ToolCallId;
+        var calls = scoped.Where(item => item.ToolCallId == toolCallId
+            && registry.Decode(item) is ToolCallRequested call
+            && call.ToolCallId == toolCallId
+            && call.ToolName is "process.read" or "process.send_input" or "process.stop"
+            && call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal)).ToArray();
+        if (calls.Length != 1 || registry.Decode(calls[0]) is not ToolCallRequested toolCall
+            || !Guid.TryParseExact(toolCall.ProviderCallId["native-action-".Length..], "D", out var invocationGuid)
+            || toolCall.ProviderCallId != "native-action-" + invocationGuid.ToString("D"))
+            return false;
+
+        var prepared = scoped.Where(item => item.ToolCallId == toolCallId
+            && registry.Decode(item) is ToolCallPrepared call && call.ToolCallId == toolCallId).ToArray();
+        if (prepared.Length != 1 || prepared[0].Sequence <= calls[0].Sequence
+            || prepared[0].Sequence >= permissions[0].Sequence
+            || permissions[0].Sequence >= interactionEnvelope.Sequence)
+            return false;
+
+        var invocation = new CommandId(invocationGuid);
+        var admissions = events.Where(item => item.SessionId == interactionEnvelope.SessionId
+            && item.Sequence < calls[0].Sequence && item.RunId == resumed.RunId
+            && registry.Decode(item) is NativeCommandInvocationAdmitted admitted
+            && admitted.InvocationId == invocation && admitted.SessionId == interactionEnvelope.SessionId
+            && admitted.RunId == resumed.RunId && admitted.Kind == "nativeTool"
+            && admitted.CanonicalCommandId == "core:process.control").ToArray();
+        if (admissions.Length != 1
+            || events.Any(item => item.SessionId == interactionEnvelope.SessionId
+                && registry.Decode(item) is NativeCommandInvocationStarted started
+                && started.InvocationId == invocation)
+            || events.Any(item => item.SessionId == interactionEnvelope.SessionId
+                && registry.Decode(item) is NativeCommandInvocationFinished finished
+                && finished.InvocationId == invocation))
+            return false;
+
+        var resolutions = events.Where(item => item.SessionId == interactionEnvelope.SessionId
+            && item.Sequence > interactionEnvelope.Sequence && item.Sequence < resumeEnvelope.Sequence
+            && item.RunId == resumed.RunId && item.TaskId == taskId && item.LaneId == laneId
+            && item.TurnId == turnId && item.ToolCallId == toolCallId && item.ExecutionId == executionId
+            && registry.Decode(item) is InteractionResolved resolved
+            && resolved.InteractionId == resumed.InteractionId
+            && OptionIds(interaction.OptionsJson).Contains(resolved.OptionId, StringComparer.Ordinal)
+            && resolved.Cause == InteractionCause.User).ToArray();
+        if (resolutions.Length != 1 || resolutions[0].Causation is not CommandCausation resolutionCause
+            || resolutionCause.CommandId != resumeCause.CommandId)
+            return false;
+
+        var pending = new HashSet<InteractionId>();
+        foreach (var item in events.Where(item => item.Sequence < resumeEnvelope.Sequence).OrderBy(item => item.Sequence))
         {
             switch (registry.Decode(item))
             {
@@ -462,40 +669,76 @@ public sealed class RunProjection
 
         var beforeRequest = scopedEvents.Where(item => item.Sequence < requestEnvelope.Sequence).ToArray();
         var requestedCalls = beforeRequest.Where(item => registry.Decode(item) is ToolCallRequested call
-            && call.ToolCallId == toolCallId && call.ToolName == "dyn.core.verify_integration").ToArray();
-        if (requestedCalls.Length != 1 || registry.Decode(requestedCalls[0]) is not ToolCallRequested)
+            && call.ToolCallId == toolCallId).ToArray();
+        if (requestedCalls.Length != 1 || registry.Decode(requestedCalls[0]) is not ToolCallRequested toolCall)
             return false;
-        var toolRequest = requestedCalls[0];
+        var toolRequestEvent = requestedCalls[0];
+        var toolRequest = (ToolCallRequested)registry.Decode(toolRequestEvent);
         var prepared = beforeRequest.Where(item => registry.Decode(item) is ToolCallPrepared payload
             && payload.ToolCallId == toolCallId).ToArray();
         var authorized = beforeRequest.Where(item => registry.Decode(item) is ToolCallAuthorized payload
             && payload.ToolCallId == toolCallId).ToArray();
         if (prepared.Length != 1 || authorized.Length != 1
-            || toolRequest.Sequence >= prepared[0].Sequence || prepared[0].Sequence >= authorized[0].Sequence
+            || toolRequestEvent.Sequence >= prepared[0].Sequence || prepared[0].Sequence >= authorized[0].Sequence
             || authorized[0].Sequence >= requestEnvelope.Sequence)
             return false;
 
-        var runHistory = events.Where(item => item.Sequence < requestEnvelope.Sequence
-            && item.SessionId == requestEnvelope.SessionId && item.RunId == resumed.RunId).ToArray();
-        var executions = runHistory.Where(item => item.TaskId == taskId && item.LaneId == laneId
-            && item.ExecutionId == executionId && registry.Decode(item) is AgentExecutionStarted started
-            && started.ExecutionId == executionId && started.ParentExecutionId is not null
-            && started.LaneId == laneId).ToArray();
-        if (executions.Length != 1) return false;
-        var startedPayload = (AgentExecutionStarted)registry.Decode(executions[0]);
-        var accepted = runHistory.Where(item => registry.Decode(item) is DelegationAccepted delegation
-            && delegation.ChildExecutionId == executionId && delegation.ExecutionId == startedPayload.ParentExecutionId)
-            .ToArray();
-        if (accepted.Length != 1 || registry.Decode(accepted[0]) is not DelegationAccepted acceptedPayload
-            || accepted[0].Sequence <= executions[0].Sequence)
-            return false;
-        var created = runHistory.Where(item => registry.Decode(item) is DelegationCreated delegation
-            && delegation.Delegation.DelegationId == acceptedPayload.DelegationId
-            && delegation.Delegation.ParentExecutionId == acceptedPayload.ExecutionId
-            && delegation.Delegation.ChildTaskId == taskId
-            && delegation.Delegation.ChildLaneId == laneId).ToArray();
-        if (created.Length != 1 || created[0].Sequence >= executions[0].Sequence
-            || created[0].Sequence >= accepted[0].Sequence) return false;
+        if (toolRequest.ToolName == "shell.exec")
+        {
+            const string invocationPrefix = "native-action-";
+            if (!toolRequest.ProviderCallId.StartsWith(invocationPrefix, StringComparison.Ordinal)
+                || !Guid.TryParseExact(toolRequest.ProviderCallId[invocationPrefix.Length..], "D", out var invocationGuid)
+                || toolRequest.ProviderCallId != invocationPrefix + invocationGuid.ToString("D")) return false;
+            var invocation = new CommandId(invocationGuid);
+            var admissions = events.Where(item => item.SessionId == requestEnvelope.SessionId
+                && item.Sequence < toolRequestEvent.Sequence && item.RunId == resumed.RunId
+                && registry.Decode(item) is NativeCommandInvocationAdmitted admitted
+                && admitted.InvocationId == invocation && admitted.SessionId == requestEnvelope.SessionId
+                && admitted.RunId == resumed.RunId && admitted.Kind == "nativeTool"
+                && admitted.CanonicalCommandId == "core:shell.exec").ToArray();
+            var starts = events.Where(item => item.SessionId == requestEnvelope.SessionId
+                && item.Sequence < toolRequestEvent.Sequence && item.RunId == resumed.RunId
+                && registry.Decode(item) is NativeCommandInvocationStarted started
+                && started.InvocationId == invocation && started.Kind == "nativeTool"
+                && started.RunId == resumed.RunId).ToArray();
+            var finished = events.Any(item => item.SessionId == requestEnvelope.SessionId
+                && item.Sequence < resumeEnvelope.Sequence
+                && item.RunId == resumed.RunId
+                && registry.Decode(item) is NativeCommandInvocationFinished completed
+                && completed.InvocationId == invocation);
+            var awaiting = events.Where(item => item.SessionId == requestEnvelope.SessionId
+                    && item.Sequence < resumeEnvelope.Sequence && item.RunId == resumed.RunId
+                    && registry.Decode(item) is RunAwaitingInput)
+                .Select(item => (RunAwaitingInput)registry.Decode(item)).LastOrDefault();
+            if (admissions.Length != 1 || starts.Length != 1 || starts[0].Sequence <= admissions[0].Sequence
+                || finished || awaiting?.RootLaneId != laneId)
+                return false;
+        }
+        else
+        {
+            if (toolRequest.ToolName != "dyn.core.verify_integration") return false;
+            var runHistory = events.Where(item => item.Sequence < requestEnvelope.Sequence
+                && item.SessionId == requestEnvelope.SessionId && item.RunId == resumed.RunId).ToArray();
+            var executions = runHistory.Where(item => item.TaskId == taskId && item.LaneId == laneId
+                && item.ExecutionId == executionId && registry.Decode(item) is AgentExecutionStarted started
+                && started.ExecutionId == executionId && started.ParentExecutionId is not null
+                && started.LaneId == laneId).ToArray();
+            if (executions.Length != 1) return false;
+            var startedPayload = (AgentExecutionStarted)registry.Decode(executions[0]);
+            var accepted = runHistory.Where(item => registry.Decode(item) is DelegationAccepted delegation
+                && delegation.ChildExecutionId == executionId && delegation.ExecutionId == startedPayload.ParentExecutionId)
+                .ToArray();
+            if (accepted.Length != 1 || registry.Decode(accepted[0]) is not DelegationAccepted acceptedPayload
+                || accepted[0].Sequence <= executions[0].Sequence)
+                return false;
+            var created = runHistory.Where(item => registry.Decode(item) is DelegationCreated delegation
+                && delegation.Delegation.DelegationId == acceptedPayload.DelegationId
+                && delegation.Delegation.ParentExecutionId == acceptedPayload.ExecutionId
+                && delegation.Delegation.ChildTaskId == taskId
+                && delegation.Delegation.ChildLaneId == laneId).ToArray();
+            if (created.Length != 1 || created[0].Sequence >= executions[0].Sequence
+                || created[0].Sequence >= accepted[0].Sequence) return false;
+        }
 
         var afterRequest = scopedEvents.Where(item => item.Sequence > requestEnvelope.Sequence).ToArray();
         var terminalToolEvents = afterRequest.Where(item =>

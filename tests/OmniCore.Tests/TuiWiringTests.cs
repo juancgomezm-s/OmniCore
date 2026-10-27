@@ -324,6 +324,89 @@ public sealed partial class TuiWiringTests
     });
 
     [Fact]
+    public void Composer_bang_dispatches_to_human_shell_and_requires_explicit_context_opt_in() => RunTuiTest(fx =>
+    {
+        var session = fx.Server.LastSessionId()!.ToString();
+        var host = new HumanShellComposerTurnHost();
+        fx.StartTui(client: new HumanActionScopeClient(fx.Server, session), turnHost: host);
+
+        Type(fx, "!exit 3");
+        KeyWithEffect(fx, KeyCode.Enter, () => host.ShellCalls == 1, "! se despacha al contrato de shell humano");
+        fx.Wait(() => fx.App.Overlay is not null
+            && OverlayText(fx.App.Overlay).Contains("fixture exit 3", StringComparison.Ordinal),
+            "el error del comando se presenta sin despacharlo al modelo");
+        Assert.Equal(0, host.ModelCalls);
+        Assert.Equal("exit 3", host.LastCommand);
+        Assert.Equal("!exit 3", fx.App.Composer!.Text?.ToString());
+
+        Type(fx, "!printf fixture");
+        KeyWithEffect(fx, KeyCode.Enter, () => host.ShellCalls == 2, "el segundo ! vuelve al mismo Host");
+        fx.Wait(() => fx.App.Overlay is not null
+            && OverlayText(fx.App.Overlay).Contains("NATIVE_TUI_SHELL_OUTPUT", StringComparison.Ordinal),
+            "la salida se presenta como contexto opcional");
+        Assert.Equal(0, host.ModelCalls);
+        Assert.Equal("printf fixture", host.LastCommand);
+        Assert.Equal("", fx.App.Composer!.Text?.ToString());
+
+        var add = fx.App.Overlay!.SubViews.OfType<Button>()
+            .Single(button => button.Text?.ToString() == "Añadir al borrador");
+        fx.Invoke(() => add.InvokeCommand(Command.Accept));
+        fx.Wait(() => fx.App.Composer!.Text?.ToString() == "NATIVE_TUI_SHELL_OUTPUT",
+            "solo la acción explícita incluye salida en el borrador");
+        Assert.Equal(0, host.ModelCalls);
+    });
+
+    private sealed class HumanShellComposerTurnHost : ITuiTurnHost
+    {
+        internal int ShellCalls;
+        internal int ModelCalls;
+        internal string? LastCommand;
+
+        public System.Threading.Tasks.Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref ModelCalls);
+            return System.Threading.Tasks.Task.FromResult(0);
+        }
+
+        public System.Threading.Tasks.Task<int> ExecuteHumanShellAsync(string command, Action<string> output,
+            Action<string> diagnostics, CancellationToken cancellationToken)
+        {
+            LastCommand = command;
+            var call = Interlocked.Increment(ref ShellCalls);
+            if (call == 1)
+            {
+                diagnostics("fixture exit 7");
+                return System.Threading.Tasks.Task.FromResult(7);
+            }
+            output("NATIVE_TUI_SHELL_OUTPUT");
+            return System.Threading.Tasks.Task.FromResult(0);
+        }
+
+        public System.Threading.Tasks.Task<OmniCliRuntime.HumanShellCommandOutcome> ExecuteHumanShellWithOutcomeAsync(
+            string command, Action<string> output, Action<string> diagnostics, CancellationToken cancellationToken)
+        {
+            LastCommand = command;
+            var call = Interlocked.Increment(ref ShellCalls);
+            if (call == 1)
+            {
+                diagnostics("fixture exit 3");
+                return System.Threading.Tasks.Task.FromResult(new OmniCliRuntime.HumanShellCommandOutcome(3, false));
+            }
+            output("NATIVE_TUI_SHELL_OUTPUT");
+            return System.Threading.Tasks.Task.FromResult(new OmniCliRuntime.HumanShellCommandOutcome(0, false));
+        }
+    }
+
+    private sealed class HumanActionScopeClient(IOmniClient inner, string sessionId) : IOmniClient
+    {
+        public CommandAck Send(WireEnvelope command, CancellationToken cancellationToken) => inner.Send(command, cancellationToken);
+        public IReadOnlyList<WireEnvelope> SubscribeSince(long fromSequence) => inner.SubscribeSince(fromSequence);
+        public SessionQueryResult? Query(string name, CancellationToken cancellationToken) => name == "humanActionScope"
+            ? new(name, "{" + JsonObj.Field("sessionId", sessionId) + "}")
+            : inner.Query(name, cancellationToken);
+    }
+
+    [Fact]
     public void Delegation_workers_run_in_background_without_blocking_composer_and_cancel_independently() => RunTuiTest(fx =>
     {
         var host = new BackgroundDelegationTurnHostFixture();

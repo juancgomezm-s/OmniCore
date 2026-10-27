@@ -115,6 +115,35 @@ public sealed class FilePermissionGrantStore : IPermissionGrantStore
             foreach (var arg in claims.Process.Args) Add("process.arg", arg);
         }
         foreach (var value in claims.Secrets.OrderBy(v => v, StringComparer.Ordinal)) Add("secret", value);
+        if (claims.WorktreeDisposition is { } disposition)
+        {
+            Add("worktree.workspace", disposition.WorkspaceId);
+            Add("worktree.workspaceRoot", disposition.WorkspaceRoot);
+            Add("worktree.lane", disposition.LaneId);
+            Add("worktree.ownership", disposition.OwnershipId);
+            Add("worktree.operation", disposition.Operation.ToString());
+            Add("worktree.laneHead", disposition.LaneHead);
+            Add("worktree.laneTree", disposition.LaneTree);
+        }
+        if (claims.WorktreeRetention is { } retention)
+        {
+            Add("worktreeRetention.session", retention.SessionId);
+            Add("worktreeRetention.actionRun", retention.ActionRunId);
+            Add("worktreeRetention.ownerRun", retention.TargetOwnerRunId);
+            Add("worktreeRetention.workspace", retention.WorkspaceId);
+            Add("worktreeRetention.root", retention.WorkspaceRoot);
+            Add("worktreeRetention.lane", retention.LaneId);
+            Add("worktreeRetention.ownership", retention.OwnershipId);
+            Add("worktreeRetention.snapshotCommit", retention.SnapshotCommit.ToUpperInvariant());
+            Add("worktreeRetention.gitCommonDirectory", retention.GitCommonDirectory);
+            Add("worktreeRetention.worktreePath", retention.WorktreePath);
+            Add("worktreeRetention.removedAt", retention.RemovedAtUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
+            foreach (var reference in retention.References.OrderBy(item => item.Name, StringComparer.Ordinal))
+            {
+                Add("worktreeRetention.ref", reference.Name);
+                Add("worktreeRetention.oid", reference.ExpectedObjectId.ToUpperInvariant());
+            }
+        }
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text.ToString())));
 
         void Add(string name, string value) => text.Append(name).Append(':').Append(value.Length)

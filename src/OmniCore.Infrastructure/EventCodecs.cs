@@ -29,6 +29,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.RunAwaitingInput())
             .Plus(Typed.UserInputReceived())
             .Plus(Typed.ConversationHistoryImported())
+            .Plus(Typed.ConversationTranscriptImported())
             .Plus(Typed.FollowUpQueued())
             .Plus(Typed.FollowUpPromoted())
             .Plus(Typed.TurnSteeringReceived())
@@ -419,6 +420,8 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(RunAwaitingInput))]
 [JsonSerializable(typeof(UserInputReceived))]
 [JsonSerializable(typeof(ConversationHistoryImported))]
+[JsonSerializable(typeof(ConversationTranscriptImported))]
+[JsonSerializable(typeof(ConversationTranscriptMessage))]
 [JsonSerializable(typeof(FollowUpQueued))]
 [JsonSerializable(typeof(FollowUpPromoted))]
 [JsonSerializable(typeof(TurnSteeringReceived))]
@@ -631,6 +634,9 @@ public sealed class Typed
 
     public static CodecPair ConversationHistoryImported() =>
         Of(EventType.Of("conversation.history_imported"), EventJsonContext.Default.ConversationHistoryImported);
+
+    public static CodecPair ConversationTranscriptImported() =>
+        Of(EventType.Of("conversation.transcript_imported"), EventJsonContext.Default.ConversationTranscriptImported);
 
     public static CodecPair FollowUpQueued() =>
         Of(EventType.Of("followup.queued"), EventJsonContext.Default.FollowUpQueued);

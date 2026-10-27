@@ -18,6 +18,10 @@ public interface ITool
         CancellationToken cancellationToken);
 }
 
+/// <summary>Marks a protected Core tool as callable only through a server-admitted native
+/// human action. It does not alter capability or Permission evaluation.</summary>
+public interface INativeUserActionOnlyTool { }
+
 /// <summary>
 /// Tool con efecto que describe cómo reconciliarlo tras un crash (ADR-0004 §4). El ToolRuntime la
 /// consulta DESPUÉS de la autorización y ANTES de emitir el <c>ToolCallStarted</c> (Barrier), para
@@ -40,6 +44,20 @@ public interface ITrustedBatchPublicationTool : IRequiresReconciliationTool
 {
     bool ValidatePublicationEnvelope(ToolIntent intent, IReadOnlyList<ToolIntent> effectiveIntents,
         ToolExecutionContext context, ReconciliationSpec reconciliation);
+}
+
+/// <summary>Core-owned native lane disposition with a mandatory protected, exact-snapshot receipt.</summary>
+public interface ITrustedWorktreeDispositionTool : IRequiresReconciliationTool
+{
+    bool ValidateWorktreeDispositionEnvelope(ToolIntent intent, ToolExecutionContext context,
+        ReconciliationSpec reconciliation);
+}
+
+/// <summary>Core-owned native exact-reference retention with a protected review receipt.</summary>
+public interface ITrustedWorktreeRetentionTool : IRequiresReconciliationTool
+{
+    bool ValidateWorktreeRetentionEnvelope(ToolIntent intent, ToolExecutionContext context,
+        ReconciliationSpec reconciliation);
 }
 
 /// <summary>Host-provided publisher for a protected immutable extension write proposal.</summary>
@@ -88,6 +106,14 @@ public interface IEffectiveToolAuthorizationIntents
         CancellationToken cancellationToken);
 }
 
+/// <summary>Resolves one exact Host-owned non-filesystem resource claim before permission
+/// evaluation. The intent still traverses every active capability and Permission boundary.</summary>
+public interface IHostResolvedAuthorizationIntent
+{
+    ToolIntent ResolveHostAuthorizationIntent(ToolIntent intent, ToolPreparationContext preparation,
+        ToolExecutionContext execution, CancellationToken cancellationToken);
+}
+
 /// <summary>
 /// A process-backed tool may request one explicit, per-call sandbox downgrade before the
 /// durable effect-start barrier. Implementations must return a request only when they can prove
@@ -116,6 +142,31 @@ public interface IWorktreeIntegrationCoordinator
 {
     ReconciliationSpec Prepare(AuthorizedToolIntent intent, ToolExecutionContext context,
         CancellationToken cancellationToken);
+    Task<ToolResult> ApplyAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>Host-owned terminal lane cleanup/discard. The Host resolves lane ownership and
+/// reviewed snapshot claims; apply still runs only after ordinary Security authorization.</summary>
+public interface IWorktreeDispositionCoordinator
+{
+    ToolIntent ResolveAuthorizationIntent(ToolIntent intent, ToolPreparationContext preparation,
+        ToolExecutionContext execution, CancellationToken cancellationToken);
+    ReconciliationSpec Prepare(AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken);
+    bool ValidateEnvelope(ToolIntent intent, ToolExecutionContext context, ReconciliationSpec reconciliation);
+    Task<ToolResult> ApplyAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken);
+}
+
+/// <summary>Host-resolved retention for one terminal historical Run under current-Run authority.</summary>
+public interface IWorktreeRetentionCoordinator
+{
+    ToolIntent ResolveAuthorizationIntent(ToolIntent intent, ToolPreparationContext preparation,
+        ToolExecutionContext execution, CancellationToken cancellationToken);
+    ReconciliationSpec Prepare(AuthorizedToolIntent intent, ToolExecutionContext context,
+        CancellationToken cancellationToken);
+    bool ValidateEnvelope(ToolIntent intent, ToolExecutionContext context, ReconciliationSpec reconciliation);
     Task<ToolResult> ApplyAsync(AuthorizedToolIntent intent, ToolExecutionContext context,
         CancellationToken cancellationToken);
 }
@@ -292,10 +343,14 @@ public sealed class ToolPreparationContext
 
     public DateTimeOffset FrozenClock { get; }
 
-    public ToolPreparationContext(string workspaceRoot, DateTimeOffset frozenClock)
+    public bool IsNativeUserAction { get; }
+
+    public ToolPreparationContext(string workspaceRoot, DateTimeOffset frozenClock,
+        bool isNativeUserAction = false)
     {
         WorkspaceRoot = workspaceRoot;
         FrozenClock = frozenClock;
+        IsNativeUserAction = isNativeUserAction;
     }
 }
 
@@ -323,6 +378,9 @@ public sealed class ToolExecutionContext
     public WeakSandboxConsentState? WeakSandboxConsent { get; }
 
     public bool IsInteractive { get; }
+
+    /// <summary>True only for a native user action admitted by the Host protocol.</summary>
+    public bool IsNativeUserAction { get; }
 
     /// <summary>True only for a trusted native conversation connection that negotiated the
     /// server-defined Permission choice contract. Legacy/headless callers retain NoClient Deny.</summary>
@@ -392,7 +450,8 @@ public sealed class ToolExecutionContext
         bool allowDeferredWeakSandboxConsent = false,
         bool weakSandboxConsentForThisCall = false,
         IWorkspaceMutationHistoryStore? mutationHistory = null,
-        string? mutationRunId = null, string? mutationTurnId = null, string? mutationLaneId = null)
+        string? mutationRunId = null, string? mutationTurnId = null, string? mutationLaneId = null,
+        bool isNativeUserAction = false)
     {
         WorkspaceRoot = workspaceRoot;
         ReadRegistry = readRegistry;
@@ -400,6 +459,7 @@ public sealed class ToolExecutionContext
         ResolveInteraction = resolveInteraction;
         Audit = audit;
         IsInteractive = isInteractive;
+        IsNativeUserAction = isNativeUserAction;
         WeakSandboxConsent = weakSandboxConsent;
         BeforeEffect = beforeEffect;
         Artifacts = artifacts;

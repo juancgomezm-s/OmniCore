@@ -313,6 +313,15 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
             return PermissionResource.SecretPaths;
         }
 
+        if (claims.WorktreeDisposition is { } disposition)
+            return IsExactWorktreeDisposition(intent, disposition)
+                ? PermissionResource.WriteInsideWorkspace
+                : PermissionResource.ExternalOrUnknownProcess;
+        if (claims.WorktreeRetention is { } retention)
+            return IsExactWorktreeRetention(intent, retention)
+                ? PermissionResource.WriteInsideWorkspace
+                : PermissionResource.ExternalOrUnknownProcess;
+
         if (claims.Process is not null)
         {
             if (intent.ToolId.ToString().StartsWith("ext.", StringComparison.Ordinal)
@@ -357,6 +366,51 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
             ? PermissionResource.ReadInsideWorkspace
             : PermissionResource.ExternalOrUnknownProcess;
     }
+
+    private static bool IsExactWorktreeDisposition(ToolIntent intent, WorktreeDispositionClaim claim)
+    {
+        var operationMatches = intent.ToolId.ToString() switch
+        {
+            "worktree.cleanup" => claim.Operation == WorktreeDispositionOperation.Cleanup,
+            "worktree.discard" => claim.Operation == WorktreeDispositionOperation.Discard,
+            _ => false,
+        };
+        if (!operationMatches || intent.Effect != EffectClass.Reconcilable || intent.Risk != ToolRisk.High
+            || intent.Claims.Reads.Count != 0 || intent.Claims.Writes.Count != 0 || intent.Claims.Process is not null
+            || intent.Claims.Network.Count != 0 || intent.Claims.Secrets.Count != 0
+            || claim.WorkspaceId.Length != 16 || !claim.WorkspaceId.All(Uri.IsHexDigit)
+            || !Guid.TryParseExact(claim.LaneId, "D", out var laneId)
+            || claim.LaneId != new LaneId(laneId).ToString()
+            || !Guid.TryParseExact(claim.OwnershipId, "N", out var ownershipId)
+            || claim.OwnershipId != ownershipId.ToString("N")
+            || claim.LaneHead.Length is not (40 or 64) || !claim.LaneHead.All(Uri.IsHexDigit)
+            || claim.LaneTree.Length is not (40 or 64) || !claim.LaneTree.All(Uri.IsHexDigit)
+            || !Path.IsPathFullyQualified(claim.WorkspaceRoot)) return false;
+        try
+        {
+            var fullRoot = Path.GetFullPath(claim.WorkspaceRoot);
+            return string.Equals(Path.TrimEndingDirectorySeparator(fullRoot),
+                Path.TrimEndingDirectorySeparator(claim.WorkspaceRoot), OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        }
+        catch (Exception error) when (error is ArgumentException or IOException or NotSupportedException)
+        { return false; }
+    }
+
+    private static bool IsExactWorktreeRetention(ToolIntent intent, WorktreeRetentionClaim claim) =>
+        intent.ToolId.ToString() == "worktree.retention" && intent.Effect == EffectClass.Reconcilable
+        && intent.Risk == ToolRisk.High && intent.Claims.Reads.Count == 0 && intent.Claims.Writes.Count == 0
+        && intent.Claims.Process is null && intent.Claims.Network.Count == 0 && intent.Claims.Secrets.Count == 0
+        && Guid.TryParseExact(claim.SessionId, "D", out _) && Guid.TryParseExact(claim.ActionRunId, "D", out _)
+        && Guid.TryParseExact(claim.TargetOwnerRunId, "D", out _) && claim.ActionRunId != claim.TargetOwnerRunId
+        && claim.WorkspaceId.Length == 16 && claim.WorkspaceId.All(Uri.IsHexDigit)
+        && Path.IsPathFullyQualified(claim.WorkspaceRoot) && Guid.TryParseExact(claim.LaneId, "D", out _)
+        && Guid.TryParseExact(claim.OwnershipId, "N", out _) && claim.References is { Count: > 0 and <= 2 }
+        && claim.SnapshotCommit is { Length: 40 or 64 } && claim.SnapshotCommit.All(Uri.IsHexDigit)
+        && Path.IsPathFullyQualified(claim.GitCommonDirectory) && Path.IsPathFullyQualified(claim.WorktreePath)
+        && claim.References.All(reference => (reference.Name.StartsWith("refs/omnicore/snapshots/", StringComparison.Ordinal)
+                || reference.Name.StartsWith("refs/omnicore/retained-lanes/", StringComparison.Ordinal))
+            && reference.ExpectedObjectId.Length is 40 or 64 && reference.ExpectedObjectId.All(Uri.IsHexDigit));
 
     /// <summary>
     /// Construye un intent autorizado. El constructor del AuthorizedToolIntent es internal en

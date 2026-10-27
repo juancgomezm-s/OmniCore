@@ -172,7 +172,8 @@ public sealed partial class OmniServer
             else if (payload is ToolCallSucceeded success && calls.TryGetValue(success.ToolCallId, out var call))
             {
                 kind = "tool"; text = call.ToolName; files = ToolFiles(call.ArgumentsJson);
-                activity = call.ToolName is "filesystem.read" ? "read" : call.ToolName is "filesystem.write" or "filesystem.patch" or "worktree.integrate"
+                activity = call.ToolName is "filesystem.read" ? "read" : call.ToolName is "filesystem.write" or "filesystem.patch"
+                    or "worktree.integrate" or "worktree.cleanup" or "worktree.discard"
                     ? "write" : "tool";
             }
             else if (payload is ToolCallFailed failed && calls.TryGetValue(failed.ToolCallId, out var failedCall))

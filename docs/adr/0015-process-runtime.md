@@ -76,6 +76,29 @@ public interface IProcessHandle : IAsyncDisposable
 - **Approvals:** la autorización ocurre antes de `StartAsync` (ADR-0014). El runtime no decide permisos.
 - **PTY (futuro):** ConPTY detrás del mismo `IProcessHandle` (`StdinPolicy.Interactive`).
 
+### Corte Windows de persistencia Weak (2026-10-24)
+
+La solicitud Weak dúplex usa un launcher propio con Job Object de Windows; no
+aplica AppContainer ni se presenta como aislamiento Strong. El proceso se crea
+suspendido y se asigna al Job con KillOnJobClose antes de reanudar su hilo. Los
+descendientes permanecen en el Job. El control conserva stdin/stdout/stderr y,
+cuando se solicita terminal, HPCON con resize real. Al salir el proceso raíz se
+terminan los miembros restantes antes de depender de EOF.
+
+La disposición cierra el Job antes de desmontar ConPTY y libera los demás
+recursos incluso ante fallos de consulta, terminación o espera; después propaga
+el error. Un fallo posterior a ResumeThread es resultado desconocido, aunque
+se confirme la terminación posterior: no demuestra ausencia de ejecución ni
+habilita reintentos automáticos. El entorno hereda únicamente la allowlist
+Windows exacta y el delta explícito autorizado.
+
+El selector Strong, WeakConsent y la política vigente siguen siendo la autoridad;
+el nuevo backend no los sustituye. Los controles usan el manager y ToolRuntime
+existentes. La evidencia y su estado de aceptación están en el
+[acta del corte](../validation/m9-weak-persistence-20261024.md). Linux y macOS
+conservan el rechazo tipado para Weak persistente sin ownership equivalente;
+este corte no implementa PTY de esas plataformas ni cierra M9 global.
+
 ## Clasificación
 
 | Elemento | Categoría |

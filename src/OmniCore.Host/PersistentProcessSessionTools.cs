@@ -16,12 +16,60 @@ internal sealed record ProcessOutputChunk(long Sequence, string Stream, string T
 internal sealed record ProcessSessionSummary(string Handle, string State, string RunId, string LaneId,
     long LastOutputSequence, int? ExitCode, string? ProposalId, string SourceToolId, bool OutputLost,
     bool CanRead, bool CanInput, bool CanStop);
+public sealed class PersistentProcessSessionQuota
+{
+    private readonly object gate = new();
+    private int handles, active;
+    internal Lease? TryAcquire()
+    {
+        lock (gate)
+        {
+            if (handles >= 32 || active >= 8) return null;
+            handles++; active++;
+            return new Lease(this, active: true);
+        }
+    }
+    internal Lease? TryRecoverHandle()
+    {
+        lock (gate)
+        {
+            if (handles >= 32) return null;
+            handles++;
+            return new Lease(this, active: false);
+        }
+    }
+    private void Release(bool releaseHandle, bool releaseActive)
+    {
+        lock (gate)
+        {
+            if (releaseHandle) handles--;
+            if (releaseActive) active--;
+        }
+    }
+    internal sealed class Lease(PersistentProcessSessionQuota owner, bool active) : IDisposable
+    {
+        private int released;
+        private int activeOwned = active ? 1 : 0;
+        internal void ReleaseActive()
+        {
+            if (Interlocked.Exchange(ref activeOwned, 0) == 1) owner.Release(false, true);
+        }
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref released, 1) != 0) return;
+            var releaseActive = Interlocked.Exchange(ref activeOwned, 0) == 1;
+            owner.Release(true, releaseActive);
+        }
+    }
+}
 internal sealed class ProcessInputOutcomeUnknownException(string reason, Exception innerException)
     : IOException(reason, innerException);
 
 /// <summary>Host-owned persistent processes. Handles are random capabilities scoped to one Session/Run/Lane.</summary>
 public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventStore store, IEventCodecRegistry codecs,
-    string hostLeaseGeneration, string workspaceRoot, IArtifactStore? artifacts, Func<bool> ownsHostLease)
+    string hostLeaseGeneration, string workspaceRoot, IArtifactStore? artifacts, Func<bool> ownsHostLease,
+    PersistentProcessSessionQuota? sessionQuota = null, Action? trimSessionProcessHandles = null,
+    bool enforceChildControlProcessScope = false)
 {
     private const int RetainedBytes = 256 * 1_024;
     private const int MaximumTotalBytes = 32 * 1_048_576;
@@ -30,14 +78,16 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
     private const int MaximumActiveProcesses = 8;
     private const int MaximumPendingSanitizerChars = 8_192;
     private readonly ConcurrentDictionary<string, ProcessRecord> _processes = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, PersistentProcessSessionQuota.Lease> _recoveredCapacity = new(StringComparer.Ordinal);
     private readonly EventStream _events = new(store, codecs, sessionId);
     private readonly object _capacityGate = new();
+    private readonly Action? _trimSessionProcessHandles = trimSessionProcessHandles;
     private bool _closing;
 
     private sealed class ProcessRecord(string id, string run, string lane, string lease,
         ISandboxPersistentProcessControl? control, DateTimeOffset started, TimeSpan timeout,
         ExtensionWriteWorkspace? staging, string workspaceRoot, ToolCallId sourceCall, ToolId sourceTool,
-        string turn, ResourceClaims? writerClaims)
+        string turn, ResourceClaims? writerClaims, ProcessClaim? sourceProcessClaim)
     {
         internal readonly string Id = id, Run = run, Lane = lane;
         internal string Lease = lease;
@@ -51,6 +101,7 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
         internal readonly ToolId SourceTool = sourceTool;
         internal readonly string Turn = turn;
         internal readonly ResourceClaims? WriterClaims = writerClaims;
+        internal readonly ProcessClaim? SourceProcessClaim = sourceProcessClaim;
         internal IReadOnlyList<ExtensionWorkspaceChange>? Changes;
         internal ExtensionWriteBatchProposal? Proposal;
         internal ArtifactRef? ProposalArtifact;
@@ -68,13 +119,14 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
         internal Task Pumps = Task.CompletedTask;
         internal Task Monitor = Task.CompletedTask;
         internal readonly TaskCompletionSource StartReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal PersistentProcessSessionQuota.Lease? CapacityLease;
     }
 
     internal async Task<(string? Handle, string State, string? Error)> StartAsync(
         string run, string lane, SandboxLaunchSpec spec, ISandboxProcessLauncher launcher,
         Action<DomainEventPayload>? emit, CancellationToken token, ExtensionWriteWorkspace? staging = null,
         string workspaceRoot = "", ToolCallId? sourceCall = null, ToolId? sourceTool = null,
-        string turn = "", ResourceClaims? writerClaims = null)
+        string turn = "", ResourceClaims? writerClaims = null, ProcessClaim? sourceProcessClaim = null)
     {
         EnsureHostLease();
         token.ThrowIfCancellationRequested();
@@ -83,21 +135,35 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
             return (null, "failed", "process.start.invalid_request");
         sourceCall ??= new ToolCallId(Guid.Empty);
         sourceTool ??= new ToolId("process.start");
+        var capacityLease = sessionQuota?.TryAcquire();
+        if (sessionQuota is not null && capacityLease is null)
+        {
+            _trimSessionProcessHandles?.Invoke();
+            capacityLease = sessionQuota.TryAcquire();
+        }
+        if (sessionQuota is not null && capacityLease is null)
+            return (null, "failed", "process.start.session_capacity_exceeded");
         var id = Guid.NewGuid().ToString("N");
         var record = new ProcessRecord(id, run, lane, hostLeaseGeneration, null, DateTimeOffset.UtcNow,
-            spec.Timeout ?? TimeSpan.FromMinutes(10), staging, workspaceRoot, sourceCall, sourceTool, turn, writerClaims);
+            spec.Timeout ?? TimeSpan.FromMinutes(10), staging, workspaceRoot, sourceCall, sourceTool, turn,
+            writerClaims, sourceProcessClaim)
+        { CapacityLease = capacityLease };
         lock (_capacityGate)
         {
             RecycleTerminalProcesses();
             if (_closing || _processes.Count + _recovered.Count >= MaximumHandles
                 || _processes.Values.Count(process => process.State is "starting" or "running" or "stopping" or "unknown") >= MaximumActiveProcesses)
+            {
+                capacityLease?.Dispose();
                 return (null, "failed", "process.start.capacity_exceeded");
-            if (!_processes.TryAdd(id, record)) return (null, "failed", "process.handle_collision");
+            }
+            if (!_processes.TryAdd(id, record)) { capacityLease?.Dispose(); return (null, "failed", "process.handle_collision"); }
         }
         if (!Record(record, emit, "starting"))
         {
             record.StartReady.TrySetResult();
             _processes.TryRemove(id, out _);
+            capacityLease?.Dispose();
             DisposeStaging(staging);
             return (null, "failed", "process.start.lifecycle_reservation_failed");
         }
@@ -133,6 +199,7 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
             DisposeStaging(staging);
             lock (record.Gate) { record.State = "failed"; record.Diagnostic = ex.GetType().Name; }
             Record(record, emit, "failed");
+            record.CapacityLease?.ReleaseActive();
             return (id, "failed", "process.start." + ex.GetType().Name);
         }
         catch (ProcessLaunchUnavailableBeforeStartException ex) when (raw is null)
@@ -140,6 +207,7 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
             DisposeStaging(staging);
             lock (record.Gate) { record.State = "failed"; record.Diagnostic = ex.GetType().Name; }
             Record(record, emit, "failed");
+            record.CapacityLease?.ReleaseActive();
             return (id, "failed", "process.start." + ex.GetType().Name);
         }
         catch (StrongSandboxLaunchOutcomeUnknownException ex)
@@ -178,9 +246,9 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
         finally { record.StartReady.TrySetResult(); }
     }
 
-    private void RecycleTerminalProcesses()
+    internal void RecycleTerminalProcesses(bool force = false)
     {
-        if (_processes.Count + _recovered.Count < MaximumHandles) return;
+        if (!force && _processes.Count + _recovered.Count < MaximumHandles) return;
         foreach (var pair in _processes)
         {
             var process = pair.Value;
@@ -191,11 +259,12 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
                     continue;
                 if (_processes.TryRemove(pair.Key, out _))
                 {
+                    process.CapacityLease?.Dispose();
                     process.OutputChanged.Dispose();
                     process.InputGate.Dispose();
                 }
             }
-            if (_processes.Count + _recovered.Count < MaximumHandles) return;
+            if (!force && _processes.Count + _recovered.Count < MaximumHandles) return;
         }
     }
 
@@ -222,7 +291,7 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
             Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)), comparison);
     }
 
-    private readonly ConcurrentDictionary<string, (string Run, string Lane, long Last, int? Exit, bool Lost)> _recovered = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, (string Run, string Lane, string SourceTool, long Last, int? Exit, bool Lost)> _recovered = new(StringComparer.Ordinal);
 
     internal void RestoreUnknown(IReadOnlyDictionary<string, ProcessSessionStateRecorded> latest)
     {
@@ -232,6 +301,9 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
             evidence.Validate();
             if (evidence.ProposalId is { } proposalId)
             {
+                var recoveredCapacity = sessionQuota?.TryRecoverHandle();
+                if (sessionQuota is not null && recoveredCapacity is null)
+                    throw new InvalidDataException("Recovered process handles exceed the Session capacity.");
                 if (artifacts is not IProtectedArtifactStore protectedStore)
                     throw new InvalidDataException("Durable process proposal requires a protected artifact store.");
                 var artifactHash = evidence.ProposalArtifactHash
@@ -262,16 +334,17 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
                 var record = new ProcessRecord(evidence.HandleId, evidence.RunId, evidence.LaneId, evidence.LeaseId,
                     null, DateTimeOffset.MinValue, TimeSpan.Zero, null, workspaceRoot,
                     new ToolCallId(Guid.Parse(sourceCall)), new ToolId(evidence.SourceToolId), turn,
-                    new ResourceClaims([], proposal.Changes.Select(change => change.Path).ToArray(), [], null, []))
+                    new ResourceClaims([], proposal.Changes.Select(change => change.Path).ToArray(), [], null, []), null)
                 { Lease = hostLeaseGeneration, State = evidence.State, ExitCode = evidence.ExitCode, LastSequence = evidence.LastOutputSequence,
-                    OutputLostOnRecovery = evidence.LastOutputSequence > 0,
+                    OutputLostOnRecovery = evidence.LastOutputSequence > 0, CapacityLease = recoveredCapacity,
                     Proposal = proposal, ProposalArtifact = artifact };
-                if (!_processes.TryAdd(record.Id, record)) throw new InvalidDataException("Duplicate durable process handle.");
+                if (!_processes.TryAdd(record.Id, record)) { recoveredCapacity?.Dispose(); throw new InvalidDataException("Duplicate durable process handle."); }
                 if (_processes.Count + _recovered.Count > MaximumHandles)
                     throw new InvalidDataException("Durable process handles exceed the session retention limit.");
                 if (!Record(record, null, evidence.State))
                 {
                     _processes.TryRemove(record.Id, out _);
+                    recoveredCapacity?.Dispose();
                     throw new InvalidDataException("Recovered process proposal lease could not be persisted.");
                 }
                 continue;
@@ -280,10 +353,14 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
                 continue;
             if (_processes.Count + _recovered.Count >= MaximumHandles)
                 throw new InvalidDataException("Unresolved durable processes exceed the session retention limit.");
+            var unresolvedCapacity = sessionQuota?.TryRecoverHandle();
+            if (sessionQuota is not null && unresolvedCapacity is null)
+                throw new InvalidDataException("Recovered process handles exceed the Session capacity.");
             // Live output is intentionally not journaled; after ownership recovery even a zero
             // durable cursor cannot prove that the old process emitted no bytes before it died.
             _recovered[evidence.HandleId] = (evidence.RunId, evidence.LaneId,
-                evidence.LastOutputSequence, evidence.ExitCode, Lost: true);
+                evidence.SourceToolId ?? "process.start", evidence.LastOutputSequence, evidence.ExitCode, Lost: true);
+            if (unresolvedCapacity is not null) _recoveredCapacity[evidence.HandleId] = unresolvedCapacity;
             if (evidence.State is "running" or "starting" or "stopping" or "unknown")
             {
                 if (evidence.State != "unknown" || evidence.Diagnostic != "host_restarted_with_process_unresolved")
@@ -292,11 +369,14 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
         }
     }
 
+    internal bool UsesWorkspaceRoot(string root) => PathEquals(workspaceRoot, root);
+
     /// <summary>Read-only live summary; never restores ownership or writes recovery events.</summary>
     internal IReadOnlyList<ProcessSessionSummary> Snapshot(string run)
     {
         var result = new List<ProcessSessionSummary>();
-        foreach (var process in _processes.Values.Where(item => item.Run == run))
+        foreach (var process in _processes.Values.Where(item => item.Run == run
+                     && item.SourceTool.ToString() != HumanShellProcessTool.ProcessOwnerSource))
         {
             lock (process.Gate)
                 result.Add(new(process.Id, process.State, process.Run, process.Lane, process.LastSequence,
@@ -305,21 +385,26 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
                     process.Lease == hostLeaseGeneration && process.State == "running",
                     process.Lease == hostLeaseGeneration && process.State is "running" or "stopping"));
         }
-        foreach (var pair in _recovered.Where(item => item.Value.Run == run))
+        foreach (var pair in _recovered.Where(item => item.Value.Run == run
+                     && item.Value.SourceTool != HumanShellProcessTool.ProcessOwnerSource))
             result.Add(new(pair.Key, "unknown", pair.Value.Run, pair.Value.Lane, pair.Value.Last,
-                pair.Value.Exit, null, "process.start", pair.Value.Lost, false, false, false));
+                pair.Value.Exit, null, pair.Value.SourceTool, pair.Value.Lost, false, false, false));
         return result.OrderBy(item => item.Handle, StringComparer.Ordinal).ToArray();
     }
 
     internal bool HasRootLaneControlCandidate(string run, string lane) =>
         _processes.Values.Any(process => process.Run == run && process.Lane == lane
+            && process.SourceTool.ToString() != HumanShellProcessTool.ProcessOwnerSource
             && process.Lease == hostLeaseGeneration
-            && process.State is "running" or "exited" or "stopped" or "timed_out" or "output_limit");
+            && process.State is "running" or "exited" or "stopped" or "timed_out" or "output_limit")
+        || _recovered.Values.Any(item => item.Run == run && item.Lane == lane
+            && item.SourceTool != HumanShellProcessTool.ProcessOwnerSource);
 
     internal bool CanControlOwnedProcess(string handle, string run, string lane, string toolName)
     {
         if (toolName is not ("process.read" or "process.send_input" or "process.stop")
             || !ownsHostLease() || !_processes.TryGetValue(handle, out var process)
+            || process.SourceTool.ToString() == HumanShellProcessTool.ProcessOwnerSource
             || process.Run != run || process.Lane != lane || process.Lease != hostLeaseGeneration) return false;
         lock (process.Gate)
         {
@@ -357,14 +442,16 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
     {
         if (_recovered.TryGetValue(handle, out var recovered))
         {
-            if (recovered.Run != run || recovered.Lane != lane)
+            if (recovered.SourceTool == HumanShellProcessTool.ProcessOwnerSource
+                || recovered.Run != run || recovered.Lane != lane)
                 throw new KeyNotFoundException("process.handle_unavailable");
             highWater = recovered.Last;
             if (after > highWater) throw new ArgumentOutOfRangeException(nameof(after));
             last = after; state = "unknown"; exitCode = recovered.Exit; gap = recovered.Lost || after < highWater;
             return Array.Empty<ProcessOutputChunk>();
         }
-        if (!_processes.TryGetValue(handle, out var process) || process.Run != run || process.Lane != lane)
+        if (!_processes.TryGetValue(handle, out var process) || process.Run != run || process.Lane != lane
+            || process.SourceTool.ToString() == HumanShellProcessTool.ProcessOwnerSource)
             throw new KeyNotFoundException("process.handle_unavailable");
         if (process.Lease != hostLeaseGeneration && process.OutputLostOnRecovery)
         {
@@ -395,15 +482,76 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
         }
     }
 
+    /// <summary>Private read capability for the native human shell action. Agent process tools,
+    /// passive process queries, and process-control claims cannot address these handles.</summary>
+    internal IReadOnlyList<ProcessOutputChunk> ReadHumanShell(string handle, string run, string lane,
+        long after, int maximumChunks, out long last, out long highWater, out bool gap,
+        out string state, out int? exitCode)
+    {
+        if (_recovered.TryGetValue(handle, out var recovered))
+        {
+            if (recovered.SourceTool != HumanShellProcessTool.ProcessOwnerSource
+                || recovered.Run != run || recovered.Lane != lane)
+                throw new KeyNotFoundException("process.handle_unavailable");
+            if (maximumChunks is < 1 or > 128) throw new ArgumentOutOfRangeException(nameof(maximumChunks));
+            highWater = recovered.Last;
+            if (after > highWater) throw new ArgumentOutOfRangeException(nameof(after));
+            last = after;
+            state = "unknown";
+            exitCode = recovered.Exit;
+            gap = true; // Recovered output is never replayed and no process is relaunched.
+            return Array.Empty<ProcessOutputChunk>();
+        }
+        if (!_processes.TryGetValue(handle, out var process)
+            || process.SourceTool.ToString() != HumanShellProcessTool.ProcessOwnerSource
+            || process.Run != run || process.Lane != lane)
+            throw new KeyNotFoundException("process.handle_unavailable");
+        return ReadCore(process, after, maximumChunks, out last, out highWater, out gap, out state, out exitCode);
+    }
+
+    private IReadOnlyList<ProcessOutputChunk> ReadCore(ProcessRecord process, long after, int maximumChunks,
+        out long last, out long highWater, out bool gap, out string state, out int? exitCode)
+    {
+        if (maximumChunks is < 1 or > 128) throw new ArgumentOutOfRangeException(nameof(maximumChunks));
+        if (process.Lease != hostLeaseGeneration && process.OutputLostOnRecovery)
+        {
+            lock (process.Gate)
+            {
+                highWater = process.LastSequence;
+                if (after > highWater) throw new ArgumentOutOfRangeException(nameof(after));
+                last = after; state = process.State; exitCode = process.ExitCode; gap = after < highWater;
+                return Array.Empty<ProcessOutputChunk>();
+            }
+        }
+        if (process.Lease != hostLeaseGeneration) throw new KeyNotFoundException("process.handle_unavailable");
+        lock (process.Gate)
+        {
+            highWater = process.LastSequence;
+            if (after > highWater) throw new ArgumentOutOfRangeException(nameof(after));
+            last = after; state = process.State; exitCode = process.ExitCode;
+            gap = process.OutputLostOnRecovery && after < highWater
+                || process.Chunks.Count > 0 && after < process.Chunks.Peek().Sequence - 1;
+            var selected = process.Chunks.Where(chunk => chunk.Sequence > after).Take(maximumChunks).ToArray();
+            if (selected.Length > 0) last = selected[^1].Sequence;
+            return selected.GroupBy(chunk => chunk.Stream, StringComparer.Ordinal)
+                .Select(group => new ProcessOutputChunk(group.Max(chunk => chunk.Sequence), group.Key,
+                    SafeOutput(string.Concat(group.Select(chunk => chunk.Text))))).OrderBy(chunk => chunk.Sequence).ToArray();
+        }
+    }
+
     internal async Task<(IReadOnlyList<ProcessOutputChunk> Output, long Last, long HighWater, bool Gap,
         string State, int? ExitCode)> ReadAsync(string handle, string run, string lane, long after,
-        int maximumChunks, TimeSpan wait, CancellationToken token)
+        int maximumChunks, TimeSpan wait, CancellationToken token, bool humanShell = false)
     {
         if (wait < TimeSpan.Zero || wait > TimeSpan.FromSeconds(10))
             throw new ArgumentOutOfRangeException(nameof(wait));
+        IReadOnlyList<ProcessOutputChunk> ReadForOwner(long cursor, int count, out long last,
+            out long highWater, out bool gap, out string state, out int? exitCode) => humanShell
+            ? ReadHumanShell(handle, run, lane, cursor, count, out last, out highWater, out gap, out state, out exitCode)
+            : Read(handle, run, lane, cursor, count, out last, out highWater, out gap, out state, out exitCode);
         if (_recovered.ContainsKey(handle))
         {
-            var recoveredOutput = Read(handle, run, lane, after, maximumChunks, out var recoveredLast,
+            var recoveredOutput = ReadForOwner(after, maximumChunks, out var recoveredLast,
                 out var recoveredHighWater, out var recoveredGap, out var recoveredState, out var recoveredExit);
             return (recoveredOutput, recoveredLast, recoveredHighWater, recoveredGap, recoveredState, recoveredExit);
         }
@@ -411,7 +559,7 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
             throw new KeyNotFoundException("process.handle_unavailable");
         if (process.Lease != hostLeaseGeneration)
         {
-            var lostOutput = Read(handle, run, lane, after, maximumChunks, out var lostLast,
+            var lostOutput = ReadForOwner(after, maximumChunks, out var lostLast,
                 out var lostHighWater, out var lostGap, out var lostState, out var lostExit);
             return (lostOutput, lostLast, lostHighWater, lostGap, lostState, lostExit);
         }
@@ -422,7 +570,7 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
             lock (process.Gate)
             {
                 while (process.OutputChanged.Wait(0)) { }
-                var output = Read(handle, run, lane, after, maximumChunks, out var last,
+                var output = ReadForOwner(after, maximumChunks, out var last,
                     out var highWater, out var gap, out var state, out var exitCode);
                 if (output.Count > 0 || state is not ("starting" or "running" or "stopping")
                     || wait == TimeSpan.Zero)
@@ -438,7 +586,7 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
 
         (IReadOnlyList<ProcessOutputChunk>, long, long, bool, string, int?) ReadCurrent()
         {
-            var output = Read(handle, run, lane, after, maximumChunks, out var last,
+            var output = ReadForOwner(after, maximumChunks, out var last,
                 out var highWater, out var gap, out var state, out var exitCode);
             return (output, last, highWater, gap, state, exitCode);
         }
@@ -472,15 +620,22 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
     {
         EnsureHostLease();
         if (!_processes.TryGetValue(handle, out var process) || process.Run != run || process.Lane != lane
+            || process.SourceTool.ToString() == HumanShellProcessTool.ProcessOwnerSource
             || process.Lease != hostLeaseGeneration
             || process.State is not ("running" or "exited" or "stopped" or "stopping" or "unknown")
             || process.State == "unknown" && process.Control is null && process.UncertainControl is null) return null;
         var privateWriter = process.Staging is not null && process.WriterClaims is { Writes.Count: > 0 };
-        return new ProcessClaim("process.handle:" + handle, [], privateWriter ? "PrivateProcessWriter" : "External",
-            WorkingDirectory: process.WorkspaceRoot,
-            Isolation: privateWriter ? ProcessIsolation.PrivateProcessWorkspace : ProcessIsolation.None,
-            OwnerSessionId: sessionId.ToString(), OwnerRunId: process.Run, OwnerLaneId: process.Lane,
-            OwnerLeaseId: process.Lease);
+        if (enforceChildControlProcessScope && process.SourceProcessClaim is null) return null;
+        var claim = enforceChildControlProcessScope
+            ? process.SourceProcessClaim!
+            : new ProcessClaim("process.handle:" + handle, [], privateWriter ? "PrivateProcessWriter" : "External",
+                WorkingDirectory: process.WorkspaceRoot,
+                Isolation: privateWriter ? ProcessIsolation.PrivateProcessWorkspace : ProcessIsolation.None);
+        return claim with
+        {
+            OwnerSessionId = sessionId.ToString(), OwnerRunId = process.Run, OwnerLaneId = process.Lane,
+            OwnerLeaseId = process.Lease,
+        };
     }
 
     internal bool TryBindProcessControlIntent(ToolIntent intent, ToolExecutionContext execution, out ToolIntent bound)
@@ -494,7 +649,7 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
             if (handle is null || ControlClaim(handle, execution.MutationRunId, execution.MutationLaneId) is not { } claim)
                 return false;
             var claims = new ResourceClaims(intent.Claims.Reads, intent.Claims.Writes, intent.Claims.Network,
-                claim, intent.Claims.Secrets);
+                claim, intent.Claims.Secrets, intent.Claims.WorktreeDisposition, intent.Claims.WorktreeRetention);
             bound = new ToolIntent(intent.ToolCallId, intent.ToolId, intent.NormalizedArgumentsJson,
                 intent.Effect, claims, intent.Risk, intent.Reconciliation,
                 intent.EffectiveMutationOperation, intent.RequiresPhysicalCreateCapability,
@@ -1102,6 +1257,8 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
             await control.DisposeAsync().ConfigureAwait(false);
             DisposeStaging(process.Staging);
             Record(process, emit, process.State);
+            if (process.State is "exited" or "stopped" or "cancelled" or "failed" or "timed_out" or "output_limit")
+                process.CapacityLease?.ReleaseActive();
         }
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
@@ -1140,8 +1297,8 @@ public sealed class PersistentProcessSessionManager(SessionId sessionId, IEventS
                 var evidence = new ProcessSessionStateRecorded(process.Id, state, process.Run, process.Lane,
                     process.Lease, process.LastSequence, process.ExitCode, process.Proposal?.ProposalId,
                     process.Diagnostic, process.ProposalArtifact?.Hash.Value, process.ProposalArtifact?.Size,
-                    process.Proposal?.ToolCallId, process.Proposal?.ToolId,
-                    process.Proposal?.MutationTurnId, process.Proposal?.WorkspaceRoot);
+                    process.SourceCall.ToString(), process.SourceTool.ToString(),
+                    process.Turn, process.WorkspaceRoot);
                 _events.Append(evidence, DurabilityClass.Barrier);
                 SignalOutputChanged(process);
                 return true;
@@ -1262,7 +1419,8 @@ internal sealed class ProcessStartTool(PersistentProcessSessionManager manager, 
                 { Duplex = true, Terminal = terminal };
             var started = await manager.StartAsync(run, lane, launch, launcher, context.EmitEvent, token,
                 staging, context.WorkspaceRoot, intent.Intent.ToolCallId, intent.Intent.ToolId,
-                context.MutationTurnId, writer ? intent.Intent.Claims : null).ConfigureAwait(false);
+                context.MutationTurnId, writer ? intent.Intent.Claims : null,
+                intent.Intent.Claims.Process).ConfigureAwait(false);
             managerOwnsStaging = started.Handle is not null;
             if (started.Handle is null) return ToolResult.Error(ToolErrorCode.ToolFailure, started.Error ?? "process.start.failed");
             var summary = ProcessSessionToolJson.StartSummary(started.Handle, started.State, run, lane, terminal);

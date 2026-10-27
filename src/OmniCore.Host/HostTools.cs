@@ -28,10 +28,15 @@ public sealed class HostTools
         bool includeControlTools = true, bool includeMailboxReceive = false, bool includeShellTool = true,
         IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null,
         MediaReadTool? mediaReadTool = null,
-        PersistentProcessSessionManager? processSessionManager = null)
+        PersistentProcessSessionManager? processSessionManager = null,
+        IWorktreeDispositionCoordinator? worktreeDispositionCoordinator = null,
+        IWorktreeRetentionCoordinator? worktreeRetentionCoordinator = null,
+        bool humanShellAction = false, Action<string>? humanShellOutput = null)
         : this(boundary, planService, includeSimulationTools, includeMutationTools, includeProcessTools,
             processSandboxStrength, artifactReadTool, includeControlTools, includeMailboxReceive, includeShellTool,
-            processRuntime: null, worktreeIntegrationCoordinator, mediaReadTool, processSessionManager)
+            processRuntime: null, worktreeIntegrationCoordinator, mediaReadTool, processSessionManager,
+            worktreeDispositionCoordinator, worktreeRetentionCoordinator, processLauncherOverride: null,
+            humanShellAction: humanShellAction, humanShellOutput: humanShellOutput)
     {
     }
 
@@ -40,7 +45,11 @@ public sealed class HostTools
         ArtifactReadTool? artifactReadTool, bool includeControlTools, bool includeMailboxReceive,
         bool includeShellTool, OmniCore.Abstractions.IProcessRuntime? processRuntime,
         IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null,
-        MediaReadTool? mediaReadTool = null, PersistentProcessSessionManager? processSessionManager = null)
+        MediaReadTool? mediaReadTool = null, PersistentProcessSessionManager? processSessionManager = null,
+        IWorktreeDispositionCoordinator? worktreeDispositionCoordinator = null,
+        IWorktreeRetentionCoordinator? worktreeRetentionCoordinator = null,
+        ISandboxProcessLauncher? processLauncherOverride = null, bool humanShellAction = false,
+        Action<string>? humanShellOutput = null)
     {
         _planPropose = new PlanProposeTool(planService);
         _extensionBatchCoordinator = worktreeIntegrationCoordinator as WorktreeIntegrationHostCoordinator;
@@ -63,7 +72,8 @@ public sealed class HostTools
             }        }
         if (includeProcessTools)
         {
-            var processLauncher = OmniHost.CreateProcessSandboxLauncher(processRuntime ?? SystemProcessRuntime.Instance());
+            var processLauncher = processLauncherOverride
+                ?? OmniHost.CreateProcessSandboxLauncher(processRuntime ?? SystemProcessRuntime.Instance());
             var gitActivity = new OmniCore.Infrastructure.GitWorktreeStore(SystemProcessRuntime.Instance());
             if (processSessionManager is not null)
             {
@@ -87,8 +97,11 @@ public sealed class HostTools
                 catalog = catalog.Add(new ProcessExecBatchTool("process.exec", processSessionManager,
                     processLauncher, boundary, executableResolver, canPublish));
                 if (includeShellTool)
-                    catalog = catalog.Add(new ProcessExecBatchTool("shell.exec", processSessionManager,
-                        processLauncher, boundary, executableResolver, canPublish));
+                    catalog = humanShellAction
+                        ? catalog.Add(new HumanShellProcessTool(processSessionManager, processLauncher,
+                            processSandboxStrength, boundary, humanShellOutput))
+                        : catalog.Add(new ProcessExecBatchTool("shell.exec", processSessionManager,
+                            processLauncher, boundary, executableResolver, canPublish));
                 catalog = catalog.Add(new ProcessStartTool(processSessionManager, processLauncher, processSandboxStrength,
                         boundary, new SystemExecutableResolver(allowWorkspaceRelativePaths: true)))
                     .Add(new ProcessReadTool(processSessionManager))
@@ -102,6 +115,15 @@ public sealed class HostTools
                 if (includeShellTool) catalog = catalog.Add(new ShellExecTool(processLauncher, boundary, processSandboxStrength, gitActivity));
             }
         }
+        if (worktreeDispositionCoordinator is not null)
+        {
+            catalog = catalog.Add(new WorktreeDispositionTool(WorktreeDispositionOperation.Cleanup,
+                worktreeDispositionCoordinator));
+            catalog = catalog.Add(new WorktreeDispositionTool(WorktreeDispositionOperation.Discard,
+                worktreeDispositionCoordinator));
+        }
+        if (worktreeRetentionCoordinator is not null)
+            catalog = catalog.Add(new WorktreeRetentionTool(worktreeRetentionCoordinator));
 
         catalog = catalog.Add(new ReferenceResolveTool(boundary));
         if (artifactReadTool is not null) catalog = catalog.Add(artifactReadTool);
@@ -118,6 +140,25 @@ public sealed class HostTools
         return new HostTools(boundary, planService, includeSimulationTools: true, includeMutationTools: true);
     }
 
+    internal static HostTools CreateActToolsWithProcessLauncherForTests(ISandboxProcessLauncher processLauncher,
+        ArtifactReadTool? artifactReadTool, IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator,
+        MediaReadTool? mediaReadTool, PersistentProcessSessionManager? processSessionManager,
+        IWorktreeDispositionCoordinator? worktreeDispositionCoordinator,
+        IWorktreeRetentionCoordinator? worktreeRetentionCoordinator,
+        bool humanShellAction, Action<string>? humanShellOutput)
+    {
+        ArgumentNullException.ThrowIfNull(processLauncher);
+        return new HostTools(boundary: new PathBoundaryValidator(), planService: new PlanService(),
+            includeSimulationTools: false, includeMutationTools: true, includeProcessTools: true,
+            processSandboxStrength: SandboxStrength.Strong, artifactReadTool: artifactReadTool,
+            includeControlTools: true, includeMailboxReceive: false, includeShellTool: true,
+            processRuntime: null, worktreeIntegrationCoordinator: worktreeIntegrationCoordinator,
+            mediaReadTool: mediaReadTool, processSessionManager: processSessionManager,
+            worktreeDispositionCoordinator: worktreeDispositionCoordinator,
+            worktreeRetentionCoordinator: worktreeRetentionCoordinator, processLauncherOverride: processLauncher,
+            humanShellAction: humanShellAction, humanShellOutput: humanShellOutput);
+    }
+
     public static HostTools DelegatedReader(ArtifactReadTool? artifactReadTool = null) =>
         new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
             artifactReadTool: artifactReadTool, includeControlTools: false);
@@ -129,12 +170,13 @@ public sealed class HostTools
     /// <summary>Child workspace tools are composed from its durable profile; Security still intersects
     /// each request with the parent mode, grants, project restrictions and that exact profile ceiling.</summary>
     public static HostTools DelegatedAgent(AgentProfile profile, ArtifactReadTool? artifactReadTool = null,
-        SandboxStrength processSandboxStrength = SandboxStrength.Strong) =>
+        SandboxStrength processSandboxStrength = SandboxStrength.Strong,
+        PersistentProcessSessionManager? processSessionManager = null) =>
         new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
             includeMutationTools: profile.PermissionCeiling.Writes.Count > 0,
             includeProcessTools: profile.PermissionCeiling.Process.Count > 0 || profile.PermissionCeiling.AllowShell,
             processSandboxStrength: processSandboxStrength, artifactReadTool: artifactReadTool,
-            includeControlTools: false, includeMailboxReceive: true);
+            includeControlTools: false, includeMailboxReceive: true, processSessionManager: processSessionManager);
 
     /// <summary>Workflow stage catalog: only tools whose concrete capabilities are declared by that stage.</summary>
     public static HostTools WorkflowStage(WorkflowStage stage, AgentProfile profile,
@@ -144,19 +186,33 @@ public sealed class HostTools
 
     internal static HostTools WorkflowStageForTests(WorkflowStage stage, AgentProfile profile,
         ArtifactReadTool? artifactReadTool, SandboxStrength processSandboxStrength,
-        OmniCore.Abstractions.IProcessRuntime processRuntime) =>
-        WorkflowStageCore(stage, profile, artifactReadTool, processSandboxStrength,
-            processRuntime ?? throw new ArgumentNullException(nameof(processRuntime)));
+        OmniCore.Abstractions.IProcessRuntime processRuntime,
+        ISandboxCapabilitiesProbe? capabilities = null,
+        Func<ISandboxProcessLauncher, ISandboxProcessLauncher>? processLauncherDecorator = null)
+    {
+        ArgumentNullException.ThrowIfNull(processRuntime);
+        ISandboxProcessLauncher? processLauncher = null;
+        if (capabilities is not null || processLauncherDecorator is not null)
+        {
+            processLauncher = OmniHost.CreateProcessSandboxLauncher(processRuntime, capabilities);
+            if (processLauncherDecorator is not null)
+                processLauncher = processLauncherDecorator(processLauncher)
+                    ?? throw new InvalidOperationException("The test process-launcher decorator returned null.");
+        }
+        return WorkflowStageCore(stage, profile, artifactReadTool, processSandboxStrength,
+            processRuntime, processLauncher);
+    }
 
     private static HostTools WorkflowStageCore(WorkflowStage stage, AgentProfile profile,
         ArtifactReadTool? artifactReadTool, SandboxStrength processSandboxStrength,
-        OmniCore.Abstractions.IProcessRuntime? processRuntime) =>
+        OmniCore.Abstractions.IProcessRuntime? processRuntime,
+        ISandboxProcessLauncher? processLauncherOverride = null) =>
         new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
             includeMutationTools: stage == global::OmniCore.Host.WorkflowStage.Implement,
             includeProcessTools: stage == global::OmniCore.Host.WorkflowStage.Verify && profile.PermissionCeiling.Process.Count > 0,
             processSandboxStrength: processSandboxStrength, artifactReadTool: artifactReadTool,
             includeControlTools: false, includeMailboxReceive: true, includeShellTool: false,
-            processRuntime: processRuntime);
+            processRuntime: processRuntime, processLauncherOverride: processLauncherOverride);
 
     public static HostTools Explorer(ArtifactReadTool? artifactReadTool = null, MediaReadTool? mediaReadTool = null) =>
         new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,

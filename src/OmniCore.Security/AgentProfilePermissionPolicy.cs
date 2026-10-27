@@ -100,6 +100,20 @@ public sealed class AgentProfilePermissionPolicy : IPermissionPolicy, IGrantable
         var claims = intent.Claims;
         if (claims is null || claims.Reads is null || claims.Writes is null || claims.Network is null || claims.Secrets is null)
             return PermissionDecision.Deny;
+        if (claims.WorktreeDisposition is { } disposition
+            && (!Guid.TryParseExact(disposition.OwnershipId, "N", out _)
+                || string.IsNullOrWhiteSpace(disposition.WorkspaceId)
+                || !CoversEntireWorkspace(disposition.WorkspaceRoot, scope.Writes)
+                || string.IsNullOrWhiteSpace(disposition.LaneId)
+                || !Enum.IsDefined(disposition.Operation)
+                || disposition.Operation == WorktreeDispositionOperation.Cleanup && intent.ToolId.ToString() != "worktree.cleanup"
+                || disposition.Operation == WorktreeDispositionOperation.Discard && intent.ToolId.ToString() != "worktree.discard"))
+            return PermissionDecision.Deny;
+        if (claims.WorktreeRetention is { } retention
+            && (string.IsNullOrWhiteSpace(retention.WorkspaceId)
+                || !CoversEntireWorkspace(retention.WorkspaceRoot, scope.Writes)
+                || retention.References is not { Count: > 0 and <= 2 }
+                || intent.ToolId.ToString() != "worktree.retention")) return PermissionDecision.Deny;
         if (intent.ToolId.ToString() == "shell.exec" && !scope.AllowShell) return PermissionDecision.Deny;
         if (claims.Reads.Any(path => !PathAllowed(path, scope.Reads))
             || claims.Writes.Any(path => !PathAllowed(path, scope.Writes))
@@ -165,6 +179,34 @@ public sealed class AgentProfilePermissionPolicy : IPermissionPolicy, IGrantable
         {
             return false;
         }
+    }
+
+    private bool CoversEntireWorkspace(string claimedRoot, IReadOnlyList<string> patterns)
+    {
+        try
+        {
+            var physical = _paths.ResolvePhysical(Path.GetFullPath(claimedRoot, _workspaceRoot));
+            if (physical is null || !string.Equals(Path.TrimEndingDirectorySeparator(physical),
+                    Path.TrimEndingDirectorySeparator(_workspaceRoot), OperatingSystem.IsWindows()
+                        ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) return false;
+            foreach (var rule in patterns)
+            {
+                if (rule is "**" or "**/*") return true;
+                if (!Path.IsPathFullyQualified(rule)) continue;
+                var normalized = rule.Replace('\\', '/').TrimEnd('/');
+                string prefix;
+                if (normalized.EndsWith("/**/*", StringComparison.Ordinal)) prefix = normalized[..^5];
+                else if (normalized.EndsWith("/**", StringComparison.Ordinal)) prefix = normalized[..^3];
+                else continue;
+                var physicalPrefix = _paths.ResolvePhysical(Path.GetFullPath(prefix));
+                if (physicalPrefix is not null && string.Equals(Path.TrimEndingDirectorySeparator(physicalPrefix),
+                        Path.TrimEndingDirectorySeparator(physical), OperatingSystem.IsWindows()
+                            ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) return true;
+            }
+            return false;
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException or NotSupportedException)
+        { return false; }
     }
 
     private static PermissionDecision Min(PermissionDecision first, PermissionDecision second) =>

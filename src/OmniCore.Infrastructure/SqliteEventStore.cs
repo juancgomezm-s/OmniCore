@@ -548,7 +548,7 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader, IDi
     public void CompleteCommandExecution(string commandId, string requestHash, string state, string code,
         string sessionId, string runId, string? scope = null)
     {
-        if (state is not ("completed" or "failed" or "cancelled" or "deferred")) throw new ArgumentOutOfRangeException(nameof(state));
+        if (state is not ("completed" or "failed" or "cancelled" or "deferred" or "unknown")) throw new ArgumentOutOfRangeException(nameof(state));
         if (code.Length is 0 or > 96 || !code.All(character => char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-'))
             throw new ArgumentException("Execution code must be a short canonical code.", nameof(code));
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
@@ -576,6 +576,53 @@ public sealed class SqliteEventStore : IEventStore, IWorkspaceJournalReader, IDi
                     || existing.RequestHash != requestHash || existing.SessionId != sessionId
                     || existing.ExecutionRunId != runId || existing.ExecutionState != state || existing.ExecutionCode != code)
                     throw new InvalidOperationException("Conversation execution receipt conflicts with its admission.");
+            }
+            tx.Commit();
+            return true;
+        });
+    }
+
+    /// <summary>Terminalizes a deferred accepted command only when its exact admission hash and
+    /// Session/Run still match. Replays of the same terminal fact are idempotent; a different
+    /// terminal result or an unresolved receipt is never overwritten.</summary>
+    public void CompleteDeferredCommandExecution(string commandId, string requestHash, string state, string code,
+        string sessionId, string runId, string? scope = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(commandId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestHash);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        if (state is not ("completed" or "failed" or "cancelled" or "unknown"))
+            throw new ArgumentOutOfRangeException(nameof(state));
+        if (code.Length is 0 or > 96 || !code.All(character => char.IsAsciiLetterOrDigit(character)
+            || character is '.' or '_' or '-'))
+            throw new ArgumentException("Execution code must be a short canonical code.", nameof(code));
+        scope ??= CommandReceiptScope;
+        WithConnection(() =>
+        {
+            using var tx = ((Microsoft.Data.Sqlite.SqliteConnection)_conn).BeginTransaction(deferred: false);
+            using var update = _conn.CreateCommand()!;
+            update.Transaction = tx;
+            update.CommandText = "UPDATE command_receipts SET execution_state=:state, execution_code=:code "
+                + "WHERE scope_id=:scope AND command_id=:command AND request_hash=:hash AND state=1 "
+                + "AND session_id=:session AND execution_run_id=:run "
+                + "AND execution_state='deferred' AND execution_code='input_required'";
+            update.Parameters.Add(S(update, "state", state));
+            update.Parameters.Add(S(update, "code", code));
+            update.Parameters.Add(S(update, "session", sessionId));
+            update.Parameters.Add(S(update, "run", runId));
+            update.Parameters.Add(S(update, "scope", scope));
+            update.Parameters.Add(S(update, "command", commandId));
+            update.Parameters.Add(S(update, "hash", requestHash));
+            var changed = update.ExecuteNonQuery();
+            if (changed == 0)
+            {
+                var existing = ReadCommandReceipt(commandId, scope, tx);
+                if (existing is not { State: CommandReceiptState.Completed }
+                    || existing.RequestHash != requestHash || existing.SessionId != sessionId
+                    || existing.ExecutionRunId != runId || existing.ExecutionState != state
+                    || existing.ExecutionCode != code)
+                    throw new InvalidOperationException("Deferred command execution receipt conflicts with its terminal fact.");
             }
             tx.Commit();
             return true;

@@ -23,20 +23,16 @@ using OmniCore.Domain;
 /// haciendo <c>filesystem.patch</c> como defensa en profundidad, y el ToolRuntime + el
 /// Permission Engine conservan su autoridad (INV-018): este registro solo RESTRINGE.
 ///
-/// Las lecturas efectivas siguen siendo volátiles por Run: tras reiniciar se exige releer antes
-/// de parchear. El contador de mutaciones sí persiste cargas confirmadas por Turn en el journal;
-/// una mutación histórica sin carga verificable bloquea nuevas escrituras en ese Turn.
+/// La cobertura se mantiene en memoria durante la ejecución y el Host registra el rango visible
+/// como <c>WorkspaceFileReadCoverageRecorded</c> tras la lectura exitosa. El replay introducido
+/// por M9-L-MUT-01 puede rehidratar esa evidencia canónica únicamente si encuentra el read
+/// solicitado y completado con el mismo ToolCallId, Session, Run y Lane; una ruta, token o rango
+/// de otro ámbito, ausente o inválido no acredita lectura. No restaura grants de permiso. Véase
+/// <c>docs/validation/m9-durable-file-history-20261020.md</c>.
 ///
-/// SEMÁNTICA TRAS RESTART (ADR-0044 §5): el registro es en-memoria y por-Run. Tras un restart
-/// del proceso, un Run reanudado conserva en su journal los eventos <c>toolcall.requested</c>
-/// (filesystem.read + su route) y <c>toolcall.succeeded</c> que prueban QUE la lectura efectiva
-/// ocurrió, pero NO el token de versión que se expuso al modelo: <c>toolcall.succeeded</c> solo
-/// serializa el summary, no el token del marker. Reconstruir la identidad exacta path/version
-/// tras restart exigiría perseguir el token en el journal (un cambio de contrato del evento).
-/// Hasta que exista ese cambio, un restart vacía el registro y el runtime es CONSERVADOR: exige
-/// releer el archivo en el nuevo proceso antes de permitir un patch, incluso si el journal del
-/// mismo Run ya contenía la lectura. Esto es más estricto (nunca amplía) y no abre la brecha;
-/// la verificación contra el contenido vigente (STALE_WRITE) sigue defendiendo en todo momento.
+/// Los cargos de mutación confirmados siguen teniendo sus propias reglas de replay por Turn/Run;
+/// una mutación histórica sin carga verificable bloquea nuevas escrituras. La revalidación del
+/// token contra el contenido vigente (STALE_WRITE) sigue defendiendo en todo momento.
 /// </summary>
 public sealed class FileReadRegistry
 {

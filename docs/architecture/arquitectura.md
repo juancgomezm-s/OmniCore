@@ -747,12 +747,155 @@ Los procesos persistentes y controles nativos, la lectura pasiva de salida termi
 publicación privada Strong tienen recorridos integrales locales; ConPTY demuestra captura,
 entrada y resize/ACK exacto sin cambios del registro. WebP estático se decodifica íntegramente.
 El [contrato y acta actuales](../validation/m9-core-process-contract-20261023.md) distinguen
-los efectos comprobados de los buffers efímeros, límites y pendientes. La primera CI aprobó
-instaladores y paquetes Linux pero detectó regresiones; las correcciones locales requieren
-CI nueva antes de publicar; Luna bajo ya aprobó ocho focos sin recompilar. Esta actualización supera los estados
+los efectos comprobados de los buffers efímeros, límites y pendientes. El bloque se publicó
+en `main` como `f02d3b5` después de aprobar los cinco jobs de la
+[CI final](https://github.com/juancgomezm-s/OmniCore/actions/runs/40014136165).
+Se retoma el ciclo durable de worktrees de M9-L en ZephyrusG14, con construcción
+y validación Luna secuenciales, sin nueva publicación automática. Esta actualización supera los estados
 históricos de construcción inferiores, sin cerrar M9 global, M8 manual ni la aceptación del
-consumidor Electron, que corresponde a su coordinación. Persistencia Weak, controles de Lane
-hijo, ciclo durable restante de worktrees y aceptación transversal siguen explícitos.
+consumidor Electron, que corresponde a su coordinación. Persistencia Weak,
+ciclo durable restante de worktrees y aceptación transversal siguen explícitos;
+el incremento local de procesos hijos se registra abajo.
+
+El bloque local de integración nativa de worktrees ya conecta preview por Lane
+público y aplicación al pipeline existente, con permisos, recibos y reapertura
+comprobados. Luna bajo aprobó 12 casos pertinentes sobre binarios congelados sin
+recompilar; [evidencia](../validation/m9-worktree-lifecycle-20261023.md).
+No acredita CI/publicación nueva ni el ciclo completo de limpieza/provisión.
+
+Los controles de procesos de delegaciones genéricas también tienen aceptación
+local: el manager conserva el claim del proceso y la raíz física del hijo; cada
+intervención usa su Execution y Turn original, con política y ToolRuntime vigentes.
+La capacidad negociada de entregar Ask pertenece a la acción nativa autenticada,
+no concede permisos ni cambia el ejecutor del modelo. La respuesta y el resultado
+del efecto tienen recibos separados; la incertidumbre no se convierte en éxito
+ni habilita reintento automático. Luna bajo validó seis casos únicos y revalidó
+el foco tras corregir la correlación de InteractionId, sin recompilar.
+[Acta y límites](../validation/m9-child-process-controls-20261023.md).
+La admisión de la fixture es Core in-process y el control es Host/stdio; no acredita
+admisión de delegación por stdio end-to-end. Verify conserva su comando exacto,
+OmniCoder permanece en sólo lectura y no hubo nueva CI ni publicación.
+
+La limpieza y el descarte nativos de worktrees terminales tienen aceptación
+local del 2026-10-24. El claim tipado liga operación, ownership y árbol revisado;
+la aprobación no cubre cambios posteriores, y discard archiva antes del retiro.
+Luna bajo aprobó 13 casos finales sin recompilar tras corregir una regresión del
+catálogo. [Acta y límites](../validation/m9-worktree-disposition-20261024.md).
+Reapertura tras éxito no acredita recuperación de una caída intermedia. El
+barrido nativo de retención y undo siguen pendientes; se conservan las demás
+aceptaciones de Core, el límite de solo lectura de OmniCoder y M9/M8 abiertos.
+Este incremento permanece local, sin nueva CI ni publicación.
+
+La retención nativa de refs tiene aceptación local del 2026-10-24, bajo la
+excepción de autoridad aprobada: Run actual y propietario histórico terminal
+separados, misma Session/workspace, permisos vigentes y refs/OIDs exactos.
+No se borran directorios ni metadata. Luna bajo aprobó 13 casos sin recompilar;
+[acta y límites](../validation/m9-worktree-retention-20261024.md).
+No se acredita caída intermedia, aceptación del consumidor ni CI/publicación.
+El incremento siguiente aporta persistencia Weak Windows. Native/Imported y
+las demás aceptaciones de M9 siguen pendientes; M8 manual y el límite de solo
+lectura de OmniCoder se conservan.
+
+La persistencia Weak de Windows tiene aceptación local del 2026-10-24: Job
+Object con KillOnJobClose asignado antes de ResumeThread, pipes y ConPTY real,
+entrada/EOF y controles por el manager existente. Al salir el root se terminan
+los descendientes antes de depender de EOF. La disposición libera Job/handles
+incluso fallando consulta, terminación o espera; fallos posteriores al arranque
+quedan desconocidos y no habilitan relanzamiento. El entorno usa una allowlist
+exacta y los permisos, Strong y WeakConsent conservan su autoridad.
+Luna bajo aprobó 28 casos sin recompilar, después de corregir el defecto de
+limpieza detectado en su primera revisión. [Acta y límites](../validation/m9-weak-persistence-20261024.md).
+La ejecución validada es Windows; la compilación net8/net10 no acredita Linux
+ni macOS, cuyo Weak persistente sigue explícitamente no disponible. PTY de otras
+plataformas conserva su diferido. Checkpoint local, sin nueva CI/publicación ni
+cambios de OmniCoder; M9 global y M8 manual permanecen abiertos.
+
+El importador neutral Native/Imported tiene aceptación local del 2026-10-24.
+`conversation.import` y la CLI aceptan únicamente texto user/assistant del
+formato canónico v1; Core fija identidad y política Imported/ObserveOnly/ImportReview,
+sin trasladar autoridad del origen. Importar sólo almacena: no crea Run/input,
+hooks ni llamadas al proveedor. El transcript aparece en el contexto de una
+conversación posterior autorizada; las alternativas internas siguen Native.
+Recibo workspace-global también en la ruta directa, replay del ACK original
+sin cambiar selección y Unknown sin redispatch. No carga todos los transcripts
+del workspace para admitir uno nuevo. Luna bajo aprobó 16 casos sin recompilar
+tras corregir el replay directo. [Acta y límites](../validation/m9-native-import-20261024.md).
+La CLI y dos runtimes con SQLite se probaron in-process; el Turn abierto del
+negativo se siembra en fixture. No acredita ejecutable CLI separado, dos procesos
+OS, medios/conversores ajenos, consumidor Electron ni proveedor live. Checkpoint
+local sin CI/publicación; SEC-CONV y las demás aceptaciones transversales, M9 global
+y M8 manual siguen abiertos.
+
+El corte posterior de importación entre procesos OS cubre la CLI ejecutable y
+dos Hosts coexistentes con una Session/evento y replay del ACK durable original.
+El lookup autenticado de `conversation.import` se adelanta al lease solo cuando
+hay receipt; un ID nuevo mantiene la barrera de escritura. Luna bajo aprobó 3/3
+casos pertinentes sin recompilar. [Acta y evidencia](../validation/m9-native-import-processes-20261024.md).
+El solapamiento medido es de requests; no demuestra simultaneidad SQL ni el
+contenido/propietario interno de leases. No cambia OmniCoder ni acredita GUI,
+live, otras plataformas o cierre SEC-CONV/M9/M8. Sin nueva CI/publicación.
+
+La aceptación SEC-CONV Core del 2026-10-24 agrega el hueco de snapshots por
+Session sobre Host/stdio en proceso OS separado: A=ObserveOnly, B=PatchOnly,
+default posterior FullAgent sin retroactividad y alternancia/reapertura de ambas
+con revisión/procedencia/origen propios. El journal no incorpora input ni Run
+por esas operaciones. No requirió cambio de producción. Luna bajo aprobó tres
+métodos pertinentes, 3/3 casos, sin recompilar.
+[Matriz, binarios y límites](../validation/m9-sec-conv-core-20261024.md).
+Es evidencia de snapshots y continuidad; grants/dispatch de SEC-CONV-02, consumidor
+GUI, live y otras plataformas conservan sus gates. El checkpoint es local, sin
+CI/publicación/instalación ni cambios de OmniCoder; SEC-CONV global y M9/M8 abiertos.
+
+El corte local SEC-CONV-02 del 2026-10-24 añade dispatch real de `filesystem.patch`
+en un mismo Host OS A→B→A: aislamiento del grant Run, Workspace grant compartido
+legítimamente y techo PatchOnly vigente pese al grant. Se reparan igualdad de
+tipos/lectura JSON en el replay de cobertura y la omisión de AppliedGrant en el
+evento, sin ampliar permisos. Luna bajo aprobó 7 casos en seis métodos sin
+recompilar; [acta y límites](../validation/m9-sec-conv02-dispatch-20261024.md).
+El positivo Direct no valida discovery. El diagnóstico genérico histórico de
+plan descubierto sigue sin causa/resolución confirmada, sin snapshot conservado;
+PatchOnly mantiene discovery deshabilitado. No se acredita Run terminal A2,
+GUI/live ni otras plataformas. SEC-CONV-02 completo y M9/M8 permanecen abiertos,
+con OmniCoder en solo lectura y sin CI/publicación/instalación nueva.
+
+El siguiente corte local SEC-CONV-02 valida recuperación Discovered con modelo y
+Session `ScopedCoder`: discovery, lectura, patch en Ask y continuación firmada
+Once/Workspace en Host OS separado. El patch no está visible en el primer request,
+se descubre y sigue en la continuación; se preservan snapshot/CAS y plan v3.
+Luna bajo aprobó 2/2 casos de la candidata final sin recompilar. Solo se modificaron
+pruebas y limpieza del fixture, sin cambios de producción. [Acta](../validation/m9-sec-conv02-discovered-20261024.md).
+No atribuye el fallo histórico sin snapshot ni cambia PatchOnly. Aceptación local
+Windows con HTTP scripted; SEC-CONV-02 global, M9/M8 manual siguen abiertos,
+sin cambios de OmniCoder ni CI/publicación/instalación nueva.
+
+El corte de provisión de worktree por workflow stdio acredita la ruta existente
+Orchestrate firmada/`core:orq-auth`: TaskPacket y ownership de etapa reales sin
+binding sembrado, queries pasivas y rechazos de scope/revisión. Luna bajo aprobó
+dos casos aislados sin recompilar; no cambió producción. [Acta](../validation/m9-worktree-workflow-provision-20261024.md).
+Host framed in-process, provider fixture y Verify `dotnet --version` con Weak
+consentido; no valida frontera OS de Host, compilación de FeatureApp ni Strong.
+La delegación genérica stdio sigue sin exponerse y necesita decisión explícita
+de interfaz/autoridad. Sin cambios de OmniCoder ni publicación; M9/M8 abiertos.
+
+El corte de retención ante terminación del Host valida una ventana post-prune:
+Git real termina bajo un proxy de fixture y se corta el Host OS propio antes
+del resultado. Al reabrir, recovery marca EffectUnknown/Unresolvable y bloquea
+continue; el ACK original representa admisión, no éxito del efecto. Luna bajo
+aprobó 2/2 casos en imagen congelada sin build. [Acta](../validation/m9-worktree-retention-crash-20261024.md).
+Solo cambiaron tests/helper. No garantiza atomicidad Git, caída del sistema,
+exactly-once para otro ID ni crash de cleanup/discard; no amplía autoridad ni
+modifica OmniCoder. Sin publicación y sin cierre global M9/M8.
+
+El incremento de cleanup/discard ante terminación del Host cubre ambas rutas
+del mismo Run propietario después de `git worktree remove` real y antes del
+resultado. Al reabrir conserva snapshot/archivo, clasifica el efecto como
+Unknown/Unresolvable y bloquea continue; admisión Accepted y ejecución deferred
+siguen separadas. Replay pasivo conserva journal/refs/bytes observados. Luna bajo
+aprobó 3/3 casos sin recompilar, incluida la regresión de retención compartida.
+[Acta](../validation/m9-worktree-disposition-crash-20261024.md). Solo tests/helper,
+binding preparado y barrera controlada: no provisión, caída del sistema,
+atomicidad ni exactly-once para un ID nuevo. Sin cambios de OmniCoder ni
+publicación; M9 global y M8 manual siguen abiertos.
 
 ### P0-OMNI-UNIFICACION
 

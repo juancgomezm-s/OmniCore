@@ -58,6 +58,27 @@ de `command.payload` recibidos por el wire, sin parsear/reserializar.
 - El contrato sigue siendo stdio 1.0; payloads durables y protocolo/transporte permanecen
   separados conforme ADR-0013, ADR-0019, ADR-0038 y ADR-0049.
 
+## Excepción acotada de retención entre Runs (2026-10-24)
+
+El usuario autoriza que una acción firmada en el Run actual limpie únicamente
+referencias Git privadas vencidas de Runs históricos terminados de la misma
+Session y workspace. La decisión responde a que el plazo de retención supera
+habitualmente la vigencia de la autorización del Run propietario. No amplía las
+operaciones de integración, cleanup/discard ni los controles de procesos a otros Runs.
+
+El Run actual conserva la autoridad, revisión, presupuesto, permisos, perfil y
+Turn de la acción. El Run histórico es identidad del propietario, derivada del
+journal, y nunca fuente de permisos. El intent y su evidencia deben distinguir
+ambos Runs y ligar las referencias exactas y sus OIDs revisados. No se reutilizan
+autorizaciones antiguas ni se concede acceso persistente por esta decisión.
+
+Se rechazan otras Sessions/workspaces, Runs propietarios no terminados, refs no
+vencidas o ajenas y cambios de identidad/OID entre revisión y efecto. El efecto
+se limita a las refs previstas: no borra directorios, metadatos ni archivos por
+extensión. Las consultas siguen siendo pasivas y un resultado incierto no se
+reintenta automáticamente. La autorización de construcción no acredita una
+implementación, CI o aceptación del consumidor; su evidencia se registra por bloque.
+
 ## Evidencia
 
 Ver [acta M9-D](../validation/m9-block-d-20261014.md), test focal de proof/replay en

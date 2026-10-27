@@ -4,6 +4,12 @@ using System.Net.Sockets;
 using System.Text;
 using System.Runtime.InteropServices;
 
+if (OperatingSystem.IsWindows()
+    && string.Equals(Path.GetFileName(Environment.ProcessPath), "git.exe", StringComparison.OrdinalIgnoreCase))
+{
+    return await OmniCore.SandboxTestProcess.WorktreeRetentionGitProxy.RunAsync(args);
+}
+
 if (args.Length == 1 && args[0] == "legacy-stdio")
 {
     var helloLine = Console.ReadLine();
@@ -248,6 +254,44 @@ if (args.Length == 1 && args[0] == "persistent-process-control")
     await Console.Out.FlushAsync();
     // Stay alive after acknowledging input so the Host can exercise a verifiable stop.
     _ = await Console.In.ReadLineAsync();
+    return 0;
+}
+
+if (args.Length == 2 && args[0] == "spawn-delayed-marker")
+{
+    var child = Process.Start(new ProcessStartInfo
+    {
+        FileName = Environment.ProcessPath!,
+        ArgumentList = { "delayed-marker", args[1] },
+        UseShellExecute = false,
+        CreateNoWindow = true
+    }) ?? throw new InvalidOperationException("Failed to start marker descendant.");
+    Console.OutputEncoding = new UTF8Encoding(false);
+    Console.WriteLine("DESCENDANT:" + child.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    await Console.Out.FlushAsync();
+    await Task.Delay(TimeSpan.FromMinutes(10));
+    return 0;
+}
+
+if (args.Length == 2 && args[0] == "exit-after-spawn-marker")
+{
+    var child = Process.Start(new ProcessStartInfo
+    {
+        FileName = Environment.ProcessPath!,
+        ArgumentList = { "delayed-marker", args[1] },
+        UseShellExecute = false,
+        CreateNoWindow = true
+    }) ?? throw new InvalidOperationException("Failed to start marker descendant.");
+    Console.OutputEncoding = new UTF8Encoding(false);
+    Console.WriteLine("DESCENDANT:" + child.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    await Console.Out.FlushAsync();
+    return 0;
+}
+
+if (args.Length == 2 && args[0] == "delayed-marker")
+{
+    await Task.Delay(TimeSpan.FromSeconds(2));
+    await File.WriteAllTextAsync(args[1], "orphan-ran");
     return 0;
 }
 

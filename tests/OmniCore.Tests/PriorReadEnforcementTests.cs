@@ -3,6 +3,7 @@ using OmniCore.Domain;
 using OmniCore.Engine;
 using OmniCore.Execution;
 using OmniCore.Host;
+using OmniCore.Infrastructure;
 using OmniCore.Security;
 using OmniCore.Tools;
 
@@ -148,6 +149,63 @@ public sealed class PriorReadEnforcementTests
 
             Assert.False(result.Succeeded, result.Summary);
             Assert.Contains("PRIOR_READ_REQUIRED", result.Summary);
+            Assert.Equal(original, File.ReadAllText(path));
+        }
+        finally { RmDir(ws); }
+    }
+
+    [Fact]
+    public void Durable_read_coverage_from_another_lane_does_not_authorize_patch()
+    {
+        var ws = TempDir();
+        const string original = "linea-uno\nlinea-dos\n";
+        var path = Path.Combine(ws, "doc.txt");
+        File.WriteAllText(path, original);
+        try
+        {
+            var store = new InMemoryEventStore();
+            var codecs = EventCodecs.Create();
+            var session = SessionId.New();
+            var stream = new EventStream(store, codecs, session);
+            var opened = TestRun.Open(stream, session);
+            var boundaryForRead = new ModelCapabilityBoundary(PatchOnlyPolicy(),
+                ModelCapabilityBoundary.CoreTools, new FileReadRegistry(ws));
+            var readExecutor = PatchPipeline(ws, boundaryForRead);
+            var readCall = ReadCall("doc.txt");
+            var readScope = new ExecutionScopeState(opened.RunId, opened.RootTask, opened.RootLane,
+                TurnId.New());
+            ToolOutcome readOutcome;
+            using (ExecutionScope.Begin(readScope))
+            {
+                readOutcome = readExecutor.ExecuteTool(readCall, false, CancellationToken.None, stream);
+                foreach (var evt in readOutcome.Events) stream.Append(evt);
+            }
+            Assert.True(readOutcome.Succeeded, readOutcome.Summary);
+            var readJournal = store.ReadFrom(session, 1);
+            Assert.True(readJournal.Any(item => item.Type.Equals(EventType.Of("workspace.file_read_coverage_recorded"))),
+                "El read real debe persistir cobertura. Journal=" + string.Join(",", readJournal.Select(item => item.Type)));
+            var readCoverage = Assert.Single(readJournal.Select(codecs.Decode)
+                .OfType<WorkspaceFileReadCoverageRecorded>());
+            Assert.Equal(opened.RootLane, store.ReadFrom(session, 1).Single(item =>
+                item.ToolCallId == readCoverage.ToolCallId && item.Type.Equals(EventType.Of(
+                    "workspace.file_read_coverage_recorded"))).LaneId);
+
+            // A new per-Run boundary sees the durable read, but its different Lane scope must
+            // not rehydrate that evidence. Both calls still pass through real Host tools/runtime.
+            var otherLane = LaneId.New();
+            var boundaryForPatch = new ModelCapabilityBoundary(PatchOnlyPolicy(),
+                ModelCapabilityBoundary.CoreTools, new FileReadRegistry(ws));
+            var patchExecutor = PatchPipeline(ws, boundaryForPatch);
+            var patchCall = PatchCall("doc.txt", VersionOf(original), "linea-dos", "linea-dos-X");
+            ToolOutcome patchOutcome;
+            using (ExecutionScope.Begin(readScope with { LaneId = otherLane, TurnId = TurnId.New() }))
+            {
+                patchOutcome = patchExecutor.ExecuteTool(patchCall, false, CancellationToken.None, stream);
+                foreach (var evt in patchOutcome.Events) stream.Append(evt);
+            }
+            Assert.False(patchOutcome.Succeeded, patchOutcome.Summary);
+            Assert.Equal(ToolCallState.Failed, patchOutcome.FinalState);
+            Assert.Contains("PRIOR_READ_REQUIRED", patchOutcome.Summary);
             Assert.Equal(original, File.ReadAllText(path));
         }
         finally { RmDir(ws); }

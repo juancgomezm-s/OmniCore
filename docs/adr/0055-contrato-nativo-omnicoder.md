@@ -70,8 +70,12 @@ interacción ni reenviar una operación con outcome incierto.
 `Permission` debe continuar la llamada original pendiente antes de
 `ToolCallStarted`, con el mismo Turn y la autorización exacta de Core. La
 rehidratación conserva revalidación de argumentos/intent, política vigente,
-presupuestos, sandbox y Barrier; no restaura grants de lectura/versionado desde
-el journal. `Started`, incertidumbre o una correlación incompleta impiden una
+presupuestos, sandbox y Barrier; no concede lectura por un token suelto o un
+summary del journal. La evolución posterior M9-L-MUT-01 permite rehidratar sólo
+cobertura canónica visible (path/versión/rango) del read solicitado y completado
+en la misma Session/Run/Lane, sin cambiar permisos y con versión física vigente.
+[Contrato posterior y corrección del replay](../validation/m9-sec-conv02-dispatch-20261024.md).
+`Started`, incertidumbre o una correlación incompleta impiden una
 nueva ejecución. `PlanApproval` conserva los efectos de las opciones de
 `RunControlService`: aprobar sin ejecutar no inicia efectos de ACT; la ejecución
 aprobada continúa en el mismo Run.
@@ -119,3 +123,63 @@ de M10 siguen inexistentes y no se anuncian como disponibles.
 La selección durable de modelos/rutas por Session y su consumidor real se
 construyeron después; [ADR-0057](0057-session-model-selection.md) y su acta
 registran CAS, consentimiento exacto, límites y validación integrada.
+
+### Ampliación Core M9-L: disponer worktrees terminales (2026-10-24)
+
+El catálogo nativo incorpora `core:worktree.cleanup` y `core:worktree.discard`
+sobre `command.invoke.user`. Sus argumentos contienen operación canónica,
+Lane pública y HEAD/árbol revisados; `worktree.preview:<laneId>` ofrece esos
+valores. Ownership y rutas físicas se resuelven exclusivamente en Core.
+La admisión conserva las revisiones, firma, Session y Run existentes; la
+capacidad de respuesta a Ask se negocia independientemente de la procedencia.
+
+Ambos comandos pasan por herramientas protegidas, permisos y sobre durable.
+Reabrir o consultar recibos no repite el retiro. La continuación de Ask usa
+el ToolCall y Turn originales; `Unknown` no habilita retry automático.
+Retención y undo no adquieren una ruta nueva por disponer de estos comandos.
+La aceptación local y sus correcciones están en [el acta del bloque](../validation/m9-worktree-disposition-20261024.md).
+La integración del consumidor OmniCoder pertenece a su coordinación y no forma
+parte de este incremento; esta ampliación no acredita el cierre de M9 global.
+
+### Retención entre Runs: alcance autorizado (2026-10-24)
+
+La excepción de [ADR-0050](0050-autoridad-humana-stdio-omnicoder.md#excepción-acotada-de-retención-entre-runs-2026-10-24)
+permite construir la retención nativa de refs vencidas de un Run propietario
+histórico terminal, usando la autorización vigente del Run actual en la misma
+Session/workspace. La identidad histórica y la autoridad actual permanecen
+separadas en admisión, intent protegido, recibo y efecto. No se amplía el acceso
+a otras conversaciones/proyectos ni se convierten consultas en mutaciones.
+
+La operación debe ligar el conjunto revisado de refs/OIDs, conservar los siete
+días existentes, rechazar cambios posteriores y usar comparación del OID esperado
+al retirar. Esta es una decisión de alcance; el catálogo no anunciará la capacidad
+por este texto sin dispatcher, pipeline, recibos y pruebas reales construidos.
+
+El bloque se construyó y aceptó localmente: `worktree.retention:<ownershipId>`
+consulta la candidatura acotada y `core:worktree.retention` ejecuta la acción
+mediante `command.invoke.user`. La consulta distingue historial no disponible
+de ausencia de candidatos. Core deriva la pertenencia histórica sin exigir que
+el directorio retirado siga existiendo; verifica su binding y metadatos antes
+de autorizar el conjunto exacto. Ask conserva el ToolCall/Turn de la acción actual.
+La poda usa una transacción Git con OIDs esperados y sin desreferenciar symrefs.
+Luna bajo aprobó 13 casos sin recompilar; [acta](../validation/m9-worktree-retention-20261024.md).
+La entrega sigue local, sin CI/publicación ni cambios del consumidor OmniCoder.
+
+### Importación neutral de conversación (2026-10-24)
+
+`conversation.import`, anunciada por `command.conversation.import.user`, es una
+acción humana con HMAC, scope de conexión/workspace, hash exacto y recibo durable.
+Su único campo de documento es `documentBase64`, con un transcript canónico v1
+validado por Core. El documento no elige SessionId, origen, permisos ni política.
+Core crea Imported/ObserveOnly/ImportReview y almacena texto user/assistant sin
+ejecutar hooks, herramientas o inferencia. Un input posterior conserva admisión
+revisionada y usa ese texto como historial pasivo.
+
+La CLI directa también reclama el recibo SQL del workspace antes de crear.
+Completed devuelve el ACK original antes de las guardas de turno/selección y
+Unknown no redespacha. El marcador de reserva previa es exclusivamente interno
+al dispatch que ya ganó la reserva; no es una capability ni un campo aceptado del
+cliente. [Formato, 16 casos independientes y límites](../validation/m9-native-import-20261024.md).
+La aceptación local no acredita dos procesos OS, ejecutable CLI separado,
+formatos propietarios, medios o integración Electron. OmniCoder se conserva en
+solo lectura; sin nueva CI/publicación ni cierre global de M9/M8.

@@ -293,7 +293,8 @@ public sealed class RunControlService
 
     /// <summary>Authenticated native choice response for a pending Permission or PlanApproval.</summary>
     public void RespondNativeChoice(SessionId session, InteractionId interaction, RunId expectedRun,
-        string optionId, string commandId)
+        string optionId, string commandId, bool nativeWorktreeToolOnly = false,
+        ExecutionScopeState? nativeProcessControlScope = null, string? nativeProcessControlInvocationId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(commandId);
         var events = _store.ReadFrom(session, 1);
@@ -307,7 +308,9 @@ public sealed class RunControlService
         if (request.Kind == InteractionKind.Permission)
             ValidatePendingPermission(events, session, interaction);
         ResolveInteraction(session, interaction, optionId, InteractionCause.User, noClient: false, commandId,
-            nativeChoice: true);
+            nativeChoice: true, nativeWorktreeToolOnly: nativeWorktreeToolOnly,
+            nativeProcessControlScope: nativeProcessControlScope,
+            nativeProcessControlInvocationId: nativeProcessControlInvocationId);
     }
 
     /// <summary>Resolves one pre-launch Weak sandbox choice for the exact child ToolCall. This is
@@ -375,7 +378,9 @@ public sealed class RunControlService
     }
 
     private void ResolveInteraction(SessionId session, InteractionId interaction, string optionId,
-        InteractionCause cause, bool noClient, string? commandId = null, bool nativeChoice = false)
+        InteractionCause cause, bool noClient, string? commandId = null, bool nativeChoice = false,
+        bool nativeWorktreeToolOnly = false, ExecutionScopeState? nativeProcessControlScope = null,
+        string? nativeProcessControlInvocationId = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(optionId);
         var events = _store.ReadFrom(session, 1);
@@ -445,6 +450,8 @@ public sealed class RunControlService
             }
         }
         RunId? budgetDeniedRun = null;
+        ExecutionScopeState? nativeWorktreeScope = null;
+        ExecutionScopeState? nativeChildProcessControlScope = null;
         if (request.Kind == InteractionKind.BudgetExceeded && optionId == "deny")
         {
             budgetDeniedRun = AddBudgetDenialLifecycle(events, pendingRequest!.Envelope, request, batch);
@@ -484,6 +491,51 @@ public sealed class RunControlService
         {
             batch.AddRange(PlanApprovalEffect(events, session, run, optionId, nativeChoice));
         }
+        else if (nativeChoice && request.Kind == InteractionKind.Permission
+            && nativeProcessControlScope is { } childProcessScope
+            && nativeProcessControlInvocationId is { Length: > 0 } processInvocation)
+        {
+            if (commandId is null || pendingRequest?.Envelope.RunId is not { } processRun
+                || processRun != childProcessScope.RunId
+                || pendingRequest.Envelope.TaskId != childProcessScope.TaskId
+                || pendingRequest.Envelope.LaneId != childProcessScope.LaneId
+                || pendingRequest.Envelope.TurnId != childProcessScope.TurnId
+                || pendingRequest.Envelope.ToolCallId is { } responseToolCall
+                    && responseToolCall != childProcessScope.ToolCallId
+                || childProcessScope.ExecutionId is not { } processExecution
+                || ActiveRun(session) != processRun
+                || RunProjection.Replay(session, processRun, _codecs, events).State != RunState.AwaitingInput
+                || PendingInteractionEnvelopes(events).Any(pending => pending.Envelope.RunId == processRun
+                    && pending.Request.InteractionId != interaction))
+                throw new InteractionNotPendingException(interaction);
+            var permissionEvent = events.SingleOrDefault(evt => evt.RunId == processRun
+                && evt.TaskId == childProcessScope.TaskId && evt.LaneId == childProcessScope.LaneId
+                && evt.ExecutionId == processExecution && evt.TurnId == childProcessScope.TurnId
+                && evt.ToolCallId == childProcessScope.ToolCallId
+                && _codecs.Decode(evt) is PermissionRequested permission
+                && permission.InteractionId == interaction && permission.ToolCallId == childProcessScope.ToolCallId);
+            var interactionEvent = events.SingleOrDefault(evt => evt.RunId == processRun
+                && evt.TaskId == childProcessScope.TaskId && evt.LaneId == childProcessScope.LaneId
+                && evt.ExecutionId == processExecution && evt.TurnId == childProcessScope.TurnId
+                && (evt.ToolCallId is null || evt.ToolCallId == childProcessScope.ToolCallId)
+                && _codecs.Decode(evt) is InteractionRequested asked
+                && asked.InteractionId == interaction && asked.Kind == InteractionKind.Permission);
+            var processCall = events.SingleOrDefault(evt => evt.RunId == processRun
+                && evt.TaskId == childProcessScope.TaskId && evt.LaneId == childProcessScope.LaneId
+                && evt.ExecutionId == processExecution && evt.TurnId == childProcessScope.TurnId
+                && evt.ToolCallId == childProcessScope.ToolCallId
+                && _codecs.Decode(evt) is ToolCallRequested call
+                && call.ProviderCallId == "native-action-" + processInvocation
+                && call.ToolName is ("process.read" or "process.send_input" or "process.stop"));
+            if (permissionEvent is null || interactionEvent is null || processCall is null
+                || !OptionIds(request.OptionsJson).Contains(optionId, StringComparer.Ordinal))
+                throw new InteractionNotPendingException(interaction);
+            if (optionId == "deny")
+                batch.Add(new PermissionDenied(new ToolCallId(childProcessScope.ToolCallId!.Value),
+                    "Human denied the pending tool call."));
+            batch.Add(new RunInteractionResumed(processRun, interaction, commandId));
+            nativeChildProcessControlScope = childProcessScope;
+        }
         else if (nativeChoice && request.Kind == InteractionKind.Permission)
         {
             var source = events.Single(evt => _codecs.Decode(evt) is PermissionRequested permission
@@ -501,8 +553,18 @@ public sealed class RunControlService
                 var permission = (PermissionRequested)_codecs.Decode(source);
                 batch.Add(new PermissionDenied(permission.ToolCallId, "Human denied the pending tool call."));
             }
-            batch.Add(new UserInputReceived(permissionRun, InputParts(string.Empty), null,
-                "InteractionResponse(Permission)"));
+            if (nativeWorktreeToolOnly)
+            {
+                if (string.IsNullOrWhiteSpace(commandId))
+                    throw new InvalidOperationException("Resuming a native worktree tool requires its response command identity.");
+                var permission = (PermissionRequested)_codecs.Decode(source);
+                nativeWorktreeScope = new ExecutionScopeState(permissionRun, source.TaskId, source.LaneId,
+                    source.TurnId, permission.ToolCallId, source.ExecutionId);
+                batch.Add(new RunInteractionResumed(permissionRun, interaction, commandId));
+            }
+            else
+                batch.Add(new UserInputReceived(permissionRun, InputParts(string.Empty), null,
+                    "InteractionResponse(Permission)"));
         }
         else if (nativeChoice && request.Kind == InteractionKind.MemoryPromotion
             && pendingRequest?.Envelope.RunId is { } memoryRun
@@ -583,6 +645,16 @@ public sealed class RunControlService
                 ExecutionId: pendingRequest.Envelope.ExecutionId);
             stream.AppendBatch(batch, DurabilityClass.Standard,
                 batch.Select(_ => (ExecutionScopeState?)requestScope).ToArray());
+        }
+        else if (nativeWorktreeScope is { } worktreeScope)
+        {
+            stream.AppendBatch(batch, DurabilityClass.Standard,
+                batch.Select(_ => (ExecutionScopeState?)worktreeScope).ToArray());
+        }
+        else if (nativeChildProcessControlScope is { } childProcessResponseScope)
+        {
+            stream.AppendBatch(batch, DurabilityClass.Standard,
+                batch.Select(_ => (ExecutionScopeState?)childProcessResponseScope).ToArray());
         }
         else
         {

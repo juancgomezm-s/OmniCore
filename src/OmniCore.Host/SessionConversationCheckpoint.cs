@@ -56,6 +56,9 @@ public sealed partial class OmniServer
             foreach (var message in imported.Messages)
                 lines.Add(message.Role == "tool" ? "Tool " + message.ToolName + ": " + message.Text
                     : (message.Role == "user" ? "User: " : "Assistant: ") + message.Text);
+        if (previous is null && journal.Select(_codecs.Decode).OfType<ConversationTranscriptImported>().SingleOrDefault() is { } transcript)
+            foreach (var message in transcript.Messages)
+                lines.Add((message.Role == "user" ? "User: " : "Assistant: ") + message.Text);
         var firstSequence = messages[0].Sequence;
         var through = older[^1].Sequence;
         var scoped = journal.Where(scope.CanRead).ToArray();

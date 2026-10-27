@@ -122,6 +122,36 @@ public sealed class EffectiveAgentProfileTests
     }
 
     [Fact]
+    public void Worktree_disposition_requires_profile_coverage_of_the_entire_workspace()
+    {
+        WithRoot(root =>
+        {
+            var claim = new WorktreeDispositionClaim("workspace-a", root, "lane-a",
+                "0123456789abcdef0123456789abcdef", WorktreeDispositionOperation.Discard,
+                new string('a', 40), new string('b', 40));
+            var intent = new ToolIntent(ToolCallId.New(), new ToolId("worktree.discard"), "{}",
+                EffectClass.Reconcilable, new ResourceClaims([], [], [], null, [], claim), ToolRisk.High, null);
+
+            var readOnly = new AgentProfilePermissionPolicy(new ScriptedPermissionPolicy([]),
+                Profile(), new PathBoundaryValidator(), root);
+            var scopedWriter = new AgentProfilePermissionPolicy(new ScriptedPermissionPolicy([]),
+                Profile(writes: ["README.md"]), new PathBoundaryValidator(), root);
+            var dotWriter = new AgentProfilePermissionPolicy(new ScriptedPermissionPolicy([]),
+                Profile(writes: ["."]), new PathBoundaryValidator(), root);
+            var singleSegmentWriter = new AgentProfilePermissionPolicy(new ScriptedPermissionPolicy([]),
+                Profile(writes: ["*"]), new PathBoundaryValidator(), root);
+            var fullWriter = new AgentProfilePermissionPolicy(new ScriptedPermissionPolicy([]),
+                Profile(writes: ["**"]), new PathBoundaryValidator(), root);
+
+            Assert.Equal(PermissionDecision.Deny, readOnly.Evaluate(intent).Final);
+            Assert.Equal(PermissionDecision.Deny, scopedWriter.Evaluate(intent).Final);
+            Assert.Equal(PermissionDecision.Deny, dotWriter.Evaluate(intent).Final);
+            Assert.Equal(PermissionDecision.Deny, singleSegmentWriter.Evaluate(intent).Final);
+            Assert.Equal(PermissionDecision.Allow, fullWriter.Evaluate(intent).Final);
+        });
+    }
+
+    [Fact]
     public void Actual_tool_pipeline_rejects_preferred_write_without_executing_or_emitting_started()
     {
         WithRoot(root =>

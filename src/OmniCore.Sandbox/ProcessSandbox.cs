@@ -183,8 +183,15 @@ public sealed class StrongSandboxUnavailableBeforeLaunchException(string reason)
     : NotSupportedException(reason);
 
 /// <summary>A launcher proved that it rejected a request before starting any process.</summary>
-public sealed class ProcessLaunchUnavailableBeforeStartException(string reason)
-    : NotSupportedException(reason);
+public sealed class ProcessLaunchUnavailableBeforeStartException : NotSupportedException
+{
+    public ProcessLaunchUnavailableBeforeStartException(string reason) : base(reason) { }
+    public ProcessLaunchUnavailableBeforeStartException(string reason, Exception innerException) : base(reason, innerException) { }
+}
+
+/// <summary>A Weak process may have executed before launcher/control setup failed; callers must not retry it.</summary>
+public sealed class ProcessLaunchOutcomeUnknownException(string reason, Exception innerException)
+    : IOException(reason, innerException);
 
 /// <summary>A Strong launch was attempted and its process-start outcome cannot be proven.</summary>
 public sealed class StrongSandboxLaunchOutcomeUnknownException(string reason, Exception innerException)

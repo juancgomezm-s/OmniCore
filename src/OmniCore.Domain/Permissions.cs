@@ -114,19 +114,39 @@ public sealed class ResourceClaims
 
     public IReadOnlyList<string> Secrets { get; }
 
+    /// <summary>Host-resolved ownership and operation for a native worktree disposition.</summary>
+    public WorktreeDispositionClaim? WorktreeDisposition { get; }
+    /// <summary>Host-resolved exact references for native pruning under current Run authority.</summary>
+    public WorktreeRetentionClaim? WorktreeRetention { get; }
+
     public ResourceClaims(IReadOnlyList<string> reads, IReadOnlyList<string> writes,
-        IReadOnlyList<NetworkGrant> network, ProcessClaim? process, IReadOnlyList<string> secrets)
+        IReadOnlyList<NetworkGrant> network, ProcessClaim? process, IReadOnlyList<string> secrets,
+        WorktreeDispositionClaim? worktreeDisposition = null, WorktreeRetentionClaim? worktreeRetention = null)
     {
         Reads = reads;
         Writes = writes;
         Network = network;
         Process = process;
         Secrets = secrets;
+        WorktreeDisposition = worktreeDisposition;
+        WorktreeRetention = worktreeRetention;
     }
 
     public static ResourceClaims Empty() =>
         new(new string[0], new string[0], new NetworkGrant[0], null, new string[0]);
 }
+
+/// <summary>Bounded native claim for disposing an exact lane-owned worktree.</summary>
+public sealed record WorktreeDispositionClaim(string WorkspaceId, string WorkspaceRoot, string LaneId, string OwnershipId,
+    WorktreeDispositionOperation Operation, string LaneHead, string LaneTree);
+
+public enum WorktreeDispositionOperation { Cleanup, Discard }
+
+/// <summary>Exact Host-derived snapshot refs for one terminal historical Run in the current Session.</summary>
+public sealed record WorktreeRetentionClaim(string SessionId, string ActionRunId, string TargetOwnerRunId,
+    string WorkspaceId, string WorkspaceRoot, string LaneId, string OwnershipId, string SnapshotCommit,
+    string GitCommonDirectory, string WorktreePath, DateTimeOffset RemovedAtUtc,
+    IReadOnlyList<WorktreeSnapshotReference> References);
 
 /// <summary>Destino de red reclamado.</summary>
 public record NetworkGrant(string Host, int? Port) { }

@@ -44,7 +44,7 @@ public sealed class ModelCapabilityDecision
 /// una categoría nunca otorga permisos por sí sola (spec §20, ADR-0044 §10.4).
 /// Vive junto a IPathBoundaryValidator en Abstractions (ADR-0009 §2.2) y es pura.
 /// </summary>
-public sealed class ModelCapabilityBoundary : IToolIntentBoundary
+public sealed class ModelCapabilityBoundary : INativeUserActionIntentBoundary
 {
     /// <summary>Clasificación de tools Core por capacidad (ADR-0044 §3). Versionable y
     /// reemplazable en composición; la frontera no la inventa por nombre de modelo.</summary>
@@ -74,6 +74,9 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             // existing destructive capability so only Full mutation policy can expose it and
             // Delete=Ask/Deny is honored for the entire batch.
             { "worktree.integrate", ModelToolCapability.DeleteFile },
+            { "worktree.cleanup", ModelToolCapability.DeleteFile },
+            { "worktree.discard", ModelToolCapability.DeleteFile },
+            { "worktree.retention", ModelToolCapability.DeleteFile },
             { "extension.batch.apply", ModelToolCapability.ReplaceFile },
             { "process.exec", ModelToolCapability.GeneralProcess },
             { "process.start", ModelToolCapability.GeneralProcess },
@@ -168,12 +171,25 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
     /// 5. red: exige la capacidad Network del techo;
     /// 6. ObserveOnly no permite ningún efecto de escritura aunque la tool esté clasificada.
     /// </summary>
-    public ModelCapabilityDecision Evaluate(ToolIntent intent)
+    public ModelCapabilityDecision Evaluate(ToolIntent intent) => EvaluateCore(intent, nativeUserAction: false);
+
+    public ModelCapabilityDecision EvaluateNativeUserAction(ToolIntent intent) =>
+        EvaluateCore(intent, nativeUserAction: true);
+
+    private ModelCapabilityDecision EvaluateCore(ToolIntent intent, bool nativeUserAction)
     {
         var toolName = intent.ToolId.ToString();
         var privateExtensionStage = IsPrivateExtensionStageIntent(intent, toolName);
-        var sessionDecision = EvaluateSessionSecurityCeiling(intent, toolName);
+        var sessionDecision = EvaluateSessionSecurityCeiling(intent, toolName, nativeUserAction);
         if (sessionDecision is { Allowed: false }) return sessionDecision;
+        if (intent.Claims.WorktreeDisposition is { } disposition
+            && (!IsValidWorktreeDisposition(disposition)
+                || disposition.Operation == WorktreeDispositionOperation.Cleanup && toolName != "worktree.cleanup"
+                || disposition.Operation == WorktreeDispositionOperation.Discard && toolName != "worktree.discard"))
+            return ModelCapabilityDecision.Reject("worktree disposition claim does not match its canonical operation", null);
+        if (intent.Claims.WorktreeRetention is { } retention
+            && (toolName != "worktree.retention" || !IsValidWorktreeRetention(retention)))
+            return ModelCapabilityDecision.Reject("worktree retention claim does not match its canonical operation", null);
 
         // A configured completion gate is a User-owned, Host-bound argv. Do not let a model
         // profile disable that existing control, but require the durable Session ceiling above.
@@ -214,6 +230,35 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             if (_policy.MutationPolicy.Delete == DestructiveActionPolicy.Ask)
                 return ModelCapabilityDecision.Ask(
                     "worktree integration can create, replace, or delete workspace files", capability);
+        }
+        else if (intent.Claims.WorktreeDisposition is { } worktreeDisposition)
+        {
+            // Disposition is destructive on one Host-owned lane tree. It consumes the existing
+            // full-mutation/Delete ceiling and destructive Ask/Deny decision; native provenance
+            // never lifts any of these constraints.
+            if (_policy.MutationPolicy.Mode != FileMutationMode.Full
+                || !_policy.ToolPolicy.Allows(ModelToolCapability.DeleteFile))
+                return ModelCapabilityDecision.Reject("worktree disposition requires Full mutation and DeleteFile capability",
+                    ModelToolCapability.DeleteFile);
+            if (_policy.MutationPolicy.Delete == DestructiveActionPolicy.Deny)
+                return ModelCapabilityDecision.Reject("worktree disposition is denied by destructive-action policy",
+                    ModelToolCapability.DeleteFile);
+            if (_policy.MutationPolicy.Delete == DestructiveActionPolicy.Ask)
+                return ModelCapabilityDecision.Ask("worktree " + worktreeDisposition.Operation.ToString().ToLowerInvariant()
+                    + " removes a lane-owned worktree", ModelToolCapability.DeleteFile);
+        }
+        else if (intent.Claims.WorktreeRetention is not null)
+        {
+            if (_policy.MutationPolicy.Mode != FileMutationMode.Full
+                || !_policy.ToolPolicy.Allows(ModelToolCapability.DeleteFile))
+                return ModelCapabilityDecision.Reject("worktree retention requires Full mutation and DeleteFile capability",
+                    ModelToolCapability.DeleteFile);
+            if (_policy.MutationPolicy.Delete == DestructiveActionPolicy.Deny)
+                return ModelCapabilityDecision.Reject("worktree retention is denied by destructive-action policy",
+                    ModelToolCapability.DeleteFile);
+            if (_policy.MutationPolicy.Delete == DestructiveActionPolicy.Ask)
+                return ModelCapabilityDecision.Ask("worktree retention prunes reviewed private references",
+                    ModelToolCapability.DeleteFile);
         }
 
         // Legacy replacement-classified integrations retain their historical mode mapping.
@@ -262,7 +307,8 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         }
 
         // 2/6. Mutación: cualquier claim de escritura exige mutación permitida por el techo.
-        if (intent.Claims.Writes.Count > 0 && !privateExtensionStage && !MutationAllowed(capability)
+        if (intent.Claims.Writes.Count > 0 && !privateExtensionStage
+            && !MutationClaimsAllowed(_policy.MutationPolicy.Mode, capability, intent, toolName, nativeUserAction)
             && !IsBoundValidationProcess(capability, intent))
         {
             return ModelCapabilityDecision.Reject(
@@ -294,7 +340,8 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
         return sessionDecision is { RequiresAsk: true } ? sessionDecision : ModelCapabilityDecision.Allow();
     }
 
-    private ModelCapabilityDecision? EvaluateSessionSecurityCeiling(ToolIntent intent, string toolName)
+    private ModelCapabilityDecision? EvaluateSessionSecurityCeiling(ToolIntent intent, string toolName,
+        bool nativeUserAction)
     {
         if (_sessionSecurityPolicy is null) return null;
         var requiresAsk = false;
@@ -328,6 +375,29 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             if (ceiling.DeletePolicy == DestructiveActionPolicy.Ask)
                 requiresAsk = true;
         }
+        else if (intent.Claims.WorktreeDisposition is not null)
+        {
+            if (ceiling.FileMutationMode != FileMutationMode.Full
+                || !ceiling.CapabilityCeiling.Contains(ModelToolCapability.DeleteFile))
+                return ModelCapabilityDecision.Reject("worktree disposition exceeds the Session security ceiling",
+                    ModelToolCapability.DeleteFile);
+            if (ceiling.DeletePolicy == DestructiveActionPolicy.Deny)
+                return ModelCapabilityDecision.Reject("Session security policy denies worktree disposition",
+                    ModelToolCapability.DeleteFile);
+            if (ceiling.DeletePolicy == DestructiveActionPolicy.Ask)
+                requiresAsk = true;
+        }
+        else if (intent.Claims.WorktreeRetention is not null)
+        {
+            if (ceiling.FileMutationMode != FileMutationMode.Full
+                || !ceiling.CapabilityCeiling.Contains(ModelToolCapability.DeleteFile))
+                return ModelCapabilityDecision.Reject("worktree retention exceeds the Session security ceiling",
+                    ModelToolCapability.DeleteFile);
+            if (ceiling.DeletePolicy == DestructiveActionPolicy.Deny)
+                return ModelCapabilityDecision.Reject("Session security policy denies worktree retention",
+                    ModelToolCapability.DeleteFile);
+            if (ceiling.DeletePolicy == DestructiveActionPolicy.Ask) requiresAsk = true;
+        }
         if (capability == ModelToolCapability.ReplaceFile
             && intent.EffectiveMutationOperation != ModelToolCapability.ReplaceFile)
         {
@@ -356,7 +426,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             && string.Equals(intent.Claims.Writes.Single(), cwd,
                 OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
         if (intent.Claims.Writes.Count > 0 && !IsPrivateExtensionStageIntent(intent, toolName)
-            && !MutationAllowed(ceiling.FileMutationMode, capability)
+            && !MutationClaimsAllowed(ceiling.FileMutationMode, capability, intent, toolName, nativeUserAction)
             && !(boundedValidation && ceiling.FileMutationMode is FileMutationMode.PatchAndCreate or FileMutationMode.Full))
             return ModelCapabilityDecision.Reject("file mutation is outside the current Session security ceiling", capability);
         if (capability is ModelToolCapability.DeleteFile or ModelToolCapability.MoveOrRename)
@@ -371,6 +441,30 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             ? ModelCapabilityDecision.Ask("action requires confirmation under Session security policy", capability)
             : ModelCapabilityDecision.Allow();
     }
+
+    private static bool IsValidWorktreeDisposition(WorktreeDispositionClaim claim) =>
+        claim.WorkspaceId is { Length: > 0 and <= 64 }
+        && !string.IsNullOrWhiteSpace(claim.WorkspaceRoot)
+        && claim.LaneId is { Length: > 0 and <= 128 }
+        && Guid.TryParseExact(claim.OwnershipId, "N", out _)
+        && claim.LaneHead is { Length: 40 or 64 } && claim.LaneHead.All(Uri.IsHexDigit)
+        && claim.LaneTree is { Length: 40 or 64 } && claim.LaneTree.All(Uri.IsHexDigit)
+        && Enum.IsDefined(claim.Operation);
+
+    private static bool IsValidWorktreeRetention(WorktreeRetentionClaim claim) =>
+        Guid.TryParseExact(claim.SessionId, "D", out var session) && claim.SessionId == new SessionId(session).ToString()
+        && Guid.TryParseExact(claim.ActionRunId, "D", out var action) && claim.ActionRunId == new RunId(action).ToString()
+        && Guid.TryParseExact(claim.TargetOwnerRunId, "D", out var owner) && claim.TargetOwnerRunId == new RunId(owner).ToString()
+        && claim.SessionId.Length > 0 && claim.ActionRunId != claim.TargetOwnerRunId
+        && claim.WorkspaceId is { Length: 16 } && claim.WorkspaceId.All(Uri.IsHexDigit)
+        && Path.IsPathFullyQualified(claim.WorkspaceRoot)
+        && Guid.TryParseExact(claim.LaneId, "D", out var lane) && claim.LaneId == new LaneId(lane).ToString()
+        && Guid.TryParseExact(claim.OwnershipId, "N", out _) && claim.References is { Count: > 0 and <= 2 }
+        && claim.SnapshotCommit is { Length: 40 or 64 } && claim.SnapshotCommit.All(Uri.IsHexDigit)
+        && Path.IsPathFullyQualified(claim.GitCommonDirectory) && Path.IsPathFullyQualified(claim.WorktreePath)
+        && claim.References.All(reference => (reference.Name.StartsWith("refs/omnicore/snapshots/", StringComparison.Ordinal)
+                || reference.Name.StartsWith("refs/omnicore/retained-lanes/", StringComparison.Ordinal))
+            && reference.ExpectedObjectId.Length is 40 or 64 && reference.ExpectedObjectId.All(Uri.IsHexDigit));
 
     private static bool IsPrivateExtensionStageIntent(ToolIntent intent, string toolName) =>
         (toolName.StartsWith("ext.", StringComparison.Ordinal)
@@ -446,6 +540,14 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
             or ModelToolCapability.ReplaceFile or ModelToolCapability.DeleteFile or ModelToolCapability.MoveOrRename,
         _ => false,
     };
+
+    private static bool MutationClaimsAllowed(FileMutationMode mode, ModelToolCapability capability,
+        ToolIntent intent, string toolName, bool nativeUserAction) =>
+        nativeUserAction && toolName == "shell.exec"
+            && capability == ModelToolCapability.Shell
+            && mode == FileMutationMode.Full
+            && intent.Claims.Process is { NetworkRequired: false, EffectClass: "External" }
+        || MutationAllowed(mode, capability);
 
     private static int Rank(DestructiveActionPolicy policy) => policy switch
     {
@@ -560,6 +662,7 @@ public sealed class ModelCapabilityBoundary : IToolIntentBoundary
     /// </summary>
     public bool IsToolVisible(string toolName)
     {
+        if (toolName is "worktree.cleanup" or "worktree.discard" or "worktree.retention") return false;
         if (!_toolCapabilities.TryGetValue(toolName, out var capability))
         {
             return false;

@@ -4,9 +4,9 @@ using OmniCore.Abstractions;
 using OmniCore.Sandbox;
 
 /// <summary>
-/// Selects the OS-enforced launcher for Strong requests and the regular process runtime for
-/// Weak/None. Strong is never silently downgraded: when unavailable the caller must obtain the
-/// session's WeakSandboxConsent and explicitly retry with Weak.
+/// Selects the OS-enforced launcher for Strong requests, a Windows Job Object for persistent
+/// Weak processes, and the regular process runtime for other Weak/None calls. Strong is never
+/// silently downgraded: when unavailable the caller must obtain current WeakSandboxConsent and retry.
 /// </summary>
 public sealed class PlatformSandboxProcessLauncher : ISandboxProcessLauncher, IStrongSandboxPreflight
 {
@@ -37,7 +37,9 @@ public sealed class PlatformSandboxProcessLauncher : ISandboxProcessLauncher, IS
         cancellationToken.ThrowIfCancellationRequested();
         if (launch.RequestedStrength != SandboxStrength.Strong)
             return launch.Duplex
-                ? await new SystemProcessDuplexLauncher().StartAsync(launch, cancellationToken).ConfigureAwait(false)
+                ? OperatingSystem.IsWindows()
+                    ? await new WindowsWeakPersistentProcessLauncher().StartAsync(launch, cancellationToken).ConfigureAwait(false)
+                    : await new SystemProcessDuplexLauncher().StartAsync(launch, cancellationToken).ConfigureAwait(false)
                 : await _basicLauncher.StartAsync(launch, cancellationToken).ConfigureAwait(false);
 
         var preflight = CheckStrongAvailability(launch);

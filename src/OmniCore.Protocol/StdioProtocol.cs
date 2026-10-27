@@ -66,6 +66,7 @@ public static class StdioProtocol
         "command.session.input.user",
         "command.conversation.start.user",
         "command.conversation.new.user",
+        "command.conversation.import.user",
         "command.conversation.resume.user",
         "command.conversation.rename.user",
         "command.conversation.compact.user",
@@ -105,6 +106,8 @@ public static class StdioProtocol
         "command.extensions.package.user",
         "query.humanActionScope",
         "query.processSessions",
+        "query.worktreePreview",
+        "query.worktreeRetention",
     ];
 
     public static IReadOnlyList<NativeQueryDescriptor> NativeQueries { get; } =
@@ -116,6 +119,8 @@ public static class StdioProtocol
         new("workflow.recovery", "query.workflowRecovery", "Durable compiled-workflow stage status and explicit continuation eligibility", "trusted-session", "session-read", false),
         new("process.sessions", "query.processSessions", "Passive, bounded process handles owned by the current Session and Run", "trusted-session", "session-read", false),
         new("process.output", "query.processSessions", "Passive, bounded output already retained for an exact owned process handle", "trusted-session", "session-read", false),
+        new("worktree.preview", "query.worktreePreview", "Passive 3-way Git integration proposal for one exact Lane ID in the current Session and Run; returns its apply ownership token", "trusted-session", "session-read", false),
+        new("worktree.retention", "query.worktreeRetention", "Passive exact-ref preview for expired snapshots owned by one terminal Run in this Session", "trusted-session", "session-read", false),
         new("state", "query.state", "Current runtime state", "session", "session-read", true),
         new("sessionIdentity", "query.sessionIdentity", "Current Session and Run identity", "session", "session-read", true),
         new("sessionSecurity", "query.sessionSecurity", "Durable Session security ceiling and revision", "session", "session-read", true),
@@ -167,7 +172,9 @@ public static class StdioProtocol
             || name.StartsWith("extensions.configuration:", StringComparison.Ordinal)
             || name.StartsWith("extensions.notifications:", StringComparison.Ordinal)
             || name.StartsWith("process.sessions:", StringComparison.Ordinal)
-            || name.StartsWith("process.output:", StringComparison.Ordinal);
+            || name.StartsWith("process.output:", StringComparison.Ordinal)
+            || name.StartsWith("worktree.preview:", StringComparison.Ordinal)
+            || name.StartsWith("worktree.retention:", StringComparison.Ordinal);
 
     public static bool TryGetQuery(string name, out NativeQueryDescriptor descriptor)
     {
@@ -178,7 +185,9 @@ public static class StdioProtocol
             || query.Name == "extensions.configuration" && name.StartsWith("extensions.configuration:", StringComparison.Ordinal)
             || query.Name == "extensions.notifications" && name.StartsWith("extensions.notifications:", StringComparison.Ordinal)
             || query.Name == "process.sessions" && name.StartsWith("process.sessions:", StringComparison.Ordinal)
-            || query.Name == "process.output" && name.StartsWith("process.output:", StringComparison.Ordinal))!;
+            || query.Name == "process.output" && name.StartsWith("process.output:", StringComparison.Ordinal)
+            || query.Name == "worktree.preview" && name.StartsWith("worktree.preview:", StringComparison.Ordinal)
+            || query.Name == "worktree.retention" && name.StartsWith("worktree.retention:", StringComparison.Ordinal))!;
         return descriptor is not null;
     }
 
@@ -217,7 +226,7 @@ public static class StdioProtocol
     }
 
     public static bool IsSupportedCommand(string name) => name is "sim" or "sim.resume" or "session.input"
-        or "conversation.start" or "conversation.new" or "conversation.resume" or "conversation.rename" or "conversation.compact" or "conversation.alternative"
+        or "conversation.start" or "conversation.new" or "conversation.import" or "conversation.resume" or "conversation.rename" or "conversation.compact" or "conversation.alternative"
         or "session.security.set" or "session.security.default.set" or "session.model.select" or "session.model.route.respond"
         or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
         or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
@@ -235,6 +244,7 @@ public static class StdioProtocol
         new("session.input", "command.session.input", "generic", "command.result.lookup", "Persist literal user input without inference"),
         new("conversation.start", "command.conversation.start.user", "native-confirmation+hmac+session-scope+security-revision-v1", "conversation.result.lookup", "Persist input and invoke the Core conversation pipeline"),
         new("conversation.new", "command.conversation.new.user", "native-confirmation+hmac+connection-scope+receipt", "command.result.lookup", "Create a blank Session with the configured security ceiling"),
+        new("conversation.import", "command.conversation.import.user", "native-confirmation+hmac+connection-scope+receipt+payload-hash", "command.result.lookup", "Import a bounded passive user/assistant text transcript into an ObserveOnly Session"),
         new("conversation.resume", "command.conversation.resume.user", "native-confirmation+hmac+workspace-session-scope+lease+receipt", "command.result.lookup", "Resume a Session in the current workspace"),
         new("conversation.rename", "command.conversation.rename.user", "native-confirmation+hmac+session-sequence-cas+receipt", "command.result.lookup", "Set the current Session title with compare-and-set"),
         new("conversation.compact", "command.conversation.compact.user", "native-confirmation+hmac+session-scope+receipt", "command.result.lookup", "Compact the current Session context while retaining history"),
@@ -264,6 +274,14 @@ public static class StdioProtocol
         new("delegation.disposition", "command.delegation.disposition.user", "native-confirmation+hmac+session-run-delegation-result-policy-revision+receipt", "command.result.lookup", "Accept or request rework for one exact returned child result"),
         new("delegation.mailbox.send", "command.delegation.mailbox.send.user", "native-confirmation+hmac+session-run-delegation-policy-revision+receipt", "command.result.lookup", "Send a bounded supervisor message to one exact active child delegation"),
         new("process.control", "command.process.control.user", "native-confirmation+hmac+session-run-policy-revision+tool-receipt", "command.result.lookup", "Run one scoped process read, input/EOF, or stop through the Host tool pipeline"),
+        new("worktree.integrate", "command.invoke.user", "native-confirmation+hmac+session-run-policy-revision+tool-receipt+proposal-cas", "command.result.lookup", "Apply one exact previewed Lane worktree proposal through the existing tool permission and reconciliation pipeline")
+        { WireName = "command.invoke.user", Variant = "canonicalCommandId=core:worktree.integrate; arguments=[toolName,argumentsJson]" },
+        new("worktree.cleanup", "command.invoke.user", "native-confirmation+hmac+session-run-policy-revision+tool-receipt+terminal-lane-ownership", "command.result.lookup", "Retire one exact terminal Lane worktree through the existing tool permission pipeline")
+        { WireName = "command.invoke.user", Variant = "canonicalCommandId=core:worktree.cleanup; arguments=[toolName,argumentsJson]" },
+        new("worktree.discard", "command.invoke.user", "native-confirmation+hmac+session-run-policy-revision+tool-receipt+terminal-lane-ownership+retained-tree", "command.result.lookup", "Archive and discard one exact reviewed terminal Lane worktree through the existing tool permission pipeline")
+        { WireName = "command.invoke.user", Variant = "canonicalCommandId=core:worktree.discard; arguments=[toolName,argumentsJson]" },
+        new("worktree.retention", "command.invoke.user", "native-confirmation+hmac+current-session-run-policy+historical-terminal-owner+exact-refs+tool-receipt", "command.result.lookup", "Prune exact expired private refs owned by one terminal historical Run in the same Session through current permissions")
+        { WireName = "command.invoke.user", Variant = "canonicalCommandId=core:worktree.retention; arguments=[toolName,argumentsJson]" },
         new("run.interrupt", "command.run.interrupt.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Interrupt the active Run"),
         new("run.cancel", "command.run.cancel.user", "native-confirmation+hmac+run-scope", "command.result.lookup", "Cancel the active Run"),
         new("run.mode.select", "command.run.mode.select.user", "native-confirmation+hmac+session-scope", "command.result.lookup", "Select the active Run mode"),
@@ -287,7 +305,9 @@ public sealed record NativeQueryDescriptor(string Name, string Capability, strin
         || Name == "extensions.configuration" && requestedName.StartsWith("extensions.configuration:", StringComparison.Ordinal)
         || Name == "extensions.notifications" && requestedName.StartsWith("extensions.notifications:", StringComparison.Ordinal)
         || Name == "process.sessions" && requestedName.StartsWith("process.sessions:", StringComparison.Ordinal)
-        || Name == "process.output" && requestedName.StartsWith("process.output:", StringComparison.Ordinal))
+        || Name == "process.output" && requestedName.StartsWith("process.output:", StringComparison.Ordinal)
+        || Name == "worktree.preview" && requestedName.StartsWith("worktree.preview:", StringComparison.Ordinal)
+        || Name == "worktree.retention" && requestedName.StartsWith("worktree.retention:", StringComparison.Ordinal))
         ? requestedName : WireName;
 }
 

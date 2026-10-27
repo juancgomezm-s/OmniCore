@@ -580,6 +580,7 @@ public sealed partial class OmniServer
             capacity.Cancellation.Token.ThrowIfCancellationRequested();
             if (result.StopReason == StopReason.InputRequired) return Ack(RuntimeCommandOutcome.Accepted());
             if (result.StopReason != StopReason.EndTurn) throw new InvalidOperationException("Child stopped: " + result.StopReason);
+            StopProcessesForChild(session, run, work.Scope.LaneId!, work.Scope.ExecutionId!);
             lock (_modeAuthorityMutationGate)
             {
                 var journal = _store.ReadFrom(session, 1);
@@ -1215,6 +1216,7 @@ public sealed partial class OmniServer
         var scopes = batch.Take(batch.Count - 1)
             .Select(evt => (ExecutionScopeState?)(evt is TurnAbandoned or TurnSteeringDropped ? scope : childScope))
             .Append(AgentScope(run, facts, delegation.ParentExecutionId)).ToList();
+        StopProcessesForChild(session, run, scope.LaneId!, childId);
         if (finishNativeInvocationId is { } finishedInvocation)
         {
             if (deniedTurn is null || causeCommandId is not { } responseCommandId

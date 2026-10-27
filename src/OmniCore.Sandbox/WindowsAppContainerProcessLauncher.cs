@@ -127,11 +127,16 @@ public sealed class WindowsAppContainerProcessLauncher : ISandboxProcessLauncher
         {
             AuthorizationRuleCollection rules = isDirectory
                 ? new DirectoryInfo(path).GetAccessControl(AccessControlSections.Access)
-                    .GetAccessRules(true, false, typeof(SecurityIdentifier))
+                    .GetAccessRules(true, true, typeof(SecurityIdentifier))
                 : new FileInfo(path).GetAccessControl(AccessControlSections.Access)
-                    .GetAccessRules(true, false, typeof(SecurityIdentifier));
+                    .GetAccessRules(true, true, typeof(SecurityIdentifier));
+            // Installed SDKs normally inherit ALL APPLICATION PACKAGES read/execute access.
+            // Ignoring those effective ACEs needlessly grants/revokes an inheritable profile
+            // ACE across the shared SDK tree, and may wait on its cross-process ACL mutex.
+            // An inherit-only ACE grants descendants access, not this directory itself.
             var packageRules = rules.Cast<FileSystemAccessRule>()
-                .Where(rule => rule.IdentityReference.Equals(AllApplicationPackagesSid)).ToArray();
+                .Where(rule => rule.IdentityReference.Equals(AllApplicationPackagesSid)
+                    && (rule.PropagationFlags & PropagationFlags.InheritOnly) == 0).ToArray();
             var required = FileSystemRights.ReadAndExecute;
             if (packageRules.Any(rule => rule.AccessControlType == AccessControlType.Deny
                 && (rule.FileSystemRights & required) != 0))
@@ -217,7 +222,7 @@ public sealed class WindowsAppContainerProcessLauncher : ISandboxProcessLauncher
         try
         {
             var sid = AppContainerNative.GetOrCreateProfileSid(profileName);
-            aclLease = new AppContainerAclLease(sid);
+            aclLease = new AppContainerAclLease(sid, cancellationToken);
             Directory.CreateDirectory(tempDirectory);
             aclLease.GrantDirectory(tempDirectory, FileSystemRights.Modify);
             var executableDirectory = Path.GetDirectoryName(executable)!;
@@ -341,7 +346,7 @@ public sealed class WindowsAppContainerProcessLauncher : ISandboxProcessLauncher
         return "OmniCore-" + hash[..40];
     }
 
-    private static string BuildCommandLine(string executable, IReadOnlyList<string> arguments, bool windowsShellCommandLine)
+    internal static string BuildCommandLine(string executable, IReadOnlyList<string> arguments, bool windowsShellCommandLine)
     {
         if (windowsShellCommandLine)
         {
@@ -426,10 +431,15 @@ public sealed class WindowsAppContainerCapabilitiesProbe : ISandboxCapabilitiesP
 internal sealed class AppContainerAclLease : IDisposable
 {
     private readonly SecurityIdentifier _sid;
+    private readonly CancellationToken _grantCancellation;
     private readonly List<(string Path, bool IsDirectory, FileSystemAccessRule Rule)> _added = new();
     private bool _disposed;
 
-    public AppContainerAclLease(SecurityIdentifier sid) => _sid = sid;
+    public AppContainerAclLease(SecurityIdentifier sid, CancellationToken grantCancellation = default)
+    {
+        _sid = sid;
+        _grantCancellation = grantCancellation;
+    }
 
     public void GrantDirectory(string path, FileSystemRights rights) => Grant(path, true, rights);
     public void GrantFile(string path, FileSystemRights rights) => Grant(path, false, rights);
@@ -481,10 +491,10 @@ internal sealed class AppContainerAclLease : IDisposable
                     _added.Add((path, false, rule));
                 }
             }
-        });
+        }, _grantCancellation);
     }
 
-    private static void WithAclPathLock(string path, Action action)
+    private static void WithAclPathLock(string path, Action action, CancellationToken cancellationToken = default)
     {
         // ACL updates are read/modify/write operations. Distinct workspace profiles still update
         // shared paths (notably the test/helper executable directory), so per-profile locks alone
@@ -494,10 +504,19 @@ internal sealed class AppContainerAclLease : IDisposable
         var lockName = "Local\\OmniCore-AppContainerAcl-" + Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes(fullPath.ToUpperInvariant())));
         using var mutex = new Mutex(false, lockName);
-        try { mutex.WaitOne(); }
-        catch (AbandonedMutexException) { /* The abandoned mutex is acquired by this thread. */ }
-        try { action(); }
-        finally { mutex.ReleaseMutex(); }
+        var acquired = false;
+        try
+        {
+            while (!acquired)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try { acquired = mutex.WaitOne(50); }
+                catch (AbandonedMutexException) { acquired = true; }
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            action();
+        }
+        finally { if (acquired) mutex.ReleaseMutex(); }
     }
 
     public void Dispose()
@@ -1095,6 +1114,35 @@ internal static partial class AppContainerNative
         }
     }
 
+    private static IntPtr BuildInheritedEnvironmentBlock(IReadOnlyDictionary<string, string> requested,
+        string workingDirectory)
+    {
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "PATH", "SystemRoot", "WINDIR", "SystemDrive", "TEMP", "TMP", "LOCALAPPDATA", "APPDATA",
+            "USERPROFILE", "PUBLIC", "ALLUSERSPROFILE", "ProgramData", "ProgramFiles", "ProgramFiles(x86)",
+            "CommonProgramFiles", "CommonProgramFiles(x86)", "COMPUTERNAME", "OS", "PROCESSOR_ARCHITECTURE",
+            "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL", "PROCESSOR_REVISION", "USERNAME", "HOMEDRIVE", "HOMEPATH",
+            "ComSpec", "PATHEXT", "DOTNET_ROOT", "DOTNET_ROOT_X64", "DOTNET_ROOT_X86"
+        };
+        var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (System.Collections.DictionaryEntry item in Environment.GetEnvironmentVariables())
+        {
+            if (item.Key is not string name || item.Value is not string value) continue;
+            if (allowed.Contains(name))
+                values[name] = value;
+        }
+        var drive = Path.GetPathRoot(workingDirectory);
+        if (drive is { Length: 3 } && drive[1] == ':') values["=" + drive[..2]] = workingDirectory;
+        foreach (var pair in requested) values[pair.Key] = pair.Value;
+        var block = string.Join('\0', values.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(pair => pair.Key + "=" + pair.Value)) + "\0\0";
+        var characters = block.ToCharArray();
+        var pointer = Marshal.AllocHGlobal(checked(characters.Length * sizeof(char)));
+        Marshal.Copy(characters, 0, pointer, characters.Length);
+        return pointer;
+    }
+
     private static Dictionary<string, string> ReadEnvironmentBlock(IntPtr block)
     {
         var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -1119,19 +1167,39 @@ internal static partial class AppContainerNative
         return values;
     }
 
+    internal static bool CreateSuspendedWeakProcess(string application, string commandLine, string workingDirectory,
+        IReadOnlyDictionary<string, string> requestedEnvironment, bool terminal,
+        out SafeFileHandle? retainedInput, out SafeFileHandle? stdoutRead,
+        out SafeFileHandle? stderrRead, out SafeFileHandle? job, out SafeProcessHandle? process,
+        out SafePseudoConsoleHandle? pseudoConsole, out bool processResumed) => CreateSuspendedProcessCore(application, commandLine,
+            workingDirectory, requestedEnvironment, null, null, null, true, false, terminal,
+            out retainedInput, out stdoutRead, out stderrRead, out job, out process, out pseudoConsole, out processResumed);
+
     internal static bool CreateSuspendedProcess(string application, string commandLine, string workingDirectory,
         IReadOnlyDictionary<string, string> requestedEnvironment, string tempDirectory,
         SecurityCapabilitiesBuffer securityCapabilities, string? initialStandardInput, bool duplex, bool lessPrivileged,
         bool terminal, out SafeFileHandle? retainedInput, out SafeFileHandle? stdoutRead,
         out SafeFileHandle? stderrRead, out SafeFileHandle? job, out SafeProcessHandle? process,
-        out SafePseudoConsoleHandle? pseudoConsole)
+        out SafePseudoConsoleHandle? pseudoConsole) => CreateSuspendedProcessCore(application, commandLine,
+            workingDirectory, requestedEnvironment, tempDirectory, securityCapabilities, initialStandardInput,
+            duplex, lessPrivileged, terminal, out retainedInput, out stdoutRead, out stderrRead, out job,
+        out process, out pseudoConsole, out _);
+
+    private static bool CreateSuspendedProcessCore(string application, string commandLine, string workingDirectory,
+        IReadOnlyDictionary<string, string> requestedEnvironment, string? tempDirectory,
+        SecurityCapabilitiesBuffer? securityCapabilities, string? initialStandardInput, bool? duplex,
+        bool lessPrivileged, bool terminal, out SafeFileHandle? retainedInput, out SafeFileHandle? stdoutRead,
+        out SafeFileHandle? stderrRead, out SafeFileHandle? job, out SafeProcessHandle? process,
+        out SafePseudoConsoleHandle? pseudoConsole, out bool processResumed)
     {
+        processResumed = false;
         retainedInput = null; stdoutRead = stderrRead = null; job = null; process = null; pseudoConsole = null;
         var startupSize = (nuint)0;
-        var attributeCount = lessPrivileged ? 3 : 2;
+        var appContainer = securityCapabilities is not null;
+        var attributeCount = (lessPrivileged ? 1 : 0) + (appContainer ? 1 : 0) + 1;
         InitializeProcThreadAttributeList(IntPtr.Zero, attributeCount, 0, ref startupSize);
         var attributes = Marshal.AllocHGlobal(checked((int)startupSize));
-        var policy = Marshal.AllocHGlobal(sizeof(int));
+        var policy = lessPrivileged ? Marshal.AllocHGlobal(sizeof(int)) : IntPtr.Zero;
         IntPtr stdoutWrite = IntPtr.Zero, stderrWrite = IntPtr.Zero, stdinRead = IntPtr.Zero,
             stdinWrite = IntPtr.Zero, threadHandle = IntPtr.Zero;
         IntPtr pseudoInputRead = IntPtr.Zero, pseudoOutputWrite = IntPtr.Zero, pseudoConsoleRaw = IntPtr.Zero;
@@ -1141,10 +1209,10 @@ internal static partial class AppContainerNative
         {
             if (!InitializeProcThreadAttributeList(attributes, attributeCount, 0, ref startupSize))
                 throw new Win32Exception(Marshal.GetLastPInvokeError());
-            if (!UpdateProcThreadAttribute(attributes, 0, (nuint)ProcThreadAttributeSecurityCapabilities,
+            if (securityCapabilities is not null && !UpdateProcThreadAttribute(attributes, 0, (nuint)ProcThreadAttributeSecurityCapabilities,
                 securityCapabilities.Pointer, (nuint)Marshal.SizeOf<SecurityCapabilities>(), IntPtr.Zero, IntPtr.Zero))
                 throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to set AppContainer security capabilities.");
-            Marshal.WriteInt32(policy, 1); // PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT
+            if (lessPrivileged) Marshal.WriteInt32(policy, 1); // PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT
             if (lessPrivileged && !UpdateProcThreadAttribute(attributes, 0, (nuint)ProcThreadAttributeAllApplicationPackagesPolicy,
                 policy, sizeof(int), IntPtr.Zero, IntPtr.Zero))
                 throw new Win32Exception(Marshal.GetLastPInvokeError(), "LPAC is required; no AppContainer downgrade is permitted.");
@@ -1205,8 +1273,9 @@ internal static partial class AppContainerNative
                     AttributeList = attributes
                 };
                 var startupPointer = Marshal.AllocHGlobal(Marshal.SizeOf<StartupInfoEx>());
-                var environmentPointer = BuildAppContainerEnvironmentBlock(securityCapabilities.Pointer,
-                    requestedEnvironment, tempDirectory, workingDirectory);
+                var environmentPointer = appContainer
+                    ? BuildAppContainerEnvironmentBlock(securityCapabilities!.Pointer, requestedEnvironment, tempDirectory!, workingDirectory)
+                    : BuildInheritedEnvironmentBlock(requestedEnvironment, workingDirectory);
                 var mutableCommand = Marshal.StringToHGlobalUni(commandLine);
                 try
                 {
@@ -1216,7 +1285,7 @@ internal static partial class AppContainerNative
                         workingDirectory, startupPointer, out var info))
                     {
                         var error = Marshal.GetLastPInvokeError();
-                        throw new Win32Exception(error, $"CreateProcessW failed for AppContainer (Win32 error {error}).");
+                        throw new Win32Exception(error, $"CreateProcessW failed (Win32 error {error}).");
                     }
                     processHandle = info.Process; threadHandle = info.Thread; processCreated = true;
                     if (pseudoInputRead != IntPtr.Zero) { CloseHandle(pseudoInputRead); pseudoInputRead = IntPtr.Zero; }
@@ -1230,6 +1299,7 @@ internal static partial class AppContainerNative
             if (jobHandle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to create process Job Object.");
             var limits = new ExtendedLimitInformation { BasicLimitInformation = new BasicLimitInformation
             {
+                // Breakaway flags are deliberately absent: every descendant remains in this job.
                 LimitFlags = JobObjectLimitKillOnJobClose | (lessPrivileged ? 0x00000008u : 0u),
                 // Extensions use Core's broker, not child processes. Legacy batch policy is unchanged.
                 ActiveProcessLimit = lessPrivileged ? 1u : 0u
@@ -1251,13 +1321,14 @@ internal static partial class AppContainerNative
             job = new SafeFileHandle(jobHandle, true); jobHandle = IntPtr.Zero;
             if (ResumeThread(threadHandle) == ResumeFailed)
                 throw new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to resume AppContainer process.");
+            processResumed = true;
             CloseHandle(threadHandle); threadHandle = IntPtr.Zero;
-            if (duplex)
+            if (duplex == true)
             {
                 retainedInput = new SafeFileHandle(stdinWrite, ownsHandle: true);
                 stdinWrite = IntPtr.Zero;
             }
-            else using (var inputHandle = new SafeFileHandle(stdinWrite, ownsHandle: true))
+            else if (duplex == false) using (var inputHandle = new SafeFileHandle(stdinWrite, ownsHandle: true))
             {
                 stdinWrite = IntPtr.Zero;
                 if (initialStandardInput is not null)
@@ -1269,14 +1340,47 @@ internal static partial class AppContainerNative
             }
             return true;
         }
-        catch
+        catch (Exception launchFailure)
         {
-            if (jobHandle != IntPtr.Zero) TerminateJobObjectRaw(jobHandle, 1);
-            if (processCreated && processHandle != IntPtr.Zero) TerminateProcess(processHandle, 1);
+            Exception? cleanupFailure = null;
+            if (jobHandle != IntPtr.Zero)
+            {
+                if (!TerminateJobObjectRaw(jobHandle, 1))
+                    cleanupFailure = new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to terminate the suspended process job.");
+            }
+            else if (job is { IsClosed: false, IsInvalid: false }
+                && !TerminateJobObject(job, 1) && Marshal.GetLastPInvokeError() != ErrorProcessNotFound)
+                cleanupFailure = new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to terminate the suspended process job.");
+            if (processCreated && processHandle != IntPtr.Zero && !TerminateProcess(processHandle, 1))
+                cleanupFailure ??= new Win32Exception(Marshal.GetLastPInvokeError(), "Unable to terminate the suspended process.");
             if (processHandle != IntPtr.Zero)
             {
-                WaitForSingleObjectRaw(processHandle, 5000);
+                try
+                {
+                    var wait = WaitForSingleObjectRaw(processHandle, 5000);
+                    if (wait != WaitObject0) cleanupFailure ??= new IOException("The suspended process did not exit during launch cleanup.");
+                }
+                catch (Exception waitFailure) when (waitFailure is not OutOfMemoryException and not StackOverflowException)
+                { cleanupFailure ??= waitFailure; }
                 CloseHandle(processHandle);
+            }
+            else if (process is { IsClosed: false, IsInvalid: false })
+            {
+                try
+                {
+                    var wait = WaitForSingleObject(process, 5000);
+                    if (wait == WaitTimeout)
+                    {
+                        // Closing a configured kill-on-close job is the final fence if explicit
+                        // termination raced with handle transfer or the root's suspended state.
+                        job?.Dispose();
+                        wait = WaitForSingleObject(process, 5000);
+                    }
+                    if (wait != WaitObject0)
+                        cleanupFailure ??= new IOException("The suspended process did not exit during launch cleanup.");
+                }
+                catch (Exception waitFailure) when (waitFailure is not OutOfMemoryException and not StackOverflowException)
+                { cleanupFailure ??= waitFailure; }
             }
             if (jobHandle != IntPtr.Zero) CloseHandle(jobHandle);
             if (threadHandle != IntPtr.Zero) CloseHandle(threadHandle);
@@ -1287,6 +1391,7 @@ internal static partial class AppContainerNative
             if (pseudoConsoleRaw != IntPtr.Zero) ClosePseudoConsole(pseudoConsoleRaw);
             process?.Dispose(); job?.Dispose(); retainedInput?.Dispose(); stdoutRead?.Dispose(); stderrRead?.Dispose();
             pseudoConsole?.Dispose();
+            if (cleanupFailure is not null) throw new AggregateException("Unable to prove cleanup of a failed suspended process launch.", launchFailure, cleanupFailure);
             throw;
         }
         finally
@@ -1295,7 +1400,7 @@ internal static partial class AppContainerNative
             if (stderrWrite != IntPtr.Zero) CloseHandle(stderrWrite);
             DeleteProcThreadAttributeList(attributes);
             Marshal.FreeHGlobal(attributes);
-            Marshal.FreeHGlobal(policy);
+            if (policy != IntPtr.Zero) Marshal.FreeHGlobal(policy);
         }
     }
 

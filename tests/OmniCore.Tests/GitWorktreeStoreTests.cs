@@ -1094,6 +1094,125 @@ public sealed class GitWorktreeStoreTests
     }
 
     [Fact]
+    public async Task Reviewed_retention_prunes_two_refs_atomically_and_rejects_a_stale_review()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("tracked.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var worktree = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(fixture.Request(),
+            CancellationToken.None)).Worktree);
+        Assert.True((await store.CleanupAsync(worktree.Ownership, CancellationToken.None)).Removed);
+        var secondRef = AddExpiredRetainedLaneReference(fixture, worktree);
+        var now = DateTimeOffset.UtcNow.AddDays(8);
+        var inspected = await store.InspectExpiredSnapshotRefsForOwnershipAsync(fixture.Repository, fixture.Data,
+            worktree.WorkspaceId.ToString(), worktree.OwnershipId, now, CancellationToken.None);
+        var candidate = Assert.IsType<WorktreeRetentionCandidate>(inspected.Candidate);
+        Assert.Equal(2, candidate.References.Count);
+
+        var pruned = await store.PruneReviewedSnapshotRefsAsync(fixture.Repository, fixture.Data,
+            worktree.WorkspaceId.ToString(), candidate, now, CancellationToken.None);
+        Assert.True(pruned.PrunedReferences == 2,
+            $"actual={pruned.PrunedReferences}; error={pruned.Error}; unknown={pruned.OutcomeUnknown}");
+        Assert.False(pruned.OutcomeUnknown);
+        Assert.Empty(fixture.Git("for-each-ref", "--format=%(refname)", "refs/omnicore/").Split('\n',
+            StringSplitOptions.RemoveEmptyEntries));
+        Assert.True(File.Exists(worktree.OwnershipMetadataPath));
+        Assert.False(Directory.Exists(worktree.WorktreePath));
+        Assert.NotNull(secondRef);
+
+        using var staleFixture = new GitFixture();
+        staleFixture.Init();
+        staleFixture.Write("tracked.txt", "base\n");
+        staleFixture.CommitAll("base");
+        var staleStore = new GitWorktreeStore(new SystemProcessRuntime());
+        var staleWorktree = Assert.IsType<WorktreeIdentity>((await staleStore.CreateAsync(staleFixture.Request(),
+            CancellationToken.None)).Worktree);
+        Assert.True((await staleStore.CleanupAsync(staleWorktree.Ownership, CancellationToken.None)).Removed);
+        var staleSecondRef = AddExpiredRetainedLaneReference(staleFixture, staleWorktree);
+        var reviewed = await staleStore.InspectExpiredSnapshotRefsForOwnershipAsync(staleFixture.Repository,
+            staleFixture.Data, staleWorktree.WorkspaceId.ToString(), staleWorktree.OwnershipId, now,
+            CancellationToken.None);
+        var staleCandidate = Assert.IsType<WorktreeRetentionCandidate>(reviewed.Candidate);
+        var newObject = staleFixture.Git("rev-parse", "HEAD").Trim();
+        staleFixture.Git("update-ref", staleSecondRef, newObject);
+
+        var rejected = await staleStore.PruneReviewedSnapshotRefsAsync(staleFixture.Repository,
+            staleFixture.Data, staleWorktree.WorkspaceId.ToString(), staleCandidate, now, CancellationToken.None);
+        Assert.Equal(0, rejected.PrunedReferences);
+        Assert.False(rejected.OutcomeUnknown);
+        var unchangedRef = Assert.Single(staleCandidate.References, reference => reference.Name != staleSecondRef);
+        Assert.Equal(unchangedRef.ExpectedObjectId,
+            staleFixture.Git("rev-parse", "--verify", unchangedRef.Name).Trim());
+        Assert.Equal(newObject, staleFixture.Git("rev-parse", "--verify", staleSecondRef).Trim());
+        Assert.True(File.Exists(staleWorktree.OwnershipMetadataPath));
+    }
+
+    [Fact]
+    public async Task Retention_preserves_symbolic_private_ref_and_its_foreign_branch_target()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("tracked.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var worktree = Assert.IsType<WorktreeIdentity>((await store.CreateAsync(fixture.Request(),
+            CancellationToken.None)).Worktree);
+        Assert.True((await store.CleanupAsync(worktree.Ownership, CancellationToken.None)).Removed);
+        const string sentinel = "refs/heads/retention-sentinel";
+        var before = worktree.SnapshotCommit;
+        var mainBefore = fixture.Git("rev-parse", "refs/heads/main").Trim();
+        fixture.Git("update-ref", sentinel, before);
+        fixture.Git("update-ref", "--no-deref", "-d", worktree.SnapshotRef, before);
+        fixture.Git("symbolic-ref", worktree.SnapshotRef, sentinel);
+        var now = DateTimeOffset.UtcNow.AddDays(8);
+
+        var inspected = await store.InspectExpiredSnapshotRefsForOwnershipAsync(fixture.Repository, fixture.Data,
+            worktree.WorkspaceId.ToString(), worktree.OwnershipId, now, CancellationToken.None);
+        Assert.Null(inspected.Candidate);
+        var swept = await store.PruneExpiredSnapshotRefsAsync(fixture.Repository, fixture.Data,
+            worktree.WorkspaceId.ToString(), now, dryRun: false, CancellationToken.None);
+        Assert.Equal(0, swept.Pruned);
+        Assert.Equal(1, swept.Preserved);
+        Assert.Equal(sentinel, fixture.Git("symbolic-ref", "--quiet", worktree.SnapshotRef).Trim());
+        Assert.Equal(before, fixture.Git("rev-parse", "--verify", sentinel).Trim());
+        Assert.Equal(mainBefore, fixture.Git("rev-parse", "--verify", "refs/heads/main").Trim());
+        Assert.True(File.Exists(worktree.OwnershipMetadataPath));
+        Assert.False(Directory.Exists(worktree.WorktreePath));
+    }
+
+    private static string AddExpiredRetainedLaneReference(GitFixture fixture, WorktreeIdentity worktree)
+    {
+        var original = fixture.Git("rev-parse", "HEAD").Trim();
+        fixture.Write("retained-lane-only.txt", Guid.NewGuid().ToString("N"));
+        fixture.CommitAll("unpublished retained lane");
+        var retainedCommit = fixture.Git("rev-parse", "HEAD").Trim();
+        var retainedTree = fixture.Git("rev-parse", "HEAD^{tree}").Trim();
+        static string SafeSegment(string value) => Convert.ToHexStringLower(
+            SHA256.HashData(Encoding.UTF8.GetBytes(value)))[..16];
+        var retainedRef = $"refs/omnicore/retained-lanes/{SafeSegment(worktree.WorkspaceId.ToString())}/"
+            + $"{SafeSegment(worktree.LaneId.ToString())}/{worktree.OwnershipId}";
+        fixture.Git("update-ref", retainedRef, retainedCommit);
+        fixture.Git("reset", "--hard", original);
+
+        var json = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(worktree.OwnershipMetadataPath))!
+            .AsObject();
+        void Set(string name, string value)
+        {
+            var key = json.Select(pair => pair.Key).SingleOrDefault(key =>
+                string.Equals(key, name, StringComparison.OrdinalIgnoreCase)) ?? name;
+            json[key] = value;
+        }
+        Set("RetainedLaneRef", retainedRef);
+        Set("RetainedLaneCommit", retainedCommit);
+        Set("RetainedLaneTree", retainedTree);
+        Set("RetainedLaneDisposition", "discard");
+        File.WriteAllText(worktree.OwnershipMetadataPath, json.ToJsonString());
+        return retainedRef;
+    }
+
+    [Fact]
     public async Task Snapshot_retention_preserves_metadata_bound_to_another_workspace_id()
     {
         using var fixture = new GitFixture();
@@ -1529,6 +1648,115 @@ public sealed class GitWorktreeStoreTests
     }
 
     [Fact]
+    public async Task Explicit_discard_rejects_lane_edits_made_after_the_reviewed_snapshot()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("base.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        var path = Path.Combine(worktree.WorktreePath, "untracked output.txt");
+        File.WriteAllText(path, "reviewed output\n");
+        var preview = await store.PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(worktree),
+            CancellationToken.None);
+        var reviewed = Assert.IsType<WorktreeIntegrationPreview>(preview.Preview);
+        Assert.True(preview.Succeeded);
+
+        File.WriteAllText(path, "changed while permission was pending\n");
+        var discarded = await store.DiscardAsync(worktree.Ownership,
+            new WorktreeDispositionSnapshot(reviewed.LaneHeadAtCapture, reviewed.TheirsTree),
+            CancellationToken.None);
+
+        Assert.False(discarded.Removed);
+        Assert.Equal(GitWorktreeErrorCode.WorkspaceChanged, discarded.Error);
+        Assert.True(Directory.Exists(worktree.WorktreePath));
+        Assert.Equal("changed while permission was pending\n", File.ReadAllText(path));
+        Assert.Empty(fixture.Git("for-each-ref", "--format=%(refname)", "refs/omnicore/retained-lanes"));
+    }
+
+    [Fact]
+    public async Task Disposition_snapshot_check_is_read_only_and_rejects_a_changed_lane()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("base.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        var reviewed = new WorktreeDispositionSnapshot(worktree.SnapshotCommit, worktree.SnapshotTree);
+        var refsBefore = fixture.Git("for-each-ref", "--format=%(refname) %(objectname)", "refs/omnicore");
+        Assert.Equal(worktree.SnapshotCommit, fixture.Git("-C", worktree.WorktreePath, "rev-parse", "HEAD").Trim());
+        Assert.Equal(worktree.SnapshotTree, fixture.Git("-C", worktree.WorktreePath, "rev-parse", "HEAD^{tree}").Trim());
+        Assert.Empty(fixture.Git("-C", worktree.WorktreePath, "status", "--porcelain", "--untracked-files=all",
+            "--ignored=matching").Split('\n', StringSplitOptions.RemoveEmptyEntries));
+
+        Assert.True(await store.MatchesDispositionSnapshotAsync(worktree, reviewed, CancellationToken.None));
+        Assert.Equal(refsBefore, fixture.Git("for-each-ref", "--format=%(refname) %(objectname)", "refs/omnicore"));
+
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "later.txt"), "changed after review\n");
+        Assert.False(await store.MatchesDispositionSnapshotAsync(worktree, reviewed, CancellationToken.None));
+        Assert.True(Directory.Exists(worktree.WorktreePath));
+    }
+
+    [Fact]
+    public async Task Explicit_cleanup_rechecks_the_reviewed_clean_tree_at_the_removal_fence()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write("base.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        var latePath = Path.Combine(worktree.WorktreePath, "late-edit.txt");
+        store.BeforeFinalCleanupValidationForTests = _ => File.WriteAllText(latePath, "preserve me\n");
+
+        var cleanup = await store.CleanupAsync(worktree.Ownership,
+            new WorktreeDispositionSnapshot(worktree.SnapshotCommit, worktree.SnapshotTree), CancellationToken.None);
+
+        Assert.False(cleanup.Removed);
+        Assert.Equal(GitWorktreeErrorCode.WorktreeDirty, cleanup.Error);
+        Assert.True(Directory.Exists(worktree.WorktreePath));
+        Assert.Equal("preserve me\n", File.ReadAllText(latePath));
+        Assert.Empty(fixture.Git("for-each-ref", "--format=%(refname)", "refs/omnicore/retained-lanes"));
+    }
+
+    [Fact]
+    public async Task Explicit_discard_rechecks_ignored_outputs_at_the_removal_fence()
+    {
+        using var fixture = new GitFixture();
+        fixture.Init();
+        fixture.Write(".gitignore", ".local-output\n");
+        fixture.Write("base.txt", "base\n");
+        fixture.CommitAll("base");
+        var store = new GitWorktreeStore(new SystemProcessRuntime());
+        var created = await store.CreateAsync(fixture.Request(), CancellationToken.None);
+        var worktree = Assert.IsType<WorktreeIdentity>(created.Worktree);
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "lane-output.txt"), "reviewed\n");
+        var preview = await store.PreviewIntegrationAsync(new WorktreeIntegrationPreviewRequest(worktree),
+            CancellationToken.None);
+        var reviewed = Assert.IsType<WorktreeIntegrationPreview>(preview.Preview);
+        Assert.True(preview.Succeeded);
+        store.BeforeFinalCleanupValidationForTests = path =>
+            File.WriteAllText(Path.Combine(path, ".local-output"), "keep ignored output\n");
+
+        var discarded = await store.DiscardAsync(worktree.Ownership,
+            new WorktreeDispositionSnapshot(reviewed.LaneHeadAtCapture, reviewed.TheirsTree),
+            CancellationToken.None);
+
+        Assert.False(discarded.Removed);
+        Assert.Equal(GitWorktreeErrorCode.WorktreeDirty, discarded.Error);
+        Assert.True(Directory.Exists(worktree.WorktreePath));
+        Assert.Equal("keep ignored output\n", File.ReadAllText(Path.Combine(worktree.WorktreePath, ".local-output")));
+        var retainedRef = Assert.Single(fixture.Git("for-each-ref", "--format=%(refname)",
+            "refs/omnicore/retained-lanes").Split('\n', StringSplitOptions.RemoveEmptyEntries));
+        Assert.Equal("reviewed\n", fixture.Git("show", retainedRef + ":lane-output.txt"));
+    }
+
+    [Fact]
     public async Task Explicit_discard_refuses_ignored_outputs_that_would_not_be_in_retained_tree()
     {
         using var fixture = new GitFixture();
@@ -1699,22 +1927,59 @@ public sealed class GitWorktreeStoreTests
     }
 
     [Theory]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(false, false, true)]
     public async Task Host_cleanup_preserves_lane_when_proposal_is_partial_or_a_consumer_is_active(
-        bool subset, bool activeConsumer)
+        bool subset, bool activeConsumer, bool unrelatedActiveLane)
     {
-        var scenario = await CreateCleanupScenario(subset, activeConsumer);
+        var scenario = await CreateCleanupScenario(subset, activeConsumer, unrelatedActiveLane);
         var before = File.ReadAllText(Path.Combine(scenario.Worktree.WorktreePath, "sample.txt"));
         var outcome = await WorktreeCleanupHost.CleanupWithDependenciesAsync(scenario.Fixture.Repository,
             scenario.Fixture.Data, scenario.Worktree.OwnershipId, scenario.Journal, scenario.Codecs,
             scenario.Artifacts, scenario.Git, CancellationToken.None);
+
+        if (unrelatedActiveLane)
+        {
+            Assert.True(outcome.Removed, outcome.Error?.ToString());
+            Assert.False(Directory.Exists(scenario.Worktree.WorktreePath));
+            var retainedRef = Assert.Single(scenario.Fixture.Git("for-each-ref", "--format=%(refname)",
+                "refs/omnicore/retained-lanes").Split('\n', StringSplitOptions.RemoveEmptyEntries));
+            Assert.Equal(scenario.Preview.TheirsTree, scenario.Fixture.Git("show", "-s", "--format=%T", retainedRef).Trim());
+            Assert.Equal(before, scenario.Fixture.Git("show", retainedRef + ":sample.txt"));
+            return;
+        }
 
         Assert.False(outcome.Removed);
         Assert.Equal(GitWorktreeErrorCode.WorktreeDirty, outcome.Error);
         Assert.True(Directory.Exists(scenario.Worktree.WorktreePath));
         Assert.Equal(before, File.ReadAllText(Path.Combine(scenario.Worktree.WorktreePath, "sample.txt")));
         Assert.Empty(scenario.Fixture.Git("for-each-ref", "--format=%(refname)", "refs/omnicore/retained-lanes"));
+        if (activeConsumer)
+        {
+            var consumerTask = Assert.IsType<TaskId>(scenario.ActiveConsumerTask);
+            var consumerLane = Assert.IsType<LaneId>(scenario.ActiveConsumerLane);
+            var consumerExecution = Assert.IsType<ExecutionId>(scenario.ActiveConsumerExecution);
+            var consumerProfile = Assert.IsType<ProfileId>(scenario.ActiveConsumerProfile);
+            AppendScoped(scenario.Journal, scenario.Codecs, scenario.Session, scenario.Run,
+                consumerTask, consumerLane, consumerExecution,
+                new AgentExecutionCompleted(consumerExecution, consumerLane, consumerProfile,
+                    scenario.RootExecution, ExecutionRelation.Awaited, ExecutionSupervision.Managed));
+            AppendScoped(scenario.Journal, scenario.Codecs, scenario.Session, scenario.Run,
+                consumerTask, consumerLane, consumerExecution, new LaneCompleted(consumerLane, null));
+            AppendScoped(scenario.Journal, scenario.Codecs, scenario.Session, scenario.Run,
+                consumerTask, consumerLane, consumerExecution, new TaskCompleted(consumerTask, null));
+
+            var afterConsumer = await WorktreeCleanupHost.CleanupWithDependenciesAsync(scenario.Fixture.Repository,
+                scenario.Fixture.Data, scenario.Worktree.OwnershipId, scenario.Journal, scenario.Codecs,
+                scenario.Artifacts, scenario.Git, CancellationToken.None);
+            Assert.True(afterConsumer.Removed, afterConsumer.Error?.ToString());
+            Assert.False(Directory.Exists(scenario.Worktree.WorktreePath));
+            var retainedRef = Assert.Single(scenario.Fixture.Git("for-each-ref", "--format=%(refname)",
+                "refs/omnicore/retained-lanes").Split('\n', StringSplitOptions.RemoveEmptyEntries));
+            Assert.Equal(scenario.Preview.TheirsTree, scenario.Fixture.Git("show", "-s", "--format=%T", retainedRef).Trim());
+            Assert.Equal(before, scenario.Fixture.Git("show", retainedRef + ":sample.txt"));
+        }
     }
 
     [Fact]
@@ -1733,7 +1998,8 @@ public sealed class GitWorktreeStoreTests
         Assert.True(Directory.Exists(scenario.Worktree.WorktreePath));
     }
 
-    private static async Task<CleanupScenario> CreateCleanupScenario(bool subset = false, bool activeConsumer = false)
+    private static async Task<CleanupScenario> CreateCleanupScenario(bool subset = false, bool activeConsumer = false,
+        bool unrelatedActiveLane = false)
     {
         var fixture = new GitFixture();
         fixture.Init();
@@ -1801,6 +2067,10 @@ public sealed class GitWorktreeStoreTests
             new TaskStarted(childTask, worktree.LaneId));
         var selectedProjection = artifacts.PutText("{}", ContextInheritanceService.DelegationPacketMediaType,
             ArtifactKind.Other, Sensitivity.Sensitive);
+        TaskId? activeConsumerTask = null;
+        LaneId? activeConsumerLane = null;
+        ExecutionId? activeConsumerExecution = null;
+        ProfileId? activeConsumerProfile = null;
         var taskPacket = new TaskPacket(1, session, run, childTask, worktree.LaneId, childExecution,
             DelegationId.New(), rootExecution, ProfileId.New(), "cleanup fixture lane",
             new TaskBudget(null, null, null, null), selectedProjection, worktree.OwnershipId,
@@ -1818,10 +2088,70 @@ public sealed class GitWorktreeStoreTests
         {
             var pendingTask = TaskId.New(); var pendingLane = LaneId.New();
             var pendingExecution = ExecutionId.New();
+            var pendingDelegationId = DelegationId.New();
+            var verifierProfile = ProfileId.New();
+            activeConsumerTask = pendingTask;
+            activeConsumerLane = pendingLane;
+            activeConsumerExecution = pendingExecution;
+            activeConsumerProfile = verifierProfile;
             AppendScoped(journal, codecs, session, run, pendingTask, pendingLane, pendingExecution,
                 new TaskCreated(pendingTask, run, "pending verify", [], new TaskBudget(null, null, null, null)));
             AppendScoped(journal, codecs, session, run, pendingTask, pendingLane, pendingExecution,
-                new LaneCreated(pendingLane, pendingTask, ProfileId.New()));
+                new LaneCreated(pendingLane, pendingTask, verifierProfile));
+            AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
+                new DelegationCreated(rootExecution, new Delegation(pendingDelegationId, rootExecution,
+                    pendingTask, pendingLane, verifierProfile, selectedProjection,
+                    ExecutionRelation.Awaited, ExecutionSupervision.Managed)));
+            AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
+                new DelegationAccepted(rootExecution, pendingDelegationId, pendingExecution));
+            AppendScoped(journal, codecs, session, run, pendingTask, pendingLane, pendingExecution,
+                new AgentExecutionStarted(pendingExecution, pendingLane, verifierProfile, rootExecution,
+                    ExecutionRelation.Awaited, ExecutionSupervision.Managed));
+            AppendScoped(journal, codecs, session, run, pendingTask, pendingLane, pendingExecution,
+                new TaskStarted(pendingTask, pendingLane));
+            var workflowBinding = new WorkflowImplementationBinding("core.orq", "1", "fixture-instance",
+                childTask, worktree.LaneId, childExecution, worktree.OwnershipId,
+                preview.TheirsTree, preview.LaneHeadAtCapture, preview.LaneBranchAtCapture);
+            var verifyPacket = new TaskPacket(1, session, run, pendingTask, pendingLane, pendingExecution,
+                pendingDelegationId, rootExecution, verifierProfile, "verify implementation fixture",
+                new TaskBudget(null, null, null, null), selectedProjection, worktree.OwnershipId,
+                worktree.RepositoryRoot, worktree.GitCommonDirectory, worktree.WorktreePath,
+                worktree.Head, worktree.SnapshotCommit, worktree.SnapshotTree,
+                WorktreeBase.SnapshotOfWorkingTree, "read-only consumer of the exact implementation snapshot",
+                workflowBinding);
+            var verifyPacketJson = System.Text.Json.JsonSerializer.Serialize(verifyPacket,
+                TaskPacketJsonContext.Default.TaskPacket);
+            var verifyPacketRef = artifacts.PutText(verifyPacketJson, LaneWorktreeProvisioner.TaskPacketMediaType,
+                ArtifactKind.Other, Sensitivity.Sensitive);
+            AppendScoped(journal, codecs, session, run, pendingTask, pendingLane, pendingExecution,
+                new LaneWorktreeBound(pendingTask, pendingLane, pendingExecution,
+                    childTask, worktree.LaneId, childExecution, worktree.OwnershipId,
+                    worktree.RepositoryRoot, worktree.GitCommonDirectory, worktree.WorktreePath,
+                    worktree.SnapshotCommit, worktree.SnapshotTree, verifyPacketRef, selectedProjection,
+                    workflowBinding.WorkflowId, workflowBinding.WorkflowVersion, workflowBinding.Instance,
+                    workflowBinding.Tree, workflowBinding.Head, workflowBinding.Branch));
+        }
+        if (unrelatedActiveLane)
+        {
+            var unrelatedTask = TaskId.New(); var unrelatedLane = LaneId.New();
+            var unrelatedExecution = ExecutionId.New();
+            var unrelatedDelegationId = DelegationId.New();
+            var unrelatedProfile = ProfileId.New();
+            AppendScoped(journal, codecs, session, run, unrelatedTask, unrelatedLane, unrelatedExecution,
+                new TaskCreated(unrelatedTask, run, "unrelated active task", [], new TaskBudget(null, null, null, null)));
+            AppendScoped(journal, codecs, session, run, unrelatedTask, unrelatedLane, unrelatedExecution,
+                new LaneCreated(unrelatedLane, unrelatedTask, unrelatedProfile));
+            AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
+                new DelegationCreated(rootExecution, new Delegation(unrelatedDelegationId, rootExecution,
+                    unrelatedTask, unrelatedLane, unrelatedProfile, selectedProjection,
+                    ExecutionRelation.Awaited, ExecutionSupervision.Managed)));
+            AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
+                new DelegationAccepted(rootExecution, unrelatedDelegationId, unrelatedExecution));
+            AppendScoped(journal, codecs, session, run, unrelatedTask, unrelatedLane, unrelatedExecution,
+                new AgentExecutionStarted(unrelatedExecution, unrelatedLane, unrelatedProfile, rootExecution,
+                    ExecutionRelation.Awaited, ExecutionSupervision.Managed));
+            AppendScoped(journal, codecs, session, run, unrelatedTask, unrelatedLane, unrelatedExecution,
+                new TaskStarted(unrelatedTask, unrelatedLane));
         }
 
         if (spec is not null && completed is not null)
@@ -1850,7 +2180,9 @@ public sealed class GitWorktreeStoreTests
             new LaneCompleted(rootLane, null));
         AppendScoped(journal, codecs, session, run, rootTask, rootLane, rootExecution,
             new TaskCompleted(rootTask, null));
-        return new CleanupScenario(fixture, git, worktree, preview, journal, codecs, artifacts);
+        return new CleanupScenario(fixture, git, worktree, preview, journal, codecs, artifacts,
+            session, run, rootExecution, activeConsumerTask, activeConsumerLane,
+            activeConsumerExecution, activeConsumerProfile);
     }
 
     private static void AppendScoped(IEventStore store, IEventCodecRegistry codecs, SessionId session,
@@ -1871,7 +2203,9 @@ public sealed class GitWorktreeStoreTests
     }
 
     private sealed record CleanupScenario(GitFixture Fixture, GitWorktreeStore Git, WorktreeIdentity Worktree,
-        WorktreeIntegrationPreview Preview, InMemoryEventStore Journal, IEventCodecRegistry Codecs, IArtifactStore Artifacts);
+        WorktreeIntegrationPreview Preview, InMemoryEventStore Journal, IEventCodecRegistry Codecs, IArtifactStore Artifacts,
+        SessionId Session, RunId Run, ExecutionId RootExecution, TaskId? ActiveConsumerTask,
+        LaneId? ActiveConsumerLane, ExecutionId? ActiveConsumerExecution, ProfileId? ActiveConsumerProfile);
 
     [Fact]
     public async Task Integration_batch_policy_preflight_rejects_excess_file_budget_before_barrier_or_artifact()

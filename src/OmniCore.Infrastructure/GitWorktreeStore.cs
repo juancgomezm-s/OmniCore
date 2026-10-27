@@ -25,6 +25,8 @@ public sealed partial class GitWorktreeStore
     private readonly IProcessRuntime _processes;
     private readonly RedactionPolicy _redaction;
 
+    internal Action<string>? BeforeFinalCleanupValidationForTests { get; set; }
+
     public GitWorktreeStore(IProcessRuntime processes, RedactionPolicy? redaction = null)
     {
         _processes = processes ?? throw new ArgumentNullException(nameof(processes));
@@ -643,6 +645,16 @@ public sealed partial class GitWorktreeStore
     public Task<WorktreeCleanupOutcome> CleanupAsync(WorktreeOwnership ownership, CancellationToken cancellationToken) =>
         CleanupCoreAsync(ownership, null, cancellationToken);
 
+    /// <summary>Removes a clean terminal lane only while its exact reviewed head and tree remain unchanged.</summary>
+    public Task<WorktreeCleanupOutcome> CleanupAsync(WorktreeOwnership ownership,
+        WorktreeDispositionSnapshot expected, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        if (!IsOid(expected.LaneHead) || !IsOid(expected.LaneTree))
+            return Task.FromResult(WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.OwnershipMismatch));
+        return CleanupCoreAsync(ownership, null, cancellationToken, expectedCleanup: expected);
+    }
+
     /// <summary>Retires a lane only after Host has proved that its complete result was integrated
     /// and all consumers are terminal. Before removal, stores the exact captured lane tree in a
     /// private commit/ref retained for the normal seven-day ownership retention period.</summary>
@@ -663,8 +675,51 @@ public sealed partial class GitWorktreeStore
     public Task<WorktreeCleanupOutcome> DiscardAsync(WorktreeOwnership ownership,
         CancellationToken cancellationToken) => CleanupCoreAsync(ownership, null, cancellationToken, discard: true);
 
+    /// <summary>Explicit user discard bound to the exact lane revision and tree reviewed before
+    /// permission was requested. The same snapshot is checked again before it is pinned and
+    /// immediately before removal, so edits made while an Ask is pending remain in place.</summary>
+    public Task<WorktreeCleanupOutcome> DiscardAsync(WorktreeOwnership ownership,
+        WorktreeDispositionSnapshot expected, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        if (!IsOid(expected.LaneHead) || !IsOid(expected.LaneTree))
+            return Task.FromResult(WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.OwnershipMismatch));
+        return CleanupCoreAsync(ownership, null, cancellationToken, discard: true, expectedDiscard: expected);
+    }
+
+    /// <summary>Verifies the exact detached lane snapshot without calculating an integration proposal.</summary>
+    public async Task<bool> MatchesDispositionSnapshotAsync(WorktreeIdentity identity,
+        WorktreeDispositionSnapshot expected, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(expected);
+        if (!IsOid(expected.LaneHead) || !IsOid(expected.LaneTree)
+            || string.IsNullOrWhiteSpace(identity.WorktreePath) || string.IsNullOrWhiteSpace(identity.GitCommonDirectory))
+            return false;
+        var current = await InspectAsync(identity.WorktreePath, cancellationToken).ConfigureAwait(false);
+        if (!current.Succeeded || current.Identity is not { Branch: null } lane
+            || !PathEquals(lane.GitCommonDirectory, identity.GitCommonDirectory)
+            || !string.Equals(lane.HeadCommit, expected.LaneHead, StringComparison.OrdinalIgnoreCase)) return false;
+        var status = await Git(identity.WorktreePath,
+            ["status", "--porcelain", "--untracked-files=all", "--ignored=matching"], null, cancellationToken)
+            .ConfigureAwait(false);
+        if (!status.Success || status.Output.Split('\n')
+                .Any(static line => line.StartsWith("!! ", StringComparison.Ordinal))) return false;
+        using var temporary = new PrivateTempDirectory(identity.Ownership.DataRoot);
+        var objectEnvironment = await CreatePrivateObjectEnvironment(identity.RepositoryRoot,
+            temporary.Path, cancellationToken).ConfigureAwait(false);
+        if (!objectEnvironment.Success || objectEnvironment.Environment is not { } environment) return false;
+        var snapshot = await CaptureCurrentTree(identity.WorktreePath, expected.LaneHead, temporary.Path,
+            "disposition-verify", environment, cancellationToken)
+            .ConfigureAwait(false);
+        return snapshot.Success && string.Equals(snapshot.Head, expected.LaneHead, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(snapshot.Tree, expected.LaneTree, StringComparison.OrdinalIgnoreCase);
+    }
+
     private async Task<WorktreeCleanupOutcome> CleanupCoreAsync(WorktreeOwnership ownership,
-        WorktreeIntegratedCleanupProof? integratedProof, CancellationToken cancellationToken, bool discard = false)
+        WorktreeIntegratedCleanupProof? integratedProof, CancellationToken cancellationToken, bool discard = false,
+        WorktreeDispositionSnapshot? expectedDiscard = null,
+        WorktreeDispositionSnapshot? expectedCleanup = null)
     {
         ArgumentNullException.ThrowIfNull(ownership);
         try
@@ -724,6 +779,9 @@ public sealed partial class GitWorktreeStore
         // not discard unintegrated committed work. Dirty or unmerged lane state remains owned.
         if (worktree.Identity!.Branch is not null)
             return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.WorktreeDirty);
+        if (expectedCleanup is not null
+            && !string.Equals(worktree.Identity.HeadCommit, expectedCleanup.LaneHead, StringComparison.OrdinalIgnoreCase))
+            return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.WorkspaceChanged);
         if (integratedProof is null && !discard
             && !string.Equals(worktree.Identity.HeadCommit, metadata.SnapshotCommit, StringComparison.OrdinalIgnoreCase))
         {
@@ -741,6 +799,8 @@ public sealed partial class GitWorktreeStore
         {
             if (integratedProof is not null
                     && !string.Equals(worktree.Identity.HeadCommit, integratedProof.LaneHead, StringComparison.OrdinalIgnoreCase)
+                || expectedDiscard is not null
+                    && !string.Equals(worktree.Identity.HeadCommit, expectedDiscard.LaneHead, StringComparison.OrdinalIgnoreCase)
                 || status.Output.Split('\n').Any(static line => line.StartsWith("!! ", StringComparison.Ordinal)))
                 return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.WorktreeDirty);
 
@@ -754,7 +814,9 @@ public sealed partial class GitWorktreeStore
                 cancellationToken).ConfigureAwait(false);
             var retainedTreeExpected = integratedProof?.LaneTree ?? captured.Tree;
             if (!captured.Success || !string.Equals(captured.Tree, retainedTreeExpected, StringComparison.OrdinalIgnoreCase)
-                || !string.Equals(captured.Head, retainedParentExpected, StringComparison.OrdinalIgnoreCase))
+                || !string.Equals(captured.Head, retainedParentExpected, StringComparison.OrdinalIgnoreCase)
+                || expectedDiscard is not null
+                    && !string.Equals(captured.Tree, expectedDiscard.LaneTree, StringComparison.OrdinalIgnoreCase))
                 return WorktreeCleanupOutcome.Failure(captured.Error ?? GitWorktreeErrorCode.WorkspaceChanged);
 
             var retainedRef = RetainedLaneRefFor(metadata.WorkspaceId, metadata.LaneId, metadata.OwnershipId);
@@ -806,7 +868,56 @@ public sealed partial class GitWorktreeStore
                 cancellationToken).ConfigureAwait(false);
             if (!finalLane.Succeeded || !PathEquals(finalLane.Identity!.GitCommonDirectory, metadata.GitCommonDirectory)
                 || finalLane.Identity.HeadCommit != retainedParentExpected
-                || !finalTree.Success || finalTree.Tree != retainedTreeExpected)
+                || !finalTree.Success || finalTree.Tree != retainedTreeExpected
+                || expectedDiscard is not null && finalTree.Tree != expectedDiscard.LaneTree)
+                return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.WorktreeDirty);
+
+            BeforeFinalCleanupValidationForTests?.Invoke(metadata.WorktreePath);
+            var finalStatus = await Git(metadata.WorktreePath,
+                ["status", "--porcelain", "--untracked-files=all", "--ignored=matching"], null, cancellationToken)
+                .ConfigureAwait(false);
+            if (!finalStatus.Success || finalStatus.Output.Split('\n')
+                    .Any(static line => line.StartsWith("!! ", StringComparison.Ordinal)))
+                return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.WorktreeDirty);
+            var finalIdentity = await InspectAsync(metadata.WorktreePath, cancellationToken).ConfigureAwait(false);
+            var fenceTree = await CaptureCurrentTree(metadata.WorktreePath, retainedParentExpected,
+                temp.Path, "retained-index-fence", new Dictionary<string, string>(StringComparer.Ordinal),
+                cancellationToken).ConfigureAwait(false);
+            var fenceStatus = await Git(metadata.WorktreePath,
+                ["status", "--porcelain", "--untracked-files=all", "--ignored=matching"], null, cancellationToken)
+                .ConfigureAwait(false);
+            if (!finalIdentity.Succeeded || finalIdentity.Identity!.Branch is not null
+                || finalIdentity.Identity.HeadCommit != retainedParentExpected
+                || !PathEquals(finalIdentity.Identity.GitCommonDirectory, metadata.GitCommonDirectory)
+                || !fenceTree.Success || fenceTree.Tree != retainedTreeExpected
+                || expectedDiscard is not null && fenceTree.Tree != expectedDiscard.LaneTree
+                || !fenceStatus.Success || fenceStatus.Output.Split('\n')
+                    .Any(static line => line.StartsWith("!! ", StringComparison.Ordinal)))
+                return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.WorktreeDirty);
+        }
+        else if (expectedCleanup is not null)
+        {
+            var tree = await Git(metadata.WorktreePath, ["rev-parse", "--verify", "HEAD^{tree}"], null,
+                cancellationToken).ConfigureAwait(false);
+            if (!tree.Success || !string.Equals(tree.Output.Trim(), expectedCleanup.LaneTree, StringComparison.OrdinalIgnoreCase))
+                return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.WorkspaceChanged);
+            BeforeFinalCleanupValidationForTests?.Invoke(metadata.WorktreePath);
+            var finalStatus = await Git(metadata.WorktreePath,
+                ["status", "--porcelain", "--untracked-files=all", "--ignored=matching"], null, cancellationToken)
+                .ConfigureAwait(false);
+            var finalIdentity = await InspectAsync(metadata.WorktreePath, cancellationToken).ConfigureAwait(false);
+            var fence = await Git(metadata.WorktreePath, ["rev-parse", "--verify", "HEAD^{tree}"], null,
+                cancellationToken)
+                .ConfigureAwait(false);
+            var fenceStatus = await Git(metadata.WorktreePath,
+                ["status", "--porcelain", "--untracked-files=all", "--ignored=matching"], null, cancellationToken)
+                .ConfigureAwait(false);
+            if (!finalStatus.Success || finalStatus.Output.Length != 0
+                || !finalIdentity.Succeeded || finalIdentity.Identity!.Branch is not null
+                || finalIdentity.Identity.HeadCommit != expectedCleanup.LaneHead
+                || !PathEquals(finalIdentity.Identity.GitCommonDirectory, metadata.GitCommonDirectory)
+                || !fence.Success || fence.Output.Trim() != expectedCleanup.LaneTree
+                || !fenceStatus.Success || fenceStatus.Output.Length != 0)
                 return WorktreeCleanupOutcome.Failure(GitWorktreeErrorCode.WorktreeDirty);
         }
         var remove = integratedProof is null && !discard
@@ -819,6 +930,138 @@ public sealed partial class GitWorktreeStore
         await PersistMetadata(metadata.DataRoot, ownership.MetadataPath,
             metadata with { State = "removed", RemovedAtUtc = DateTimeOffset.UtcNow }, cancellationToken);
         return WorktreeCleanupOutcome.Success();
+    }
+
+    /// <summary>Prunes only expired private snapshot refs for metadata records that already say
+    /// the owned worktree was removed. This never deletes worktree directories or metadata and
+    /// uses Git's expected-old-OID compare-and-delete form. Callers can request a dry run.</summary>
+    public async Task<(WorktreeRetentionCandidate? Candidate, GitWorktreeErrorCode? Error)> InspectExpiredSnapshotRefsForOwnershipAsync(
+        string repositoryRoot, string expectedWorkspaceDataRoot, string expectedWorkspaceId, string ownershipId,
+        DateTimeOffset nowUtc, CancellationToken cancellationToken)
+    {
+        string repo;
+        string dataRoot;
+        try { repo = Canonical(repositoryRoot); dataRoot = Canonical(expectedWorkspaceDataRoot); }
+        catch (Exception) { return (null, GitWorktreeErrorCode.InvalidPath); }
+        if (HasReparseDirectoryComponent(repo) || HasReparseDirectoryComponent(dataRoot)
+            || !IsWorkspaceId(expectedWorkspaceId) || !Guid.TryParseExact(ownershipId, "N", out _)
+            || IsWithinOrEqual(repo, dataRoot) || IsWithinOrEqual(dataRoot, repo))
+            return (null, GitWorktreeErrorCode.UnsafePath);
+        var inspected = await InspectAsync(repo, cancellationToken).ConfigureAwait(false);
+        if (!inspected.Succeeded || !PathEquals(inspected.Identity!.RepoRoot, repo))
+            return (null, inspected.ErrorCode ?? GitWorktreeErrorCode.OwnershipMismatch);
+        var metadataDirectory = Path.Combine(dataRoot, "worktree-metadata");
+        if (!Directory.Exists(metadataDirectory)) return (null, null);
+        if (HasReparseDirectoryComponent(metadataDirectory)) return (null, GitWorktreeErrorCode.UnsafePath);
+        var metadataPath = Path.Combine(metadataDirectory, ownershipId + ".json");
+        OwnershipMetadata? metadata;
+        try
+        {
+            if (!File.Exists(metadataPath) || (File.GetAttributes(metadataPath) & FileAttributes.ReparsePoint) != 0
+                || HasReparseDirectoryComponent(metadataPath)) return (null, null);
+            const int maximumMetadataBytes = 64 * 1024;
+            await using var stream = new FileStream(metadataPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            if (stream.Length is <= 0 or > maximumMetadataBytes) return (null, GitWorktreeErrorCode.UnsupportedOwnershipMetadata);
+            var bytes = new byte[checked((int)stream.Length)];
+            var read = 0;
+            while (read < bytes.Length)
+            {
+                var count = await stream.ReadAsync(bytes.AsMemory(read), cancellationToken).ConfigureAwait(false);
+                if (count == 0) return (null, GitWorktreeErrorCode.UnsupportedOwnershipMetadata);
+                read += count;
+            }
+            if (stream.ReadByte() != -1) return (null, GitWorktreeErrorCode.UnsupportedOwnershipMetadata);
+            metadata = JsonSerializer.Deserialize(bytes, GitWorktreeJsonContext.Default.OwnershipMetadata);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception) { return (null, GitWorktreeErrorCode.UnsupportedOwnershipMetadata); }
+        if (metadata is null || !IsExpiredRemovedOwnership(metadata, metadataPath, repo, dataRoot,
+                expectedWorkspaceId, inspected.Identity!.GitCommonDirectory, nowUtc)) return (null, null);
+        if (metadata.SnapshotCommit is not { } snapshotCommit || !IsOid(snapshotCommit)) return (null, null);
+        var snapshotSymbol = await Git(repo, ["symbolic-ref", "--quiet", metadata.SnapshotRef], null,
+            cancellationToken, allowConflictExit: true).ConfigureAwait(false);
+        if (snapshotSymbol.Success || snapshotSymbol.ExitCode != 1) return (null, snapshotSymbol.Error);
+        var snapshot = await Git(repo, ["rev-parse", "--verify", metadata.SnapshotRef + "^{commit}"], null,
+            cancellationToken).ConfigureAwait(false);
+        if (!snapshot.Success || !string.Equals(snapshot.Output.Trim(), snapshotCommit, StringComparison.OrdinalIgnoreCase))
+            return (null, null);
+        var references = new List<WorktreeSnapshotReference>
+        {
+            new(metadata.SnapshotRef, snapshotCommit),
+        };
+        if (metadata.RetainedLaneRef is { } retainedRef)
+        {
+            var retainedCommit = metadata.RetainedLaneCommit;
+            var retainedTree = metadata.RetainedLaneTree;
+            if (retainedCommit is null || retainedTree is null || !IsOid(retainedCommit) || !IsOid(retainedTree)
+                || retainedRef != RetainedLaneRefFor(metadata.WorkspaceId, metadata.LaneId, metadata.OwnershipId))
+                return (null, null);
+            var retainedSymbol = await Git(repo, ["symbolic-ref", "--quiet", retainedRef], null,
+                cancellationToken, allowConflictExit: true).ConfigureAwait(false);
+            if (retainedSymbol.Success || retainedSymbol.ExitCode != 1) return (null, retainedSymbol.Error);
+            var actualCommit = await Git(repo, ["rev-parse", "--verify", retainedRef + "^{commit}"], null,
+                cancellationToken).ConfigureAwait(false);
+            var actualTree = await Git(repo, ["rev-parse", "--verify", retainedRef + "^{tree}"], null,
+                cancellationToken).ConfigureAwait(false);
+            if (!actualCommit.Success || !string.Equals(actualCommit.Output.Trim(), retainedCommit,
+                    StringComparison.OrdinalIgnoreCase)
+                || !actualTree.Success || !string.Equals(actualTree.Output.Trim(), retainedTree,
+                    StringComparison.OrdinalIgnoreCase)) return (null, null);
+            references.Add(new(retainedRef, retainedCommit));
+        }
+        var worktrees = await Git(repo, ["worktree", "list", "--porcelain"], null, cancellationToken)
+            .ConfigureAwait(false);
+        if (!worktrees.Success) return (null, worktrees.Error ?? GitWorktreeErrorCode.GitCommandFailed);
+        var checkedOut = worktrees.Output.Split('\n').Where(line => line.StartsWith("HEAD ", StringComparison.Ordinal))
+            .Select(line => line[5..].Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (references.Any(reference => checkedOut.Contains(reference.ExpectedObjectId))) return (null, null);
+        return (new WorktreeRetentionCandidate(metadata.OwnershipId, metadata.WorkspaceId, metadata.LaneId,
+            metadata.SnapshotCommit!, Canonical(metadata.GitCommonDirectory), Canonical(metadata.WorktreePath),
+            metadata.RemovedAtUtc!.Value, references.OrderBy(reference => reference.Name, StringComparer.Ordinal).ToArray()), null);
+    }
+
+    /// <summary>Prunes only the exact reviewed references for one expired, removed ownership.
+    /// Rechecks metadata and expected OIDs immediately before each compare-and-delete. A partial
+    /// multi-ref result is explicitly unknown so callers never report success or retry blindly.</summary>
+    public async Task<WorktreeRetentionPruneOutcome> PruneReviewedSnapshotRefsAsync(string repositoryRoot,
+        string expectedWorkspaceDataRoot, string expectedWorkspaceId, WorktreeRetentionCandidate expected,
+        DateTimeOffset nowUtc, CancellationToken cancellationToken)
+    {
+        var current = await InspectExpiredSnapshotRefsForOwnershipAsync(repositoryRoot, expectedWorkspaceDataRoot,
+            expectedWorkspaceId, expected.OwnershipId, nowUtc, cancellationToken).ConfigureAwait(false);
+        if (current.Error is not null) return new(0, current.Error);
+        if (current.Candidate is null || current.Candidate.OwnershipId != expected.OwnershipId
+            || current.Candidate.WorkspaceId != expected.WorkspaceId || current.Candidate.LaneId != expected.LaneId
+            || current.Candidate.SnapshotCommit != expected.SnapshotCommit
+            || !PathEquals(current.Candidate.GitCommonDirectory, expected.GitCommonDirectory)
+            || !PathEquals(current.Candidate.WorktreePath, expected.WorktreePath)
+            || current.Candidate.RemovedAtUtc != expected.RemovedAtUtc
+            || !current.Candidate.References.SequenceEqual(expected.References))
+            return new(0, GitWorktreeErrorCode.WorkspaceChanged);
+        // Recheck all metadata and exact OIDs immediately before one atomic Git ref transaction.
+        // The update-ref transaction locks the whole set, verifies every expected old OID, then
+        // commits all deletions together; a stale member cannot leave a falsely successful prefix.
+        var fence = await InspectExpiredSnapshotRefsForOwnershipAsync(repositoryRoot, expectedWorkspaceDataRoot,
+            expectedWorkspaceId, expected.OwnershipId, nowUtc, cancellationToken).ConfigureAwait(false);
+        if (fence.Error is not null) return new(0, fence.Error);
+        if (fence.Candidate is null || fence.Candidate.OwnershipId != expected.OwnershipId
+            || fence.Candidate.WorkspaceId != expected.WorkspaceId || fence.Candidate.LaneId != expected.LaneId
+            || fence.Candidate.SnapshotCommit != expected.SnapshotCommit
+            || !PathEquals(fence.Candidate.GitCommonDirectory, expected.GitCommonDirectory)
+            || !PathEquals(fence.Candidate.WorktreePath, expected.WorktreePath)
+            || fence.Candidate.RemovedAtUtc != expected.RemovedAtUtc
+            || !fence.Candidate.References.SequenceEqual(expected.References))
+            return new(0, GitWorktreeErrorCode.WorkspaceChanged);
+        var transaction = new StringBuilder("start\0");
+        foreach (var reference in expected.References)
+            transaction.Append("delete ").Append(reference.Name).Append('\0').Append(reference.ExpectedObjectId).Append('\0');
+        transaction.Append("prepare\0commit\0");
+        var committed = await Git(Canonical(repositoryRoot), ["update-ref", "--stdin", "-z", "--no-deref"], null,
+            cancellationToken, standardInput: transaction.ToString()).ConfigureAwait(false);
+        if (!committed.Success)
+            return new(0, committed.Error ?? GitWorktreeErrorCode.WorkspaceChanged, OutcomeUnknown: true);
+        return new(expected.References.Count);
     }
 
     /// <summary>Prunes only expired private snapshot refs for metadata records that already say
@@ -874,6 +1117,10 @@ public sealed partial class GitWorktreeStore
             if (metadata.SnapshotCommit is not { } snapshotCommit || !IsOid(snapshotCommit))
             { preserved++; continue; }
 
+            var snapshotSymbol = await Git(repo, ["symbolic-ref", "--quiet", metadata.SnapshotRef], null,
+                cancellationToken, allowConflictExit: true).ConfigureAwait(false);
+            if (snapshotSymbol.Success || snapshotSymbol.ExitCode != 1) { preserved++; continue; }
+
             var reference = await Git(repo, ["rev-parse", "--verify", metadata.SnapshotRef + "^{commit}"], null,
                 cancellationToken).ConfigureAwait(false);
             if (!reference.Success || !string.Equals(reference.Output.Trim(), snapshotCommit,
@@ -893,6 +1140,9 @@ public sealed partial class GitWorktreeStore
                     || metadata.RetainedLaneDisposition is not ("integrated" or "discard")
                     || candidateRef != RetainedLaneRefFor(metadata.WorkspaceId, metadata.LaneId, metadata.OwnershipId))
                 { preserved++; continue; }
+                var retainedSymbol = await Git(repo, ["symbolic-ref", "--quiet", candidateRef], null,
+                    cancellationToken, allowConflictExit: true).ConfigureAwait(false);
+                if (retainedSymbol.Success || retainedSymbol.ExitCode != 1) { preserved++; continue; }
                 var retainedCurrent = await Git(repo, ["rev-parse", "--verify", candidateRef + "^{commit}"], null,
                     cancellationToken).ConfigureAwait(false);
                 var retainedCurrentTree = await Git(repo, ["rev-parse", "--verify", candidateRef + "^{tree}"], null,
@@ -916,11 +1166,11 @@ public sealed partial class GitWorktreeStore
             if (dryRun) continue;
             if (retainedRef is not null)
             {
-                var retainedDelete = await Git(repo, ["update-ref", "-d", retainedRef, retainedCommit!], null,
+                var retainedDelete = await Git(repo, ["update-ref", "--no-deref", "-d", retainedRef, retainedCommit!], null,
                     cancellationToken).ConfigureAwait(false);
                 if (!retainedDelete.Success) { failed++; continue; }
             }
-            var delete = await Git(repo, ["update-ref", "-d", metadata.SnapshotRef, snapshotCommit], null,
+            var delete = await Git(repo, ["update-ref", "--no-deref", "-d", metadata.SnapshotRef, snapshotCommit], null,
                 cancellationToken).ConfigureAwait(false);
             if (!delete.Success) { failed++; continue; }
             pruned++;
@@ -1353,8 +1603,11 @@ public sealed partial class GitWorktreeStore
             // The Host may own a persistent stdin pipe for its native protocol. Git must never
             // inherit that pipe: commands without explicit input get a closed, redirected stdin;
             // commands that intentionally consume input retain their supplied payload.
+            var exactInput = command.Count > 1 && command[0] == "update-ref" && command[1] == "--stdin"
+                && command.Contains("-z", StringComparer.Ordinal);
             var handle = _processes.Launch(new ProcessLaunch("git", args, workingDirectory, env, true)
-                { InitialStandardInput = standardInput ?? string.Empty }, cancellationToken);
+                { InitialStandardInput = standardInput ?? string.Empty, InitialStandardInputIsExact = exactInput },
+                cancellationToken);
             using var registration = cancellationToken.Register(() => CancelTree(handle));
             ProcessResult result;
             try

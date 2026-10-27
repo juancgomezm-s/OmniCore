@@ -92,6 +92,27 @@ public sealed class AuthorizedToolIntent
 
 `plan.propose` (ADR-0016) y `tool.search` siguen el mismo pipeline. Su permiso lo concede la capa `CoreBoundary`. No hay un atajo que las saque del pipeline.
 
+### 5. Disposición nativa de worktrees (M9-L, 2026-10-24)
+
+`worktree.cleanup` y `worktree.discard` son herramientas Core protegidas de acción
+humana. `Prepare` sigue siendo puro. Una resolución posterior del Host liga el
+intent primario a un `WorktreeDispositionClaim`: workspace físico, Lane,
+ownership, operación y HEAD/árbol revisados, manteniendo ToolCall, argumentos,
+efecto y riesgo. Ese intent completo pasa por Security antes de cualquier efecto;
+no se autoriza un intent vacío como sustituto de la operación real.
+
+La procedencia de una acción admitida y la capacidad negociada de entregar Ask
+son controles independientes. Ninguno concede permisos. La política de Session,
+la capacidad de borrado, la política destructiva, UserPolicy y el techo recursivo
+de escritura del perfil se intersectan. La huella del intent y los grants incluyen
+el recurso exacto; los intents históricos sin este claim conservan sus hashes.
+
+El sobre protegido se comprueba antes de `ToolCallStarted`/Barrier. La ejecución
+exige exclusión de escritura antes de operar sobre Git. El store verifica la revisión física y conserva el
+árbol antes del descarte. Consultar no dispone recursos, y un resultado incierto
+no se reintenta por ausencia del directorio. El contrato y los límites de la
+validación local se registran en [el acta M9-L](../validation/m9-worktree-disposition-20261024.md).
+
 ## Clasificación
 
 | Elemento | Categoría |

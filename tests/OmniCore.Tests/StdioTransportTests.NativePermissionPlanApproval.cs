@@ -21,6 +21,79 @@ namespace OmniCore.Tests;
 
 public sealed partial class StdioTransportTests
 {
+    [Theory]
+    [InlineData("allow_once", GrantLifetime.Once)]
+    [InlineData("allow_workspace", GrantLifetime.Workspace)]
+    public async Task Discovered_plan_recovers_after_native_patch_approval_under_scoped_coder(
+        string optionId, GrantLifetime expectedLifetime)
+    {
+        var fixture = await NativeChoiceFixture.StartAsync("permission-discovered");
+        try
+        {
+            File.WriteAllText(fixture.DiscoveredTargetPath,
+                string.Join("\n", Enumerable.Range(0, 16).Select(index => index == 0 ? "before" : "padding-" + index)) + "\n",
+                new UTF8Encoding(false));
+            var pending = await fixture.StartAndWaitForInteractionAsync(InteractionKind.Permission);
+            Assert.Equal(3, fixture.Provider.RequestCount);
+            var eventsBeforeChoice = fixture.ReadEvents();
+            var discovery = Assert.Single(eventsBeforeChoice, item => item.Envelope.RunId == RunId.Parse(pending.RunId)
+                && item.Payload is ToolCallRequested requested && requested.ToolName == "tool.search");
+            var read = Assert.Single(eventsBeforeChoice, item => item.Envelope.RunId == RunId.Parse(pending.RunId)
+                && item.Payload is ToolCallRequested requested && requested.ToolName == "filesystem.read");
+            var patch = Assert.Single(eventsBeforeChoice, item => item.Envelope.RunId == RunId.Parse(pending.RunId)
+                && item.Payload is ToolCallRequested requested && requested.ToolName == "filesystem.patch");
+            Assert.Equal(discovery.Envelope.TurnId, patch.Envelope.TurnId);
+            Assert.Equal(read.Envelope.TurnId, patch.Envelope.TurnId);
+            Assert.Contains(eventsBeforeChoice, item => item.Envelope.RunId == RunId.Parse(pending.RunId)
+                && item.Payload is ToolCallSucceeded succeeded && succeeded.ToolCallId == ((ToolCallRequested)read.Payload).ToolCallId);
+            Assert.Equal("ScopedCoder", ReadNativeSessionSecurity(fixture.Host!).GetProperty("category").GetString());
+            Assert.Equal(ToolMode.Discovered, ModelPolicyPresets.ScopedCoder().ToolPolicy.Mode);
+            Assert.True(ModelPolicyPresets.ScopedCoder().ToolPolicy.AllowToolDiscovery);
+            var savedPlanProof = fixture.CaptureSavedDiscoveredPlanProof(pending.RunId, pending.TurnId);
+
+            var choice = fixture.ChoiceCommand(pending.Request.InteractionId, pending.RunId,
+                pending.PolicyRevision, optionId, Ids.NewV7());
+            Assert.Contains(optionId, ParseOptionIds(pending.Request.OptionsJson));
+            var ack = Ack(fixture.Exchange(TrustedActionEnvelope(choice, fixture.Key,
+                fixture.Nonce!, fixture.Workspace, fixture.CurrentSessionId, pending.RunId)));
+            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, ack.Outcome?.Kind);
+            await fixture.Provider.WaitForRequestAsync(4, TestContext.Current.CancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+            var discoveredFunctionName = fixture.ProviderFunctionNameAt(2);
+            var resumedTools = fixture.ProviderToolNamesAt(3);
+            Assert.Contains(discoveredFunctionName, resumedTools);
+            fixture.SetRecoveryProof(JsonSerializer.Serialize(new
+            {
+                category = "ScopedCoder",
+                toolMode = "Discovered",
+                allowToolDiscovery = true,
+                choice = optionId,
+                expectedGrantLifetime = expectedLifetime.ToString(),
+                discoveryFunctionAlias = discoveredFunctionName,
+                resumedRequestRetainedDiscoveredFunction = true,
+                resumedRequestToolCount = resumedTools.Count,
+                savedPlan = JsonSerializer.Deserialize<JsonElement>(savedPlanProof),
+            }));
+            await fixture.WaitForTurnCompletionAsync(pending.RunId, pending.TurnId);
+
+            var events = fixture.ReadEvents().Where(item => item.Envelope.RunId == RunId.Parse(pending.RunId)).ToArray();
+            var patchCall = (ToolCallRequested)patch.Payload;
+            Assert.Single(events, item => item.Envelope.ToolCallId == patchCall.ToolCallId
+                && item.Payload is PermissionGranted granted && granted.Lifetime == expectedLifetime);
+            Assert.Single(events, item => item.Envelope.ToolCallId == patchCall.ToolCallId
+                && item.Payload is ToolCallSucceeded);
+            Assert.Equal("omega\n" + string.Join("\n", Enumerable.Range(1, 15).Select(index => "padding-" + index)) + "\n",
+                File.ReadAllText(fixture.DiscoveredTargetPath));
+            Assert.Equal(4, fixture.Provider.RequestCount);
+            CanonicalStateTracker.Replay(EventCodecs.Create(), fixture.ReadEnvelopes());
+        }
+        finally
+        {
+            try { await fixture.PreserveAttemptAsync("scoped-coder-discovered-patch-approval-" + optionId); }
+            finally { await fixture.DisposeAsync(); }
+        }
+    }
+
     [Fact]
     public void Resumed_permission_rechecks_do_not_authorize_until_a_grant_is_recorded()
     {
@@ -244,6 +317,11 @@ public sealed partial class StdioTransportTests
             var write = Assert.Single(events, item => item.Envelope.RunId == RunId.Parse(pending.RunId)
                 && item.Payload is ToolCallRequested requested && requested.ToolName == "filesystem.write");
             var writeCallId = ((ToolCallRequested)write.Payload).ToolCallId;
+            var writeEvaluations = events.Where(item => item.Envelope.RunId == RunId.Parse(pending.RunId)
+                && item.Payload is PermissionEvaluated evaluated && evaluated.ToolCallId == writeCallId)
+                .Select(item => (PermissionEvaluated)item.Payload).ToArray();
+            Assert.NotEmpty(writeEvaluations);
+            Assert.All(writeEvaluations, evaluation => Assert.Null(evaluation.AppliedGrant));
             if (shouldWrite)
             {
                 Assert.Single(events, item => item.Envelope.RunId == RunId.Parse(pending.RunId)
@@ -544,12 +622,15 @@ public sealed partial class StdioTransportTests
         private readonly string _journal;
         private readonly string? _oldData;
         private readonly string? _oldConfig;
+        private readonly string? _oldAgentHome;
         private readonly string _oldDirectory;
-        private Task<string>? _stderrCapture;
+        private Task? _stderrCapture;
+        private readonly StringBuilder _stderrOutput = new();
+        private string? _recoveryProof;
         private bool _disposed;
 
         private NativeChoiceFixture(string root, string workspace, string dataDirectory, string journal,
-            string? oldData, string? oldConfig, string oldDirectory, byte[] key,
+            string? oldData, string? oldConfig, string? oldAgentHome, string oldDirectory, byte[] key,
             CliEndToEndTests.ScriptedHttpProvider provider, string mode, string? selectedOption)
         {
             _root = root;
@@ -558,6 +639,7 @@ public sealed partial class StdioTransportTests
             _journal = journal;
             _oldData = oldData;
             _oldConfig = oldConfig;
+            _oldAgentHome = oldAgentHome;
             _oldDirectory = oldDirectory;
             Key = key;
             Provider = provider;
@@ -574,11 +656,258 @@ public sealed partial class StdioTransportTests
         public string? SelectedOption { get; }
         public string MarkerPath { get; }
         public string SecondMarkerPath { get; }
+        public string GrantTargetPath => Path.Combine(Workspace, "grant-dispatch-target.txt");
+        public string DiscoveredTargetPath => Path.Combine(Workspace, "discovered-target.txt");
+        private readonly List<string> _stdioTranscript = [];
         public string? LastStartCommandId { get; private set; }
         public string? Nonce { get; private set; }
         public IReadOnlyList<string> NegotiatedCapabilities { get; private set; } = [];
         public string? CurrentSessionId { get; private set; }
         public Process? Host { get; private set; }
+        public string HostErrorDiagnostic
+        {
+            get
+            {
+                string text;
+                lock (_stderrOutput) text = _stderrOutput.ToString();
+                return text.Length > 2048 ? text[^2048..] : text;
+            }
+        }
+
+        public WireEnvelope Exchange(WireEnvelope request)
+        {
+            var response = RawExchange(Host!, request);
+            _stdioTranscript.Add(JsonSerializer.Serialize(new
+            {
+                requestId = request.MessageId,
+                requestType = request.MessageType.ToString(),
+                responseId = response.MessageId,
+                responseType = response.MessageType.ToString(),
+                response = RedactJson(response.PayloadJson),
+            }));
+            return response;
+        }
+
+        public void SetRecoveryProof(string proof) => _recoveryProof = proof;
+
+        public string CaptureSavedDiscoveredPlanProof(string runId, TurnId turnId)
+        {
+            var run = RunId.Parse(runId);
+            var step = ReadEvents().Where(item => item.Envelope.RunId == run && item.Envelope.TurnId == turnId)
+                .Select(item => item.Payload).OfType<ModelStepStarted>()
+                .Where(item => item.ContextSnapshotRef is not null)
+                .OrderByDescending(item => item.StepIndex).First();
+            var snapshotRef = step.ContextSnapshotRef!;
+            var artifacts = new FileArtifactStore(Path.GetDirectoryName(_journal)!);
+            Assert.True(artifacts.Verify(snapshotRef.Hash, snapshotRef.Size));
+            var snapshotText = Assert.IsType<string>(artifacts.GetText(snapshotRef.Hash));
+            using var snapshot = JsonDocument.Parse(snapshotText);
+            var savedPlan = snapshot.RootElement.GetProperty("toolPlan");
+            var componentVersion = savedPlan.GetProperty("componentVersion").GetString();
+            var componentHash = savedPlan.GetProperty("componentHash").GetString();
+            var artifactHashText = savedPlan.GetProperty("artifactHash").GetString();
+            var artifactSize = savedPlan.GetProperty("artifactSize").GetInt64();
+            Assert.Equal("3", componentVersion);
+            Assert.Equal(componentHash, artifactHashText);
+            Assert.StartsWith("sha256:", artifactHashText, StringComparison.Ordinal);
+            var planHash = ContentHash.Sha256(artifactHashText![("sha256:".Length)..]);
+            Assert.True(artifacts.Verify(planHash, artifactSize));
+            var planText = Assert.IsType<string>(artifacts.GetText(planHash));
+            using var plan = JsonDocument.Parse(planText);
+            var toolNames = plan.RootElement.GetProperty("tools").EnumerateArray()
+                .Select(item => item.GetProperty("toolId").GetString()!).ToArray();
+            Assert.Contains("filesystem.patch", toolNames);
+            return JsonSerializer.Serialize(new
+            {
+                turnId = turnId.ToString(),
+                stepIndex = step.StepIndex,
+                snapshotHash = snapshotRef.Hash.ToString(),
+                snapshotSize = snapshotRef.Size,
+                savedFingerprint = snapshot.RootElement.GetProperty("fingerprint").GetString(),
+                componentVersion,
+                componentHash,
+                artifactHash = artifactHashText,
+                artifactSize,
+                toolNames,
+                currentStepToolCount = toolNames.Length,
+            });
+        }
+
+        public string ProviderFunctionNameAt(int responseIndex)
+        {
+            var body = Provider.ResponseBodies.Single(item => item.Index == responseIndex).Body;
+            return body.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Where(line => line.StartsWith("data: ", StringComparison.Ordinal))
+                .Select(line =>
+                {
+                    using var eventDocument = JsonDocument.Parse(line[6..]);
+                    var root = eventDocument.RootElement;
+                    return root.TryGetProperty("item", out var item)
+                        && item.TryGetProperty("type", out var type)
+                        && type.GetString() == "function_call"
+                        ? item.GetProperty("name").GetString() : null;
+                }).Last(name => name is not null)!;
+        }
+
+        public IReadOnlyList<string> ProviderToolNamesAt(int requestIndex)
+        {
+            var body = Provider.RequestBodies.Single(item => item.Index == requestIndex).Body;
+            using var request = JsonDocument.Parse(body);
+            return request.RootElement.GetProperty("tools").EnumerateArray()
+                .Select(item => item.GetProperty("name").GetString()!).ToArray();
+        }
+
+        private static string RedactJson(string json)
+        {
+            try
+            {
+                var node = System.Text.Json.Nodes.JsonNode.Parse(json);
+                Redact(node);
+                return node?.ToJsonString() ?? "null";
+            }
+            catch (JsonException) { return "<invalid-json-redacted>"; }
+
+            static void Redact(System.Text.Json.Nodes.JsonNode? node)
+            {
+                if (node is System.Text.Json.Nodes.JsonObject obj)
+                {
+                    foreach (var pair in obj.ToArray())
+                    {
+                        if (pair.Key.Contains("key", StringComparison.OrdinalIgnoreCase)
+                            || pair.Key.Contains("nonce", StringComparison.OrdinalIgnoreCase)
+                            || pair.Key.Contains("token", StringComparison.OrdinalIgnoreCase)
+                            || pair.Key.Contains("secret", StringComparison.OrdinalIgnoreCase)
+                            || pair.Key.Contains("credential", StringComparison.OrdinalIgnoreCase)
+                            || pair.Key.Contains("authorization", StringComparison.OrdinalIgnoreCase))
+                            obj[pair.Key] = "<redacted>";
+                        else Redact(pair.Value);
+                    }
+                }
+                else if (node is System.Text.Json.Nodes.JsonArray array)
+                    foreach (var child in array) Redact(child);
+            }
+        }
+
+        public async Task PreserveAttemptAsync(string label)
+        {
+            var repoRoot = FindRepositoryRoot();
+            var destinationRoot = Path.Combine(repoRoot, "artifacts", "m9-sec-conv02-discovered",
+                DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfffZ") + "-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(destinationRoot);
+            var diagnostics = await StopAndCaptureHostDiagnosticsAsync();
+            File.WriteAllText(Path.Combine(destinationRoot, "attempt.txt"), label + "\n" + diagnostics + "\n",
+                new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(destinationRoot, "stderr.log"), _stderrOutput.ToString(), new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(destinationRoot, "stdio-transcript-redacted.jsonl"), string.Join("\n", _stdioTranscript) + "\n",
+                new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(destinationRoot, "discovered-recovery-proof.json"),
+                _recoveryProof ?? "proof-not-recorded", new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(destinationRoot, "provider-requests.jsonl"),
+                string.Join("\n", Provider.RequestBodies.Select(item => JsonSerializer.Serialize(new
+                {
+                    item.Index,
+                    body = RedactJson(item.Body),
+                }))) + "\n", new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(destinationRoot, "provider-responses.jsonl"),
+                string.Join("\n", Provider.ResponseBodies.Select(item => JsonSerializer.Serialize(new
+                {
+                    item.Index,
+                    body = item.Body,
+                }))) + "\n", new UTF8Encoding(false));
+            CopyDirectory(Path.Combine(_root, "config"), Path.Combine(destinationRoot, "config"));
+            CopyDirectory(Path.Combine(_root, "agent-home"), Path.Combine(destinationRoot, "agent-home"));
+            CopyDirectory(Workspace, Path.Combine(destinationRoot, "workspace"));
+            CopyDirectory(_dataDirectory, Path.Combine(destinationRoot, "data"));
+
+            // The Host is stopped before this point. SQLite BackupDatabase reads a coherent view
+            // including any committed WAL frames; replace the copied journal and remove stale sidecars.
+            if (File.Exists(_journal))
+            {
+                var relativeJournal = Path.GetRelativePath(_dataDirectory, _journal);
+                var backupPath = Path.Combine(destinationRoot, "data", relativeJournal);
+                Directory.CreateDirectory(Path.GetDirectoryName(backupPath)!);
+                using (var source = new SqliteConnection(new SqliteConnectionStringBuilder
+                {
+                    DataSource = _journal,
+                    Mode = SqliteOpenMode.ReadOnly,
+                    Pooling = false,
+                }.ToString()))
+                using (var backup = new SqliteConnection(new SqliteConnectionStringBuilder
+                {
+                    DataSource = backupPath,
+                    Pooling = false,
+                }.ToString()))
+                {
+                    source.Open();
+                    backup.Open();
+                    source.BackupDatabase(backup);
+                }
+                foreach (var sidecar in new[] { backupPath + "-wal", backupPath + "-shm" })
+                    if (File.Exists(sidecar)) File.Delete(sidecar);
+            }
+
+            var sourceFiles = new[]
+            {
+                Path.Combine(repoRoot, "src", "OmniCore.Host", "ExplorerTurn.cs"),
+                Path.Combine(repoRoot, "src", "OmniCore.Host", "ExternalAgentDiscoveryCatalog.cs"),
+                Path.Combine(repoRoot, "src", "OmniCore.Domain", "ModelPolicy.cs"),
+                Path.Combine(repoRoot, "tests", "OmniCore.Tests", "StdioTransportTests.NativePermissionPlanApproval.cs"),
+                Path.Combine(repoRoot, "tests", "OmniCore.Tests", "CliEndToEndTests.cs"),
+            };
+            var binaryFiles = new[]
+            {
+                typeof(StdioTransportTests).Assembly.Location,
+                typeof(OmniHost).Assembly.Location,
+                Path.Combine(AppContext.BaseDirectory, "omni.dll"),
+            };
+            var manifest = new
+            {
+                label,
+                workingDirectory = repoRoot,
+                agentHomeIsolation = Path.Combine(destinationRoot, "agent-home"),
+                bootstrapKeyPresent = Key.Length > 0,
+                transcriptRedaction = "Fixture stdio response payloads are retained with trustedActionNonce redacted; provider response bodies are fixture-generated and contain no credentials.",
+                journalRelativePath = Path.GetRelativePath(_dataDirectory, _journal),
+                hostCliPath = Path.Combine(AppContext.BaseDirectory, "omni.dll"),
+                sourceSha256 = sourceFiles.ToDictionary(path => Path.GetRelativePath(repoRoot, path),
+                    path => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))), StringComparer.Ordinal),
+                executedBinarySha256 = binaryFiles.ToDictionary(path => path,
+                    path => File.Exists(path) ? Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))) : "missing",
+                    StringComparer.Ordinal),
+                capturedDataFiles = Directory.EnumerateFiles(destinationRoot, "*", SearchOption.AllDirectories)
+                    .Select(path => Path.GetRelativePath(destinationRoot, path))
+                    .Where(path => path != "manifest.json")
+                    .Order(StringComparer.Ordinal)
+                    .ToArray(),
+                capturedFileSha256 = Directory.EnumerateFiles(destinationRoot, "*", SearchOption.AllDirectories)
+                    .Where(path => Path.GetFileName(path) != "manifest.json")
+                    .ToDictionary(path => Path.GetRelativePath(destinationRoot, path),
+                        path => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))), StringComparer.Ordinal),
+            };
+            File.WriteAllText(Path.Combine(destinationRoot, "manifest.json"),
+                JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = true }), new UTF8Encoding(false));
+        }
+
+        private static string FindRepositoryRoot()
+        {
+            for (var current = new DirectoryInfo(AppContext.BaseDirectory); current is not null; current = current.Parent)
+                if (Directory.Exists(Path.Combine(current.FullName, "src", "OmniCore.Host"))
+                    && Directory.Exists(Path.Combine(current.FullName, "tests", "OmniCore.Tests")))
+                    return current.FullName;
+            throw new DirectoryNotFoundException("Could not locate the OmniCore repository root from the test binary.");
+        }
+
+        private static void CopyDirectory(string source, string destination)
+        {
+            if (!Directory.Exists(source)) return;
+            Directory.CreateDirectory(destination);
+            foreach (var file in Directory.EnumerateFiles(source))
+                File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), overwrite: true);
+            foreach (var child in Directory.EnumerateDirectories(source))
+                CopyDirectory(child, Path.Combine(destination, Path.GetFileName(child)));
+        }
+
+        public void SetCurrentSessionIdForTest(string sessionId) => CurrentSessionId = sessionId;
 
         public static async Task<NativeChoiceFixture> StartAsync(string mode, string? selectedOption = null,
             bool requestNativeChoices = true)
@@ -587,10 +916,13 @@ public sealed partial class StdioTransportTests
             var workspace = Path.Combine(root, "workspace");
             var config = Path.Combine(root, "config");
             var data = Path.Combine(root, "data");
+            var agentHome = Path.Combine(root, "agent-home");
             Directory.CreateDirectory(workspace);
             Directory.CreateDirectory(config);
+            Directory.CreateDirectory(agentHome);
             var oldData = Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
             var oldConfig = Environment.GetEnvironmentVariable("OMNICORE_CONFIG_DIR");
+            var oldAgentHome = Environment.GetEnvironmentVariable("OMNICORE_AGENT_HOME");
             var oldDirectory = Environment.CurrentDirectory;
             var key = RandomNumberGenerator.GetBytes(32);
             var provider = new CliEndToEndTests.ScriptedHttpProvider();
@@ -599,6 +931,59 @@ public sealed partial class StdioTransportTests
             var toolId = "choice-tool-" + Guid.NewGuid().ToString("N");
             provider.RespondWith((index, _) =>
             {
+                if (mode == "permission-discovered")
+                {
+                    const string relativePath = "discovered-target.txt";
+                    if (index == 0)
+                        return CliEndToEndTests.ResponsesToolCallResponse("discover-patch", "tool.search",
+                            "{\"query\":\"filesystem.patch\",\"maxResults\":8}");
+                    if (index == 1)
+                        return CliEndToEndTests.ResponsesToolCallResponse("read-discovered-target", "filesystem.read",
+                            JsonSerializer.Serialize(new { path = relativePath }));
+                    if (index == 2)
+                    {
+                        var before = File.ReadAllBytes(Path.Combine(workspace, relativePath));
+                        return CliEndToEndTests.ResponsesToolCallResponse("patch-discovered-target", "filesystem.patch",
+                            JsonSerializer.Serialize(new
+                            {
+                                path = relativePath,
+                                expectedVersion = FilesystemPatchTool.VersionToken(before),
+                                oldText = "before\n",
+                                newText = "omega\n",
+                            }));
+                    }
+                    return CliEndToEndTests.ResponsesTextResponse("Patch approved and completed.");
+                }
+                if (mode == "permission-grant-scope")
+                {
+                    var phase = index % 3;
+                    var run = index / 3;
+                    const string relativePath = "grant-dispatch-target.txt";
+                    if (phase == 0)
+                        return CliEndToEndTests.ResponsesToolCallResponse("grant-read-" + index,
+                            "filesystem.read", JsonSerializer.Serialize(new { path = relativePath }));
+                    if (phase == 1)
+                    {
+                        var state = run switch { 0 => "state-0", 1 => "state-1", 2 => "state-2", _ => "state-2" };
+                        var next = run switch
+                        {
+                            0 => "state-1\n",
+                            1 => "state-2\n",
+                            2 => string.Join("\n", Enumerable.Range(0, 201).Select(line => "expanded-" + line)) + "\n",
+                            _ => "state-3\n",
+                        };
+                        var before = GrantContent(state);
+                        return CliEndToEndTests.ResponsesToolCallResponse("grant-patch-" + index,
+                            "filesystem.patch", JsonSerializer.Serialize(new
+                            {
+                                path = relativePath,
+                                expectedVersion = FilesystemPatchTool.VersionToken(Encoding.UTF8.GetBytes(before)),
+                                    oldText = state + "\n",
+                                newText = next,
+                            }));
+                    }
+                    return CliEndToEndTests.ResponsesTextResponse("Grant scope dispatch completed.");
+                }
                 if (mode is "permission" or "permission-sequential" && index == 0)
                     return CliEndToEndTests.ResponsesToolCallResponse("discover-write-" + toolId, "tool.search",
                         "{\"query\":\"filesystem.write\",\"maxResults\":8}");
@@ -625,7 +1010,7 @@ public sealed partial class StdioTransportTests
 
             var fixture = new NativeChoiceFixture(root, workspace, data,
                 Path.Combine(OmniHost.WorkspaceDataDirectory(new ChoicePlatformPaths(root), workspace), "journal.db"),
-                oldData, oldConfig, oldDirectory, key, provider, mode, selectedOption);
+                oldData, oldConfig, oldAgentHome, oldDirectory, key, provider, mode, selectedOption);
             try
             {
                 File.WriteAllText(Path.Combine(config, "providers.yaml"), $$"""
@@ -642,17 +1027,34 @@ public sealed partial class StdioTransportTests
                 File.WriteAllText(Path.Combine(config, "settings.yaml"), "defaultModel: scripted-model\n", new UTF8Encoding(false));
                 File.WriteAllText(Path.Combine(config, "permissions.yaml"), mode is "permission" or "permission-sequential"
                     ? "profile: balanced\nrules:\n  tool.search: allow\n  filesystem.write: ask\n"
+                    : mode == "permission-discovered"
+                        ? "profile: balanced\nrules:\n  tool.search: allow\n  filesystem.read: allow\n  filesystem.patch: ask\n"
+                    : mode == "permission-grant-scope"
+                        ? "profile: balanced\nrules:\n  tool.search: allow\n  filesystem.read: allow\n  filesystem.patch: ask\n"
                     : "profile: balanced\nrules:\n  tool.search: allow\n  plan.propose: allow\n  filesystem.write: allow\n", new UTF8Encoding(false));
                 Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", data);
                 Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", config);
+                Environment.SetEnvironmentVariable("OMNICORE_AGENT_HOME", agentHome);
                 Environment.CurrentDirectory = workspace;
 
                 using (var modelPolicies = OmniHost.CreateModelPolicyService(data))
+                {
+                    var fullAgent = ModelPolicyPresets.FullAgent();
+                    var directFullAgent = new UserModelPolicy(fullAgent.Category,
+                        new ModelToolPolicy(ToolMode.Direct, fullAgent.ToolPolicy.MaxVisibleTools, false,
+                            fullAgent.ToolPolicy.CapabilityCeiling), fullAgent.MutationPolicy, fullAgent.Source,
+                        fullAgent.Note, fullAgent.MaxModelStepsPerTurn, fullAgent.MaxToolCallsPerTurn,
+                        fullAgent.AllowOrchestration, fullAgent.MaxGenerationSeconds);
                     modelPolicies.Set(ModelPolicyKey.For("scripted", "scripted-model"), 0,
-                        ModelPolicyPresets.FullAgent(), CancellationToken.None);
+                        mode == "permission-grant-scope" ? directFullAgent
+                            : mode == "permission-discovered" ? ModelPolicyPresets.ScopedCoder() : fullAgent,
+                        CancellationToken.None);
+                }
                 var paths = OmniHost.CreatePlatformPaths();
                 var defaults = new SessionSecurityDefaultConfiguration(paths);
-                defaults.Set(defaults.Read().Revision, ModelPolicyCategory.FullAgent, CancellationToken.None);
+                defaults.Set(defaults.Read().Revision,
+                    mode == "permission-discovered" ? ModelPolicyCategory.ScopedCoder : ModelPolicyCategory.FullAgent,
+                    CancellationToken.None);
                 fixture.StartHost(requestNativeChoices);
             }
             catch
@@ -666,15 +1068,32 @@ public sealed partial class StdioTransportTests
         public async Task<(InteractionRequested Request, string RunId, TurnId TurnId, long PolicyRevision)>
             StartAndWaitForInteractionAsync(InteractionKind kind)
         {
+            var providerRequestsBeforeStart = Provider.RequestCount;
+            if (CurrentSessionId is { } priorSession)
+            {
+                var create = WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"conversation.new\"}");
+                var createAck = Ack(Exchange(TrustedActionEnvelope(create, Key, Nonce!, Workspace,
+                    priorSession, null)));
+                Assert.Equal(RuntimeCommandOutcomeKind.Accepted, createAck.Outcome?.Kind);
+                var createdSession = ReadCurrentSessionId(Host!);
+                Assert.NotEqual(priorSession, createdSession);
+                CurrentSessionId = createdSession;
+            }
             var defaultRevision = ReadSessionSecurityDefaultRevision(Host!);
-            var mode = Mode is "permission" or "permission-sequential" ? "act" : "plan";
+            var currentPolicyRevision = CurrentSessionId is null
+                ? (long?)null : ReadNativeSessionSecurity(Host!).GetProperty("revision").GetInt64();
+            var mode = Mode is "permission" or "permission-sequential" or "permission-grant-scope" or "permission-discovered" ? "act" : "plan";
             var start = WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"conversation.start\",\"text\":\"Exercise a server choice\",\"mode\":"
-                + JsonSerializer.Serialize(mode) + ",\"expectedRevision\":null,\"expectedPolicyRevision\":null,\"expectedDefaultRevision\":"
-                + JsonSerializer.Serialize(defaultRevision) + "}");
+                + JsonSerializer.Serialize(mode) + ",\"expectedRevision\":null,\"expectedPolicyRevision\":"
+                + (currentPolicyRevision?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "null")
+                + ",\"expectedDefaultRevision\":"
+                + (currentPolicyRevision is null ? JsonSerializer.Serialize(defaultRevision) : "null") + "}");
             LastStartCommandId = start.MessageId;
-            var ack = Ack(RawExchange(Host!, TrustedActionEnvelope(start, Key, Nonce!, Workspace, null, null)));
-            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, ack.Outcome?.Kind);
-            await Provider.WaitForRequestAsync(1, TestContext.Current.CancellationToken)
+            var ack = Ack(Exchange(TrustedActionEnvelope(start, Key, Nonce!, Workspace,
+                CurrentSessionId, null)));
+            Assert.True(ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted,
+                "conversation.start rejected: " + ack.Error);
+            await Provider.WaitForRequestAsync(providerRequestsBeforeStart + 1, TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
             var scope = ReadCurrentScope(Host!);
             CurrentSessionId = scope.SessionId;
@@ -704,7 +1123,8 @@ public sealed partial class StdioTransportTests
                         var deferred = await WaitForDeferredStartAsync(start);
                         Assert.Equal("deferred", deferred.GetProperty("state").GetString());
                         Assert.Equal("input_required", deferred.GetProperty("code").GetString());
-                        Assert.Equal(kind == InteractionKind.PlanApproval ? 3 : 2, Provider.RequestCount);
+                        Assert.Equal(providerRequestsBeforeStart + (kind == InteractionKind.PlanApproval ? 3
+                            : Mode == "permission-grant-scope" ? 2 : Mode == "permission-discovered" ? 3 : 2), Provider.RequestCount);
                         var policyRevision = ReadNativeSessionSecurity(Host!).GetProperty("revision").GetInt64();
                         return (interaction, run.ToString(), turnId, policyRevision);
                     }
@@ -782,7 +1202,7 @@ public sealed partial class StdioTransportTests
             if (Host is null) return;
             Host.Kill(entireProcessTree: true);
             await Host.WaitForExitAsync(TestContext.Current.CancellationToken);
-            if (_stderrCapture is not null) _ = await _stderrCapture;
+            if (_stderrCapture is not null) await _stderrCapture;
             Host.Dispose();
             Host = null;
             _stderrCapture = null;
@@ -794,17 +1214,25 @@ public sealed partial class StdioTransportTests
             // also keeps --artifacts-path builds isolated from shared src/bin outputs.
             var cli = Path.Combine(AppContext.BaseDirectory, "omni.dll");
             Host = StartRawHost(cli, Workspace, Convert.ToHexString(Key));
-            _stderrCapture = Host.StandardError.ReadToEndAsync();
+            _stderrCapture = CaptureHostErrorAsync(Host.StandardError);
             var requested = requestNativeChoices
                 ? ",\"capabilities\":[\"command.conversation.interaction.choice.respond.user\"]"
                 : string.Empty;
-            var hello = RawExchange(Host, WireEnvelope.FromJson(
+            var hello = Exchange(WireEnvelope.FromJson(
                 "{\"version\":\"1.0\",\"messageType\":\"hello\",\"messageId\":\"choice-restart-hello\",\"payload\":{\"supportedVersions\":[\"1.0\"]"
                 + requested + "}}"));
             using var helloJson = JsonDocument.Parse(hello.PayloadJson);
             Nonce = helloJson.RootElement.GetProperty("trustedActionNonce").GetString();
             NegotiatedCapabilities = helloJson.RootElement.GetProperty("capabilities").EnumerateArray()
                 .Select(value => value.GetString()!).ToArray();
+        }
+
+        private async Task CaptureHostErrorAsync(StreamReader reader)
+        {
+            while (await reader.ReadLineAsync().ConfigureAwait(false) is { } line)
+            {
+                lock (_stderrOutput) _stderrOutput.AppendLine(line);
+            }
         }
 
         public async Task<string> StopAndCaptureHostDiagnosticsAsync()
@@ -815,7 +1243,8 @@ public sealed partial class StdioTransportTests
                 Host.Kill(entireProcessTree: true);
                 await Host.WaitForExitAsync(TestContext.Current.CancellationToken);
             }
-            var diagnostics = _stderrCapture is null ? string.Empty : await _stderrCapture;
+            if (_stderrCapture is not null) await _stderrCapture;
+            var diagnostics = HostErrorDiagnostic;
             Host.Dispose();
             Host = null;
             _stderrCapture = null;
@@ -848,6 +1277,14 @@ public sealed partial class StdioTransportTests
             return store.ReadFrom(session, 1).Select(envelope => (envelope, codecs.Decode(envelope))).ToArray();
         }
 
+        public IReadOnlyList<(DomainEvent Envelope, DomainEventPayload Payload)> ReadSessionEvents(string sessionId)
+        {
+            var session = OmniCore.Domain.SessionId.Parse(sessionId);
+            var codecs = EventCodecs.Create();
+            using var store = new SqliteEventStore(_journal, readOnly: true);
+            return store.ReadFrom(session, 1).Select(envelope => (envelope, codecs.Decode(envelope))).ToArray();
+        }
+
         public IReadOnlyList<DomainEvent> ReadEnvelopes()
         {
             using var store = new SqliteEventStore(_journal, readOnly: true);
@@ -866,7 +1303,7 @@ public sealed partial class StdioTransportTests
             var payload = "{\"operation\":\"conversation.result\",\"commandId\":"
                 + JsonSerializer.Serialize(command.MessageId) + ",\"requestHash\":"
                 + JsonSerializer.Serialize(requestHash) + "}";
-            using var document = JsonDocument.Parse(RawExchange(Host!,
+            using var document = JsonDocument.Parse(Exchange(
                 WireEnvelope.Command("conversation-result-" + Guid.NewGuid().ToString("N"), payload)).PayloadJson);
             return document.RootElement.Clone();
         }
@@ -912,22 +1349,114 @@ public sealed partial class StdioTransportTests
             throw new TimeoutException("approve_only did not complete the original Plan Run.");
         }
 
+        public async Task WaitForRunCancellationAsync(string runId)
+        {
+            var run = RunId.Parse(runId);
+            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+                var events = ReadEvents().Where(item => item.Envelope.RunId == run).ToArray();
+                if (events.Any(item => item.Payload is RunCancelled)) return;
+                if (events.Any(item => item.Payload is RunCompleted or RunFailed))
+                    throw new InvalidOperationException("The fixture Run reached a different terminal outcome before cancel.");
+                await Task.Delay(25, TestContext.Current.CancellationToken);
+            }
+            throw new TimeoutException("The authorized fixture run.cancel did not persist RunCancelled.");
+        }
+
         public async ValueTask DisposeAsync()
         {
             if (_disposed) return;
             _disposed = true;
-            if (Host is not null)
+            var cleanupErrors = new List<Exception>();
+            try { await StopOwnedHostForDisposeAsync(); }
+            catch (Exception exception) { cleanupErrors.Add(exception); }
+            try { await Provider.DisposeAsync(); }
+            catch (Exception exception) { cleanupErrors.Add(exception); }
+            try { CryptographicOperations.ZeroMemory(Key); }
+            catch (Exception exception) { cleanupErrors.Add(exception); }
+            try { Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", _oldData); }
+            catch (Exception exception) { cleanupErrors.Add(exception); }
+            try { Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", _oldConfig); }
+            catch (Exception exception) { cleanupErrors.Add(exception); }
+            try { Environment.SetEnvironmentVariable("OMNICORE_AGENT_HOME", _oldAgentHome); }
+            catch (Exception exception) { cleanupErrors.Add(exception); }
+            try { Environment.CurrentDirectory = _oldDirectory; }
+            catch (Exception exception) { cleanupErrors.Add(exception); }
+            try
             {
-                try { if (!Host.HasExited) Host.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
-                try { await Host.WaitForExitAsync(TestContext.Current.CancellationToken); } catch (InvalidOperationException) { }
-                Host.Dispose();
+                // The fixture's model-policy store uses SQLite pooling for its private user.db.
+                // Clear only that exact connection-string pool so Windows can remove the fixture tree.
+                using var poolKey = new SqliteConnection("DataSource=" + Path.Combine(_dataDirectory, "user.db"));
+                SqliteConnection.ClearPool(poolKey);
             }
-            await Provider.DisposeAsync();
-            CryptographicOperations.ZeroMemory(Key);
-            Environment.SetEnvironmentVariable("OMNICORE_DATA_DIR", _oldData);
-            Environment.SetEnvironmentVariable("OMNICORE_CONFIG_DIR", _oldConfig);
-            Environment.CurrentDirectory = _oldDirectory;
-            try { Directory.Delete(_root, recursive: true); } catch (IOException) { }
+            catch (Exception exception) { cleanupErrors.Add(exception); }
+            try
+            {
+                if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+            }
+            catch (Exception exception) { cleanupErrors.Add(exception); }
+
+            if (cleanupErrors.Count == 1) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(cleanupErrors[0]).Throw();
+            if (cleanupErrors.Count > 1) throw new AggregateException("Native choice fixture cleanup failed.", cleanupErrors);
+        }
+
+        private async Task StopOwnedHostForDisposeAsync()
+        {
+            var process = Host;
+            if (process is null) return;
+            var cleanupErrors = new List<Exception>();
+            try
+            {
+                try
+                {
+                    if (!process.HasExited) process.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException) when (process.HasExited) { }
+                catch (Exception exception) { cleanupErrors.Add(exception); }
+
+                using (var wait = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+                {
+                    try { await process.WaitForExitAsync(wait.Token); }
+                    catch (OperationCanceledException)
+                    {
+                        cleanupErrors.Add(new TimeoutException("Native choice Host did not exit within 10 seconds after termination."));
+                        try
+                        {
+                            if (!process.HasExited) process.Kill(entireProcessTree: true);
+                        }
+                        catch (InvalidOperationException) when (process.HasExited) { }
+                        catch (Exception exception) { cleanupErrors.Add(exception); }
+
+                        // Bound the retry wait too: an OS-level failure to terminate must be
+                        // reported without preventing environment/key/provider cleanup below.
+                        using var finalWait = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                        try { await process.WaitForExitAsync(finalWait.Token); }
+                        catch (OperationCanceledException) when (!process.HasExited)
+                        {
+                            cleanupErrors.Add(new TimeoutException(
+                                "Native choice Host remained alive after a second tree-termination attempt."));
+                        }
+                    }
+                }
+            }
+            catch (Exception exception) { cleanupErrors.Add(exception); }
+            finally
+            {
+                if (_stderrCapture is not null)
+                {
+                    try { await _stderrCapture.WaitAsync(TimeSpan.FromSeconds(5)); }
+                    catch (Exception exception) { cleanupErrors.Add(exception); }
+                }
+                try { process.Dispose(); }
+                catch (Exception exception) { cleanupErrors.Add(exception); }
+                Host = null;
+                _stderrCapture = null;
+            }
+
+            if (cleanupErrors.Count == 1) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(cleanupErrors[0]).Throw();
+            if (cleanupErrors.Count > 1) throw new AggregateException("Native choice Host cleanup failed.", cleanupErrors);
         }
     }
 

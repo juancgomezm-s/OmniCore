@@ -109,6 +109,31 @@ public sealed class UserPermissionsTests
         }
     }
 
+    [Fact]
+    public void Exact_worktree_disposition_claim_uses_workspace_write_policy_and_still_obeys_user_deny()
+    {
+        var claim = new WorktreeDispositionClaim("0123456789abcdef",
+            Path.GetFullPath(Path.Combine(Path.GetTempPath(), "omni-disposition-policy")),
+            LaneId.New().ToString(), Guid.NewGuid().ToString("N"), WorktreeDispositionOperation.Discard,
+            new string('a', 40), new string('b', 40));
+        var claims = new ResourceClaims([], [], [], null, [], claim);
+        var disposition = new ToolIntent(ToolCallId.New(), new ToolId("worktree.discard"), "{}",
+            EffectClass.Reconcilable, claims, ToolRisk.High, null);
+        var malformedClaim = claim with { OwnershipId = "foreign" };
+        var malformed = new ToolIntent(ToolCallId.New(), new ToolId("worktree.discard"), "{}",
+            EffectClass.Reconcilable, new ResourceClaims([], [], [], null, [], malformedClaim), ToolRisk.High, null);
+        var missingClaim = new ToolIntent(ToolCallId.New(), new ToolId("worktree.discard"), "{}",
+            EffectClass.Reconcilable, ResourceClaims.Empty(), ToolRisk.High, null);
+
+        Assert.Equal(PermissionDecision.Allow, Policy(RunMode.Act).Evaluate(disposition).Final);
+        Assert.Equal(PermissionDecision.Allow, Policy(RunMode.Act, rules: new()
+            { ["worktree.discard"] = PermissionDecision.Allow }).Evaluate(disposition).Final);
+        Assert.Equal(PermissionDecision.Ask, Policy(RunMode.Act).Evaluate(missingClaim).Final);
+        Assert.Equal(PermissionDecision.Ask, Policy(RunMode.Act).Evaluate(malformed).Final);
+        Assert.Equal(PermissionDecision.Deny, Policy(RunMode.Act, rules: new()
+            { ["worktree.discard"] = PermissionDecision.Deny }).Evaluate(disposition).Final);
+    }
+
     // ---------------------------------------------------------------- reglas de usuario (UserPolicy)
 
     [Fact]

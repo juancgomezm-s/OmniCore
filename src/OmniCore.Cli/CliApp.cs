@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using OmniCore.Abstractions;
 using OmniCore.Client;
 using OmniCore.Host;
@@ -122,6 +124,12 @@ public sealed partial class CliApp
         var userAliasApplied = !ReferenceEquals(withUserAlias, args);
         args = HumanCommandAliases.NormalizeCli(withUserAlias);
         var command = args[0];
+        if (command.StartsWith('!'))
+        {
+            var shellCommand = command[1..] + (args.Length > 1 ? " " + string.Join(" ", args.Skip(1)) : "");
+            return ExecuteHumanShellCliAsync(shellCommand,
+                allowDeferredPermission: !Console.IsInputRedirected && !Console.IsOutputRedirected);
+        }
         if (command is "pet" or "/pet")
         {
             try
@@ -141,6 +149,7 @@ public sealed partial class CliApp
             { Console.WriteLine("{\"error\":\"" + JsonObj.Escape(error.Message) + "\"}"); return Task.FromResult(2); }
         }
         if (command is "new" or "sessions" or "resume-session" or "rename-session" or "compact" or "clear") return RunConversationCommand(args);
+        if (command == "conversation") return RunConversationCommand(new[] { "conversation" }.Concat(args.Skip(1)).ToArray());
         if (command.StartsWith("/", StringComparison.Ordinal)) return RunTypedCommand(args);
         if (command == "sim") return RunSim(args);
         if (command == "stdio") return RunStdioClientAsync(args);
@@ -202,6 +211,24 @@ public sealed partial class CliApp
 
         Console.WriteLine(Loc().Resolve("cli.ask_assumed", "command", command));
         return RunAsk(new[] { "ask", string.Join(" ", args) });
+    }
+
+    private static async Task<int> ExecuteHumanShellCliAsync(string command, bool allowDeferredPermission)
+    {
+        using var cancellation = new CancellationTokenSource();
+        ConsoleCancelEventHandler handler = (_, eventArgs) =>
+        {
+            eventArgs.Cancel = true;
+            cancellation.Cancel();
+        };
+        Console.CancelKeyPress += handler;
+        try
+        {
+            return await Runtime.ExecuteHumanShellCommandAsync(command, Console.Write,
+                line => Console.Error.WriteLine(OmniCliRuntime.RedactSensitive(line)), cancellation.Token,
+                allowDeferredPermission).ConfigureAwait(false);
+        }
+        finally { Console.CancelKeyPress -= handler; }
     }
 
     private static Task<int> RunStdioClientAsync(string[] args)
@@ -990,6 +1017,42 @@ public sealed partial class CliApp
             foreach (var row in rows) Console.WriteLine((row.Current ? "* " : "  ") + row.Id + "  "
                 + row.UpdatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm") + "  " + row.Title);
             return Task.FromResult(0);
+        }
+        if (args is ["conversation", "import", var sourcePath])
+        {
+            if (client is not ITrustedUserActionClient importClient)
+            { Console.WriteLine(Loc().Resolve("conversation.trusted_required")); return Task.FromResult(1); }
+            try
+            {
+                var fullPath = Path.GetFullPath(sourcePath);
+                using var input = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                // Keep the CLI inside the stdio frame budget without taking a direct dependency
+                // on Domain. Host remains the single authority that parses and validates the
+                // canonical import document and its stricter source/event limits.
+                if (input.Length is <= 0 or > StdioProtocol.MaximumFrameBytes / 2)
+                    throw new InvalidDataException("Transcript file size is outside the allowed limit.");
+                var bytes = new byte[checked((int)input.Length)];
+                input.ReadExactly(bytes);
+                var base64 = Convert.ToBase64String(bytes);
+                var payload = "{" + JsonObj.Field("cmd", "conversation.import") + ","
+                    + JsonObj.Field("documentBase64", base64) + "}";
+                var envelope = WireEnvelope.Command(Ids.NewV7(), payload);
+                if (Encoding.UTF8.GetByteCount(envelope.ToJson()) > StdioProtocol.MaximumFrameBytes - 8192)
+                    throw new InvalidDataException("Transcript command exceeds the allowed protocol frame size.");
+                var sourceSha256 = Convert.ToHexString(SHA256.HashData(bytes));
+                var importAck = importClient.SendUserAction(envelope, CancellationToken.None);
+                if (importAck.Status != "ok")
+                {
+                    Console.WriteLine(Loc().ResolveWire(importAck.Error ?? "conversation.failed"));
+                    return Task.FromResult(importAck.Error == "conversation.import.invalid" ? 2 : 1);
+                }
+                Console.WriteLine("{" + JsonObj.Field("origin", "Imported") + "," + JsonObj.Field("sourceSha256", sourceSha256)
+                    + "," + JsonObj.Field("session", client.Query("sessionIdentity", CancellationToken.None)?.Json ?? "null") + "}");
+                return Task.FromResult(0);
+            }
+            catch (Exception error) when (error is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException
+                or System.Text.Json.JsonException or NotSupportedException)
+            { Console.WriteLine(Loc().ResolveWire("conversation.import.invalid")); return Task.FromResult(2); }
         }
         if (args is not (["new"] or ["compact"] or ["resume-session", _] or ["rename-session", ..]))
         { Console.WriteLine(Loc().Resolve("shell.conversation.arguments")); return Task.FromResult(2); }

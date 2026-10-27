@@ -606,7 +606,8 @@ public sealed class ExplorerTurn
     /// and bound to its Session/Run receipt.</summary>
     internal TurnResult ExecuteNativeToolAction(string toolName, string argumentsJson,
         string invocationId, SessionId sessionId, RunId runId, LaneId laneId,
-        CancellationToken cancellationToken, bool allowOpenTurn = false)
+        CancellationToken cancellationToken, bool allowOpenTurn = false, bool requireExistingTurn = false,
+        bool? allowDeferredInteraction = null, ExecutionId? expectedExecutionId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(toolName);
         ArgumentNullException.ThrowIfNull(argumentsJson);
@@ -617,15 +618,17 @@ public sealed class ExplorerTurn
         var runEvents = journal.Where(item => item.RunId == runId).ToArray();
         if (RunProjection.Replay(sessionId, runId, _codecs,
                 runEvents).State is not (RunState.Running or RunState.AwaitingInput)
+            || requireExistingTurn && openTurn is null
             || LaneProjection.Replay(_codecs, journal.Where(item => item.RunId == runId).ToArray()).StateOf(laneId) != LaneState.Running
             || openTurn is not null && (!allowOpenTurn || RunProjection.Replay(sessionId, runId, _codecs, runEvents).State != RunState.Running
                 || HasInFlightToolEffect(journal, _codecs, runId, laneId, openTurn))
             || FindPendingRunInteraction(runEvents, runId) is not null)
             return new TurnResult("Native tool action is outside an available execution boundary.",
                 StopReason.Error, 0, new TokenUsage(0, 0, 0, 0, 0), [], null);
-        if (_tools is not ScriptedToolExecutor executor
-            || _catalog.Find(new ToolId(toolName)) is null
-            || _boundary?.IsToolVisible(toolName) != true)
+        var nativeActionTool = _catalog.Find(new ToolId(toolName));
+        var nativeUserActionOnly = nativeActionTool is INativeUserActionOnlyTool;
+        if (_tools is not ScriptedToolExecutor executor || nativeActionTool is null
+            || !nativeUserActionOnly && _boundary?.IsToolVisible(toolName) != true)
             return new TurnResult("Native tool action is not available under the current capability boundary.",
                 StopReason.Error, 0, new TokenUsage(0, 0, 0, 0, 0), [], null);
 
@@ -633,6 +636,9 @@ public sealed class ExplorerTurn
         var turnId = openTurn ?? TurnId.New();
         var toolCallId = ToolCallId.New();
         var taskId = FindTaskForLane(journal, runId, laneId);
+        using var executionResolutionScope = expectedExecutionId is { } expectedOwner
+            ? ExecutionScope.Begin(new ExecutionScopeState(runId, taskId, laneId, ExecutionId: expectedOwner))
+            : null;
         var executionId = HostAgentInvocation.Resolve(_store, _codecs, sessionId, runId, taskId, laneId, stream);
         using var scope = ExecutionScope.Begin(new ExecutionScopeState(runId, taskId, laneId, turnId,
             ExecutionId: executionId));
@@ -675,10 +681,35 @@ public sealed class ExplorerTurn
             var receipt = stream.AppendToolCallRequestAdmitted(
                 new ToolCallRequested(toolCallId, call.ProviderCallId, toolName, argumentsJson),
                 events => ValidateNativeToolActionBudget(events, sessionId, runId, laneId, turnId, toolCallId, authority));
-            ToolOutcome outcome = executor.ExecuteTool(call, userApprovesAsk: false, actionDeadline.Token, stream, receipt);
+            ToolOutcome outcome = allowDeferredInteraction is { } deferAsk
+                ? executor.ExecuteNativeToolAction(call, userApprovesAsk: false, actionDeadline.Token, stream,
+                    receipt, deferAsk)
+                : executor.ExecuteTool(call, userApprovesAsk: false, actionDeadline.Token, stream, receipt);
             if (outcome.Events.Count != 0) stream.AppendBatch(outcome.Events, DurabilityClass.Standard);
             if (outcome.PendingInteractionId is { } interaction)
             {
+                var pendingEvents = stream.EventsSince(1).Where(item => item.RunId == runId
+                    && item.TaskId == taskId && item.LaneId == laneId && item.TurnId == turnId
+                    && item.ToolCallId == toolCallId).Select(item => (Event: item, Payload: _codecs.Decode(item))).ToArray();
+                var requestEvents = pendingEvents.Where(item => item.Payload is InteractionRequested request
+                    && request.InteractionId == interaction
+                    && request.Kind is InteractionKind.Permission or InteractionKind.WeakSandboxConsent).ToArray();
+                var hasExactPermissionBinding = requestEvents.Length == 1
+                    && requestEvents[0].Payload is InteractionRequested { Kind: InteractionKind.Permission }
+                    && pendingEvents.Count(item => item.Payload is PermissionRequested permission
+                        && permission.InteractionId == interaction && permission.ToolCallId == toolCallId) == 1;
+                var hasExactWeakConsentBinding = requestEvents.Length == 1
+                    && requestEvents[0].Payload is InteractionRequested { Kind: InteractionKind.WeakSandboxConsent }
+                    && !pendingEvents.Any(item => item.Payload is PermissionRequested permission
+                        && permission.InteractionId == interaction)
+                    && !pendingEvents.Any(item => item.Payload is ToolCallStarted or ToolCallSucceeded
+                        or ToolCallFailed or ToolCallEffectUnknown or ToolCallReconciled);
+                if (!hasExactPermissionBinding && !hasExactWeakConsentBinding)
+                    throw new InvalidDataException("Native tool wait is missing its exact durable Permission binding.");
+                // Native actions bypass AskCore's normal tool loop, so persist the canonical
+                // Run wait transition here before returning the deferred command to stdio.
+                // The Permission request and open Turn already exist in the exact execution scope.
+                EnsureRunAwaitingInput(stream, runId, laneId);
                 return new TurnResult(null, StopReason.InputRequired, 0, new TokenUsage(0, 0, 0, 0, 0),
                     [new ToolUseTrace(toolName, outcome.Succeeded, outcome.Summary, argumentsJson)], null, interaction)
                     { TurnId = turnId };
@@ -709,6 +740,89 @@ public sealed class ExplorerTurn
         {
             if (toolGateHeld) _toolExecutionGate.Release();
         }
+    }
+
+    internal ToolOutcome ResumeNativeToolActionPermission(SessionId sessionId, RunId runId, TaskId taskId,
+        LaneId laneId, ExecutionId executionId, TurnId turnId, ToolCallId toolCallId, string providerCallId,
+        InteractionId interactionId, string optionId, CancellationToken cancellationToken)
+    {
+        if (optionId is not ("allow_once" or "allow_run" or "allow_workspace" or "deny"))
+            throw new InvalidOperationException("Native Permission option is not a server-defined choice.");
+        var stream = new EventStream(_store, _codecs, sessionId);
+        var journal = stream.EventsSince(1);
+        var exactScope = journal.Where(item => item.RunId == runId && item.TaskId == taskId
+            && item.LaneId == laneId && item.ExecutionId == executionId && item.TurnId == turnId)
+            .Select(item => (Event: item, Payload: _codecs.Decode(item))).ToArray();
+        if (FindOpenTurn(stream, runId, laneId) != turnId
+            || RunProjection.Replay(sessionId, runId, _codecs,
+                journal.Where(item => item.RunId == runId).ToArray()).State != RunState.Running
+            || LaneProjection.Replay(_codecs, journal.Where(item => item.RunId == runId).ToArray())
+                .StateOf(laneId) != LaneState.Running
+            || !journal.Any(item => item.RunId == runId && item.TaskId == taskId && item.LaneId == laneId
+                && item.ExecutionId == executionId
+                && _codecs.Decode(item) is AgentExecutionStarted started
+                && started.ExecutionId == executionId)
+            || journal.Any(item => item.RunId == runId
+                && (_codecs.Decode(item) is AgentExecutionCompleted completed
+                        && completed.ExecutionId == executionId
+                    || _codecs.Decode(item) is AgentExecutionFailed failed && failed.ExecutionId == executionId))
+            || journal.Any(item => item.RunId == runId
+                && _codecs.Decode(item) is DelegationCancellationRequested cancelled
+                && cancelled.ChildExecutionId == executionId)
+            || _tools is not ScriptedToolExecutor executor)
+            throw new InvalidOperationException("Native Permission continuation is outside its open child Turn.");
+
+        var scoped = exactScope.Where(item => item.Event.ToolCallId == toolCallId)
+            .ToArray();
+        var request = scoped.SingleOrDefault(item => item.Payload is ToolCallRequested call
+            && call.ProviderCallId == providerCallId && call.ToolName is "process.read" or "process.send_input" or "process.stop"
+                or "worktree.integrate" or "worktree.cleanup" or "worktree.discard" or "worktree.retention");
+        var permission = scoped.SingleOrDefault(item => item.Payload is PermissionRequested requested
+            && requested.ToolCallId == toolCallId && requested.InteractionId == interactionId);
+        if (request.Event is null || permission.Event is null
+            || exactScope.Count(item => (item.Event.ToolCallId is null || item.Event.ToolCallId == toolCallId)
+                && item.Payload is InteractionRequested asked
+                && asked.InteractionId == interactionId && asked.Kind == InteractionKind.Permission) != 1
+            || scoped.Any(item => item.Event.Sequence > permission.Event.Sequence
+                && item.Payload is ToolCallStarted or ToolCallSucceeded or ToolCallFailed
+                    or ToolCallEffectUnknown or ToolCallReconciled))
+            throw new InvalidOperationException("Native Permission continuation does not match its exact child ToolCall.");
+
+        var authority = RunProjection.Replay(sessionId, runId, _codecs,
+            journal.Where(item => item.RunId == runId).ToArray()).ModeAuthority?.Authorization;
+        using var actionDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (authority is not null)
+        {
+            var remaining = authority.GrantedAtUtc!.Value.AddSeconds(authority.Limits.MaxElapsedSeconds)
+                - DateTimeOffset.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+                throw new OperationCanceledException("Native Permission child Run deadline expired.", cancellationToken);
+            actionDeadline.CancelAfter(remaining);
+        }
+        _toolExecutionGate.Wait(actionDeadline.Token);
+        try
+        {
+            var current = stream.EventsSince(1);
+            var currentRun = current.Where(item => item.RunId == runId).ToArray();
+            var currentScope = current.Where(item => item.RunId == runId && item.TaskId == taskId
+                && item.LaneId == laneId && item.ExecutionId == executionId).ToArray();
+            if (FindOpenTurn(stream, runId, laneId) != turnId
+                || RunProjection.Replay(sessionId, runId, _codecs, currentRun).State != RunState.Running
+                || LaneProjection.Replay(_codecs, currentRun).StateOf(laneId) != LaneState.Running
+                || currentScope.Any(item => _codecs.Decode(item) is AgentExecutionCompleted completed
+                        && completed.ExecutionId == executionId
+                    || _codecs.Decode(item) is AgentExecutionFailed failed && failed.ExecutionId == executionId)
+                || currentRun.Any(item => _codecs.Decode(item) is DelegationCancellationRequested cancelled
+                    && cancelled.ChildExecutionId == executionId))
+                throw new InvalidOperationException("Native Permission child Turn closed before continuation.");
+            ValidateNativeToolActionBudget(current, sessionId, runId, laneId, turnId, toolCallId,
+                RunProjection.Replay(sessionId, runId, _codecs, currentRun).ModeAuthority?.Authorization);
+            using var scope = ExecutionScope.Begin(new ExecutionScopeState(runId, taskId, laneId, turnId,
+                toolCallId, executionId));
+            return executor.ResumeApprovedPermission(stream, _codecs, interactionId, optionId,
+                actionDeadline.Token);
+        }
+        finally { _toolExecutionGate.Release(); }
     }
 
     private bool DispatchNativeActionLifecycle(LifecyclePoint point, string toolName, string redactedArguments,
@@ -788,7 +902,7 @@ public sealed class ExplorerTurn
         }
     }
 
-    internal TurnResult ResumeNativeProcessPermission(InteractionId interaction, string optionId,
+    internal TurnResult ResumeNativeToolPermission(InteractionId interaction, string optionId,
         SessionId sessionId, RunId runId, LaneId laneId, CancellationToken cancellationToken)
     {
         if (_tools is not ScriptedToolExecutor executor
@@ -818,7 +932,8 @@ public sealed class ExplorerTurn
         var prepared = decoded.Where(item => item.Event.TurnId == turnId && item.Event.LaneId == laneId
             && item.Payload is ToolCallPrepared request && request.ToolCallId == toolCallId).ToArray();
         if (calls.Length != 1 || calls[0].Payload is not ToolCallRequested call
-            || call.ToolName is not ("process.read" or "process.send_input" or "process.stop")
+            || call.ToolName is not ("shell.exec" or "process.read" or "process.send_input" or "process.stop" or "worktree.integrate"
+                or "worktree.cleanup" or "worktree.discard" or "worktree.retention")
             || !call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal)
             || !Guid.TryParseExact(call.ProviderCallId["native-action-".Length..], "D", out var invocation)
             || call.ProviderCallId != "native-action-" + invocation.ToString("D")
@@ -832,22 +947,76 @@ public sealed class ExplorerTurn
         var execution = HostAgentInvocation.Resolve(_store, _codecs, sessionId, runId, resolvedTask, laneId, stream);
         using var scope = ExecutionScope.Begin(new ExecutionScopeState(runId, resolvedTask, laneId, turnId,
             ToolCallId: toolCallId, ExecutionId: execution));
-        var outcome = executor.ResumeApprovedPermission(stream, _codecs, interaction, optionId, cancellationToken);
+        var outcome = executor.ResumeApprovedPermission(stream, _codecs, interaction, optionId, cancellationToken,
+            isNativeUserAction: true);
         var summary = outcome.Summary ?? "process permission resolved";
+        if (outcome.PendingInteractionId is { } nextInteraction)
+        {
+            EnsureRunAwaitingInput(stream, runId, laneId);
+            return new TurnResult(null, StopReason.InputRequired, 0, new TokenUsage(0, 0, 0, 0, 0),
+                [new ToolUseTrace(call.ToolName, outcome.Succeeded, summary, call.ArgumentsJson)], null,
+                nextInteraction) { TurnId = turnId };
+        }
         if (!outcome.Succeeded)
             DispatchNativeActionLifecycle(LifecyclePoint.ToolFailed, call.ToolName,
                 SafeToolArguments(call.ToolName, call.ArgumentsJson), sessionId, runId, turnId, cancellationToken);
         DispatchNativeActionLifecycle(LifecyclePoint.AfterTool, call.ToolName,
             SafeToolArguments(call.ToolName, call.ArgumentsJson), sessionId, runId, turnId, cancellationToken);
-        if (outcome.PendingInteractionId is { } nextInteraction)
-            return new TurnResult(null, StopReason.InputRequired, 0, new TokenUsage(0, 0, 0, 0, 0),
-                [new ToolUseTrace(call.ToolName, outcome.Succeeded, summary, call.ArgumentsJson)], null,
-                nextInteraction) { TurnId = turnId };
         stream.Append(new TurnCompleted(turnId), DurabilityClass.Standard);
         return new TurnResult(null, outcome.Succeeded ? StopReason.EndTurn : StopReason.Error,
             0, new TokenUsage(0, 0, 0, 0, 0),
             [new ToolUseTrace(call.ToolName, outcome.Succeeded, summary, call.ArgumentsJson)], null)
             { TurnId = turnId };
+    }
+
+    internal TurnResult ResumeNativeToolWeakSandboxConsent(InteractionId interaction, string optionId,
+        SessionId sessionId, RunId runId, LaneId laneId, CancellationToken cancellationToken)
+    {
+        if (_tools is not ScriptedToolExecutor executor || optionId is not ("consent_once" or "deny"))
+            return new TurnResult("Native Weak sandbox continuation is unavailable.", StopReason.Error,
+                0, new TokenUsage(0, 0, 0, 0, 0), [], null);
+        var stream = new EventStream(_store, _codecs, sessionId);
+        var events = stream.EventsSince(1).Where(item => item.RunId == runId).ToArray();
+        var decoded = events.Select(item => (Event: item, Payload: _codecs.Decode(item))).ToArray();
+        var request = decoded.SingleOrDefault(item => item.Payload is InteractionRequested asked
+            && asked.InteractionId == interaction && asked.Kind == InteractionKind.WeakSandboxConsent);
+        if (request.Event is null || request.Payload is not InteractionRequested envelope
+            || request.Event.LaneId != laneId || request.Event.TurnId is not { } turnId
+            || request.Event.ToolCallId is not { } toolCallId
+            || decoded.SingleOrDefault(item => item.Payload is InteractionResolved resolved
+                && resolved.InteractionId == interaction).Payload is not InteractionResolved choice
+            || choice.IsQuestionnaire || choice.Cause != InteractionCause.User || choice.OptionId != optionId)
+            return new TurnResult("Native Weak sandbox choice binding is invalid.", StopReason.Error,
+                0, new TokenUsage(0, 0, 0, 0, 0), [], null);
+        var calls = decoded.Where(item => item.Event.TurnId == turnId && item.Event.LaneId == laneId
+                && item.Event.ToolCallId == toolCallId && item.Payload is ToolCallRequested).ToArray();
+        var prepared = decoded.SingleOrDefault(item => item.Event.ToolCallId == toolCallId
+            && item.Event.TurnId == turnId && item.Event.LaneId == laneId
+            && item.Payload is ToolCallPrepared);
+        if (calls.Length != 1 || calls[0].Payload is not ToolCallRequested call
+            || call.ToolName != "shell.exec" || !call.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal)
+            || !Guid.TryParseExact(call.ProviderCallId["native-action-".Length..], "D", out var invocation)
+            || call.ProviderCallId != "native-action-" + invocation.ToString("D")
+            || prepared.Event is null
+            || events.Any(item => item.ToolCallId == toolCallId && item.Sequence > request.Event.Sequence
+                && _codecs.Decode(item) is ToolCallStarted or ToolCallSucceeded or ToolCallFailed
+                    or ToolCallEffectUnknown or ToolCallReconciled))
+            return new TurnResult("Native Weak sandbox call is stale or already consumed.", StopReason.Error,
+                0, new TokenUsage(0, 0, 0, 0, 0), [], null) { TurnId = turnId };
+        var taskId = FindTaskForLane(events, runId, laneId);
+        var execution = HostAgentInvocation.Resolve(_store, _codecs, sessionId, runId, taskId, laneId, stream);
+        using var scope = ExecutionScope.Begin(new ExecutionScopeState(runId, taskId, laneId, turnId,
+            ToolCallId: toolCallId, ExecutionId: execution));
+        var outcome = executor.ResumeWeakSandboxConsent(stream, _codecs, interaction, optionId,
+            cancellationToken, isNativeUserAction: true);
+        DispatchNativeActionLifecycle(outcome.Succeeded ? LifecyclePoint.AfterTool : LifecyclePoint.ToolFailed,
+            call.ToolName, SafeToolArguments(call.ToolName, call.ArgumentsJson), sessionId, runId, turnId,
+            cancellationToken);
+        stream.Append(new TurnCompleted(turnId), DurabilityClass.Standard);
+        return new TurnResult(null, outcome.Succeeded ? StopReason.EndTurn : StopReason.Error,
+            0, new TokenUsage(0, 0, 0, 0, 0),
+            [new ToolUseTrace(call.ToolName, outcome.Succeeded, outcome.Summary ?? "Weak sandbox choice resolved",
+                call.ArgumentsJson)], null) { TurnId = turnId };
     }
 
     /// <summary>
@@ -3327,6 +3496,15 @@ public sealed class ExplorerTurn
         var history = new List<ModelMessage>();
         var journal = stream.EventsSince(1);
         var conversationScope = new LaneConversationScope(journal, _codecs, runId, activeLaneId);
+        var nativeToolInvocations = journal.Select(_codecs.Decode).OfType<NativeCommandInvocationAdmitted>()
+            .Where(item => item.RunId == runId && item.Kind == "nativeTool")
+            .Select(item => "native-action-" + item.InvocationId.ToString())
+            .ToHashSet(StringComparer.Ordinal);
+        var humanNativeToolCalls = journal.Where(evt => conversationScope.CanRead(evt)
+                && _codecs.Decode(evt) is ToolCallRequested call
+                && nativeToolInvocations.Contains(call.ProviderCallId))
+            .Select(evt => ((ToolCallRequested)_codecs.Decode(evt)).ToolCallId.ToString())
+            .ToHashSet(StringComparer.Ordinal);
         var currentHistoryRun = runId;
         long currentHistorySequence = 0;
         var historySequences = new List<long>();
@@ -3348,6 +3526,15 @@ public sealed class ExplorerTurn
                     else AppendHistory(new ModelMessage(message.Role == "user" ? MessageRole.User : MessageRole.Assistant,
                         new ContentBlock[] { new TextBlock(message.Text) }));
                 }
+        if (conversationScope.AllowsSessionHistory)
+            foreach (var evt in journal.Where(evt => _codecs.Decode(evt) is ConversationTranscriptImported))
+            {
+                currentHistorySequence = evt.Sequence;
+                var imported = (ConversationTranscriptImported)_codecs.Decode(evt);
+                foreach (var message in imported.Messages)
+                    AppendHistory(new ModelMessage(message.Role == "user" ? MessageRole.User : MessageRole.Assistant,
+                        new ContentBlock[] { new TextBlock(message.Text) }));
+            }
         var steeringInputs = new Dictionary<SteeringId, TurnSteeringReceived>();
         var questionnaireCalls = new HashSet<string>(StringComparer.Ordinal);
         var questionnaireResults = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -3522,6 +3709,7 @@ public sealed class ExplorerTurn
                 var call = _codecs.Decode(evt) as ToolCallRequested;
                 if (call is not null)
                 {
+                    if (humanNativeToolCalls.Contains(call.ToolCallId.ToString())) continue;
                     if (call.ParentToolCallId is not null)
                     {
                         internalToolCalls.Add(call.ToolCallId.ToString());
@@ -3549,6 +3737,7 @@ public sealed class ExplorerTurn
                     _ => (ToolCallId?)null,
                 };
                 if (callId is null) continue;
+                if (humanNativeToolCalls.Contains(callId.ToString())) continue;
                 if (internalToolCalls.Contains(callId!.ToString())) continue;
                 var isQuestionnaireCall = questionnaireCalls.Contains(callId!.ToString());
                 if (isQuestionnaireCall && !questionnaireResults.TryGetValue(callId!.ToString(), out _))
@@ -3754,6 +3943,7 @@ public sealed class ExplorerTurn
                 continue;
             }
             var governedMutation = toolName is "filesystem.write" or "filesystem.patch" or "worktree.integrate"
+                or "worktree.cleanup" or "worktree.discard"
                 || integrationCalls.Contains(toolCallId);
             if (!governedMutation)
             {

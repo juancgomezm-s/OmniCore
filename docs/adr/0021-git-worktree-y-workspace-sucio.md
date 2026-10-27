@@ -74,3 +74,23 @@ La retención predeterminada de snapshots es de siete días. Cleanup/discard req
 Límites de v1: hasta 64 archivos; hasta 2 MiB por pre/postimagen, 8 MiB agregados de imágenes y 16 MiB para el manifiesto protegido. La aplicación admite archivos de texto UTF-8 ordinarios con modo `100644`; contenido binario, modo ejecutable `100755`, directorios nuevos, symlinks/reparse points, gitlinks/submódulos modificados, secretos detectados, filtros/drivers o transformaciones Git no soportados se rechazan tipadamente antes del efecto. Los archivos ignorados no forman parte de snapshot ni integración; su presencia impide cleanup/discard para evitar pérdida. No es una prohibición general de compilar ni de aplicar cambios de texto admitidos. La validación documentada corresponde a Windows; Linux queda por verificar. Los leases coordinan operaciones de este Host, no excluyen editores o procesos externos.
 
 Quedan como diseño futuro el snapshot recursivo de submódulos, `DirectoryCopy` para carpetas sin Git y el pruning de worktrees ambiguos. Las limitaciones anteriores se rechazan de forma explícita; no se omiten silenciosamente ni se afirman como soporte M7.
+
+## Retención nativa M9-L (2026-10-24)
+
+La excepción acotada de ADR-0050 permite que el Run actual autorice la poda de
+refs privadas vencidas de un Run histórico terminado de la misma Session y
+workspace. La autoridad actual se mantiene separada del propietario histórico.
+El binding Task/Lane/Execution/TaskPacket y los datos retirados se verifican sin
+reabrir el directorio del worktree ni recuperar permisos antiguos.
+
+La revisión es pasiva y la acción fija el conjunto de refs y OIDs, limitado a
+snapshot y lane retenida de un ownership. Se conserva el plazo de siete días.
+Una transacción Git compara todos los OIDs antes de efectuar el lote, usa stdin
+exacto y `--no-deref`, y rechaza refs simbólicas; el barrido CLI conserva también
+esta protección. No se borran metadatos ni directorios. Un resultado incierto no
+se reintenta automáticamente. La transacción no ofrece una vista atómica a
+lectores concurrentes ni una garantía general ante caída intermedia.
+
+Aceptación local por Luna bajo: 13 casos sobre los mismos binarios sin recompilar.
+[Evidencia, manifiestos y límites](../validation/m9-worktree-retention-20261024.md).
+No hay nueva CI/publicación ni aceptación del consumidor por este incremento.

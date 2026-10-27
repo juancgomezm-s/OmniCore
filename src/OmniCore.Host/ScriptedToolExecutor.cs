@@ -224,7 +224,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
     }
 
     internal ToolOutcome ResumeApprovedPermission(EventStream stream, IEventCodecRegistry codecs, InteractionId interaction,
-        string optionId, CancellationToken cancellationToken)
+        string optionId, CancellationToken cancellationToken, bool isNativeUserAction = false)
     {
         ArgumentNullException.ThrowIfNull(stream);
         var scope = ExecutionScope.Current;
@@ -278,13 +278,14 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             providerCallId, call.ArgumentsJson);
         var outcome = Run(validated, false, cancellationToken, stream, approvedPermission: interaction,
             approvedOption: optionId, expectedPreparedArguments: preparedCall.ToolIntentJson,
-            expectedIntentFingerprint: intentFingerprint);
+            expectedIntentFingerprint: intentFingerprint, isNativeUserAction: isNativeUserAction);
         if (outcome.Events.Count > 0) stream.AppendBatch(outcome.Events, DurabilityClass.Standard);
         return outcome;
     }
 
     internal ToolOutcome ResumeWeakSandboxConsent(EventStream stream, IEventCodecRegistry codecs,
-        InteractionId interaction, string optionId, CancellationToken cancellationToken)
+        InteractionId interaction, string optionId, CancellationToken cancellationToken,
+        bool isNativeUserAction = false)
     {
         ArgumentNullException.ThrowIfNull(stream);
         var scope = ExecutionScope.Current;
@@ -338,9 +339,14 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         var candidate = candidates[0];
         var validated = new ValidatedToolCall(candidate.Call.ToolCallId, new ToolId(candidate.Call.ToolName),
             candidate.Call.ProviderCallId, candidate.Call.ArgumentsJson);
+        var permissionPolicy = isNativeUserAction && candidate.Call.ToolName == "shell.exec"
+            && HasPriorNativeOnceApproval(events, codecs, candidate.Call.ToolCallId,
+                candidate.Request, candidate.Fingerprint)
+            ? new PriorNativeOnceApprovalPolicy(_policy) : _policy;
         var outcome = Run(validated, userApprovesAsk: false, cancellationToken, stream,
             approvedWeakSandboxInteraction: interaction, approvedWeakSandboxOption: optionId,
-            expectedPreparedArguments: candidate.Prepared, expectedIntentFingerprint: candidate.Fingerprint);
+            expectedPreparedArguments: candidate.Prepared, expectedIntentFingerprint: candidate.Fingerprint,
+            isNativeUserAction: isNativeUserAction, permissionPolicyOverride: permissionPolicy);
         if (outcome.Events.Count > 0) stream.AppendBatch(outcome.Events, DurabilityClass.Standard);
         return outcome;
     }
@@ -372,6 +378,22 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             || !stream.IsCurrentToolCallRequestReceipt(requestReceipt, validated))
             throw new InvalidOperationException("Tool request receipt is not present in this session journal.");
         return Run(validated, userApprovesAsk, cancellationToken, stream, requestReceipt);
+    }
+
+    internal ToolOutcome ExecuteNativeToolAction(ValidatedToolCall validated, bool userApprovesAsk,
+        CancellationToken cancellationToken, EventStream stream, ToolCallRequestReceipt requestReceipt,
+        bool allowDeferredInteraction)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentNullException.ThrowIfNull(requestReceipt);
+        var scope = ExecutionScope.Current;
+        if (!requestReceipt.MatchesCall(validated)
+            || !requestReceipt.MatchesScope(scope?.RunId, scope?.TaskId, scope?.LaneId,
+                scope?.TurnId, scope?.ExecutionId)
+            || !stream.IsCurrentToolCallRequestReceipt(requestReceipt, validated))
+            throw new InvalidOperationException("Tool request receipt is not present in this session journal.");
+        return Run(validated, userApprovesAsk, cancellationToken, stream, requestReceipt,
+            allowDeferredInteractionOverride: allowDeferredInteraction, isNativeUserAction: true);
     }
 
     internal ToolOutcome ExecuteTool(ValidatedToolCall validated, bool userApprovesAsk,
@@ -411,7 +433,8 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         bool recordReadRegistry = true, InteractionId? approvedPermission = null,
         string? approvedOption = null, string? expectedPreparedArguments = null,
         string? expectedIntentFingerprint = null, InteractionId? approvedWeakSandboxInteraction = null,
-        string? approvedWeakSandboxOption = null)
+        string? approvedWeakSandboxOption = null, bool? allowDeferredInteractionOverride = null,
+        bool isNativeUserAction = false, IPermissionPolicy? permissionPolicyOverride = null)
     {
         // Buffer local a la llamada (evita estado compartido entre Runs). Sin flush, contiene
         // todos los eventos emitidos; tras un flush contiene solo los outcomes.
@@ -508,8 +531,9 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             return VoidBox.Instance;
         };
 
-        var runtime = new ToolRuntime(_catalog, _policy, emit, _boundary, _executableResolver, _additionalBoundaries);
-        var prepContext = new ToolPreparationContext(_workspaceRoot, DateTimeOffset.Now);
+        var runtime = new ToolRuntime(_catalog, permissionPolicyOverride ?? _policy, emit, _boundary,
+            _executableResolver, _additionalBoundaries);
+        var prepContext = new ToolPreparationContext(_workspaceRoot, DateTimeOffset.Now, isNativeUserAction);
         // ADR-0044 §5: cuando hay frontera de capacidad (política del modelo), el registro de
         // lecturas efectivas por-Run viaja en el contexto para que las tools exijan lectura previa.
         var execContext = new ToolExecutionContext(_workspaceRoot,
@@ -534,14 +558,15 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             requiresSubstitutionAsk: requiresSubstitutionAsk,
             protectedSubstitution: protectedSubstitution,
             acquireSessionSecurityAdmission: _acquireSessionSecurityAdmission,
-            allowDeferredInteraction: _allowDeferredInteraction,
+            allowDeferredInteraction: allowDeferredInteractionOverride ?? _allowDeferredInteraction,
             allowDeferredWeakSandboxConsent: _allowDeferredWeakSandboxConsent,
             weakSandboxConsentForThisCall: approvedWeakSandboxInteraction is not null
                 && approvedWeakSandboxOption == "consent_once",
             mutationHistory: _mutationHistory,
             mutationRunId: ExecutionScope.Current?.RunId?.ToString(),
             mutationTurnId: ExecutionScope.Current?.TurnId?.ToString(),
-            mutationLaneId: ExecutionScope.Current?.LaneId?.ToString());
+            mutationLaneId: ExecutionScope.Current?.LaneId?.ToString(),
+            isNativeUserAction: isNativeUserAction);
         var outcome = approvedWeakSandboxInteraction is { } weakInteraction
             ? runtime.ResumeWeakSandboxConsent(validated, prepContext, execContext, cancellationToken,
                 weakInteraction, approvedWeakSandboxOption!, expectedPreparedArguments!, expectedIntentFingerprint!)
@@ -561,6 +586,129 @@ public sealed class ScriptedToolExecutor : IToolExecutor
                 events, outcome.PendingInteractionId);
     }
 
+    private static bool HasPriorNativeOnceApproval(IReadOnlyList<DomainEvent> events,
+        IEventCodecRegistry codecs, ToolCallId toolCallId, DomainEvent weakRequestEvent, string fingerprint)
+    {
+        if (weakRequestEvent.RunId is not { } weakRun || weakRequestEvent.TaskId is not { } weakTask
+            || weakRequestEvent.LaneId is not { } weakLane || weakRequestEvent.TurnId is not { } weakTurn)
+            return false;
+        var weakRequestSequence = weakRequestEvent.Sequence;
+        var priorPermissionRequests = events.Where(evt => evt.SessionId == weakRequestEvent.SessionId
+                && evt.ToolCallId == toolCallId
+                && evt.RunId == weakRun && evt.TaskId == weakTask && evt.LaneId == weakLane && evt.TurnId == weakTurn
+                && evt.Sequence < weakRequestSequence && codecs.Decode(evt) is PermissionRequested)
+            .Select(evt => (Event: evt, Payload: codecs.Decode(evt)))
+            .Where(item => item.Payload is PermissionRequested requested && requested.ToolCallId == toolCallId)
+            .ToArray();
+        if (priorPermissionRequests.Length != 1
+            || priorPermissionRequests[0].Payload is not PermissionRequested permission
+            || priorPermissionRequests[0].Event.TaskId is not { } task
+            || priorPermissionRequests[0].Event.LaneId is not { } lane
+            || priorPermissionRequests[0].Event.TurnId is not { } turn) return false;
+        var interaction = permission.InteractionId;
+        var interactionRequests = events.Where(evt => evt.SessionId == weakRequestEvent.SessionId
+                && evt.RunId == weakRun
+                && evt.TaskId == task && evt.LaneId == lane && evt.TurnId == turn
+                && evt.ToolCallId == toolCallId && evt.Sequence < weakRequestSequence
+                && codecs.Decode(evt) is InteractionRequested requested
+                && requested.InteractionId == interaction && requested.Kind == InteractionKind.Permission)
+            .ToArray();
+        var resolutions = events.Where(evt => evt.SessionId == weakRequestEvent.SessionId
+                && HasCompatibleNativeResumeScope(evt, weakRequestEvent)
+                && evt.Sequence < weakRequestSequence
+                && codecs.Decode(evt) is InteractionResolved resolved && resolved.InteractionId == interaction)
+            .Select(evt => (Event: evt, Payload: codecs.Decode(evt))).ToArray();
+        var resumes = events.Where(evt => evt.SessionId == weakRequestEvent.SessionId
+                && HasCompatibleNativeResumeScope(evt, weakRequestEvent)
+                && evt.Sequence < weakRequestSequence
+                && codecs.Decode(evt) is UserInputReceived input
+                && input.RunId == weakRun && input.Origin == "InteractionResponse(Permission)")
+            .ToArray();
+        var grants = events.Where(evt => evt.SessionId == weakRequestEvent.SessionId
+                && evt.RunId == weakRun
+                && evt.TaskId == task && evt.LaneId == lane && evt.TurnId == turn
+                && evt.ToolCallId == toolCallId && evt.Sequence < weakRequestSequence
+                && codecs.Decode(evt) is PermissionGranted granted && granted.ToolCallId == toolCallId)
+            .Select(evt => (Event: evt, Payload: codecs.Decode(evt))).ToArray();
+        var authorized = events.Where(evt => evt.SessionId == weakRequestEvent.SessionId
+                && evt.RunId == weakRun
+                && evt.TaskId == task && evt.LaneId == lane && evt.TurnId == turn
+                && evt.ToolCallId == toolCallId && evt.Sequence < weakRequestSequence
+                && codecs.Decode(evt) is ToolCallAuthorized)
+            .ToArray();
+        if (interactionRequests.Length != 1 || resolutions.Length != 1 || resumes.Length == 0 || grants.Length != 1
+            || authorized.Length == 0 || codecs.Decode(interactionRequests[0]) is not InteractionRequested request
+            || resolutions[0].Payload is not InteractionResolved resolved
+            || grants[0].Payload is not PermissionGranted grantedPayload
+            || resolved.IsQuestionnaire || resolved.Cause != InteractionCause.User
+            || resolved.OptionId != "allow_once"
+            || grantedPayload.Lifetime != GrantLifetime.Once || grantedPayload.GrantId is not null
+            || interactionRequests[0].Sequence >= resolutions[0].Event.Sequence
+            || resolutions[0].Event.Sequence >= grants[0].Event.Sequence
+            || grants[0].Event.Sequence >= authorized[0].Sequence
+            || authorized[0].Sequence >= weakRequestSequence
+            || !resumes.Any(evt => evt.Sequence > resolutions[0].Event.Sequence
+                && evt.Sequence < grants[0].Event.Sequence)
+            || !PermissionOptionsContain(request.OptionsJson, "allow_once")) return false;
+        try
+        {
+            using var subject = System.Text.Json.JsonDocument.Parse(request.SubjectJson);
+            return subject.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                && subject.RootElement.TryGetProperty("intentFingerprint", out var value)
+                && value.ValueKind == System.Text.Json.JsonValueKind.String
+                && string.Equals(value.GetString(), fingerprint, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (System.Text.Json.JsonException) { return false; }
+    }
+
+    private static bool HasCompatibleNativeResumeScope(DomainEvent evt, DomainEvent weakRequestEvent) =>
+        (evt.RunId is null || evt.RunId == weakRequestEvent.RunId)
+        && (evt.TaskId is null || evt.TaskId == weakRequestEvent.TaskId)
+        && (evt.LaneId is null || evt.LaneId == weakRequestEvent.LaneId)
+        && (evt.TurnId is null || evt.TurnId == weakRequestEvent.TurnId)
+        && (evt.ToolCallId is null || evt.ToolCallId == weakRequestEvent.ToolCallId);
+
+    private static bool PermissionOptionsContain(string? optionsJson, string optionId)
+    {
+        if (optionsJson is null) return false;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(optionsJson);
+            return document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array
+                && document.RootElement.EnumerateArray().Any(item => item.ValueKind == System.Text.Json.JsonValueKind.Object
+                    && item.TryGetProperty("id", out var id) && id.ValueKind == System.Text.Json.JsonValueKind.String
+                    && id.GetString() == optionId);
+        }
+        catch (System.Text.Json.JsonException) { return false; }
+    }
+
+    private sealed class PriorNativeOnceApprovalPolicy(IPermissionPolicy inner) : IPermissionPolicy
+    {
+        public PermissionDecisionRecord Evaluate(ToolIntent intent)
+        {
+            var current = inner.Evaluate(intent);
+            var asks = current.Layers.Where(layer => layer.Decision == PermissionDecision.Ask).ToArray();
+            if (current.Final != PermissionDecision.Ask || asks.Length == 0
+                || asks.Any(layer => layer.Layer is not ("UserPolicy" or "user-policy" or "profile" or "mode-defaults")))
+                return current;
+            return new PermissionDecisionRecord(PermissionDecision.Allow,
+                current.Layers.Append(new LayerDecision("interaction", PermissionDecision.Allow,
+                    "prior-native-allow-once")).ToArray(), null);
+        }
+
+        public AuthorizedToolIntent Authorize(ToolIntent intent)
+        {
+            var current = Evaluate(intent);
+            return current.Final == PermissionDecision.Allow
+                && current.Layers.Any(layer => layer.Layer == "interaction" && layer.Rule == "prior-native-allow-once")
+                ? inner.AuthorizeApproved(intent, null)
+                : inner.Authorize(intent);
+        }
+
+        public AuthorizedToolIntent AuthorizeApproved(ToolIntent intent, GrantId? approvedGrant) =>
+            inner.AuthorizeApproved(intent, approvedGrant);
+    }
+
     private void RestoreVisibleReadCoverage(EventStream? stream, bool enabled)
     {
         if (!enabled || stream is null || _boundary?.ReadRegistry() is not { } registry
@@ -571,13 +719,13 @@ public sealed class ScriptedToolExecutor : IToolExecutor
         foreach (var envelope in events)
         {
             if (envelope.ToolCallId is not { } callId) continue;
-            if (envelope.Type == EventType.Of("toolcall.succeeded")) succeeded.Add(callId);
-            else if (envelope.Type == EventType.Of("toolcall.requested"))
+            if (envelope.Type.Equals(EventType.Of("toolcall.succeeded"))) succeeded.Add(callId);
+            else if (envelope.Type.Equals(EventType.Of("toolcall.requested")))
             {
                 try
                 {
                     using var payload = System.Text.Json.JsonDocument.Parse(envelope.PayloadJson);
-                    if (payload.RootElement.TryGetProperty("toolName", out var name)
+                    if (TryGetUniqueEventProperty(payload.RootElement, "toolName", "ToolName", out var name)
                         && name.ValueKind == System.Text.Json.JsonValueKind.String
                         && name.GetString() == "filesystem.read") requestedReads.Add(callId);
                 }
@@ -585,21 +733,60 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             }
         }
 
-        foreach (var envelope in events.Where(item => item.Type == EventType.Of("workspace.file_read_coverage_recorded")
+        foreach (var envelope in events.Where(item => item.Type.Equals(EventType.Of("workspace.file_read_coverage_recorded"))
             && item.ToolCallId is { } id && requestedReads.Contains(id) && succeeded.Contains(id)))
         {
             try
             {
                 using var payload = System.Text.Json.JsonDocument.Parse(envelope.PayloadJson);
                 var root = payload.RootElement;
-                if (!root.TryGetProperty("relativePath", out var path) || path.ValueKind != System.Text.Json.JsonValueKind.String
-                    || !root.TryGetProperty("versionToken", out var version) || version.ValueKind != System.Text.Json.JsonValueKind.String
-                    || !root.TryGetProperty("start", out var start) || !start.TryGetInt32(out var startValue)
-                    || !root.TryGetProperty("length", out var length) || !length.TryGetInt32(out var lengthValue)
-                    || !root.TryGetProperty("totalLength", out var total) || !total.TryGetInt32(out var totalValue)) continue;
+                if (!TryGetUniqueEventProperty(root, "relativePath", "RelativePath", out var path)
+                    || path.ValueKind != System.Text.Json.JsonValueKind.String
+                    || !TryGetUniqueEventProperty(root, "versionToken", "VersionToken", out var version)
+                    || version.ValueKind != System.Text.Json.JsonValueKind.String
+                    || !TryGetUniqueEventProperty(root, "start", "Start", out var start)
+                    || start.ValueKind != System.Text.Json.JsonValueKind.Number
+                    || !start.TryGetInt32(out var startValue)
+                    || !TryGetUniqueEventProperty(root, "length", "Length", out var length)
+                    || length.ValueKind != System.Text.Json.JsonValueKind.Number
+                    || !length.TryGetInt32(out var lengthValue)
+                    || !TryGetUniqueEventProperty(root, "totalLength", "TotalLength", out var total)
+                    || total.ValueKind != System.Text.Json.JsonValueKind.Number
+                    || !total.TryGetInt32(out var totalValue)) continue;
                 registry.RestoreVisibleRead(path.GetString()!, version.GetString()!, startValue, lengthValue, totalValue);
             }
             catch (Exception failure) when (failure is System.Text.Json.JsonException or ArgumentException or ArgumentOutOfRangeException) { }
         }
+    }
+
+    // Event JSON is emitted with PascalCase record properties; camelCase is the known legacy
+    // spelling. Accept those exact aliases only and refuse duplicate/ambiguous members.
+    private static bool TryGetUniqueEventProperty(System.Text.Json.JsonElement root,
+        string camelCaseName, string pascalCaseName, out System.Text.Json.JsonElement value)
+    {
+        value = default;
+        if (root.ValueKind != System.Text.Json.JsonValueKind.Object) return false;
+        var count = 0;
+        foreach (var property in root.EnumerateObject())
+        {
+            var exactCamel = string.Equals(property.Name, camelCaseName, StringComparison.Ordinal);
+            var exactPascal = string.Equals(property.Name, pascalCaseName, StringComparison.Ordinal);
+            if (!exactCamel && !exactPascal)
+            {
+                // Reject case-insensitive spellings such as TOOLNAME instead of silently
+                // treating a payload with conflicting aliases as canonical evidence.
+                if (string.Equals(property.Name, camelCaseName, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(property.Name, pascalCaseName, StringComparison.OrdinalIgnoreCase))
+                    return false;
+                continue;
+            }
+            if (++count > 1)
+            {
+                value = default;
+                return false;
+            }
+            value = property.Value;
+        }
+        return count == 1;
     }
 }

@@ -53,7 +53,13 @@ El checkpoint publicado Core `5c315ba` incluye seguridad durable, lifecycle y re
 de cuestionarios. El build de solución y 120 casos focales únicos se verificaron en los ciclos
 descritos en [el acta M9-K](../validation/m9-block-k-20261017.md); esa cifra no representa una sola
 ejecución completa. Incluye recuperación tras reiniciar el Host y restauración conservadora del
-presupuesto de mutación del Turn. Los grants de lectura/versionado no se restauran como autoridad.
+presupuesto de mutación del Turn. En ese checkpoint no se restauraban grants de lectura/versionado
+como autoridad desde los summaries disponibles. La evolución posterior
+[M9-L-MUT-01](../validation/m9-durable-file-history-20261020.md) añadió el evento de cobertura
+visible: path, token y rango del read solicitado y completado en la misma Session/Run/Lane.
+Sólo esa prueba canónica puede rehidratar lectura, manteniendo versión física y permisos;
+la [aceptación SEC-CONV-02](../validation/m9-sec-conv02-dispatch-20261024.md) corrige su lector
+sin crear autoridad desde otro ámbito ni desde tokens históricos arbitrarios.
 
 El checkpoint publicado OmniCoder `c85a77c` incluye consumidor SDK/Main/UI para cuestionarios y
 lifecycle. Pasaron el E2E real Electron→Host→fixture HTTP de dos Sessions y el de respuesta de
@@ -71,12 +77,41 @@ Windows 4853 PASS/9 SKIP, Ubuntu 4840 PASS/22 SKIP y cero fallos, además de ins
 npm y paquetes Linux. K permanece abierto hasta completar SEC-CONV-01–13 y los
 consumidores pendientes; esa matriz no acredita cambios posteriores en construcción.
 
-La propiedad de Sessions importadas requiere un importador Core real; hasta entonces no se anuncia
-ruta de importación. El cuestionario, Permission y PlanApproval de la Lane raíz tienen consumidor
+El corte de importación del 2026-10-24 incorpora un importador Core del formato
+neutral `omnicore-conversation-import.v1`. No anuncia compatibilidad con formatos
+propios de otros arneses. La acción humana `conversation.import`, bajo firma y
+recibo del workspace, crea una Session nueva con `ObserveOnly / Imported /
+ImportReview`, independientemente del default configurado. El payload sólo admite
+texto user/assistant y no decide identidad, procedencia ni política. Core persiste
+creación, techo y transcript juntos; importar no despacha hooks, proveedor ni tools.
+La reserva durable de recibo también protege la ruta directa de CLI; un bloqueo
+en memoria o una búsqueda previa de CommandId no bastan entre procesos.
+
+El evento separado `conversation.transcript_imported` conserva hash de fuente,
+formato y vínculo al comando. Es historial pasivo para un input posterior
+autorizado, no una sucesión de efectos pendientes. Cambiar de categoría conserva
+Imported. Las alternativas creadas desde checkpoints internos siguen Native y no
+se reclasifican por reutilizar historial. Los límites de bytes incluyen el JSON
+persistido y el replay escapado. [Acta y estado de aceptación](../validation/m9-native-import-20261024.md).
+Esto no acredita importación de medios, migración de formatos ajenos ni aceptación
+del consumidor Electron.
+
+El cuestionario, Permission y PlanApproval de la Lane raíz tienen consumidor
 y validación integrada; [el acta de elecciones](../validation/m9-native-choices-recovery-20261017.md)
 registra recuperación explícita, denegación en el contexto del modelo y sus límites.
 Modelos/rutas por Session ya tienen binding durable y consumidor validado
 ([ADR-0057](0057-session-model-selection.md)); acciones de Lanes hijas y los
-demás mutadores de L siguen pendientes. M (ConPTY/procesos
-persistentes) no está construido. La aceptación manual de M8 corresponde al usuario y permanece
+demás mutadores de L conservan sus actas de incrementos. M tiene aceptación local
+Windows para procesos/ConPTY Strong y
+[persistencia Weak](../validation/m9-weak-persistence-20261024.md), sin cerrar M9
+global ni acreditar PTY de otras plataformas. La aceptación manual de M8 corresponde al usuario y permanece
 pendiente.
+
+El corte SEC-CONV Core del 2026-10-24 acepta el snapshot de default por Session
+en Host/stdio separado: dos Sessions nacidas con defaults distintos conservan su
+categoría, revisión y origen al alternarlas y reabrir el Host, incluso después de
+un cambio permisivo del default fixture. El journal confirma ausencia de input y
+Run por estas operaciones. No cambió producción; Luna bajo aprobó tres métodos
+focales sin recompilar. [Matriz y límites](../validation/m9-sec-conv-core-20261024.md).
+Esto no acredita separación completa de grants/dispatch de SEC-CONV-02 ni los
+consumidores y gates de SEC-CONV-13/14; no declara cerrado K, M9 ni M8 manual.

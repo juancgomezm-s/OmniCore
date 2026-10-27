@@ -1,3 +1,4 @@
+using System.Text;
 using OmniCore.Client;
 using OmniCore.Host;
 using OmniCore.Protocol;
@@ -88,6 +89,7 @@ public sealed partial class TuiApp
     private readonly bool _ownsPolicies;
     private readonly ITuiTurnHost? _turnHost;
     private CancellationTokenSource? _turnCancellation;
+    private long _humanShellGeneration;
     private Task? _turnTask;
     private readonly Dictionary<string, (CancellationTokenSource Cancellation, Task Task, string? SessionId, string? RunId)> _delegationTasks =
         new(StringComparer.OrdinalIgnoreCase);
@@ -802,6 +804,11 @@ public sealed partial class TuiApp
             return;
         }
         if (input.Length == 0) return;
+        if (input.StartsWith('!'))
+        {
+            StartHumanShellAction(input[1..].TrimStart(), rawInput);
+            return;
+        }
         if (input == "/images")
         {
             if (_turnHost is null) ShowMessage(_localization.Resolve("shell.images.unavailable"));
@@ -1290,6 +1297,180 @@ public sealed partial class TuiApp
         else if (result.Text.Length > 0) ShowMessage(result.Text);
         if (result.ExitRequested) _application?.RequestStop();
         PollEvents();
+    }
+
+    private bool StartHumanShellAction(string command, string submittedDraft)
+    {
+        if (_turnHost is null || command.Length == 0)
+        { ShowMessage(_localization.Resolve("shell.native.requires_active_host")); return false; }
+        if (_turnBusy) { ShowMessage(_localization.Resolve("shell.a_turn_is_already_processing_wait_or_use_cancel")); return false; }
+        try
+        {
+            if (!_turnHost.TryAcquireSessionWriter())
+            { ShowMessage(_localization.Resolve(_turnHost.SessionSecurityRecoveryBlocked
+                ? "session_security.recovery_blocked" : "session_writer_owned")); return false; }
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            ShowMessage(_localization.Resolve("shell.turn_failed_check_omni_doctor") + "\n"
+                + OmniCliRuntime.RedactSensitive(error.Message));
+            return false;
+        }
+        _turnCancellation?.Dispose();
+        var cancellation = _turnCancellation = new CancellationTokenSource();
+        var sourceSession = _cursorSession;
+        var generation = System.Threading.Interlocked.Increment(ref _humanShellGeneration);
+        _localActivitySession = sourceSession;
+        _turnBusy = true; _activityPhase = 0; _turnStatus = _localization.Resolve("shell.running"); RenderState();
+        var streamedOutput = new StringBuilder();
+        _turnTask = Task.Run(async () =>
+        {
+            var diagnostics = new List<string>();
+            OmniCliRuntime.HumanShellCommandOutcome outcome;
+            try
+            {
+                Action<string> writeOutput = CreateHumanShellOutputSink(streamedOutput, sourceSession, generation);
+                Action<string> diagnostic = line =>
+                {
+                    if (diagnostics.Count == 4) diagnostics.RemoveAt(0);
+                    diagnostics.Add(OmniCliRuntime.RedactSensitive(line));
+                };
+                outcome = await _turnHost.ExecuteHumanShellWithOutcomeAsync(command, writeOutput, diagnostic,
+                    cancellation.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { outcome = new(2, false); }
+            catch (Exception) { outcome = new(1, false); diagnostics.Add(_localization.Resolve("shell.turn_failed_check_omni_doctor")); }
+            var code = outcome.ExitCode;
+            _uiActions.Enqueue(() =>
+            {
+                if (generation != _humanShellGeneration) return;
+                _turnBusy = false;
+                if (!IsHumanShellUiScopeCurrent(sourceSession, generation))
+                {
+                    _turnStatus = null;
+                    _localActivitySession = null;
+                    RenderState();
+                    return;
+                }
+                _turnStatus = cancellation.IsCancellationRequested ? _localization.Resolve("shell.cancelled")
+                    : code == 0 ? _localization.Resolve("shell.done")
+                    : outcome.InputRequired ? _localization.Resolve("shell.input_required") : _localization.Resolve("shell.error");
+                PollEvents();
+                if (code == 0 && _composer?.Text?.ToString() == submittedDraft) _composer.Text = "";
+                if (!outcome.InputRequired && !cancellation.IsCancellationRequested && streamedOutput.Length > 0)
+                    ShowHumanShellOutput(streamedOutput.ToString(), sourceSession);
+                else if (code != 0 && !outcome.InputRequired && !cancellation.IsCancellationRequested)
+                    ShowMessage(string.Join("\n", diagnostics));
+            });
+        });
+        return true;
+    }
+
+    private Action<string> CreateHumanShellOutputSink(StringBuilder streamedOutput, string? sourceSession,
+        long generation)
+    {
+        var gate = new object();
+        var pending = new StringBuilder();
+        var drainScheduled = 0;
+        void Drain()
+        {
+            string chunk;
+            lock (gate)
+            {
+                chunk = pending.ToString();
+                pending.Clear();
+                drainScheduled = 0;
+            }
+            if (!IsHumanShellUiScopeCurrent(sourceSession, generation)) return;
+            if (chunk.Length > 0)
+            {
+                streamedOutput.Append(chunk);
+                if (streamedOutput.Length > 16_384)
+                    streamedOutput.Remove(0, streamedOutput.Length - 16_384);
+                var tail = streamedOutput.ToString();
+                _turnStatus = tail.Length > 160 ? tail[^160..] : tail;
+                RenderState();
+            }
+            lock (gate)
+            {
+                if (pending.Length > 0 && System.Threading.Interlocked.Exchange(ref drainScheduled, 1) == 0)
+                    _uiActions.Enqueue(Drain);
+            }
+        }
+        return chunk =>
+        {
+            lock (gate)
+            {
+                pending.Append(chunk);
+                if (pending.Length > 65_536) pending.Remove(0, pending.Length - 65_536);
+                if (System.Threading.Interlocked.Exchange(ref drainScheduled, 1) != 0) return;
+            }
+            _uiActions.Enqueue(Drain);
+        };
+    }
+
+    private bool IsHumanShellUiScopeCurrent(string? sourceSession, long generation) =>
+        sourceSession is not null && sourceSession == _cursorSession && sourceSession == _localActivitySession
+        && generation == _humanShellGeneration;
+
+    private void ShowHumanShellOutput(string output, string? sourceSession)
+    {
+        if (_window is null || sourceSession is null || sourceSession != _cursorSession) return;
+        CloseOverlay();
+        var safeOutput = SanitizeHumanShellDraftOutput(output);
+        var lines = safeOutput.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        var frame = OverlayFrame(_localization.Resolve("shell.human_shell.output_title"),
+            Math.Min(24, Math.Max(9, lines.Length + 7)));
+        var visible = lines.Take(Math.Max(1, (_window.Frame.Height > 0 ? _window.Frame.Height : 25) - 11)).ToArray();
+        if (lines.Length > visible.Length) visible[^1] = "…";
+        frame.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Height = visible.Length,
+            Text = string.Join("\n", visible) });
+        frame.Add(new Label { X = 2, Y = Pos.AnchorEnd(3), Width = Dim.Fill(2),
+            Text = _localization.Resolve("shell.human_shell.output_context_opt_in") });
+        var add = new Button { X = Pos.AnchorEnd(28), Y = Pos.AnchorEnd(2),
+            Text = _localization.Resolve("shell.human_shell.add_to_draft") };
+        add.Accepted += (_, args) =>
+        {
+            args.Handled = true;
+            var currentSession = _client.Query("humanActionScope", CancellationToken.None)?.Json;
+            string? observedSession = null;
+            try
+            {
+                if (currentSession is not null)
+                    observedSession = JsonObj.Parse(currentSession).GetValueOrDefault("sessionId");
+            }
+            catch (System.Text.Json.JsonException) { }
+            if (sourceSession is null || sourceSession != _cursorSession || sourceSession != observedSession)
+            {
+                ShowMessage(_localization.Resolve("shell.human_shell.output_scope_changed"));
+                return;
+            }
+            var currentDraft = _composer?.Text?.ToString() ?? "";
+            var addition = safeOutput.Length == 0 ? "" : safeOutput;
+            if (_composer is null || addition.Length == 0 || currentDraft.Length + addition.Length + 2 > 32_768)
+            {
+                ShowMessage(_localization.Resolve("shell.human_shell.output_not_added_size"));
+                return;
+            }
+            _composer!.Text = currentDraft.Length == 0 ? addition : currentDraft + Environment.NewLine + addition;
+            CloseOverlay();
+            _composer.SetFocus();
+        };
+        var close = new Button { X = Pos.AnchorEnd(8), Y = Pos.AnchorEnd(2), Text = _localization.Resolve("shell.ok") };
+        close.Accepted += (_, args) => { args.Handled = true; CloseOverlay(); };
+        frame.Add(add, close); ApplyTheme(frame); _overlay = frame; _window.Add(frame); frame.SetFocus();
+    }
+
+    private static string SanitizeHumanShellDraftOutput(string output)
+    {
+        var redacted = OmniCliRuntime.RedactSensitive(output);
+        var safe = new StringBuilder(Math.Min(redacted.Length, 16_384));
+        foreach (var character in redacted)
+        {
+            if (character is '\r' or '\n' or '\t' || !char.IsControl(character)) safe.Append(character);
+            if (safe.Length == 16_384) break;
+        }
+        return safe.ToString();
     }
 
     private bool StartModelTurn(string input, bool act = false, string? resumeEscalation = null, string? resumeQuota = null,
@@ -2036,11 +2217,22 @@ public sealed partial class TuiApp
 
     private void RespondChoice(InteractionOverlayModel interaction, string optionId)
     {
+        var resumesHumanShell = interaction.Kind == "Permission"
+            && _turnHost?.IsHumanShellPermission(interaction.Id) == true;
+        var resumesHumanShellWeak = interaction.Kind == "WeakSandboxConsent"
+            && _turnHost?.IsHumanShellWeakSandboxConsent(interaction.Id) == true;
         var payload = "{\"cmd\":\"interaction.respond\"," + JsonObj.Field("interactionId", interaction.Id)
             + "," + JsonObj.Field("optionId", optionId) + "}";
-        var ack = _client.Send(WireEnvelope.Command(Ids.NewV7(), payload), CancellationToken.None);
+        var responseCommand = WireEnvelope.Command(Ids.NewV7(), payload);
+        var ack = resumesHumanShell || resumesHumanShellWeak
+            ? _turnHost!.DispatchHumanShellInteractionResponse(responseCommand)
+            : _client.Send(responseCommand, CancellationToken.None);
         if (ack.Status != "ok") { ShowMessage(ack.Error ?? _localization.Resolve("shell.response_rejected")); return; }
         CloseOverlay(); PollEvents();
+        if (resumesHumanShell && _turnHost is not null)
+            StartHumanShellPermissionResume(interaction.Id, optionId, ack);
+        if (resumesHumanShellWeak && _turnHost is not null)
+            StartHumanShellWeakSandboxResume(interaction.Id, optionId, ack);
         if (interaction.Kind == "BudgetExceeded" && optionId == "allow_quota")
         {
             if (_turnBusy) _pendingQuotaResume = interaction.Id;
@@ -2053,6 +2245,108 @@ public sealed partial class TuiApp
             if (_turnBusy) _pendingEscalationResume = interaction.Id;
             else StartModelTurn("", resumeEscalation: interaction.Id);
         }
+    }
+
+    private void StartHumanShellPermissionResume(string interactionId, string optionId, CommandAck responseAck)
+    {
+        if (_turnHost is null || _turnBusy) return;
+        _turnCancellation?.Dispose();
+        var cancellation = _turnCancellation = new CancellationTokenSource();
+        var sourceSession = _cursorSession;
+        var generation = System.Threading.Interlocked.Increment(ref _humanShellGeneration);
+        _localActivitySession = sourceSession;
+        _turnBusy = true; _turnStatus = _localization.Resolve("shell.running"); RenderState();
+        var streamedOutput = new StringBuilder();
+        _turnTask = Task.Run(async () =>
+        {
+            var diagnostics = new List<string>();
+            OmniCliRuntime.HumanShellCommandOutcome outcome;
+            try
+            {
+                Action<string> output = CreateHumanShellOutputSink(streamedOutput, sourceSession, generation);
+                Action<string> diagnostic = line =>
+                {
+                    if (diagnostics.Count == 4) diagnostics.RemoveAt(0);
+                    diagnostics.Add(OmniCliRuntime.RedactSensitive(line));
+                };
+                outcome = await _turnHost.ResumeHumanShellPermissionWithOutcomeAsync(interactionId, optionId,
+                    responseAck, output, diagnostic, cancellation.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { outcome = new(2, false); }
+            catch (Exception) { outcome = new(1, false); diagnostics.Add(_localization.Resolve("shell.turn_failed_check_omni_doctor")); }
+            var code = outcome.ExitCode;
+            _uiActions.Enqueue(() =>
+            {
+                if (generation != _humanShellGeneration) return;
+                _turnBusy = false;
+                if (!IsHumanShellUiScopeCurrent(sourceSession, generation))
+                {
+                    _turnStatus = null;
+                    _localActivitySession = null;
+                    RenderState();
+                    return;
+                }
+                _turnStatus = cancellation.IsCancellationRequested ? _localization.Resolve("shell.cancelled")
+                    : code == 0 ? _localization.Resolve("shell.done")
+                    : outcome.InputRequired ? _localization.Resolve("shell.input_required") : _localization.Resolve("shell.error");
+                PollEvents();
+                if (!outcome.InputRequired && !cancellation.IsCancellationRequested && streamedOutput.Length > 0)
+                    ShowHumanShellOutput(streamedOutput.ToString(), sourceSession);
+                else if (code != 0 && !outcome.InputRequired && !cancellation.IsCancellationRequested)
+                    ShowMessage(string.Join("\n", diagnostics));
+            });
+        });
+    }
+
+    private void StartHumanShellWeakSandboxResume(string interactionId, string optionId, CommandAck responseAck)
+    {
+        if (_turnHost is null || _turnBusy) return;
+        _turnCancellation?.Dispose();
+        var cancellation = _turnCancellation = new CancellationTokenSource();
+        var sourceSession = _cursorSession;
+        var generation = System.Threading.Interlocked.Increment(ref _humanShellGeneration);
+        _localActivitySession = sourceSession;
+        _turnBusy = true; _turnStatus = _localization.Resolve("shell.running"); RenderState();
+        var streamedOutput = new StringBuilder();
+        _turnTask = Task.Run(async () =>
+        {
+            var diagnostics = new List<string>();
+            OmniCliRuntime.HumanShellCommandOutcome outcome;
+            try
+            {
+                Action<string> output = CreateHumanShellOutputSink(streamedOutput, sourceSession, generation);
+                Action<string> diagnostic = line =>
+                {
+                    if (diagnostics.Count == 4) diagnostics.RemoveAt(0);
+                    diagnostics.Add(OmniCliRuntime.RedactSensitive(line));
+                };
+                outcome = await _turnHost.ResumeHumanShellWeakSandboxConsentWithOutcomeAsync(interactionId, optionId,
+                    responseAck, output, diagnostic, cancellation.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { outcome = new(2, false); }
+            catch (Exception) { outcome = new(1, false); diagnostics.Add(_localization.Resolve("shell.turn_failed_check_omni_doctor")); }
+            var code = outcome.ExitCode;
+            _uiActions.Enqueue(() =>
+            {
+                if (generation != _humanShellGeneration) return;
+                _turnBusy = false;
+                if (!IsHumanShellUiScopeCurrent(sourceSession, generation))
+                {
+                    _turnStatus = null;
+                    _localActivitySession = null;
+                    RenderState();
+                    return;
+                }
+                _turnStatus = cancellation.IsCancellationRequested ? _localization.Resolve("shell.cancelled")
+                    : code == 0 ? _localization.Resolve("shell.done")
+                    : outcome.InputRequired ? _localization.Resolve("shell.input_required") : _localization.Resolve("shell.error");
+                PollEvents();
+                if (!outcome.InputRequired && !cancellation.IsCancellationRequested && streamedOutput.Length > 0)
+                    ShowHumanShellOutput(streamedOutput.ToString(), sourceSession);
+                else if (code != 0 && !outcome.InputRequired && !cancellation.IsCancellationRequested)
+                    ShowMessage(string.Join("\n", diagnostics));
+            });
+        });
     }
 
     private void RespondQuestionnaire(InteractionOverlayModel interaction, OmniCore.Client.QuestionnaireResponseDto response)

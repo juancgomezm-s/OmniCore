@@ -432,11 +432,17 @@ public sealed class OmniHost
         ArtifactReadTool? artifactReadTool = null,
         IWorktreeIntegrationCoordinator? worktreeIntegrationCoordinator = null,
         MediaReadTool? mediaReadTool = null,
-        PersistentProcessSessionManager? processSessionManager = null) =>
+        PersistentProcessSessionManager? processSessionManager = null,
+        IWorktreeDispositionCoordinator? worktreeDispositionCoordinator = null,
+        IWorktreeRetentionCoordinator? worktreeRetentionCoordinator = null,
+        bool humanShellAction = false, Action<string>? humanShellOutput = null) =>
         new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
             includeMutationTools: true, includeProcessTools: true, processSandboxStrength: processSandboxStrength,
             artifactReadTool: artifactReadTool, worktreeIntegrationCoordinator: worktreeIntegrationCoordinator,
-            mediaReadTool: mediaReadTool, processSessionManager: processSessionManager);
+            mediaReadTool: mediaReadTool, processSessionManager: processSessionManager,
+            worktreeDispositionCoordinator: worktreeDispositionCoordinator,
+            worktreeRetentionCoordinator: worktreeRetentionCoordinator, humanShellAction: humanShellAction,
+            humanShellOutput: humanShellOutput);
 
     internal static IWorktreeIntegrationCoordinator? CreateWorktreeIntegrationCoordinator(
         string workspaceRoot, IPlatformPaths paths, IArtifactStore artifacts)
