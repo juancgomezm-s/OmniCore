@@ -56,7 +56,8 @@ public interface ITuiOpenRouterCatalogHost
     Task<OpenRouterCreditSnapshot> ReadOpenRouterCreditsAsync(string providerId, CancellationToken cancellationToken);
 }
 
-public sealed record OpenRouterPickerModel(string Id, string ProviderId, string? Name);
+public sealed record OpenRouterPickerModel(string Id, string ProviderId, string? Name,
+    long? ContextLength = null, string? PromptPricePerToken = null, string? CompletionPricePerToken = null);
 
 /// <summary>
 /// Fila del menú de conexiones: el estado del backend de conexiones más las marcas de tiempo
@@ -256,7 +257,8 @@ public sealed class TuiProviderConnectionHost : ITuiProviderConnectionHost, ITui
                 models.AddRange(page.Models.Where(model => !string.IsNullOrWhiteSpace(model.Id)
                     && !model.Id.Any(char.IsControl)
                     && (model.OutputModalities.Count == 0 || model.OutputModalities.Contains("text")))
-                    .Select(model => new OpenRouterPickerModel(model.Id, provider.ProviderId, model.Name)));
+                    .Select(model => new OpenRouterPickerModel(model.Id, provider.ProviderId, model.Name,
+                        model.ContextLength, model.PromptPricePerToken, model.CompletionPricePerToken)));
                 if (page.NextOffset is not { } next || next <= offset) break;
                 offset = next;
             } while (offset < 1000);
