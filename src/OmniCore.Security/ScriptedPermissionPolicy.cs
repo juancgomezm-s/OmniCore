@@ -11,7 +11,8 @@ using OmniCore.Domain;
 /// aquí Ask se trata como Deny salvo que el escenario tenga una respuesta; eso lo gestiona el
 /// Engine (ADR-0034).
 /// </summary>
-public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePermissionPolicy, IAutomaticExtensionBatchAuthority
+public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePermissionPolicy, IAutomaticExtensionBatchAuthority,
+    IAutomaticToolPermissionAuthority
 {
     private readonly Dictionary<string, PermissionDecision> _toolDecisions = new();
 
@@ -40,6 +41,17 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
             || (intent.ToolId.ToString() is "process.exec" or "shell.exec"
                 && intent.Claims.Process?.Isolation == ProcessIsolation.PrivateProcessWorkspace
                 && intent.Claims.Writes.Count is > 0 and <= 64));
+
+    public bool AllowsAutomaticToolActionCurrently(ToolIntent intent)
+    {
+        if (!_useModeDefaults || _modeForDefaults is not (RunMode.Act or RunMode.Orchestrate)) return false;
+        try
+        {
+            return CurrentUserPermissions().Profile == PermissionProfile.Autonomous
+                && EvaluateCurrentPermission(intent) == PermissionDecision.Allow;
+        }
+        catch (Exception) { return false; }
+    }
 
     public bool AllowsAutomaticExtensionBatchCurrently(ToolIntent intent)
     {
@@ -163,11 +175,12 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
     public PermissionDecisionRecord Evaluate(ToolIntent intent)
     {
         ArgumentNullException.ThrowIfNull(intent);
+        var currentUser = CurrentUserPermissions();
         var toolDecision = ToolDecision(intent.ToolId.ToString());
         var layers = new List<LayerDecision>();
         layers.Add(new LayerDecision("scripted-policy", toolDecision, "scenario"));
         var final = toolDecision;
-        if (_userDecisions.TryGetValue(intent.ToolId.ToString(), out var userDecision))
+        if (currentUser.Rules.TryGetValue(intent.ToolId.ToString(), out var userDecision))
         {
             layers.Add(new LayerDecision("UserPolicy", userDecision, "user-policy"));
             final = Min(final, userDecision);
@@ -176,14 +189,14 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
         if (_useModeDefaults)
         {
             var resource = Classify(intent);
-            var mode = ModeDefaultsPolicy.Instance(_profile).ForRunMode(_modeForDefaults, resource);
+            var mode = ModeDefaultsPolicy.Instance(currentUser.Profile).ForRunMode(_modeForDefaults, resource);
             layers.Add(new LayerDecision("mode-defaults", mode, "modo " + _modeForDefaults + " · " + resource));
             final = Min(final, mode);
         }
 
         // Una regla explícita del usuario con Allow levanta el Ask que vino de modo, perfil o UserPolicy.
         if (final == PermissionDecision.Ask && userDecision == PermissionDecision.Allow
-            && _userDecisions.ContainsKey(intent.ToolId.ToString()) && IsGrantableAsk(layers))
+            && currentUser.Rules.ContainsKey(intent.ToolId.ToString()) && IsGrantableAsk(layers))
         {
             layers.Add(new LayerDecision("user-rule", PermissionDecision.Allow, "permissions.yaml"));
             return new PermissionDecisionRecord(PermissionDecision.Allow, layers.ToArray(), null);
@@ -304,7 +317,7 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
                     && intent.Claims.Writes.Count == 0 && intent.Claims.Network.Count == 0
                     && intent.Claims.Secrets.Count == 0
                     ? PermissionResource.WriteInsideWorkspace
-                    : PermissionResource.ExternalOrUnknownProcess;
+                    : PermissionResource.UnverifiedOperation;
         }
 
         var claims = intent.Claims;
@@ -316,11 +329,11 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
         if (claims.WorktreeDisposition is { } disposition)
             return IsExactWorktreeDisposition(intent, disposition)
                 ? PermissionResource.WriteInsideWorkspace
-                : PermissionResource.ExternalOrUnknownProcess;
+                : PermissionResource.UnverifiedOperation;
         if (claims.WorktreeRetention is { } retention)
             return IsExactWorktreeRetention(intent, retention)
                 ? PermissionResource.WriteInsideWorkspace
-                : PermissionResource.ExternalOrUnknownProcess;
+                : PermissionResource.UnverifiedOperation;
 
         if (claims.Process is not null)
         {
@@ -364,7 +377,7 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
 
         return intent.Effect == EffectClass.None
             ? PermissionResource.ReadInsideWorkspace
-            : PermissionResource.ExternalOrUnknownProcess;
+            : PermissionResource.UnverifiedOperation;
     }
 
     private static bool IsExactWorktreeDisposition(ToolIntent intent, WorktreeDispositionClaim claim)

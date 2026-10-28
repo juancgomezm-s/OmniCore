@@ -19,6 +19,33 @@ namespace OmniCore.Tests;
 public sealed class WeakSandboxConsentPreflightTests
 {
     [Fact]
+    public void Autonomous_authorized_process_falls_back_without_a_per_call_question()
+    {
+        var workspace = Path.Combine(Path.GetTempPath(), "omni-auto-consent-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspace);
+        var launcher = new CountingLauncher(StrongSandboxPreflightResult.UnavailableBeforeLaunch, false);
+        var events = new List<DomainEventPayload>();
+        var policy = new ScriptedPermissionPolicy(new()).WithModeDefaults(RunMode.Act)
+            .WithProfile(PermissionProfile.Autonomous);
+        var runtime = new ToolRuntime(new FakeCatalog().Add(new ProcessExecTool(launcher,
+            new PathBoundaryValidator(), SandboxStrength.Strong)), policy,
+            payload => { events.Add(payload); return VoidBox.Instance; }, null, new FixedResolver());
+        var context = new ToolExecutionContext(workspace, readRegistry: null, emitEvent: events.Add,
+            allowDeferredWeakSandboxConsent: true);
+        var executable = OperatingSystem.IsWindows()
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "whoami.exe") : "/bin/echo";
+        var call = new ValidatedToolCall(ToolCallId.New(), new("process.exec"), "auto-consent",
+            JsonSerializer.Serialize(new { executable, argv = new[] { "fixture" }, cwd = ".", timeoutSeconds = 5 }));
+        var outcome = runtime.Run(call, new(workspace, DateTimeOffset.UtcNow), context, false,
+            TestContext.Current.CancellationToken);
+        Assert.True(outcome.Succeeded);
+        Assert.Equal(1, launcher.WeakProcessesStarted);
+        Assert.DoesNotContain(events, item => item is InteractionRequested);
+        Assert.False(context.WeakSandboxConsentForThisCall);
+        Directory.Delete(workspace);
+    }
+
+    [Fact]
     public void Scripted_executor_persists_weak_interaction_with_exact_execution_scope()
     {
         var workspace = Path.Combine(Path.GetTempPath(), "omni-weak-consent-envelope-", Guid.NewGuid().ToString("N"));

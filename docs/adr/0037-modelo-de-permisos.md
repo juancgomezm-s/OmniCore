@@ -56,16 +56,16 @@ Las categorías de la spec §43 se mapean a `ResourceClaims` (ADR-0014):
 | Recurso | PLAN | ACT | ORQ |
 |---|---|---|---|
 | Leer dentro del workspace | Allow | Allow | Allow |
-| Leer fuera del workspace | Ask | Ask | Ask |
+| Leer fuera del workspace (si lo permiten los techos) | Allow | Allow | Allow |
 | Rutas de secretos (ADR-0018 §3) | **Deny** | **Deny** | **Deny** (solo una regla explícita del usuario las habilita) |
 | Escribir dentro del workspace | Deny | Allow | Allow |
-| Escribir fuera del workspace | Deny | Ask | Ask |
+| Escribir fuera del workspace (si lo permiten los techos) | Deny | Allow | Allow |
 | `process.exec` `Observational` | Allow | Allow | Allow |
 | `process.exec` de build/test (`Rerunnable`/`WorkspaceEffect`) | Deny | **Allow** | **Allow** |
-| `process.exec` `External` o desconocido | Deny | Ask (grant hasta Run) | Ask (grant hasta Run) |
+| `process.exec` externo con intent y claims resueltos | Deny | Allow | Allow |
 | Red para procesos de build/test/restore | — | **Allow sin restricción** (decisión del usuario; ver riesgo abajo) | igual que ACT |
-| Otra red | Deny | Ask | Ask |
-| Superficie shell (`shell.exec`) | Deny | Ask (grant hasta Run) | Ask (grant hasta Run) |
+| Otra red autorizada por los techos | Deny | Allow | Allow |
+| Superficie shell (`shell.exec`) | Deny | Allow | Allow |
 | `plan.propose`, `reference.resolve`, `tool.search` | Allow | Allow | Allow |
 | `memory.propose` | Allow (candidato; la política decide) | Allow | Allow |
 
@@ -86,6 +86,14 @@ Las categorías de la spec §43 se mapean a `ResourceClaims` (ADR-0014):
   - **Reglas.** `deny` y `ask` restringen (mínimo con las demás capas, §2). `allow` es una regla explícita del usuario: solo levanta un `Ask` de modo, perfil o `UserPolicy`, nunca un `Deny` ni una restricción que el repo haya estrechado. La capa aparece en el `PermissionDecisionRecord` como `UserPolicy` (restricción) o `user-rule` (levantamiento).
   - **Validación.** Un archivo inválido se rechaza con línea y columna antes de cualquier Turn y en `omni doctor`; nunca se ignora en silencio. Sin archivo rige el perfil autónomo sin reglas.
   - **Pendiente:** la regla de la red de build de un workspace no confiable (`Ask`, §4) aún no se aplica: el recurso `BuildTestNetwork` no se clasifica por separado del proceso.
+
+### 4.1. Resolución por nivel, actualización del usuario 2026-10-27
+
+`autonomous` corresponde a **Libre** en la experiencia actual. En ACT/ORQ, los intents resueltos y autorizados ejecutan sin confirmaciones por defecto, incluido shell y los batches de worktree. El nivel resuelve también el Ask destructivo de la categoría del modelo; no habilita capacidades ausentes, modo de mutación incompatible, secretos ni un Deny de Session/modelo/AgentProfile/proyecto. Las reglas explícitas de tool `ask`/`deny` conservan su decisión. Operaciones sin claims de ownership verificables no se convierten en procesos externos libres.
+
+`balanced` conserva confirmación para shell, procesos externos, build/test y otras acciones sensibles; `conservative` añade confirmación de escrituras. PLAN sigue negando efectos y ObserveOnly sigue sin modificar archivos en cualquier nivel. El permiso vigente se vuelve a leer durante la ejecución: una reducción de nivel no hereda la autorización automática anterior.
+
+La resolución ocurre en Core, compartida por CLI/TUI, modelos, extensiones y OmniCoder; no existen selectores nuevos por comando. En Libre, un fallback de sandbox ya permitido por la política de plataforma consume autoridad sólo para esa llamada, sin otro diálogo ni grant persistente. No transforma una exigencia Strong en Weak ni cambia los límites de capacidades, rutas o argv. Un resultado de efecto desconocido sigue bloqueado; un rechazo terminal probado no bloquea otros comandos.
 
 ### 5. Grants: dónde viven y cómo se revocan
 

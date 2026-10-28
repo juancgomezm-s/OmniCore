@@ -246,3 +246,18 @@ mantiene reprepare y validación física del binding Implement→Verify.
 Un ACK de consentimiento aceptado
 cuyo inicio posterior no se puede demostrar sigue bloqueado, sin reintento
 automático. No existe una garantía exactly-once general.
+
+### Fallo nativo terminado frente a efecto incierto (2026-10-27)
+
+El contrato de recuperación incluye `failed`: un recibo terminal de herramienta
+nativa ligado a Session/Run no equivale a una ejecución incierta. Para recibos
+antiguos con `runtime_failed` sólo se admite esa clasificación cuando el payload
+protegido coincide con la llamada exacta, ésta falló sin efecto, su Turn terminó
+y no hay Started, reconciliación, efecto desconocido ni otra llamada en ese Turn.
+Los demás casos conservan el bloqueo y no se reenvían automáticamente.
+
+Un permiso denegado antes de ejecutar puede haber dejado abierto un Turn nativo
+antiguo. Sólo el propietario del lease repara ese caso con TurnAbandoned tras
+validar admisión, payload protegido, recibo terminal y ausencia de efectos.
+Consultar el estado no repara ni ejecuta. El consumidor admite `failed` como
+terminado; no lo presenta como éxito ni vuelve a enviar la misma invocación.

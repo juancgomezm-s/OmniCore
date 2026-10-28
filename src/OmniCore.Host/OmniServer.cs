@@ -752,6 +752,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                         EnsureSessionSecurityPolicy(target);
                         _lastSessionId = target;
                         _lastRunId = pointer.Run;
+                        RepairDeniedNativeWorktreeTurns(target, pointer.Run);
                         _lastSnapshot = pointer.Run is { } run ? MaterializeFromJournal(target, run) : null;
                         targetPublished = true;
                     }
@@ -796,6 +797,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                     {
                         _ = ProcessSessions(existing);
                         EnsureSessionSecurityPolicy(existing);
+                        RepairDeniedNativeWorktreeTurns(existing, _lastRunId);
                         _lastSnapshot = _lastRunId is { } run ? MaterializeFromJournal(existing, run) : null;
                         existingPublished = true;
                     }
