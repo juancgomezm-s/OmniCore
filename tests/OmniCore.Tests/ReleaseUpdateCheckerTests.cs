@@ -13,6 +13,39 @@ public sealed class ReleaseUpdateCheckerTests
         string installed = "1.0.0", bool development = false, ReleaseUpdateEnvironment? environment = null) =>
         new(channel, installed, development, environment ?? new("win-x64", "10.0.1"));
 
+    [Theory]
+    [InlineData("59")]
+    [InlineData("0")]
+    public async Task Successful_responses_with_routine_reset_headers_are_not_rejected(string remaining)
+    {
+        using var checker = new GitHubReleaseUpdateChecker(new Handler(_ =>
+        {
+            var response = Json(HttpStatusCode.OK, "[]");
+            response.Headers.TryAddWithoutValidation("X-RateLimit-Remaining", remaining);
+            response.Headers.TryAddWithoutValidation("X-RateLimit-Reset", "1793150000");
+            return response;
+        }));
+        var result = await checker.CheckAsync(Request(), TestContext.Current.CancellationToken);
+        Assert.Equal(ReleaseUpdateStatus.NoPublishedRelease, result.Status);
+    }
+
+    [Theory]
+    [InlineData("9223372036854775807")]
+    [InlineData("-9223372036854775808")]
+    public async Task Out_of_range_reset_headers_preserve_rate_limit_classification(string reset)
+    {
+        using var checker = new GitHubReleaseUpdateChecker(new Handler(_ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.Forbidden);
+            response.Headers.TryAddWithoutValidation("X-RateLimit-Remaining", "0");
+            response.Headers.TryAddWithoutValidation("X-RateLimit-Reset", reset);
+            return response;
+        }));
+        var result = await checker.CheckAsync(Request(), TestContext.Current.CancellationToken);
+        Assert.Equal(ReleaseUpdateStatus.RateLimited, result.Status);
+        Assert.NotNull(result.RetryAfterUtc);
+    }
+
     [Fact]
     public async Task Empty_public_catalog_is_distinguished_from_an_unavailable_repository()
     {

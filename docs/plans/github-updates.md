@@ -1,7 +1,9 @@
 # Canal de actualizaciones por GitHub
 
 Solicitud del usuario del 2026-10-12, incorporada al plan el 2026-10-13.
-**Nuevo requisito de M10; pendiente de construcción.** Complementa
+**Estado 2026-10-27:** consulta, preparación de aplicación y rollback implementados
+para instalación npm global; aceptación real y verificación de publicador pendientes.
+Complementa
 [arquitectura §24](../architecture/arquitectura.md) y el
 [plan M8–M10](m8-m10-user-localization.md). La instalación npm desde Git ya
 existe; todavía no existe un servicio de actualizaciones de OmniCore.
@@ -50,9 +52,10 @@ además del digest y rechazar assets que no correspondan a la release/plataforma
 
 ## Recorrido de usuario
 
-Contratos propuestos: `omni update check`, `omni update apply [version]` y
-`omni update rollback`, junto con acciones equivalentes en preferencias.
-No son comandos disponibles hoy ni herramientas invocables por el modelo.
+Contratos implementados: `omni update check`, `omni update apply [version]`,
+`omni update rollback` y `omni update status`. La vista de preferencias sólo
+ofrece consulta de metadatos; aplicar y revertir se hacen desde la CLI. No son
+herramientas invocables por el modelo.
 
 La consulta es manual por defecto. Mostrar versión instalada/disponible,
 canal, notas, tamaño, compatibilidad y procedencia antes de descargar/aplicar.
@@ -99,6 +102,13 @@ la construcción del updater permanece en M10.
   no se contabilizan fixtures como campañas autenticadas de proveedores.
 - Estados, confirmaciones, errores, ayuda y accesibilidad es/en/fr/it mediante
   los contratos existentes. IDs, versiones, URLs y hashes permanecen invariantes.
+
+**Estado de aceptación (2026-10-27):** los fixtures cubren consulta stable/preview,
+digest y tamaño alterados, redirección rechazada, identidad de paquete, backup,
+estado durable, confirmación y rollback. La aplicación real sobre una instalación
+npm, DLL ocupada, crash antes/después de activación, recuperación idempotente y la
+verificación de identidad del publicador siguen pendientes. Windows x64 es la
+primera plataforma de aceptación.
 
 Fuente primaria del mecanismo de publicación:
 [GitHub Releases API](https://docs.github.com/en/rest/releases/releases) y

@@ -1,0 +1,283 @@
+namespace OmniCore.Host;
+
+using System.Diagnostics;
+using OmniCore.Protocol;
+
+/// <summary>
+/// Prepares a verified update or rollback and hands the replacement to a detached helper.
+/// This process never replaces the files it is running from.
+/// </summary>
+public sealed class ReleaseUpdateApplier
+{
+    private readonly ReleaseUpdateStateStore _store;
+    private readonly IReleaseInstallationInspector _inspector;
+    private readonly IReleaseUpdateDownloader _downloader;
+    private readonly IReleaseUpdateHelperLauncher _launcher;
+    private readonly TimeSpan _lockTimeout;
+
+    public ReleaseUpdateApplier(ReleaseUpdateStateStore store, IReleaseInstallationInspector inspector,
+        IReleaseUpdateDownloader downloader, IReleaseUpdateHelperLauncher launcher, TimeSpan? lockTimeout = null)
+    {
+        _store = store ?? throw new ArgumentNullException(nameof(store));
+        _inspector = inspector ?? throw new ArgumentNullException(nameof(inspector));
+        _downloader = downloader ?? throw new ArgumentNullException(nameof(downloader));
+        _launcher = launcher ?? throw new ArgumentNullException(nameof(launcher));
+        _lockTimeout = lockTimeout ?? TimeSpan.FromSeconds(5);
+    }
+
+    public async Task<ReleaseUpdateApplyResult> ApplyAsync(ReleaseUpdateCheckResult check, bool confirmed,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(check);
+        if (!confirmed) return new(false, "update_confirmation_required");
+        if (check.Asset is not { } asset || check.AvailableVersion is not { } version || check.Tag is not { } tag)
+            return new(false, "update_asset_unavailable");
+        if (check.Compatibility != ReleaseCompatibility.Compatible)
+            return new(false, "update_compatibility_unverified");
+
+        var installation = _inspector.Inspect();
+        if (Refusal(installation) is { } refusal) return new(false, refusal);
+        if (installation.PackageDirectory is not { } packageDirectory || installation.NpmPath is not { } npm
+            || installation.NodePath is not { } node)
+            return new(false, installation.Detail ?? "update_toolchain_unavailable");
+        if (installation.NpmPrefix is not { } npmPrefix || !PrefixMatchesPackage(packageDirectory, npmPrefix))
+            return new(false, "update_prefix_mismatch");
+        if (HelperPath(packageDirectory) is not { } helper) return new(false, "update_helper_missing");
+
+        IDisposable lease;
+        try { lease = _store.AcquireLock(_lockTimeout); }
+        catch (TimeoutException) { return new(false, "update_operation_in_progress"); }
+        using (lease)
+        {
+            if (!_store.TryRead(out var existing, out var diagnostic))
+                return new(false, diagnostic ?? "update_state_invalid");
+            if (existing is { Status: ReleaseUpdateOperationStatus.Pending or ReleaseUpdateOperationStatus.Running })
+                return RefuseOrMarkUnknown(existing);
+            if (existing is { Status: ReleaseUpdateOperationStatus.Unknown })
+                return new(false, "update_operation_unknown", existing);
+
+            ReleaseUpdateDownloadResult download;
+            try
+            {
+                download = await _downloader.DownloadAsync(asset, tag, _store.StagingDirectory(version), version,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            if (download.Status != ReleaseUpdateDownloadStatus.Downloaded || download.Path is null)
+                return new(false, download.DiagnosticCode ?? "update_download_failed");
+
+            var operationId = Guid.NewGuid().ToString("N");
+            var backup = _store.BackupDirectory(installation.InstalledVersion ?? "unknown", operationId);
+            try
+            {
+                if (!Directory.Exists(backup)) CopyDirectory(packageDirectory, backup, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                return new(false, "update_backup_failed");
+            }
+
+            var pending = new ReleaseUpdateState(ReleaseUpdateStateStore.SchemaVersion, ReleaseUpdateOperation.Apply,
+                ReleaseUpdateOperationStatus.Pending, installation.InstalledVersion, version, download.Path, backup,
+                Environment.ProcessId, null, DateTimeOffset.UtcNow, "waiting_for_parent_exit",
+                operationId, asset.Sha256.ToLowerInvariant(), asset.Size, npmPrefix);
+            _store.Write(pending);
+            var helperPid = Launch(helper, "apply", download.Path, null, npm, node, pending);
+            if (helperPid <= 0)
+            {
+                _store.Write(pending with
+                { Status = ReleaseUpdateOperationStatus.Failed, Detail = "update_helper_start_failed" });
+                return new(false, "update_helper_start_failed");
+            }
+            var prepared = pending with { HelperPid = helperPid };
+            _store.Write(prepared);
+            return new(true, "update_prepared", prepared);
+        }
+    }
+
+    public ReleaseUpdateRollbackResult Rollback(bool confirmed)
+    {
+        if (!confirmed) return new(false, "update_confirmation_required");
+        var installation = _inspector.Inspect();
+        if (Refusal(installation) is { } refusal) return new(false, refusal);
+        if (installation.PackageDirectory is not { } packageDirectory || installation.NpmPath is not { } npm
+            || installation.NodePath is not { } node)
+            return new(false, installation.Detail ?? "update_toolchain_unavailable");
+        if (installation.NpmPrefix is not { } npmPrefix || !PrefixMatchesPackage(packageDirectory, npmPrefix))
+            return new(false, "update_prefix_mismatch");
+        if (HelperPath(packageDirectory) is not { } helper) return new(false, "update_helper_missing");
+
+        IDisposable lease;
+        try { lease = _store.AcquireLock(_lockTimeout); }
+        catch (TimeoutException) { return new(false, "update_operation_in_progress"); }
+        using (lease)
+        {
+            if (!_store.TryRead(out var state, out var diagnostic))
+                return new(false, diagnostic ?? "update_state_invalid");
+            if (state is { Status: ReleaseUpdateOperationStatus.Pending or ReleaseUpdateOperationStatus.Running })
+            {
+                var pendingRefusal = RefuseOrMarkUnknown(state);
+                return new(false, pendingRefusal.DiagnosticCode, pendingRefusal.State ?? state);
+            }
+            if (state is { Status: ReleaseUpdateOperationStatus.Unknown })
+                return new(false, "update_operation_unknown", state);
+            if (state is null || state.BackupPath is not { } backup || !Directory.Exists(backup)
+                || state.FromVersion is null)
+                return new(false, "update_rollback_unavailable", state);
+            if (state.NpmPrefix is null || !SamePath(state.NpmPrefix, npmPrefix))
+                return new(false, "update_prefix_mismatch", state);
+            if (state.Status is ReleaseUpdateOperationStatus.Pending or ReleaseUpdateOperationStatus.Running
+                && IsAlive(state.HelperPid))
+                return new(false, "update_operation_in_progress", state);
+
+            var pending = state with
+            {
+                Operation = ReleaseUpdateOperation.Rollback,
+                Status = ReleaseUpdateOperationStatus.Pending,
+                ParentPid = Environment.ProcessId,
+                HelperPid = null,
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+                Detail = "waiting_for_parent_exit",
+                OperationId = Guid.NewGuid().ToString("N"),
+                ExpectedSha256 = null,
+                ExpectedSize = null,
+                NpmPrefix = npmPrefix,
+            };
+            _store.Write(pending);
+            var helperPid = Launch(helper, "rollback", null, backup, npm, node, pending);
+            if (helperPid <= 0)
+            {
+                _store.Write(pending with
+                { Status = ReleaseUpdateOperationStatus.Failed, Detail = "update_helper_start_failed" });
+                return new(false, "update_helper_start_failed");
+            }
+            var prepared = pending with { HelperPid = helperPid };
+            _store.Write(prepared);
+            return new(true, "update_rollback_prepared", prepared);
+        }
+    }
+
+    private int Launch(string helper, string mode, string? packagePath, string? backupPath, string npm,
+        string node, ReleaseUpdateState state)
+    {
+        Directory.CreateDirectory(_store.UpdatesDirectory);
+        try
+        {
+            return _launcher.Launch(new(helper, mode, Environment.ProcessId, _store.StatePath, packagePath,
+                backupPath, npm, node, "omnicore-cli", _store.UpdatesDirectory, TimeSpan.FromMinutes(15),
+                state.OperationId ?? string.Empty, state.ExpectedSha256, state.ExpectedSize, state.NpmPrefix ?? string.Empty));
+        }
+        catch (Exception error) when (error is InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            _store.Write(state with { Status = ReleaseUpdateOperationStatus.Failed, Detail = "update_helper_start_failed" });
+            return 0;
+        }
+    }
+
+    private static string? Refusal(ReleaseInstallation installation) => installation.Kind switch
+    {
+        ReleaseInstallKind.NpmGlobal => null,
+        ReleaseInstallKind.DevelopmentCheckout => "update_development_checkout",
+        ReleaseInstallKind.ReleasePackage => "update_release_package_unsupported",
+        _ => "update_install_kind_unknown",
+    };
+
+    private ReleaseUpdateApplyResult RefuseOrMarkUnknown(ReleaseUpdateState state)
+    {
+        if (IsAlive(state.HelperPid) || IsAlive(state.ParentPid))
+            return new(false, "update_operation_in_progress", state);
+        var unknown = state with
+        {
+            Status = ReleaseUpdateOperationStatus.Unknown,
+            UpdatedAtUtc = DateTimeOffset.UtcNow,
+            Detail = "helper_outcome_unknown",
+        };
+        _store.Write(unknown);
+        return new(false, "update_operation_unknown", unknown);
+    }
+
+    private static bool PrefixMatchesPackage(string packageDirectory, string prefix)
+    {
+        var modules = Path.GetDirectoryName(packageDirectory);
+        if (modules is null || !Path.GetFileName(modules).Equals("node_modules", StringComparison.OrdinalIgnoreCase))
+            return false;
+        var parent = Path.GetDirectoryName(modules);
+        if (parent is null) return false;
+        if (Path.GetFileName(parent).Equals("lib", StringComparison.OrdinalIgnoreCase))
+            parent = Path.GetDirectoryName(parent);
+        return parent is not null && SamePath(parent, prefix);
+    }
+
+    private static bool SamePath(string left, string right)
+    {
+        try
+        {
+            var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            return string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)), comparison);
+        }
+        catch (ArgumentException) { return false; }
+    }
+
+    private static string? HelperPath(string packageDirectory)
+    {
+        var path = Path.Combine(packageDirectory, "bin", "update-helper.js");
+        return File.Exists(path) ? path : null;
+    }
+
+    private static bool IsAlive(int? pid)
+    {
+        if (pid is not > 0) return false;
+        try
+        {
+            using var process = Process.GetProcessById(pid.Value);
+            return !process.HasExited;
+        }
+        catch (ArgumentException) { return false; }
+        catch (InvalidOperationException) { return false; }
+    }
+
+    private static void CopyDirectory(string source, string destination, CancellationToken cancellationToken)
+    {
+        var temporary = destination + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            Directory.CreateDirectory(temporary);
+            CopyRecursive(new DirectoryInfo(source), temporary, cancellationToken);
+            var parent = Path.GetDirectoryName(destination);
+            if (parent is not null) Directory.CreateDirectory(parent);
+            if (Directory.Exists(destination)) Directory.Delete(destination, recursive: true);
+            Directory.Move(temporary, destination);
+        }
+        finally
+        {
+            if (Directory.Exists(temporary))
+            {
+                try { Directory.Delete(temporary, recursive: true); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+        }
+    }
+
+    private static void CopyRecursive(DirectoryInfo source, string destination, CancellationToken cancellationToken)
+    {
+        foreach (var entry in source.EnumerateFileSystemInfos())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if ((entry.Attributes & FileAttributes.ReparsePoint) != 0)
+                throw new IOException("update_backup_reparse_point");
+            var target = Path.Combine(destination, entry.Name);
+            if (entry is DirectoryInfo directory)
+            {
+                Directory.CreateDirectory(target);
+                CopyRecursive(directory, target, cancellationToken);
+            }
+            else if (entry is FileInfo file)
+            {
+                file.CopyTo(target, overwrite: false);
+            }
+        }
+    }
+}

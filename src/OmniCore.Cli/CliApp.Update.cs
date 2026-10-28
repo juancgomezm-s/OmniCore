@@ -11,34 +11,179 @@ public sealed partial class CliApp
 {
     private static async Task<int> RunUpdateAsync(string[] args)
     {
-        if (args.Length is < 2 or > 4 || args[1] != "check")
-        { Console.WriteLine(Loc().Resolve("updates.usage")); return 2; }
-        var channel = ReleaseUpdateChannel.Stable;
-        if (args.Length > 2)
+        if (args.Length < 2) return UpdateUsage();
+        return args[1] switch
         {
-            if (args.Length != 4 || args[2] != "--channel" || args[3] is not ("stable" or "preview"))
-            { Console.WriteLine(Loc().Resolve("updates.usage")); return 2; }
-            channel = args[3] == "preview" ? ReleaseUpdateChannel.Preview : ReleaseUpdateChannel.Stable;
+            "check" => await RunUpdateCheckAsync(args).ConfigureAwait(false),
+            "apply" => await RunUpdateApplyAsync(args).ConfigureAwait(false),
+            "rollback" => RunUpdateRollback(args),
+            "status" => RunUpdateStatus(args),
+            _ => UpdateUsage(),
+        };
+    }
+
+    private static int UpdateUsage()
+    {
+        Console.WriteLine(Loc().Resolve("updates.usage"));
+        return 2;
+    }
+
+    private static async Task<int> RunUpdateCheckAsync(string[] args)
+    {
+        if (!TryParseUpdateArguments(args, out var version, out var channel, out _)) return UpdateUsage();
+        var result = await CheckReleaseAsync(channel, version).ConfigureAwait(false);
+        PrintCheckResult(result);
+        return result.Status is ReleaseUpdateStatus.UpdateAvailable or ReleaseUpdateStatus.DevelopmentBuild
+            or ReleaseUpdateStatus.CompatibilityUnknown or ReleaseUpdateStatus.UpToDate
+            or ReleaseUpdateStatus.NoPublishedRelease ? 0 : 1;
+    }
+
+    private static async Task<int> RunUpdateApplyAsync(string[] args)
+    {
+        if (!TryParseUpdateArguments(args, out var version, out var channel, out var yes)) return UpdateUsage();
+        var text = Loc();
+        if (!yes && !IsInteractive) return ReportFailure("update_confirmation_required");
+        var check = await CheckReleaseAsync(channel, version).ConfigureAwait(false);
+        if (check.Status is ReleaseUpdateStatus.UpToDate or ReleaseUpdateStatus.NoPublishedRelease)
+        {
+            Console.WriteLine(text.Resolve(ReleaseUpdateResources.StatusKey(check.Status)));
+            return 0;
+        }
+        if (check.Status is not (ReleaseUpdateStatus.UpdateAvailable or ReleaseUpdateStatus.DevelopmentBuild))
+        {
+            Console.WriteLine(text.Resolve(ReleaseUpdateResources.StatusKey(check.Status)));
+            if (check.DiagnosticCode is { Length: > 0 } code) Console.WriteLine(text.Resolve("updates.diagnostic") + ": " + code);
+            return 1;
+        }
+        if (check.AvailableVersion is not { } available || check.Asset is null)
+            return ReportFailure("update_asset_unavailable");
+        if (check.Compatibility != ReleaseCompatibility.Compatible)
+            return ReportFailure("update_compatibility_unverified");
+
+        Console.WriteLine(text.Resolve("updates.available") + ": " + available);
+        Console.WriteLine(text.Resolve("updates.asset") + ": " + (check.AssetName ?? check.Asset.Name));
+        if (check.AssetSize is { } size) Console.WriteLine(text.Resolve("updates.size") + ": " + size.ToString(CultureInfo.InvariantCulture) + " bytes");
+        if (check.AssetSha256 is { } digest) Console.WriteLine(text.Resolve("updates.sha256") + ": " + digest);
+        if (!yes)
+        {
+            if (!Confirm(text.Resolve("updates.apply.confirm", "version", available)))
+            {
+                Console.WriteLine(text.Resolve("updates.apply.cancelled"));
+                return 1;
+            }
         }
 
-        var request = CreateRequest(channel);
-        ReleaseUpdateCheckResult result;
+        using var downloader = new ReleaseUpdateDownloader();
+        var applier = CreateApplier(downloader);
+        var result = await applier.ApplyAsync(check, confirmed: true).ConfigureAwait(false);
+        if (!result.Prepared) return ReportFailure(result.DiagnosticCode);
+        Console.WriteLine(text.Resolve("updates.apply.prepared", "version", available));
+        return 0;
+    }
+
+    private static int RunUpdateRollback(string[] args)
+    {
+        if (!TryParseUpdateArguments(args, out _, out _, out var yes)) return UpdateUsage();
+        var text = Loc();
+        if (!yes && !IsInteractive) return ReportFailure("update_confirmation_required");
+        if (!yes)
+        {
+            if (!Confirm(text.Resolve("updates.rollback.confirm")))
+            {
+                Console.WriteLine(text.Resolve("updates.apply.cancelled"));
+                return 1;
+            }
+        }
+        using var downloader = new ReleaseUpdateDownloader();
+        var applier = CreateApplier(downloader);
+        var result = applier.Rollback(confirmed: true);
+        if (!result.Prepared) return ReportFailure(result.DiagnosticCode);
+        Console.WriteLine(text.Resolve("updates.rollback.prepared",
+            "version", result.State?.FromVersion ?? text.Resolve("updates.unknown")));
+        return 0;
+    }
+
+    private static int RunUpdateStatus(string[] args)
+    {
+        if (args.Length != 2) return UpdateUsage();
+        var text = Loc();
+        var store = ReleaseUpdateStateStore.CreateDefault();
+        if (!store.TryRead(out var state, out var diagnostic)) return ReportFailure(diagnostic);
+        if (state is null)
+        {
+            Console.WriteLine(text.Resolve("updates.status.none"));
+            return 0;
+        }
+        Console.WriteLine(text.Resolve("updates.status.heading"));
+        Console.WriteLine(text.Resolve("updates.status.operation") + ": " + state.Operation);
+        Console.WriteLine(text.Resolve("updates.status.state") + ": " + state.Status);
+        if (state.FromVersion is not null) Console.WriteLine(text.Resolve("updates.status.from") + ": " + state.FromVersion);
+        if (state.ToVersion is not null) Console.WriteLine(text.Resolve("updates.status.to") + ": " + state.ToVersion);
+        Console.WriteLine(text.Resolve("updates.status.updated") + ": " + state.UpdatedAtUtc.ToLocalTime().ToString("O", CultureInfo.InvariantCulture));
+        if (state.Detail is { Length: > 0 } detail) Console.WriteLine(text.Resolve("updates.status.detail") + ": " + detail);
+        return 0;
+    }
+
+    private static ReleaseUpdateApplier CreateApplier(IReleaseUpdateDownloader downloader) =>
+        new(ReleaseUpdateStateStore.CreateDefault(), new ReleaseInstallationInspector(), downloader,
+            new NodeReleaseUpdateHelperLauncher());
+
+
+    private static bool IsInteractive => !Console.IsInputRedirected && !Console.IsOutputRedirected;
+
+    private static bool Confirm(string prompt)
+    {
+        Console.Write(prompt);
+        var answer = Console.ReadLine();
+        return answer is not null && answer.Trim().ToLowerInvariant() is "s" or "si" or "sí" or "y" or "yes";
+    }
+
+    private static bool TryParseUpdateArguments(string[] args, out string? version,
+        out ReleaseUpdateChannel channel, out bool yes)
+    {
+        version = null;
+        channel = ReleaseUpdateChannel.Stable;
+        yes = false;
+        for (var index = 2; index < args.Length; index++)
+        {
+            switch (args[index])
+            {
+                case "--yes" or "-y":
+                    yes = true;
+                    break;
+                case "--channel":
+                    if (++index >= args.Length || args[index] is not ("stable" or "preview")) return false;
+                    channel = args[index] == "preview" ? ReleaseUpdateChannel.Preview : ReleaseUpdateChannel.Stable;
+                    break;
+                default:
+                    if (version is not null || args[index].StartsWith("--", StringComparison.Ordinal)) return false;
+                    version = args[index];
+                    break;
+            }
+        }
+        return true;
+    }
+
+    private static async Task<ReleaseUpdateCheckResult> CheckReleaseAsync(ReleaseUpdateChannel channel,
+        string? targetVersion)
+    {
+        var request = CreateRequest(channel, targetVersion);
         try
         {
             if (ReleaseUpdateCheckOverride is { } injected)
-                result = await injected(request, CancellationToken.None).ConfigureAwait(false);
-            else
-            {
-                using var checker = new GitHubReleaseUpdateChecker();
-                result = await checker.CheckAsync(request, CancellationToken.None).ConfigureAwait(false);
-            }
+                return await injected(request, CancellationToken.None).ConfigureAwait(false);
+            using var checker = new GitHubReleaseUpdateChecker();
+            return await checker.CheckAsync(request, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception)
         {
-            result = new(channel, ReleaseUpdateStatus.NetworkError, ReleaseCompatibility.Unknown, request.InstalledVersion,
+            return new(channel, ReleaseUpdateStatus.NetworkError, ReleaseCompatibility.Unknown, request.InstalledVersion,
                 DiagnosticCode: "github_check_failed");
         }
+    }
 
+    private static void PrintCheckResult(ReleaseUpdateCheckResult result)
+    {
         var text = Loc();
         Console.WriteLine(text.Resolve(ReleaseUpdateResources.StatusKey(result.Status)));
         Console.WriteLine(text.Resolve("updates.channel") + ": " + text.Resolve(result.Channel == ReleaseUpdateChannel.Preview ? "updates.preview" : "updates.stable"));
@@ -69,17 +214,48 @@ public sealed partial class CliApp
             Console.WriteLine(text.Resolve("updates.diagnostic") + ": " + diagnostic);
         if (result.Notes is { Length: > 0 } notes)
             Console.WriteLine(text.Resolve("updates.notes") + Environment.NewLine + SafeOutput(notes));
-        return result.Status is ReleaseUpdateStatus.UpdateAvailable or ReleaseUpdateStatus.DevelopmentBuild
-            or ReleaseUpdateStatus.CompatibilityUnknown ? 0 : result.Status is ReleaseUpdateStatus.UpToDate or ReleaseUpdateStatus.NoPublishedRelease ? 0 : 1;
     }
 
-    private static ReleaseUpdateCheckRequest CreateRequest(ReleaseUpdateChannel channel)
+    private static int ReportFailure(string? code)
+    {
+        var text = Loc();
+        Console.WriteLine(text.Resolve(ErrorKey(code)));
+        if (code is { Length: > 0 }) Console.WriteLine(text.Resolve("updates.diagnostic") + ": " + code);
+        return 1;
+    }
+
+    private static string ErrorKey(string? code) => code switch
+    {
+        "update_confirmation_required" => "updates.error.confirmation",
+        "update_development_checkout" => "updates.error.development_checkout",
+        "update_release_package_unsupported" => "updates.error.release_package_unsupported",
+        "update_install_kind_unknown" => "updates.error.install_kind_unknown",
+        "update_compatibility_unverified" => "updates.error.compatibility_unverified",
+        "update_asset_unavailable" => "updates.error.asset_unavailable",
+        "update_operation_in_progress" => "updates.error.operation_in_progress",
+        "update_operation_unknown" => "updates.error.operation_unknown",
+        "update_prefix_mismatch" => "updates.error.prefix_mismatch",
+        "update_backup_failed" => "updates.error.backup_failed",
+        "update_helper_start_failed" => "updates.error.helper_start_failed",
+        "update_helper_missing" => "updates.error.helper_missing",
+        "update_state_invalid" or "update_state_unreadable" => "updates.error.state_invalid",
+        "update_toolchain_unavailable" or "npm_not_found" or "node_not_found" => "updates.error.toolchain_unavailable",
+        "update_rollback_unavailable" => "updates.error.rollback_unavailable",
+        "update_download_failed" or "release_asset_digest_mismatch" or "release_asset_size_mismatch"
+            or "release_asset_redirect_rejected" or "release_package_identity_mismatch"
+            or "release_asset_too_large" or "release_asset_not_found" or "release_asset_invalid"
+            or "release_package_invalid" or "github_offline" or "github_rate_limited" => "updates.error.download_failed",
+        _ => "updates.error.not_supported",
+    };
+
+    private static ReleaseUpdateCheckRequest CreateRequest(ReleaseUpdateChannel channel, string? targetVersion = null)
     {
         var info = typeof(CliApp).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
             ?? "0.0.0+development";
         var development = info.Contains('+', StringComparison.Ordinal);
         return new(channel, info, development,
-            new(RuntimeInformation.RuntimeIdentifier, Environment.Version.ToString(), ProtocolVersion: ProtocolVersions.V1));
+            new(RuntimeInformation.RuntimeIdentifier, Environment.Version.ToString(), ProtocolVersion: ProtocolVersions.V1),
+            targetVersion);
     }
 
     private static string SafeOutput(string value)

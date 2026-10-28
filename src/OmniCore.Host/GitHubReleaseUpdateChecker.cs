@@ -40,8 +40,10 @@ public sealed class GitHubReleaseUpdateChecker : IDisposable
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(request.Environment);
+        SemVer? wanted = null;
         if (!Enum.IsDefined(request.Channel) || request.InstalledVersion is null
             || !SemVer.TryParse(request.InstalledVersion, out _)
+            || request.TargetVersion is { } targetText && !SemVer.TryParse(targetText, out wanted)
             || string.IsNullOrWhiteSpace(request.Environment.Rid) || request.Environment.Rid.Length > 80
             || request.Environment.Rid.Any(character => !(char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.'))
             || string.IsNullOrWhiteSpace(request.Environment.DotNetVersion) || request.Environment.DotNetVersion.Length > 80)
@@ -91,7 +93,8 @@ public sealed class GitHubReleaseUpdateChecker : IDisposable
             var eligible = releases.Where(release => Eligible(release, request.Channel))
                 .OrderByDescending(release => release.Version, SemVerComparer.Instance)
                 .ThenBy(release => release.Tag, StringComparer.Ordinal).ToArray();
-            var latest = eligible.FirstOrDefault();
+            var latest = wanted is null ? eligible.FirstOrDefault()
+                : eligible.FirstOrDefault(release => SemVerComparer.Instance.Compare(release.Version, wanted) == 0);
             if (latest is null)
                 return Result(request, ReleaseUpdateStatus.NoPublishedRelease, "no_published_release",
                     releasesExamined: releases.Count);
@@ -150,7 +153,8 @@ public sealed class GitHubReleaseUpdateChecker : IDisposable
                 selected.Rid, selected.Name, selected.Size, selected.Sha256, compatibility.Detail,
                 ReleasesExamined: releases.Count, Requirements: new(selected.Requirements.DotNetMin, selected.Requirements.DotNetMax,
                     selected.Requirements.NodeMin, selected.Requirements.NodeMax, selected.Requirements.ProtocolMin,
-                    selected.Requirements.ProtocolMax, selected.Requirements.ConfigurationMin, selected.Requirements.ConfigurationMax));
+                    selected.Requirements.ProtocolMax, selected.Requirements.ConfigurationMin, selected.Requirements.ConfigurationMax),
+                Asset: new(publishedAsset.Id, selected.Name, selected.Size, selected.Sha256, selected.Rid));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (OperationCanceledException)
@@ -268,9 +272,12 @@ public sealed class GitHubReleaseUpdateChecker : IDisposable
     private static DateTimeOffset? RateLimit(HttpResponseHeaders headers)
     {
         var exhausted = headers.TryGetValues("X-RateLimit-Remaining", out var remaining) && remaining.FirstOrDefault() == "0";
+        var now = DateTimeOffset.UtcNow;
         if (headers.RetryAfter?.Date is { } date) return date;
-        if (headers.RetryAfter?.Delta is { } delta) return DateTimeOffset.UtcNow + delta;
-        if (headers.TryGetValues("X-RateLimit-Reset", out var reset) && long.TryParse(reset.FirstOrDefault(), out var unix))
+        if (headers.RetryAfter?.Delta is { } delta && delta >= TimeSpan.Zero
+            && delta <= DateTimeOffset.MaxValue - now) return now + delta;
+        if (headers.TryGetValues("X-RateLimit-Reset", out var reset) && long.TryParse(reset.FirstOrDefault(), out var unix)
+            && unix is >= -62_135_596_800 and <= 253_402_300_799)
             return DateTimeOffset.FromUnixTimeSeconds(unix);
         return exhausted ? DateTimeOffset.UtcNow.AddMinutes(1) : null;
     }
@@ -280,9 +287,15 @@ public sealed class GitHubReleaseUpdateChecker : IDisposable
 
     private static DateTimeOffset? RateLimit(HttpResponseMessage response)
     {
-        var indicated = RateLimit(response.Headers);
-        if (indicated is not null) return indicated;
-        return (int)response.StatusCode == 429 ? DateTimeOffset.UtcNow.AddMinutes(1) : null;
+        // Successful GitHub responses also carry reset headers. A reset timestamp
+        // alone never means this request was rejected for rate limiting.
+        if ((int)response.StatusCode == 429)
+            return RateLimit(response.Headers) ?? DateTimeOffset.UtcNow.AddMinutes(1);
+        if ((int)response.StatusCode != 403) return null;
+        var exhausted = response.Headers.TryGetValues("X-RateLimit-Remaining", out var remaining)
+            && remaining.FirstOrDefault() == "0";
+        return exhausted || response.Headers.RetryAfter is not null
+            ? RateLimit(response.Headers) ?? DateTimeOffset.UtcNow.AddMinutes(1) : null;
     }
 
     private static bool TryReadRelease(JsonElement value, out ReleaseRow? release)

@@ -7,11 +7,13 @@ namespace OmniCore.Tests;
 public sealed class ReleaseUpdateCliTests
 {
     [Theory]
-    [InlineData("apply")]
-    [InlineData("rollback")]
     [InlineData("check --channel live")]
     [InlineData("check --channel stable --force")]
-    public async Task Unsupported_or_malformed_update_commands_stop_before_any_checker_or_model_route(string tail)
+    [InlineData("apply --channel live")]
+    [InlineData("rollback --bogus")]
+    [InlineData("status extra")]
+    [InlineData("unknown")]
+    public async Task Malformed_update_commands_stop_before_any_checker_or_model_route(string tail)
     {
         var previousOut = Console.Out; using var output = new StringWriter(); Console.SetOut(output);
         var calls = 0;
@@ -21,7 +23,44 @@ public sealed class ReleaseUpdateCliTests
             var args = new[] { "update" }.Concat(tail.Split(' ')).ToArray();
             var exit = await CliApp.RunAsync(args);
             Assert.Equal(2, exit); Assert.Equal(0, calls);
-            Assert.Contains("omni update check [--channel stable|preview]", output.ToString());
+            Assert.Contains("omni update check|status", output.ToString());
+        }
+        finally { CliApp.ReleaseUpdateCheckOverride = null; Console.SetOut(previousOut); }
+    }
+
+    [Theory]
+    [InlineData("apply")]
+    [InlineData("rollback")]
+    public async Task Destructive_commands_require_confirmation_before_checking_or_inspecting(string command)
+    {
+        var previousOut = Console.Out; using var output = new StringWriter(); Console.SetOut(output);
+        var calls = 0;
+        CliApp.ReleaseUpdateCheckOverride = (_, _) => { calls++; throw new InvalidOperationException("must not check"); };
+        try
+        {
+            var exit = await CliApp.RunAsync(["update", command]);
+            Assert.Equal(1, exit); Assert.Equal(0, calls);
+            Assert.Contains("update_confirmation_required", output.ToString());
+        }
+        finally { CliApp.ReleaseUpdateCheckOverride = null; Console.SetOut(previousOut); }
+    }
+
+    [Fact]
+    public async Task Apply_with_confirmation_reports_a_release_without_a_verifiable_asset()
+    {
+        var previousOut = Console.Out; using var output = new StringWriter(); Console.SetOut(output);
+        var calls = 0;
+        CliApp.ReleaseUpdateCheckOverride = (request, _) =>
+        {
+            calls++;
+            return Task.FromResult(new ReleaseUpdateCheckResult(request.Channel, ReleaseUpdateStatus.UpdateAvailable,
+                ReleaseCompatibility.Compatible, request.InstalledVersion, "0.2.0", "v0.2.0"));
+        };
+        try
+        {
+            var exit = await CliApp.RunAsync(["update", "apply", "--yes"]);
+            Assert.Equal(1, exit); Assert.Equal(1, calls);
+            Assert.Contains("update_asset_unavailable", output.ToString());
         }
         finally { CliApp.ReleaseUpdateCheckOverride = null; Console.SetOut(previousOut); }
     }
