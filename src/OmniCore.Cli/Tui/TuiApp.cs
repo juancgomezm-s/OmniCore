@@ -1908,7 +1908,6 @@ public sealed partial class TuiApp
         _sidebarContent.Render(_sidebarComposition.Body);
         RenderCompanion();
         if (_sidebarAttention is not null) _sidebarAttention.Text = _sidebarSettings.Diagnostics.Count > 0 ? _localization.Resolve("shell.invalid_settings")
-            : _sidebarComposition.AttentionIds.Count > 0 ? "! " + string.Join(" · ", _sidebarComposition.AttentionIds.Select(id => id.Replace("core.", "")))
             : _sidebarComposition.Collapsed > 0 ? _localization.Resolve("shell.details_collapsed_inspect") : "";
     }
 
