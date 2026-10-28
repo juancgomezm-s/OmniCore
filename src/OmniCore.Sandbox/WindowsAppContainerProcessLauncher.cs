@@ -1096,6 +1096,13 @@ internal static partial class AppContainerNative
                         if (!allowed.Contains(name)) values.Remove(name);
                     }
 
+                    // SDK first-run state belongs to this confined process, never the
+                    // user's inaccessible profile. Keep Strong; do not retry as Weak.
+                    values["DOTNET_CLI_HOME"] = tempDirectory;
+                    values["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+                    values["DOTNET_GENERATE_ASPNET_CERTIFICATE"] = "false";
+                    values["DOTNET_ADD_GLOBAL_TOOLS_TO_PATH"] = "false";
+
                     var drive = Path.GetPathRoot(workingDirectory);
                     if (drive is { Length: 3 } && drive[1] == ':')
                         values["=" + drive[..2]] = workingDirectory;

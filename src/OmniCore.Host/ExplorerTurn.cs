@@ -2524,6 +2524,9 @@ public sealed class ExplorerTurn
                         : (outcome.Summary ?? "ok");
                     var succeeded = outcome.Succeeded && planError is null;
                     var resultText = succeeded ? content : "error: " + _redaction.Redact(planError ?? outcome.Summary ?? "failed");
+                    if (!succeeded && planError is null && outcome.Preview is { Length: > 0 } failureOutput
+                        && !string.Equals(failureOutput, outcome.Summary, StringComparison.Ordinal))
+                        resultText += "\n" + _redaction.Redact(failureOutput);
                     allToolCalls.Add(new ToolUseTrace(call.ToolName, succeeded,
                         _redaction.Redact(planError ?? outcome.Summary ?? ""),
                         SafeToolArguments(call.ToolName, call.ArgumentsJson)));

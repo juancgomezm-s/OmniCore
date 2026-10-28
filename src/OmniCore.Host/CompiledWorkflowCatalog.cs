@@ -50,11 +50,9 @@ public static class CompiledWorkflowCatalog
                     ModelToolCapability.CreateFile, ModelToolCapability.ReplaceFile,
                     ModelToolCapability.AgentMailboxWait]),
             [WorkflowStage.Verify] = new(WorkflowStage.Verify, "Verify",
-                "Run the exact integration check declared when this workflow was invoked. The command is enforced by a workflow-owned dynamic tool and runs through the ordinary permission, sandbox, fingerprint, and budget pipeline. Report the exact checks and failures.",
+                "Your first tool call must run dyn.core.verify_integration with the exact executable, argv, cwd and timeoutSeconds=120 declared for this workflow. Do not explore or reread files: Explore and Implement already did that. The tool checks the accepted Implement tree through the ordinary permission, sandbox, fingerprint, and budget pipeline. Report its actual result and failures; never claim success without its receipt.",
                 ["dyn.core.verify_integration"],
-                [ModelToolCapability.WorkspaceRead, ModelToolCapability.Search,
-                    ModelToolCapability.ReferenceResolve, ModelToolCapability.ValidationProcess,
-                    ModelToolCapability.AgentMailboxWait]),
+                [ModelToolCapability.ValidationProcess]),
         };
 
     public static WorkflowStageDefinition Stage(WorkflowStage stage) => Stages[stage];

@@ -83,7 +83,39 @@ public sealed class ExplorerTurnProviderStateIsolationTests
     /// <summary>Two Asks on ONE ExplorerTurn instance via a shared scripted delegate (no real
     /// upstream): tool-use + EndTurn in the first Ask, then a single EndTurn call in the second.
     /// Captures every ModelRequest without logging any payload.</summary>
-    private static ScriptedOutcome RunTwoAskScript(Func<List<ModelRequest>, ModelResponse> script)
+    [Fact]
+    public void Failed_tool_sends_its_diagnostic_output_to_the_model_with_credentials_redacted()
+    {
+        var call = new ToolCallBlock(ToolCallId.New(), "failed-output", "fixture.failed", "{}");
+        var outcome = RunTwoAskScript(requests => requests.Count == 1
+            ? new ModelResponse([call], StopReason.ToolUse, new(1, 1, 0, 0, 0), null, new("scripted", "test", null))
+            : new ModelResponse([new TextBlock("done")], StopReason.EndTurn, new(1, 1, 0, 0, 0), null, new("scripted", "test", null)),
+            new FailedDiagnosticTool());
+        try
+        {
+            var result = Assert.Single(outcome.Requests[1].Messages.SelectMany(message => message.Content)
+                .OfType<ToolResultBlock>(), value => value.Id == call.Id);
+            Assert.True(result.IsError);
+            var text = string.Join("\n", result.Content.OfType<TextBlock>().Select(value => value.Text));
+            Assert.Contains("exit code 1", text);
+            Assert.Contains("compiler diagnostic CS1234", text);
+            Assert.DoesNotContain("fixture-credential-0123456789", text);
+        }
+        finally { Cleanup(outcome.Store, outcome.Root, outcome.Journal); }
+    }
+
+    private sealed class FailedDiagnosticTool : ITool
+    {
+        public ToolDescriptor Descriptor => FakeTool.Read("fixture.failed").Descriptor;
+        public ToolPreparation Prepare(ValidatedToolCall call, ToolPreparationContext context) =>
+            new Prepared(new(call.ToolCallId, call.ToolId, call.NormalizedArgumentsJson,
+                EffectClass.None, ResourceClaims.Empty(), ToolRisk.Low, null));
+        public System.Threading.Tasks.Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent, ToolExecutionContext context, CancellationToken cancellationToken) =>
+            System.Threading.Tasks.Task.FromResult(new ToolResult("exit code 1", "compiler diagnostic CS1234\nAuthorization: Bearer fixture-credential-0123456789",
+                null, 90, false, EffectOutcome.None, true, ToolErrorCode.ProcessFailure));
+    }
+
+    private static ScriptedOutcome RunTwoAskScript(Func<List<ModelRequest>, ModelResponse> script, ITool? extra = null)
     {
         var root = Path.Combine(Path.GetTempPath(), "omnicore-explorer-psiso-" + Guid.NewGuid().ToString("N"));
         var journal = Path.Combine(root, "journal.db");
@@ -97,6 +129,7 @@ public sealed class ExplorerTurnProviderStateIsolationTests
             var artifacts = new FileArtifactStore(Path.Combine(root, "blobs"));
             var tools = OmniHost.CreateExplorerTools();
             var catalog = tools.Catalog();
+            if (extra is not null) catalog.Add(extra);
             var executor = ScriptedToolExecutor.WithWorkspace(catalog,
                 new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>
                 {

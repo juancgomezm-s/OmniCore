@@ -102,3 +102,41 @@ el fallo `PRIOR_READ_REQUIRED` como `failed`, sin aplicar ni repetir el efecto.
 `current-consumer-known-failure-recovery.log` y
 `permission-gui-preservation.json` acreditan recuperación y preservación visual.
 Los dos recorridos de recibos nativos volvieron a pasar sobre ese build.
+
+## Resolución de los bloqueos funcionales (2026-10-28)
+
+Este apartado sustituye los pendientes anteriores de Verify y aplicación del
+worktree. La Session real `01a18115-5eb1-7d8c-9632-2d6b75880e73`, Run
+`01a18115-d6f7-7448-bde4-e8d63e3c7d94`, completó Explore, Implement y Verify con
+disposiciones Accepted y cerró el gate compilado en la secuencia 343. Verify
+ejecutó primero `dyn.core.verify_integration`, sobre el árbol Implement ligado,
+con salida cero en Strong; no se amplió el presupuesto de cuatro herramientas.
+
+OmniCoder vigente retomó esa misma Session. El composer consultó la propuesta y
+admitió la integración `c7a821d4-fa24-411b-8b13-8a42fce7279f`: aplicó exactamente
+FeatureModule.cs y Program.cs del ownership `4b774106190940deb5370a031c83aade`.
+Journal: Started 367, dos cargos de mutación 368–369, integración Completed 370 y
+ToolCallSucceeded 371. Los bytes coinciden con el worktree, HEAD permanece intacto
+y la reapertura conserva la Session, sin inferencia adicional ni nuevos permisos.
+Electron real **1/1**, 71 segundos: `current-consumer-reconciled-workflow-apply.log`;
+resultado y captura: `final-worktree-application.json` / `final-worktree-applied.png`
+en el fixture propio indicado por `live-workflow-final-manifest.json`.
+
+El intento anterior fue interrumpido por el plazo de la prueba. La reapertura
+canónica comprobó NotApplied para ambos archivos, secuencias 356–357, antes de
+permitir la nueva orden; se conserva el intento rojo y no se fingió ausencia de
+efecto. La primera ejecución Strong también reveló que el SDK intentaba escribir
+en C:\\Users: el home temporal privado corrige esa causa sin rebajar confinamiento.
+
+Regresión integral worktrees/workflows **88/88** y foco final de diagnósticos,
+aislamiento del proveedor, SDK privado y exclusión de rutas externas **4/4**,
+sin omisiones. Logs: `close-workflow-worktree-regression-result.json` y
+`final-diagnostics-sandbox-selected-regression-result.json`. Builds focales finales
+de Host, CLI y tests: cero advertencias/errores. No se repitió la suite amplia tras
+el verde. Los resultados corresponden a esta candidata, no certifican toda la
+combinación posterior de main ni CI remota. Se conservaron fuentes, GUI y evidencias.
+
+M9 mantiene la validación de generación de imagen real y los gates de entrega:
+consolidación del consumidor, revisión de Dot y CI propia. OpenRouter ya figura
+Conectado; el estado anterior de conexión pendiente quedó superado. M8 manual es
+independiente. No hubo publicación ni instalación de esta candidata.

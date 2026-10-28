@@ -261,3 +261,24 @@ antiguo. Sólo el propietario del lease repara ese caso con TurnAbandoned tras
 validar admisión, payload protegido, recibo terminal y ausencia de efectos.
 Consultar el estado no repara ni ejecuta. El consumidor admite `failed` como
 terminado; no lo presenta como éxito ni vuelve a enviar la misma invocación.
+
+### Aceptación del recorrido completo (2026-10-28)
+
+Verify recibe sólo ValidationProcess y los argumentos exactos de su verificador
+en la herramienta dinámica. Ejecuta la comprobación antes de explorar; mantiene
+el presupuesto de cuatro llamadas y la validación del árbol Implement aceptado.
+El sandbox Strong de Windows asigna el estado inicial del SDK a su temporal
+privado, con telemetría y creación de certificados desactivadas. No amplía ACLs
+del perfil del usuario ni reintenta una ejecución fallida como Weak. Los errores
+devuelven también su salida diagnóstica saneada al modelo.
+
+La integración humana firmada aprueba una propuesta concreta con ownership,
+paths y pre/post imágenes comprobados. Ese origen nativo no fabrica lecturas del
+modelo: conserva los límites de mutación y los modelos siguen necesitando lectura
+completa previa. El mismo origen se conserva al continuar un permiso explícito.
+
+Una integración interrumpida sólo deja de bloquear nuevas órdenes cuando la
+recuperación canónica confirma NotApplied para todos los paths exactos de aquella
+llamada. Se presenta como failed, nunca como éxito; no se reenvía la invocación.
+Sin esa prueba continúa bloqueada. El ciclo completo fue aceptado con TUI real,
+Luna, verificación Strong, aplicación en OmniCoder vigente y reapertura.

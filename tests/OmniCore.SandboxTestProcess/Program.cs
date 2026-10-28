@@ -317,6 +317,17 @@ if (args.Length == 2 && args[0] == "private-process-exec")
     return 0;
 }
 
+if (args.Length == 1 && args[0] == "sdk-home-probe")
+{
+    var home = Environment.GetEnvironmentVariable("DOTNET_CLI_HOME");
+    if (string.IsNullOrWhiteSpace(home)) return 31;
+    Directory.CreateDirectory(Path.Combine(home, ".dotnet"));
+    File.WriteAllText(Path.Combine(home, ".dotnet", "first-run-sentinel"), "owned-process-state");
+    Console.WriteLine("SDK-HOME-WRITABLE");
+    Console.WriteLine(home);
+    return 0;
+}
+
 if (args.Length == 3 && args[0] == "environment-probe")
 {
     Console.WriteLine(Environment.GetEnvironmentVariable(args[1]) ?? "<null>");

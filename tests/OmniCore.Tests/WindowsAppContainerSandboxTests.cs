@@ -792,6 +792,28 @@ public sealed class WindowsAppContainerSandboxTests
     }
 
     [Fact]
+    public async Task Strong_process_has_writable_private_sdk_home_without_user_profile_access()
+    {
+        if (!OperatingSystem.IsWindows()) { Assert.Skip("AppContainer is Windows-only."); return; }
+        if (!new WindowsAppContainerCapabilitiesProbe().Probe().StrongAvailable)
+        { Assert.Skip("AppContainer is unavailable."); return; }
+        var workspace = Path.Combine(Path.GetTempPath(), "OmniCoreSdkHome-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(workspace);
+        try
+        {
+            var launch = new SandboxLaunchSpec(SandboxStrength.Strong, HelperExecutable(), ["sdk-home-probe"], workspace,
+                new Dictionary<string, string>(), [new SandboxAllowedPath(workspace, SandboxPathAccess.Read | SandboxPathAccess.Write)],
+                new SandboxNetworkPolicy(SandboxNetworkMode.Deny, []), TimeSpan.FromSeconds(20));
+            await using var process = await new WindowsAppContainerProcessLauncher().StartAsync(launch, TestContext.Current.CancellationToken);
+            var result = await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("SDK-HOME-WRITABLE", OutputText(result));
+            Assert.DoesNotContain(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "\\.dotnet", OutputText(result));
+        }
+        finally { TryDelete(workspace); }
+    }
+
+    [Fact]
     public async Task Network_is_denied_when_the_launch_spec_has_no_network_capability()
     {
         if (!OperatingSystem.IsWindows())
