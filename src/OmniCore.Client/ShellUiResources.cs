@@ -195,6 +195,7 @@ public static class ShellUiResources
         ["activity.agents"] = ["Agentes", "Agents", "Agents", "Agenti"],
         ["activity.background"] = ["{label} · {count} agentes", "{label} · {count} agents", "{label} · {count} agents", "{label} · {count} agenti"],
         ["sidebar.agents_title"] = ["AGENTES · LANES", "AGENTS · LANES", "AGENTS · LANES", "AGENTI · LANE"],
+        ["sidebar.mcp"] = ["MCP: ", "MCP: ", "MCP : ", "MCP: "],
         ["sidebar.session_title"] = ["SESIÓN", "SESSION", "SESSION", "SESSIONE"],
         ["sidebar.cache_read"] = ["Lectura de caché: ", "Cache read: ", "Lecture du cache : ", "Lettura cache: "],
         ["sidebar.cache_write"] = ["Escritura de caché: ", "Cache write: ", "Écriture du cache : ", "Scrittura cache: "],

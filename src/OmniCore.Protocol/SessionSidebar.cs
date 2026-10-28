@@ -11,7 +11,8 @@ public sealed record SessionSidebarSnapshot(string SessionId, string? RunId, lon
     bool RecoveryBlocked, bool ProjectionUnavailable,
     // Actividad derivada de la Lane raíz (ADR-0036 §3), nunca persistida: WaitingForModel, WaitingForTool,
     // WaitingForPermission, WaitingForInput, WaitingForSubtask, Validating o Stalled. Null si no hay ninguna.
-    string? Activity = null);
+    string? Activity = null,
+    IReadOnlyList<string>? ActiveMcpServers = null);
 
 public static class SidebarJson
 {

@@ -107,11 +107,11 @@ public record ToolCallStarted(ToolCallId ToolCallId, EffectClass EffectClass, st
 
     public EventType Type() => EventType.Of("toolcall.started");
 
-    public int SchemaVersion() => 4;
+    public int SchemaVersion() => 5;
 }
 
 public sealed record ToolCallAttribution(string ToolId, string SourceKind, string? ExtensionId,
-    string Version, string? PackageSha256);
+    string Version, string? PackageSha256, string? McpServerId = null);
 
 /// <summary>Effect reversibility attribution (ADR-0046 §6), not execution or recovery state.</summary>
 public enum Reversibility

@@ -8,6 +8,30 @@ namespace OmniCore.Host;
 /// <summary>Projects existing canonical state without filesystem scans, provider calls or journal writes.</summary>
 internal static class SessionSidebarReader
 {
+    private static IReadOnlyList<string> ActiveMcpServers(IEventCodecRegistry codecs, IReadOnlyList<DomainEvent> events)
+    {
+        var calls = new Dictionary<ToolCallId, string>();
+        foreach (var item in events)
+        {
+            switch (codecs.Decode(item))
+            {
+                case ToolCallStarted started:
+                    calls.Remove(started.ToolCallId);
+                    if (started.Attribution is { SourceKind: "Mcp", McpServerId: { Length: > 0 and <= 256 } server }
+                        && !server.Any(char.IsControl)) calls[started.ToolCallId] = server;
+                    break;
+                case ToolCallSucceeded completed: calls.Remove(completed.ToolCallId); break;
+                case ToolCallFailed failed: calls.Remove(failed.ToolCallId); break;
+                case ToolCallCancelled cancelled: calls.Remove(cancelled.ToolCallId); break;
+                case ToolCallRejected rejected: calls.Remove(rejected.ToolCallId); break;
+                case PermissionDenied denied: calls.Remove(denied.ToolCallId); break;
+                case ToolCallEffectUnknown unknown: calls.Remove(unknown.ToolCallId); break;
+                case ToolCallReconciled reconciled: calls.Remove(reconciled.ToolCallId); break;
+            }
+        }
+        return calls.Values.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+    }
+
     public static SessionSidebarSnapshot Read(IEventStore store, IEventCodecRegistry codecs,
         SessionId session, RunId? run, bool recoveryBlocked)
     {
@@ -41,7 +65,9 @@ internal static class SessionSidebarReader
             var activity = rootLane is null ? LaneActivity.None : LaneActivityProjection.Derive(codecs, own, rootLane);
             return empty with { Objective = Safe(projected.Objective ?? ""), Mode = projected.Mode?.ToString().ToLowerInvariant(),
                 RunState = projected.State.ToString(), Plan = view,
-                Activity = activity == LaneActivity.None ? null : activity.ToString() };
+                Activity = activity == LaneActivity.None ? null : activity.ToString(),
+                ActiveMcpServers = recoveryBlocked || projected.State.ToString() is "Completed" or "Failed" or "Cancelled"
+                    ? [] : ActiveMcpServers(codecs, own) };
         }
         catch (InvalidStateTransitionException)
         {

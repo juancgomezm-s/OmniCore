@@ -501,7 +501,8 @@ public sealed partial class TuiApp
         _sidebarSession = new SidebarView { X = 2, Y = 3, Width = Dim.Fill(1), Height = 5, CanFocus = false, ScrollBars = false };
         var settings = new Button { Id = "sidebar-settings", X = Pos.AnchorEnd(9), Y = 1, Text = _localization.Resolve("shell.settings") };
         settings.Accepted += (_, _) => ShowSidebarSettings();
-        _sidebarAttention = new Label { Id = "omni-help", X = 2, Y = 8, Width = Dim.Fill(1), Height = 1 };
+        _sidebarAttention = new Label { Id = "omni-help", X = 2, Y = Pos.Bottom(_sidebarSession), Width = Dim.Fill(1), Height = 1 };
+        _sidebarContent.Y = Pos.Bottom(_sidebarAttention) + 1;
         _sidebar.Add(new Label { Id = "omni-heading", X = 2, Y = 0, Text = _localization.Resolve("shell.workspace_heading") }, settings,
             _sidebarSession, _sidebarAttention, _sidebarContent);
         var composerFrame = _composerFrame = new FrameView { Id = "omni-composer", X = 1, Y = Pos.AnchorEnd(6), Width = Dim.Fill(1), Height = 3, BorderStyle = LineStyle.None };
@@ -1904,7 +1905,15 @@ public sealed partial class TuiApp
         var pinned = _sidebarComposition.Pinned.Select(item => (item.Widget, item.Model is ListWidgetModel list
             ? (WidgetModel)(list with { Rows = list.Rows.Select(row => row with
                 { Text = FitText(row.Text, Math.Max(1, layout.SidebarWidth - 6)) }).ToArray() }) : item.Model)).ToArray();
-        _sidebarSession?.Render(pinned);
+        if (_sidebarSession is not null)
+        {
+            var required = Math.Max(5, pinned.Sum(item => item.Item2 is ListWidgetModel list ? list.Rows.Count + 1 : 1));
+            var available = Math.Max(5, (_window?.Frame.Height ?? 25) / 2);
+            _sidebarSession.Height = Math.Min(required, available);
+            _sidebarSession.CanFocus = required > available;
+            _sidebarSession.ScrollBars = required > available;
+            _sidebarSession.Render(pinned);
+        }
         _sidebarContent.Render(_sidebarComposition.Body);
         RenderCompanion();
         if (_sidebarAttention is not null) _sidebarAttention.Text = _sidebarSettings.Diagnostics.Count > 0 ? _localization.Resolve("shell.invalid_settings")

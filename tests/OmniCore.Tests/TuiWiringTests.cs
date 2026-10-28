@@ -652,8 +652,8 @@ public sealed partial class TuiWiringTests
         Assert.Contains("Invocaciones: 1", fx.App.SidebarContent.Text.ToString());
         Assert.Contains(run.ToString(), fx.App.SidebarContent.Text.ToString());
         Assert.Contains("fixture/sidebar-model", fx.App.SidebarSession!.Text.ToString());
-        // title, session, model, mode and the activity derived from the open Turn (ADR-0036 §3) remain pinned
-        Assert.Equal(5, fx.App.SidebarSession.GetAllLines().Count);
+        // Title, session, model, mode, MCP and derived activity remain pinned.
+        Assert.Equal(6, fx.App.SidebarSession.GetAllLines().Count);
         Assert.Contains("esperando al modelo", fx.App.SidebarSession.Text.ToString());
         fx.Invoke(() => fx.Application.Driver!.SetScreenSize(120, 22));
         fx.Wait(() => fx.App.MainWindow!.Frame.Height == 22 && fx.App.SidebarContent.Viewport.Height < 20, "altura reducida obliga a desplazar detalle");

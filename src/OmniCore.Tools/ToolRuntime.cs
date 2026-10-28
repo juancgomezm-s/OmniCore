@@ -1121,7 +1121,8 @@ public sealed class ToolRuntime
             {
                 Attribution = new ToolCallAttribution(tool.Descriptor.Id.ToString(), tool.Descriptor.Source.Kind.ToString(),
                     tool.Descriptor.Source.Kind == SourceKind.Extension ? tool.Descriptor.Source.Owner : null,
-                    tool.Descriptor.Source.Version, tool.Descriptor.Source.ContentIdentity),
+                    tool.Descriptor.Source.Version, tool.Descriptor.Source.ContentIdentity,
+                    tool.Descriptor.Source.Kind == SourceKind.Mcp ? tool.Descriptor.Source.Owner : null),
                 // Attribution is not proof of reversibility: pre/post hashes cannot restore bytes.
                 TargetRef = RelativeTargetRef(intent.Claims.Writes, execContext.WorkspaceRoot),
                 Reversibility = reconciliation?.Reversibility ?? Reversibility.Unknown,

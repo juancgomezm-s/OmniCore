@@ -42,6 +42,11 @@ public static class SessionSidebarPresentation
             new(StatusLinePresentation.ModeLabel(canonical?.Mode ?? mode, locale)
                 + (canonical?.RunState is { } state ? " · " + RunState(state, locale) : ""), ThemeRole.Muted),
         };
+        var activeMcp = (canonical?.ActiveMcpServers ?? []).Where(server => !string.IsNullOrWhiteSpace(server)
+            && server.Length <= 256 && !server.Any(char.IsControl)).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+        sessionRows.Add(new(text.Resolve("sidebar.mcp") + (activeMcp.Length == 0 ? "—" : activeMcp[0]),
+            activeMcp.Length == 0 ? ThemeRole.Muted : ThemeRole.Info));
+        foreach (var server in activeMcp.Skip(1)) sessionRows.Add(new("  " + server, ThemeRole.Info));
         if (canonical?.Activity is { } activity)
             sessionRows.Add(new(Activity(activity, locale), ActivityRole(activity)));
         widgets.Add(new DataSidebarWidget("core.session", text.Resolve("sidebar.session_title"), 100, sessionRows));

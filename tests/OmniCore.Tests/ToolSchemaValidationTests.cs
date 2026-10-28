@@ -285,11 +285,12 @@ public sealed class ToolSchemaValidationTests
         var external = new InputSchema("""{"type":"object","properties":{"known":{"type":"string"}}}""");
         Assert.Null(ToolSchemaValidator.Validate("{\"known\":\"ok\",\"providerField\":true}", external,
             allowAdditionalPropertiesByDefault: true));
-        var (externalOutcome, externalTool, _) = Run("{\"known\":\"ok\",\"providerField\":true}",
+        var (externalOutcome, externalTool, externalEvents) = Run("{\"known\":\"ok\",\"providerField\":true}",
             external.ToString(), new ComponentSource(SourceKind.Mcp, ScopeLevel.User, TrustLevel.ThirdParty,
                 "fixture", "1"));
         Assert.True(externalOutcome.Succeeded, externalOutcome.Summary);
         Assert.Equal(1, externalTool.ExecuteCalls);
+        Assert.Equal("fixture", Assert.Single(externalEvents.Events.OfType<ToolCallStarted>()).Attribution!.McpServerId);
         Assert.NotNull(ToolSchemaValidator.Validate("{}",
             new InputSchema("""{"type":"object","properties":{"unused":{"type":42}}}""")));
         Assert.NotNull(ToolSchemaValidator.Validate("{}",
