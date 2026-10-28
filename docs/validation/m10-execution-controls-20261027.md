@@ -166,3 +166,12 @@ Main conserva sus cambios de OpenCode; las correcciones están comprometidas en
 esta rama aislada y en la instalación local, sin nuevo merge/push sobre el trabajo
 compartido de M9. M10 global y la recuperación/aceptación real del actualizador
 siguen abiertos.
+
+
+## Seguimiento: indicador interno de consumo
+
+Se retiró del resumen de sesión la lista de IDs internos de widgets en atención
+(`! consumption`). La sección de consumo conserva sus datos y el orden por
+atención. Instalación actualizada a `f738ebe3`, con 160 archivos verificados y
+backup de los launchers anteriores. Build Release correcto, dos regresiones de
+sidebar aprobadas y arranque por CMD/PowerShell verificado.
