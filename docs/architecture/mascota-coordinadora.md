@@ -39,13 +39,26 @@ La recepción se reclama en una transacción antes de ejecutar: no hay repetici�
 
 Solo las TUI de esta versión anuncian un consumidor disponible. Una TUI anterior o un comando CLI breve no recibe órdenes. Una instancia cerrada no se abre ni se duplica al seleccionar su aviso. El comando `omni pet sessions --json` permite inspeccionar la presencia; `omni pet alerts --json` devuelve avisos y acuses. `--text` ofrece salida textual sin gráficos.
 
-## Modelo y límites actuales
+## Modelo y consumo propios
 
-El mini chat usa la selección del modelo de la sesión o del perfil y su autenticación existente. No se crean nuevas claves ni proveedores. Respeta la autorización de ruta y no cambia de modelo automáticamente. No llama al modelo por animaciones, avisos, paso del tiempo o apertura del panel.
+En **Configuración > Modelos y ejecución > Mascota: modelo y consumo** se elige el modelo exclusivo del mini chat. También se abre desde el botón **Modelo** de la mascota o con `/pet model`. La selección es independiente del modelo, las rutas y los presupuestos del agente principal y se guarda por perfil en `companion/coordinator.db`. La primera vez hay que elegirla explícitamente; no cambia al cambiar el modelo principal.
 
-La primera versión habilita chat con rutas declaradas `IncludedQuota` y `Local`. Las rutas `MeteredCurrency`, `CreditBalance` y `Unknown` se rechazan con un mensaje claro: necesitan integrar sus recibos con el libro de gasto del agente antes de habilitar consultas separadas. Los avisos, las órdenes, la memoria y la restricción funcionan independientemente de esa limitación.
+**Solo local** está desactivado por defecto. Al activarlo, el selector muestra únicamente los proveedores declarados locales o administrados por el supervisor local. Si el modelo deja de estar disponible, no se utiliza uno remoto como respaldo. Al desactivarlo se pueden elegir modelos locales, de suscripción o por consumo. Se reutilizan los proveedores y la autenticación ya configurados, sin crear nuevas claves.
 
-La consulta tiene un timeout de 60 segundos, contexto acotado y salida textual de hasta 4000 caracteres. Se solicita un máximo de 512 tokens donde el adaptador lo soporta. El perfil Codex de suscripción no tiene un límite de salida comprobado y no recibe ese parámetro; el timeout y el recorte local no deben presentarse como límites de consumo del proveedor.
+El mini chat tiene un **contador informativo propio, sin cuotas ni topes monetarios**, que no lee ni consume los presupuestos del agente principal. Registra consultas, respuestas, fallos, tokens de entrada/salida, detalle de caché/razonamiento, estimaciones tarifarias y costes informados por el proveedor. Caché y razonamiento ya están incluidos en los tokens agregados y no se suman otra vez. Los campos no reportados y precios desconocidos se muestran como datos incompletos, nunca como consumo gratis. El contador conserva totales por modelo/proveedor entre sesiones e instancias y evita duplicar recibos.
+
+El contador registra consultas lógicas, no es una factura ni garantiza conocer el consumo de reintentos internos de un proveedor. Un cierre sin respuesta conserva el intento con datos incompletos. Se actualiza al conversar o abrir su configuración, sin nuevas consultas periódicas al modelo. **Actualizar consumo** vuelve a leer los totales locales.
+
+Por CLI:
+
+- `omni pet model <model-id> --any-model` guarda un modelo propio permitiendo cualquier tipo de proveedor.
+- `omni pet model <model-id> --local-only` selecciona un modelo local y activa la exclusividad local.
+- `omni pet model --json` muestra la configuración guardada.
+- `omni pet usage --json` muestra sus contadores; `--text` ofrece un resumen legible.
+
+La mascota no recibe las herramientas del agente principal. El contrato de conversación queda separado para poder añadir herramientas exclusivas de su alcance más adelante. Por ahora los recuerdos y las órdenes entre instancias siguen usando sus controles explícitos. No llama al modelo por animaciones, avisos, paso del tiempo o apertura del panel.
+
+La consulta conserva un timeout técnico de 60 segundos, contexto acotado y una respuesta breve; no son cuotas acumuladas. Se solicita un máximo de 512 tokens donde el adaptador lo soporta. El perfil Codex de suscripción no tiene un límite de salida comprobado y no recibe ese parámetro; el timeout y el recorte local no deben presentarse como límites de consumo del proveedor.
 
 ## Renderizado
 

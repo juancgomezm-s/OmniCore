@@ -32,6 +32,7 @@ public interface ITuiTurnHost
 {
     CompanionCoordinator? CompanionHub => null;
     string CompanionWorkspace => "";
+    CompanionModelOption[] CompanionModels() => [];
     Task<string> CompanionChatAsync(IReadOnlyList<CompanionChatMessage> messages, CancellationToken token) =>
         System.Threading.Tasks.Task.FromResult("El mini chat no está disponible en este cliente.");
     /// <summary>Checks writer admission before the renderer clears a human draft; never submits input.</summary>
@@ -107,6 +108,7 @@ public sealed class TuiTurnHost : ITuiTurnHost
 {
     public CompanionCoordinator CompanionHub => _runtime.CompanionHub;
     public string CompanionWorkspace => _runtime.CompanionWorkspace;
+    public CompanionModelOption[] CompanionModels() => _runtime.CompanionModels();
     public Task<string> CompanionChatAsync(IReadOnlyList<CompanionChatMessage> messages, CancellationToken token) =>
         _runtime.CompanionChatAsync(messages, token);
     private readonly OmniCliRuntime _runtime;

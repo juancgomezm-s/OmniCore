@@ -132,6 +132,7 @@ public sealed partial class TuiApp
         try
         {
             var localAction = argument.Trim().ToLowerInvariant();
+            if (localAction is "model" or "modelo" or "settings" or "config" or "usage" or "consumo") { ShowCompanionModelSettings(); return; }
             if (localAction is "chat" or "avisos" or "alerts" or "sessions" or "sesiones" or "memory" or "memoria" or "memory reload")
             {
                 if (localAction == "memory reload") { _companionMemoryVersion = ""; _companionMemoryDraft = ""; _companionSnapshot = null; }

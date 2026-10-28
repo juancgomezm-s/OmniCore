@@ -11,28 +11,24 @@ public sealed partial class OmniCliRuntime
     private CompanionCoordinator? _companionHub;
     public CompanionCoordinator CompanionHub => _companionHub ??= new(OmniHost.CreatePlatformPaths().DataDirectory);
     public string CompanionWorkspace => _workspaceRoot;
+    public CompanionModelOption[] CompanionModels() => CompanionModels(OmniHost.LoadUserConfiguration(OmniHost.CreatePlatformPaths()));
+    private static CompanionModelOption[] CompanionModels(LoadedUserConfiguration loaded) => loaded.Registry.Models()
+        .Select(model =>
+        {
+            var provider = loaded.Registry.Provider(model.ProviderId);
+            return new CompanionModelOption(model.Id, model.ProviderId, provider?.BillingMode == BillingMode.Local || provider?.LocalHost is not null);
+        }).OrderBy(model => model.Provider).ThenBy(model => model.Id).ToArray();
 
     public async Task<string> CompanionChatAsync(IReadOnlyList<CompanionChatMessage> messages, CancellationToken token)
     {
         var paths = OmniHost.CreatePlatformPaths();
         var loaded = OmniHost.LoadUserConfiguration(paths);
-        var server = Server();
-        var session = server.LastSessionId();
-        var selected = session is null ? null : server.ResolveSessionModelSelection(session);
-        using var policies = OmniHost.CreateModelPolicyService(null);
-        var stored = policies.CurrentSelection(ModelPolicyHost.WorkspaceSelectionId(_workspaceRoot), token);
-        var model = selected?.Model ?? (stored is null ? loaded.Registry.ResolveDefault() : loaded.Registry.Model(stored.ModelId))
-            ?? throw new InvalidOperationException("Selecciona un modelo antes de conversar con la mascota.");
-        var descriptor = selected?.Provider ?? loaded.Registry.Provider(model.ProviderId)
+        token.ThrowIfCancellationRequested();
+        var choice = CompanionCoordinator.SelectChatModel(CompanionHub.ChatSettings(), CompanionModels(loaded));
+        var model = loaded.Registry.Model(choice.Id) ?? throw new InvalidOperationException("El modelo de la mascota ya no está configurado.");
+        var descriptor = loaded.Registry.Provider(model.ProviderId)
             ?? throw new InvalidOperationException("No hay proveedor configurado para el mini chat.");
-        var route = selected?.Route ?? ModelRoutingHost.RouteFor(model, descriptor, descriptor.BaseUrl);
-        var authorization = session is null ? null : SessionRoutingAuthorization.Read(server.AcquireStore().ReadFrom(session, 1), server.AcquireCodecs(), session);
-        if (!(authorization ?? ModelRoutingHost.InitialSessionPolicy(loaded, model.ProviderId)).Allows(route, descriptor.BillingMode))
-            throw new InvalidOperationException("Autoriza esta ruta desde el chat principal antes de usarla con la mascota.");
-        // Never bypass the main agent's reservation ledger with a separate paid request.
-        // Subscription/local routes have no marginal API spend; metered routes remain in the budgeted main chat.
-        if (descriptor.BillingMode is not (BillingMode.IncludedQuota or BillingMode.Local))
-            throw new InvalidOperationException("El mini chat requiere una ruta de suscripción o local; las rutas por consumo se conservan en el chat principal con su control de gasto.");
+        var route = ModelRoutingHost.RouteFor(model, descriptor, descriptor.BaseUrl);
         var secretRef = descriptor.Auth.SecretRef ?? "qwen";
         string? key = null;
         if (descriptor.Auth.Kind == AuthKind.ApiKey)
@@ -48,16 +44,31 @@ public sealed partial class OmniCliRuntime
         var provider = OmniHost.ConnectProvider(descriptor, url, secretRef, key ?? "",
             descriptor.Profile == "codex" ? OmniHost.CreateChatGptAuth(paths) : null, _providerCircuits,
             claudeOAuth: ClaudeOAuthFor(descriptor, paths), oauthIdentity: ClaudeOAuthIdentityFor(descriptor, paths));
-        var pet = server.CompanionService.Status("terminal", session);
-        return await CompanionConversation.Reply(provider, new(new(model.Id), Math.Min(model.RecommendedUsableContext, 12000), ToolMode.Direct, null,
-            route: route, maxOutputTokens: descriptor.Profile == "codex" ? null : Math.Min(512, model.MaxOutputTokens > 0 ? model.MaxOutputTokens : 512)), pet.Name ?? "Omni", CompanionHub.ReadMemory().Text, messages, token).ConfigureAwait(false);
+        var pet = new CompanionPetService(paths.DataDirectory).Status("terminal");
+        var memory = CompanionHub.ReadMemory().Text;
+        var id = Guid.NewGuid().ToString(); CompanionHub.BeginChatUsage(id, model.Id, model.ProviderId);
+        try
+        {
+            return await CompanionConversation.Reply(provider, new(new(model.Id), Math.Min(model.RecommendedUsableContext, 12000), ToolMode.Direct, null,
+                route: route, maxOutputTokens: descriptor.Profile == "codex" ? null : Math.Min(512, model.MaxOutputTokens > 0 ? model.MaxOutputTokens : 512)), pet.Name ?? "Omni", memory, messages, token,
+                response => CompanionHub.FinishChatUsage(UsageSample(id, model.Id, model.ProviderId, response, loaded.Pricing(model.Id)))).ConfigureAwait(false);
+        }
+        catch { CompanionHub.FinishChatUsage(new(id, model.Id, model.ProviderId), failed: true); throw; }
+    }
+    internal static CompanionUsageSample UsageSample(string id, string model, string provider, ModelResponse response, ModelPricing? pricing)
+    {
+        var fields = TokenUsageValidation.IsInvalid(response.Usage, response.ReportedUsageFields) ? TokenUsageFields.None : response.ReportedUsageFields;
+        long? Value(TokenUsageFields flag, long value) => fields.HasFlag(flag) ? value : null;
+        return new(id, model, provider, Value(TokenUsageFields.Input, response.Usage.Input), Value(TokenUsageFields.Output, response.Usage.Output),
+            Value(TokenUsageFields.CacheRead, response.Usage.CacheRead), Value(TokenUsageFields.CacheWrite, response.Usage.CacheWrite),
+            Value(TokenUsageFields.Reasoning, response.Usage.Reasoning), pricing?.CostUsd(response.Usage, fields), response.ReportedProviderCostUsd is >= 0 ? response.ReportedProviderCostUsd : null);
     }
 }
 
 public static class CompanionConversation
 {
     public static async Task<string> Reply(IModelProvider provider, ModelSelection model, string name, string memory,
-        IReadOnlyList<CompanionChatMessage> history, CancellationToken token)
+        IReadOnlyList<CompanionChatMessage> history, CancellationToken token, Action<ModelResponse>? observe = null)
     {
         if (history.Count == 0 || history[^1].Role != "user" || history[^1].Text.Length is < 1 or > 4000)
             throw new ArgumentException("Escribe un mensaje de hasta 4000 caracteres.");
@@ -78,7 +89,8 @@ public static class CompanionConversation
         await foreach (var item in provider.StreamAsync(request, timeout.Token).ConfigureAwait(false))
             if (item is ResponseCompleted completed) response = completed.Response;
         if (response is null) throw new InvalidOperationException("La mascota no recibió respuesta del modelo.");
-        if (response.Content.Any(block => block is not TextBlock)) throw new InvalidOperationException("Respuesta no textual descartada; la mascota no ejecuta herramientas.");
+        observe?.Invoke(response);
+        if (response.Content.Any(block => block is ToolCallBlock or ToolResultBlock)) throw new InvalidOperationException("La mascota no ejecuta herramientas del agente principal.");
         var text = string.Join("\n", response.Content.OfType<TextBlock>().Select(block => block.Text));
         return text[..Math.Min(text.Length, 4000)];
     }

@@ -1,5 +1,7 @@
 # Validación de la mascota coordinadora — 2026-10-28
 
+Este informe describe la entrega inicial `5425f6c2`. La restricción inicial a modelos locales/de suscripción fue sustituida por selección propia, opción local y contador sin cuotas; véase [la validación posterior](companion-model-20261028.md).
+
 Implementación y uso: [mascota-coordinadora.md](../architecture/mascota-coordinadora.md).
 
 ## Entorno y aislamiento

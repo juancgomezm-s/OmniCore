@@ -15,6 +15,7 @@ public sealed partial class TuiWiringTests
     {
         public CompanionCoordinator CompanionHub { get; } = new(Path.Combine(fixture.Root, "hub"));
         public string CompanionWorkspace => fixture.Workspace;
+        public CompanionModelOption[] CompanionModels() => [new("cloud-chat", "paid", false), new("local-chat", "local", true)];
         public int Chats; public string? Input;
         public Task<string> CompanionChatAsync(IReadOnlyList<CompanionChatMessage> history, CancellationToken token)
         { Chats++; return System.Threading.Tasks.Task.FromResult("Hola, Juan. ¿Cómo va tu proyecto?"); }

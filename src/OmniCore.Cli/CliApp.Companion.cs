@@ -10,7 +10,25 @@ public sealed partial class CliApp
         try
         {
             var hub = Runtime.CompanionHub;
-            if (args[1] == "chat")
+            if (args[1] is "model" or "modelo" or "settings")
+            {
+                var current = hub.ChatSettings();
+                var model = args.Skip(2).FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal));
+                if (model is not null || args.Contains("--local-only") || args.Contains("--any-model"))
+                {
+                    current = new(model ?? current.ModelId, args.Contains("--local-only") || !args.Contains("--any-model") && current.LocalOnly);
+                    hub.SaveChatSettings(current, Runtime.CompanionModels());
+                }
+                Console.WriteLine(args.Contains("--text") ? (current.ModelId ?? "sin elegir") + " | Solo local: " + current.LocalOnly
+                    : JsonSerializer.Serialize(current, CompanionCoordinatorJson.Default.CompanionChatSettings));
+            }
+            else if (args[1] is "usage" or "consumo")
+            {
+                var totals = hub.ChatUsage();
+                Console.WriteLine(args.Contains("--text") ? TuiApp.FormatCompanionUsage(totals)
+                    : JsonSerializer.Serialize(totals, CompanionCoordinatorJson.Default.CompanionChatUsageArray));
+            }
+            else if (args[1] == "chat")
             {
                 var text = string.Join(" ", args.Skip(2).Where(a => a is not ("--json" or "--text")));
                 var key = "cli/" + Environment.CurrentDirectory;

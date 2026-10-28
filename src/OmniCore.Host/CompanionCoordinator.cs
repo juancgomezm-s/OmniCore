@@ -8,7 +8,7 @@ namespace OmniCore.Host;
 
 /// <summary>Same-profile durable mailbox. A lifetime instance id is never reused by a restarted process.
 /// Claims commit before dispatch: a crash cannot replay an instruction automatically.</summary>
-public sealed class CompanionCoordinator
+public sealed partial class CompanionCoordinator
 {
     private readonly string _directory;
     private readonly Func<DateTimeOffset> _clock;

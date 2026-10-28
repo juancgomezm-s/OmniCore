@@ -184,12 +184,14 @@ public sealed partial class TuiApp
         var action = new Button { Id = "companion-hub-action", X = 0, Y = Pos.AnchorEnd(5), Height = 2, Text = "Enviar / Ver" };
         _companionAction = action;
         action.Accepted += (_, args) => { args.Handled = true; CompanionHubAction(); };
+        var model = new Button { Id = "companion-model-open", X = Pos.Right(action) + 1, Y = Pos.AnchorEnd(5), Height = 2, Text = "Modelo" };
+        model.Accepted += (_, args) => { args.Handled = true; ShowCompanionModelSettings(); };
         var close = new Button { Id = "companion-hub-close", X = 0, Y = Pos.AnchorEnd(2), Height = 2, Text = "Cerrar" };
         close.Accepted += (_, args) => { args.Handled = true; CloseCompanionHub(); };
         var quiet = new Button { Id = "companion-hub-quiet", X = Pos.Right(close) + 1, Y = Pos.AnchorEnd(2), Height = 2, Text = _companionQuiet ? "Avisar" : "Silenciar" };
         quiet.Accepted += (_, args) => { args.Handled = true; _companionQuiet = !_companionQuiet; quiet.Text = _companionQuiet ? "Avisar" : "Silenciar"; RenderCompanionHubControls();
             var value = _companionQuiet; var hub = _turnHost!.CompanionHub!; _ = Task.Run(() => { try { hub.SetQuiet(value); } catch (Exception) { } }); };
-        frame.Add(_companionInfo, _companionBody, _companionList, _companionInput, action, close, quiet);
+        frame.Add(_companionInfo, _companionBody, _companionList, _companionInput, action, model, close, quiet);
         if (wide) _sidebar!.Add(frame); else { _overlay = frame; _window.Add(frame); }
         ApplyTheme(frame); SelectCompanionTab(tab); _companionInput.SetFocus(); _companionPolledAt = default; PollCompanionHub();
     }
