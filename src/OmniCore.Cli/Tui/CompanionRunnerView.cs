@@ -39,7 +39,7 @@ internal sealed class CompanionRunnerView : View
                 "dance" when y == 0 => pose.Frame % 2 == 0 ? "♪" : "♫",
                 "pounce" when y == 1 && pose.Frame % 2 == 1 => "*",
                 "peek" or "hide" when y == 0 && pose.Frame % 3 == 0 => "?",
-                "run" or "dash" or "roll" when y == 2 && pose.Frame % 2 == 0 => "·",
+                "run" or "dash" or "roll" when y == CompanionPetPlayground.SpriteHeight - 1 && pose.Frame % 2 == 0 => "·",
                 _ => " ",
             } : " ";
             var glyph = cell?.Glyph ?? effect;

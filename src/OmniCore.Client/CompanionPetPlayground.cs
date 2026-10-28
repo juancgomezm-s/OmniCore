@@ -4,7 +4,7 @@ namespace OmniCore.Client;
 public sealed class CompanionPetPlayground
 {
     public const int SpriteWidth = 12;
-    public const int SpriteHeight = 3;
+    public const int SpriteHeight = 5;
     public long Frame { get; private set; }
     public bool AtHome { get; private set; }
     public void Advance()

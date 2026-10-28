@@ -104,12 +104,28 @@ public sealed partial class OmniServer
                     using var payload = JsonDocument.Parse(command.PayloadJson);
                     var names = payload.RootElement.EnumerateObject().Select(property => property.Name).ToArray();
                     if (names.Length != 2 || names.Distinct(StringComparer.Ordinal).Count() != 2
-                        || !names.Contains("cmd", StringComparer.Ordinal) || !names.Contains("documentBase64", StringComparer.Ordinal)
-                        || !payload.RootElement.TryGetProperty("cmd", out var cmd) || cmd.GetString() != "conversation.import"
-                        || !payload.RootElement.TryGetProperty("documentBase64", out var base64Node)
-                        || base64Node.ValueKind != JsonValueKind.String || base64Node.GetString() is not { } base64)
+                        || !names.Contains("cmd", StringComparer.Ordinal)
+                        || !payload.RootElement.TryGetProperty("cmd", out var cmd) || cmd.GetString() != "conversation.import")
                         return new(command.MessageId, "error", "conversation.import.invalid", RuntimeCommandOutcome.Rejected());
-                    var sourceBytes = ConversationTranscriptImport.DecodeBase64Document(base64);
+                    var fileSource = payload.RootElement.TryGetProperty("fileRelativePath", out var relativeNode);
+                    string? recordedRoot = null, recordedIdentity = null;
+                    if (fileSource)
+                    {
+                        if (_lastSessionId is not { } sourceSession || relativeNode.ValueKind != JsonValueKind.String
+                            || !WorkspaceConversationImportSource.IsRelativePath(relativeNode.GetString()))
+                            return new(command.MessageId, "error", "conversation.import.invalid", RuntimeCommandOutcome.Rejected());
+                        (recordedRoot, recordedIdentity) = RecordedWorkspaceRoot(sourceSession);
+                        if (recordedRoot is null || recordedIdentity is null || !WorkspaceRootIdentity.Verify(recordedRoot, recordedIdentity))
+                            return new(command.MessageId, "error", "conversation.import.workspace_unavailable", RuntimeCommandOutcome.Rejected());
+                    }
+                    using var sourceLease = fileSource
+                        ? WorkspaceConversationImportSource.Open(recordedRoot!, relativeNode.GetString()!) : null;
+                    byte[] sourceBytes;
+                    if (sourceLease is not null) sourceBytes = sourceLease.Bytes;
+                    else if (payload.RootElement.TryGetProperty("documentBase64", out var base64Node)
+                        && base64Node.ValueKind == JsonValueKind.String && base64Node.GetString() is { } base64)
+                        sourceBytes = ConversationTranscriptImport.DecodeBase64Document(base64);
+                    else return new(command.MessageId, "error", "conversation.import.invalid", RuntimeCommandOutcome.Rejected());
                     var document = ConversationTranscriptImport.Parse(sourceBytes);
                     var commandId = new CommandId(Guid.Parse(command.MessageId)).ToString();
                     if (!workspaceReceiptReserved)
@@ -136,7 +152,7 @@ public sealed partial class OmniServer
                         // is the sole process allowed to create the Session for this command.
                     }
                     target = SessionId.New();
-                    var workspace = _workspaceRoot ?? Directory.GetCurrentDirectory();
+                    var workspace = sourceLease?.CanonicalRoot ?? _workspaceRoot ?? Directory.GetCurrentDirectory();
                     var workspaceId = WorkspaceId.Of(ProjectIdentity.CanonicalWorkspacePath(workspace)).ToString();
                     var creation = new List<DomainEventPayload>
                     {
@@ -149,9 +165,9 @@ public sealed partial class OmniServer
                     };
                     if (_workspaceRoot is { Length: > 0 })
                     {
-                        var physicalRoot = ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspace);
+                        var physicalRoot = sourceLease?.CanonicalRoot ?? ProjectIdentity.ResolvePhysicalWorkspaceRoot(workspace);
                         creation.Add(new WorkspaceRootEstablished(target, physicalRoot, DateTimeOffset.UtcNow,
-                            WorkspaceRootIdentity.Establish(physicalRoot)));
+                            sourceLease is not null ? recordedIdentity! : WorkspaceRootIdentity.Establish(physicalRoot)));
                     }
                     token.ThrowIfCancellationRequested();
                     attempted = target;
@@ -247,7 +263,7 @@ public sealed partial class OmniServer
             }
             catch (SessionWriterLeaseUnavailableException)
             { return new(command.MessageId, "busy", "session_writer_owned", RuntimeCommandOutcome.Deferred("session_writer_owned")); }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException
+            catch (Exception error) when (error is InvalidDataException or IOException or UnauthorizedAccessException or InvalidOperationException
                 or ArgumentException or System.Text.Json.JsonException)
             {
                 (_lastSessionId, _lastRunId) = previous;

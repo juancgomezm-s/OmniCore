@@ -58,15 +58,35 @@ public static class CompanionSpriteCatalog
     };
     private static readonly IReadOnlyDictionary<string, string[]> MiniArt = new Dictionary<string, string[]>
     {
-        ["claude-crab"] = [" B B    B B ", " BBBBBBBBBB ", "   BEBBEB   ", "   BBNNBB   ", "  BB BB BB  ", " DD  DD  DD "],
-        ["codex-robot"] = ["     C      ", "  CCCCCCCC  ", "  CDEDD E C ", "   CCCCCC   ", " C CCNNCC C ", "   DD  DD   "],
-        ["egg"] = ["            ", "     CC     ", "    LCCQ    ", "   LCCCQQ   ", "   CCCCQQ   ", "    CQQQ    "],
-        ["ox"] = ["            ", " C      C   ", "  BBBBBB    ", "  EBBBBE    ", "  CCNNCCBB  ", "   D  D DD  "],
-        ["fox"] = ["            ", " B    B     ", " BBBBBB     ", " BEBBEB  CC ", "  CCNBBBBCC ", "   D  D     "],
-        ["owl"] = ["            ", "  B    B    ", "  CCCCCC    ", "  CECCEC    ", "  BBBNBB    ", "   N  N     "],
-        ["beaver"] = ["            ", "  B   B     ", "  BBBBBB    ", "  EBBBEB    ", "  CCNCCC DD ", "   D  D DDD "],
-        ["cat"] = ["            ", " B    B     ", " BBBBBB     ", " BEBBEB  B  ", " CCNCCBBBB  ", "  D  D      "],
-        ["capybara"] = ["            ", "   B  B     ", "  BBBBBBB   ", " BBE BBBBB  ", " NNBBBBBBBB ", "   D  D  D  "],
+        // Drawn directly at 12×10 pixels (five terminal rows), rather than stretching
+        // the old three-row sprites. Single-pixel eyes and distinct ears/tails stay legible.
+        ["claude-crab"] = [
+            " B B    B B ", " BBB    BBB ", "  BB    BB  ", "   BBBBBB   ", "  BBEBBEBB  ",
+            "  BBBBBBBB  ", "   BBNNBB   ", "  BB BB BB  ", " BB  BB  BB ", " DD  DD  DD "],
+        ["codex-robot"] = [
+            "     C      ", "     D      ", "  CCCCCCCC  ", "  CDDDDDDC  ", "  CDEDDEDC  ",
+            "  CCCCCCCC  ", " C CCNNCC C ", " D CCCCCC D ", "   CC  CC   ", "   DD  DD   "],
+        ["egg"] = [
+            "     CC     ", "    LCCQ    ", "   LLCCCQ   ", "   LCCCCQ   ", "  LLCCCCCQ  ",
+            "  LCECCECQ  ", "  LCCCCCCQ  ", "   CCCNCCQ  ", "   CCCCCQ   ", "    CQQQ    "],
+        ["ox"] = [
+            " C      C   ", " CCCBBCCC   ", "  BBBBBB    ", "  BEBBEB    ", "  BCCCCB    ",
+            "  CCNNCCBB  ", "   CCCCBBBB ", "    BBBBBBB ", "    BB BB   ", "    DD DD   "],
+        ["fox"] = [
+            "  B   B     ", "  BCBBCB    ", " BBBBBBBB   ", " BBEBBEBB   ", "  CCNCCBB CC",
+            "   CCCBBBCCC", "   BBBBBBBBC", "   BCBBBBBB ", "   BB BB    ", "   DD DD    "],
+        ["owl"] = [
+            "  B    B    ", "  BBBBBB    ", " BBCCCCBB   ", " BCECCECB   ", " BBCCNCCBB  ",
+            " DBBBBBBBD  ", " DBCCBCCBD  ", "  DBBBBD    ", "   DDDD     ", "   N  N     "],
+        ["beaver"] = [
+            "  BB  BB    ", "  BCBBBCB   ", " BBBBBBBB   ", " BBEBBEBB   ", " BBCCNCCB   ",
+            "  CCNNCC    ", "  BBCCBBB DD", "  BBBBBBBDDD", "   BB BB DDD", "   DD DD DD "],
+        ["cat"] = [
+            " B    B     ", " BCBBCB     ", " BBBBBBB    ", " BEBBBEB    ", " CCNCCBB  B ",
+            "  CCCBBB  BB", "   BBBBB  BB", "   BCBBBBBB ", "   BB BBBB  ", "   DD DD    "],
+        ["capybara"] = [
+            "   BB  BB   ", "   BBBBBBB  ", "  BBBBBBBBB ", " BBBEBBBBBB ", " BBCCBBBBBBB",
+            " NNCCBBBBBBB", " CCCCBBBBBBB", "   BBBBBBBBB", "   BB BB BB ", "   DD DD DD "],
     };
 
     /// <summary>Small original sprites and mischievous poses superimposed on the conversation.</summary>
@@ -75,22 +95,23 @@ public static class CompanionSpriteCatalog
     {
         var id = CompanionPetPresentation.VisualId(state);
         var art = MiniArt.GetValueOrDefault(id) ?? MiniArt["egg"];
-        var pixels = new char[6, 12];
+        var height = CompanionPetPlayground.SpriteHeight * 2;
+        var pixels = new char[height, CompanionPetPlayground.SpriteWidth];
         var lift = animation is "hop" or "dash" or "weave" && frame % 2 == 1 ? 1 : 0;
         var rolling = animation == "roll" && frame % 4 is 1 or 2;
         var crouch = animation == "pounce" && frame % 4 == 0;
-        for (var y = 0; y < 6; y++)
+        for (var y = 0; y < height; y++)
         for (var x = 0; x < 12; x++)
         {
             var sourceY = y + lift;
             var sourceX = facingLeft ? x : 11 - x;
-            if (rolling) { sourceY = 5 - y; sourceX = 11 - sourceX; }
-            if (crouch) sourceY = y < 3 ? 6 : 1 + (y - 3) * 2;
+            if (rolling) { sourceY = height - 1 - y; sourceX = 11 - sourceX; }
+            if (crouch) sourceY = y < height / 2 ? height : 1 + (y - height / 2) * 2;
             if (animation == "dance") sourceX += frame % 2 == 0 ? -1 : 1;
-            var pixel = sourceY < 6 && sourceX is >= 0 and < 12 ? art[sourceY][sourceX] : ' ';
+            var pixel = sourceY < height && sourceX is >= 0 and < 12 ? art[sourceY][sourceX] : ' ';
             if (pixel == 'E' && animation == "peek" && frame % 4 < 2) pixel = 'C';
-            if (animation == "hide" && y >= (frame % 4 < 2 ? 3 : 4)) pixel = ' ';
-            if (pixel is 'D' or 'N' && sourceY == 5 && frame % 2 == 1 && animation is "run" or "dash" or "dance")
+            if (animation == "hide" && y >= (frame % 4 < 2 ? height / 2 : height / 2 + 1)) pixel = ' ';
+            if (pixel is 'D' or 'N' && sourceY == height - 1 && frame % 2 == 1 && animation is "run" or "dash" or "dance")
                 pixel = ' ';
             pixels[y, x] = pixel;
         }

@@ -7,6 +7,8 @@ public sealed class CompanionPlaygroundTests
 {
     [Theory]
     [InlineData(14, 3)]
+    [InlineData(14, 4)]
+    [InlineData(14, 5)]
     [InlineData(48, 10)]
     [InlineData(120, 30)]
     public void Typing_chase_pursues_new_targets_stays_bounded_and_forgets_the_letter(int width, int height)
@@ -18,7 +20,7 @@ public sealed class CompanionPlaygroundTests
             chase.Advance(0, width);
             var pose = chase.Pose(0, width, height, frame);
             Assert.True(pose.Outside); Assert.InRange(pose.X, 0, width - 14);
-            Assert.InRange(pose.Y, 0, height - 3);
+            Assert.InRange(pose.Y, 0, Math.Max(0, height - CompanionPetPlayground.SpriteHeight));
         }
         var previous = chase.Pose(0, width, height, 11).X;
         chase.Follow("🐾", 0); // New typing extends the chase without teleporting the sprite.
@@ -31,6 +33,8 @@ public sealed class CompanionPlaygroundTests
 
     [Theory]
     [InlineData(14, 3)]
+    [InlineData(14, 4)]
+    [InlineData(14, 5)]
     [InlineData(40, 16)]
     [InlineData(120, 32)]
     public void Local_outings_stay_in_bounds_visit_both_edges_and_return_home(int width, int height)
@@ -41,7 +45,7 @@ public sealed class CompanionPlaygroundTests
         var outside = poses.Where(p => p.Outside).ToArray();
         Assert.NotEmpty(outside);
         Assert.All(outside, pose => Assert.InRange(pose.X, 0, width - CompanionPetPlayground.SpriteWidth - 2));
-        Assert.All(outside, pose => Assert.InRange(pose.Y, 0, height - CompanionPetPlayground.SpriteHeight));
+        Assert.All(outside, pose => Assert.InRange(pose.Y, 0, Math.Max(0, height - CompanionPetPlayground.SpriteHeight)));
         if (height > CompanionPetPlayground.SpriteHeight) Assert.True(outside.Select(pose => pose.Y).Distinct().Count() > 1);
         Assert.Contains(outside, pose => pose.X == 0);
         Assert.Contains(outside, pose => pose.X == width - CompanionPetPlayground.SpriteWidth - 2);
@@ -54,22 +58,45 @@ public sealed class CompanionPlaygroundTests
     }
 
     [Fact]
-    public void All_seven_small_sprites_render_both_directions_and_playful_poses_without_changing_state()
+    public void Roaming_silhouettes_paint_five_rows_while_panel_sprites_keep_their_size()
     {
         var pet = new CompanionPetSnapshot(true, 0, "Omni", null, "egg.v1", "warm.spots-0", 0, 0, 70,
             "egg", 0, 20, "fixture", new());
-        foreach (var species in new string?[] { null, "ox", "fox", "owl", "beaver", "cat", "capybara" })
+        foreach (var (species, guest) in MiniDesigns())
+        {
+            var snapshot = pet with { Species = species, GuestId = guest };
+            var roaming = CompanionSpriteCatalog.RenderMini(snapshot, "run", 0, true);
+            Assert.Equal(5, roaming.Count);
+            Assert.All(roaming, row => Assert.Contains(row, cell => !string.IsNullOrWhiteSpace(cell.Glyph)));
+            Assert.Equal(8, CompanionSpriteCatalog.Render(snapshot, "idle", 0).Count);
+        }
+    }
+
+    [Fact]
+    public void All_nine_small_sprites_render_both_directions_and_playful_poses_without_changing_state()
+    {
+        var pet = new CompanionPetSnapshot(true, 0, "Omni", null, "egg.v1", "warm.spots-0", 0, 0, 70,
+            "egg", 0, 20, "fixture", new());
+        foreach (var (species, guest) in MiniDesigns())
         foreach (var animation in new[] { "run", "peek", "weave", "hop", "roll", "pounce", "dance", "dash", "hide" })
         foreach (var facingLeft in new[] { true, false })
         for (var frame = 0; frame < 8; frame++)
         {
-            var snapshot = pet with { Species = species };
+            var snapshot = pet with { Species = species, GuestId = guest };
             var pixels = CompanionSpriteCatalog.RenderMini(snapshot, animation, frame, facingLeft);
             Assert.Equal(CompanionPetPlayground.SpriteHeight, pixels.Count);
             Assert.All(pixels, row => Assert.Equal(CompanionPetPlayground.SpriteWidth, row.Count));
             Assert.Contains(pixels.SelectMany(row => row), cell => cell.Glyph != " ");
             Assert.Equal(0, snapshot.Xp);
         }
+    }
+
+    private static IEnumerable<(string? Species, string? Guest)> MiniDesigns()
+    {
+        foreach (var species in new string?[] { null, "ox", "fox", "owl", "beaver", "cat", "capybara" })
+            yield return (species, null);
+        yield return ("fox", "claude-crab");
+        yield return ("fox", "codex-robot");
     }
 
     [Fact]
