@@ -39,7 +39,8 @@ test('owns one profile, preserves cwd, avoids recursion, and never edits termina
   const { parent, fragment, local } = fixture(t);
   const settings = path.join(local, 'settings.json'); fs.writeFileSync(settings, 'user settings');
   const launch = prepare('C:\\Omni Core', parent);
-  assert.deepEqual(launch.args, ['-w', 'new', 'new-tab', '--profile', profileId, '--startingDirectory', parent.cwd()]);
+  assert.deepEqual(launch.args, ['-w', 'new', 'new-tab', '--profile', profileId, '--startingDirectory', parent.cwd(),
+    parent.execPath, path.join('C:\\Omni Core', 'bin', 'omni.js'), '--current-terminal', 'tui']);
   const profile = JSON.parse(fs.readFileSync(fragment, 'utf8')).profiles[0];
   assert.equal(profile.antialiasingMode, 'cleartype');
   assert.match(profile.commandline, /--current-terminal/);
@@ -58,9 +59,17 @@ test('updates its own installation path but respects a user-edited profile', t =
   assert.equal(fs.readFileSync(fragment, 'utf8'), custom);
 });
 
+test('Windows App Execution Alias is available even when existsSync follows it unsuccessfully', t => {
+  const { parent, terminal } = fixture(t);
+  const io = { ...fs, existsSync: p => p === terminal ? false : fs.existsSync(p),
+    lstatSync: p => p === terminal ? { isFile: () => false, isSymbolicLink: () => true } : fs.lstatSync(p) };
+  assert.equal(prepare('root', parent, io).terminal, terminal);
+});
+
 test('missing terminal and paths containing terminal command separators fall back', t => {
   const { parent, terminal } = fixture(t);
   parent.cwd = () => 'C:\\project;with-semicolon'; assert.equal(prepare('root', parent), null);
+  parent.cwd = () => 'C:\\project'; assert.equal(prepare('root;another-command', parent), null);
   parent.cwd = () => 'C:\\project'; fs.unlinkSync(terminal); assert.equal(prepare('root', parent), null);
   assert.equal(quote('C:\\with spaces\\'), '"C:\\with spaces\\\\"');
   assert.equal(quote('a"b'), '"a\\"b"');

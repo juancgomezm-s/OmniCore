@@ -24,27 +24,37 @@ function quote(value) {
 function prepare(packageRoot, parent, io = fs) {
   const local = parent.env.LOCALAPPDATA;
   const terminal = path.join(local, 'Microsoft', 'WindowsApps', 'wt.exe');
-  if (!io.existsSync(terminal)) return null;
+  // App Execution Aliases are reparse points: existsSync may return false even
+  // though Windows can launch them. Inspect the alias itself without following it.
+  try {
+    const entry = io.lstatSync(terminal);
+    if (!entry.isFile() && !entry.isSymbolicLink()) return null;
+  } catch { return null; }
   const cwd = parent.cwd();
+  const launcher = path.join(packageRoot, 'bin', 'omni.js');
   // wt treats semicolons as command separators, even when inherited from a path.
-  if (cwd.includes(';')) return null;
+  if ([cwd, launcher, parent.execPath].some(value => value.includes(';'))) return null;
+  // Explicit commandline also starts OmniCore when an already-running Terminal
+  // has not reloaded a newly registered fragment yet (its current profile is used).
+  const args = ['-w', 'new', 'new-tab', '--profile', profileId, '--startingDirectory', cwd,
+    parent.execPath, launcher, marker, 'tui'];
   const directory = path.join(local, 'Microsoft', 'Windows Terminal', 'Fragments', 'OmniCore');
   const fragment = path.join(directory, 'omnicore.json');
   const receipt = path.join(local, 'OmniCore', 'terminal-profile.sha256');
-  const commandline = [parent.execPath, path.join(packageRoot, 'bin', 'omni.js'), marker, 'tui'].map(quote).join(' ');
+  const commandline = [parent.execPath, launcher, marker, 'tui'].map(quote).join(' ');
   const content = JSON.stringify({ profiles: [{ guid: profileId, name: 'OmniCore', commandline,
     antialiasingMode: 'cleartype' }] }, null, 2) + '\n';
   if (io.existsSync(fragment)) {
     const existing = io.readFileSync(fragment, 'utf8');
     if (existing !== content) {
       if (!io.existsSync(receipt) || io.readFileSync(receipt, 'utf8').trim() !== hash(existing)) return null;
-    } else return { terminal, args: ['-w', 'new', 'new-tab', '--profile', profileId, '--startingDirectory', cwd] };
+    } else return { terminal, args };
   }
   io.mkdirSync(directory, { recursive: true });
   io.mkdirSync(path.dirname(receipt), { recursive: true });
   io.writeFileSync(fragment, content, 'utf8');
   io.writeFileSync(receipt, hash(content), 'utf8');
-  return { terminal, args: ['-w', 'new', 'new-tab', '--profile', profileId, '--startingDirectory', cwd] };
+  return { terminal, args };
 }
 
 module.exports = { eligible, prepare, profileId, marker, quote };
