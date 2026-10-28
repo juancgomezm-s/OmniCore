@@ -38,6 +38,9 @@ public sealed partial class TuiWiringTests
         if (!fx.Read(() => fx.App.SidebarOpen)) fx.InjectKey(new Key(KeyCode.F2));
         fx.Wait(() => fx.App.CompanionPet?.GuestId == design && fx.App.CompanionPet.Species == "ox", "guest connected; ordinary species preserved");
         Type(fx, "/pet home"); KeyWithEffect(fx, KeyCode.Enter, () => fx.App.CompanionPlayFrame == 0, "home");
+        // These captures compare expressions; moving idle frames have their own cache/animation test.
+        fx.Invoke(() => CompanionPetPresentation.Execute(fx.Server, "reduced"));
+        fx.Wait(() => fx.App.CompanionPet?.Preferences.ReducedMotion == true, "stable expression captures");
         EmulatePetSixelDevice(fx);
         string? previous = null;
         foreach (var expression in new[] { "idle", "working", "waiting", "success", "failure", "pet" })
@@ -97,7 +100,7 @@ public sealed partial class TuiWiringTests
         {
             Assert.Equal(draft, fx.App.Composer!.Text); Assert.Equal(caret, fx.App.Composer.InsertionPoint); Assert.True(fx.App.Composer.HasFocus);
             Assert.Equal(selection, fx.App.Conversation!.SelectedText); Assert.Equal(scroll, fx.App.Conversation.Viewport.Location);
-            var image = Descendants(fx.App.MainWindow!).OfType<CompanionImageView>().Single();
+            var image = Descendants(fx.App.MainWindow!).OfType<CompanionImageView>().Single(view => view.Visible);
             Assert.False(image.CanFocus); Assert.False(image.Enabled); Assert.True(image.UseBackgroundRendering);
         });
         fx.InjectKey(new Key(KeyCode.F2));

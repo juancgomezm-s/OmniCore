@@ -1,0 +1,45 @@
+{
+  "Framework": "Terminal.Gui 2.6.0-develop.61",
+  "Driver": "DOTNET",
+  "Device": "controlled Sixel capability; counting output sink; no browser",
+  "Columns": 120,
+  "Rows": 40,
+  "Samples": [
+    {
+      "Scenario": "hidden",
+      "WallMs": 12000.6912,
+      "CpuMs": 1406.25,
+      "OneCorePercent": 11.718075038877762,
+      "OutputUtf8Bytes": 1542,
+      "BytesPerSecond": 128.4925988263076,
+      "AllocatedBytes": 4633976,
+      "ManagedHeapBefore": 22546184,
+      "PrivateBytesBefore": 62803968,
+      "CachedRasterFrames": 0
+    },
+    {
+      "Scenario": "static",
+      "WallMs": 12006.2348,
+      "CpuMs": 328.125,
+      "OneCorePercent": 2.73295504765574,
+      "OutputUtf8Bytes": 1542,
+      "BytesPerSecond": 128.43327035383317,
+      "AllocatedBytes": 4929576,
+      "ManagedHeapBefore": 23833232,
+      "PrivateBytesBefore": 68554752,
+      "CachedRasterFrames": 1
+    },
+    {
+      "Scenario": "animated",
+      "WallMs": 24015.1362,
+      "CpuMs": 750,
+      "OneCorePercent": 3.1230303828133192,
+      "OutputUtf8Bytes": 125400,
+      "BytesPerSecond": 5221.706800063869,
+      "AllocatedBytes": 290157688,
+      "ManagedHeapBefore": 24337352,
+      "PrivateBytesBefore": 64663552,
+      "CachedRasterFrames": 6
+    }
+  ]
+}
