@@ -97,7 +97,7 @@ Sixel no proporciona esa confirmación. El usuario puede seleccionar Unicode/tex
   hasta seis ImageView, reutilizando sus cuadros ya escalados y codificados.
   La escala/codificación se realiza mediante su backend de preparación asíncrona.
 - El panel avanza cada **600 ms** como máximo. En reposo alterna respiración,
-  un pequeño acomodo, parpadeo y miradas dentro de un ciclo de 19,2 s, con pausas
+  un pequeño acomodo, parpadeo y miradas dentro de un ciclo nominal de 19,2 s, con pausas
   estáticas durante el 78 % de los pasos. Trabajo/espera usan ráfagas breves;
   al dormir respira suavemente. Las escapadas conservan su cadencia de 400 ms.
   Éxito/fallo/caricia respetan las reacciones efímeras existentes de Core.

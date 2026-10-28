@@ -6,7 +6,8 @@ atlas; los IDs 0–12 anteriores permanecen estables. Los PNG añaden 64 673 byt
 en total. La preparación SVG/Sharp sólo se usa durante desarrollo.
 
 El panel conserva su reloj de 600 ms. Reposo usa seis cuadros distintos en un
-ciclo de 19,2 s; 25 de sus 32 pasos mantienen la pose base. Cada renderizador
+ciclo nominal de 19,2 s; 25 de sus 32 pasos mantienen la pose base. El ciclo real
+puede alargarse según el ritmo del bucle del terminal. Cada renderizador
 retiene como máximo seis ImageView en una LRU. Al volver a un cuadro conserva
 el mismo objeto y la misma cadena Sixel codificada: no repite el encoder.
 Escalado/codificación iniciales siguen en el backend asíncrono de Terminal.Gui.
@@ -29,6 +30,9 @@ La prueba de caché alterna 14 cuadros reales, exige una sola presentación y
 comprueba identidad de las vistas y de las cadenas codificadas. Verifica expulsión
 del séptimo cuadro, invalidación de escala y limpieza de todas las presentaciones.
 Otra prueba pausa el reloj detrás de un menú y conserva el borrador al retomarlo.
+Las capturas de expresiones se estabilizan con movimiento reducido y se leen
+en el mismo turno de la UI que comprueba su disponibilidad, evitando carreras
+entre un tick de animación y la lectura del buffer.
 
 Instalación global actualizada y hashes de CLI/Client comparados con el publish
 aislado. Se abrió el ejecutable instalado en una sesión real del repositorio:
@@ -44,7 +48,8 @@ interpolar ni inventar cuadros. [Ventana completa](panel-animation-session-20261
 El visor muestra el proceso interactivo instalado; la grabación es un recorte de
 esa ventana, ampliado 1,5× para lectura. No es una reproducción del atlas.
 
-Evidencias locales: `TestResults/panel-animation-tests-2.trx` y
+Evidencias locales: `TestResults/panel-animation-tests-2.trx`,
+`TestResults/panel-animation-main-tests-2.trx` (rama integrada) y
 `TestResults/panel-animation-benchmark.trx`.
 
 ## Medición del driver real
