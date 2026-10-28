@@ -2240,6 +2240,46 @@ public sealed partial class OmniServer
         }
         ReceiptStore?.CompleteDeferredCommandExecution(invocationText, requestHash, state, code,
             admission.SessionId.ToString(), run.ToString());
+        RepairDeniedNativeWorktreeTurns(admission.SessionId, run);
+    }
+
+    // Lease-owner maintenance only: old native permission denials could leave their
+    // tool-only Turn open even after the exact execution receipt became terminal.
+    // No query calls this, and unknown/started effects are deliberately not repaired.
+    private void RepairDeniedNativeWorktreeTurns(SessionId session, RunId? run)
+    {
+        if (run is null || _lastSessionId != session || ReceiptStore is null
+            || _store.CurrentSequence(session) > 100_000) return;
+        var history = _store.ReadFrom(session, 1).Where(item => item.RunId == run).ToArray();
+        foreach (var admission in history.Select(_codecs.Decode).OfType<NativeCommandInvocationAdmitted>()
+            .Where(item => item.Kind == "nativeTool" && item.SessionId == session && item.RunId == run)
+            .TakeLast(32))
+        {
+            var id = admission.InvocationId;
+            var receipt = ReceiptStore.ReadCommandReceipt(id.ToString());
+            if (receipt is not { State: OmniCore.Infrastructure.CommandReceiptState.Completed,
+                    OutcomeKind: "Accepted", ExecutionState: "failed", ExecutionCode: "native_tool_failed" }
+                || receipt.SessionId != session.ToString() || receipt.ExecutionRunId != run.ToString()
+                || !TryReadNativeCommandPayload(id, out _, out var json)
+                || !TryDecodeNativeCommandPayload(json, out var payload)
+                || !NativeToolActionPayloadMatches(admission, payload)
+                || payload.Arguments[0] is not ("worktree.integrate" or "worktree.cleanup" or "worktree.discard" or "worktree.retention")) continue;
+            var calls = history.Where(item => _codecs.Decode(item) is ToolCallRequested requested
+                && requested.ProviderCallId == "native-action-" + id).ToArray();
+            if (calls.Length != 1 || calls[0] is not { TaskId: { } task, LaneId: { } lane, TurnId: { } turn,
+                    ToolCallId: { } call }
+                || _codecs.Decode(calls[0]) is not ToolCallRequested request
+                || !NativeToolInvocationMatches(session, run, request.ProviderCallId,
+                    request.ToolName, request.ArgumentsJson)
+                || !history.Any(item => item.ToolCallId == call && _codecs.Decode(item) is PermissionDenied)
+                || history.Any(item => item.TurnId == turn && (_codecs.Decode(item) is TurnCompleted or TurnAbandoned
+                    or ToolCallStarted or ToolCallEffectUnknown or ToolCallReconciled
+                    || _codecs.Decode(item) is ToolCallRequested other && other.ToolCallId != call))) continue;
+            using var scope = ExecutionScope.Begin(new ExecutionScopeState(run, task, lane, turn,
+                ExecutionId: calls[0].ExecutionId));
+            new EventStream(_store, _codecs, session).Append(new TurnAbandoned(turn,
+                "Native tool permission was denied before any effect."), DurabilityClass.Barrier);
+        }
     }
 
     private bool NativeWorktreeDispositionReceiptMatches(SessionId session, RunId run,
@@ -2477,6 +2517,26 @@ public sealed partial class OmniServer
             && RunProjection.Replay(session, run, _codecs, history).State == RunState.Running;
     }
 
+    private bool NativeToolFailedBeforeEffect(NativeCommandInvocationAdmitted admission)
+    {
+        if (admission.Kind != "nativeTool" || admission.RunId is not { } run
+            || _store.CurrentSequence(admission.SessionId) > 100_000
+            || !TryReadNativeCommandPayload(admission.InvocationId, out _, out var json)
+            || !TryDecodeNativeCommandPayload(json, out var payload)
+            || !NativeToolActionPayloadMatches(admission, payload)) return false;
+        var events = _store.ReadFrom(admission.SessionId, 1).Where(item => item.RunId == run).ToArray();
+        var calls = events.Where(item => _codecs.Decode(item) is ToolCallRequested request
+            && request.ProviderCallId == "native-action-" + admission.InvocationId).ToArray();
+        if (calls.Length != 1 || calls[0].TurnId is not { } turn || calls[0].ToolCallId is not { } call
+            || _codecs.Decode(calls[0]) is not ToolCallRequested requested
+            || requested.ToolName != payload.Arguments[0] || requested.ArgumentsJson != payload.Arguments[1]) return false;
+        return events.Any(item => item.ToolCallId == call && _codecs.Decode(item) is ToolCallFailed { EffectOutcome: EffectOutcome.None })
+            && events.Any(item => item.TurnId == turn && item.Sequence > calls[0].Sequence && _codecs.Decode(item) is TurnCompleted)
+            && !events.Any(item => item.TurnId == turn && (_codecs.Decode(item) is ToolCallStarted
+                or ToolCallEffectUnknown or ToolCallReconciled
+                || _codecs.Decode(item) is ToolCallRequested other && other.ToolCallId != call));
+    }
+
     private string EncodeNativeCommandRecovery()
     {
         if (_lastSessionId is not { } session)
@@ -2514,7 +2574,20 @@ public sealed partial class OmniServer
                 && string.Equals(completedReceipt.ExecutionRunId, admission.RunId?.ToString(), StringComparison.Ordinal);
             string state;
             string? reason;
-            if (finished.TryGetValue(id, out var completion))
+            if (admission.Kind == "nativeTool" && receipt is
+                { State: OmniCore.Infrastructure.CommandReceiptState.Completed, OutcomeKind: "Accepted",
+                    ExecutionState: "failed" }
+                && receipt.SessionId == admission.SessionId.ToString()
+                && receipt.ExecutionRunId == admission.RunId?.ToString()
+                && (receipt.ExecutionCode == "native_tool_failed"
+                    || receipt.ExecutionCode == "runtime_failed" && NativeToolFailedBeforeEffect(admission)))
+            {
+                // A scoped terminal failure (including an explicit denial before Started)
+                // is finished, not an uncertain action that fences all later commands.
+                state = "failed";
+                reason = "native_tool_failed";
+            }
+            else if (finished.TryGetValue(id, out var completion))
             {
                 state = completion.OutcomeCode == "completed" ? "completed" : "blocked";
                 reason = completion.OutcomeCode == "completed" ? null : "invocation_pipeline_incomplete";

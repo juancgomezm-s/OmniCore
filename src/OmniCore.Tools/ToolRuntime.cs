@@ -425,7 +425,8 @@ public sealed class ToolRuntime
             return new Outcome(false, "política falló: " + ex.Message,
                 ToolCallState.Rejected, EffectOutcome.None);
         }
-        if (execContext.RequiresSubstitutionAsk && decision.Final == PermissionDecision.Allow)
+        var requiresSubstitutionAsk = execContext.RequiresSubstitutionAsk && !IsAutomaticToolAction(authorizationIntents);
+        if (requiresSubstitutionAsk && decision.Final == PermissionDecision.Allow)
         {
             var layers = new List<LayerDecision>(decision.Layers)
             {
@@ -486,7 +487,7 @@ public sealed class ToolRuntime
             return new Outcome(false, "permission denied by the user", ToolCallState.Rejected, EffectOutcome.None);
         }
         if (automaticNoPromptRequested
-            && (decision.Final != PermissionDecision.Allow || execContext.RequiresSubstitutionAsk))
+            && (decision.Final != PermissionDecision.Allow || requiresSubstitutionAsk))
         {
             const string cause = "Automatic extension execution is blocked by current permission or model policy.";
             _emit(new PermissionDenied(validated.ToolCallId, cause));
@@ -824,6 +825,7 @@ public sealed class ToolRuntime
         // unavailable before invoking any launcher. The interaction is durable while the call is
         // still Authorized; no ToolCallStarted or process effect has occurred.
         if (execContext.AllowDeferredWeakSandboxConsent && !execContext.WeakSandboxConsentForThisCall
+            && !IsAutomaticToolAction(effectiveIntents)
             && tool is IWeakSandboxConsentPreflightTool preflightTool)
         {
             WeakSandboxConsentPreflight? preflight;
@@ -1130,7 +1132,9 @@ public sealed class ToolRuntime
         ToolResult result;
         try
         {
-            result = tool.ExecuteAsync(authorized, execContext, cancellationToken).GetAwaiter().GetResult();
+            var executionContext = intent.Claims.Process is not null && IsAutomaticToolAction(effectiveIntents)
+                ? execContext.WithAutomaticSandboxConsentForThisCall() : execContext;
+            result = tool.ExecuteAsync(authorized, executionContext, cancellationToken).GetAwaiter().GetResult();
         }
         catch (WeakSandboxConsentRequiredException ex)
         {
@@ -1445,7 +1449,22 @@ public sealed class ToolRuntime
         foreach (var boundary in _additionalBoundaries) yield return boundary;
     }
 
-    private static ModelCapabilityDecision EvaluateBoundary(IToolIntentBoundary boundary, ITool tool,
+    private bool IsAutomaticToolAction(IEnumerable<ToolIntent> intents) =>
+        _policy is IAutomaticToolPermissionAuthority authority
+        && intents.All(authority.AllowsAutomaticToolActionCurrently);
+
+    private ModelCapabilityDecision EvaluateBoundary(IToolIntentBoundary boundary, ITool tool, ToolIntent intent)
+    {
+        var decision = EvaluateRawBoundary(boundary, tool, intent);
+        // Free/Autonomous resolves confirmation defaults, never capability refusals or
+        // explicit User/Project Ask and Deny. Re-evaluate this at each effect barrier.
+        return boundary is ModelCapabilityBoundary && decision.Allowed && decision.RequiresAsk
+            && _policy is IAutomaticToolPermissionAuthority authority
+            && authority.AllowsAutomaticToolActionCurrently(intent)
+                ? ModelCapabilityDecision.Allow() : decision;
+    }
+
+    private static ModelCapabilityDecision EvaluateRawBoundary(IToolIntentBoundary boundary, ITool tool,
         ToolIntent intent)
     {
         if (boundary is ModelCapabilityBoundary
