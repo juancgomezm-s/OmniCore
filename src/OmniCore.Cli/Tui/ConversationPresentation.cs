@@ -15,6 +15,9 @@ internal sealed record ConversationSpan(string Text, ConversationStyle Style,
 /// <summary>Small, deterministic Markdown subset for terminal conversations; never modifies journal content.</summary>
 internal static class ConversationPresentation
 {
+    private static string ReasoningLabel(string locale) => locale switch
+    { "en" => "Reasoning shared by the model", "fr" => "Raisonnement partagé par le modèle", "it" => "Ragionamento condiviso dal modello", _ => "Razonamiento compartido por el modelo" };
+
     internal static IReadOnlyList<IReadOnlyList<ConversationSpan>> RenderCards(IReadOnlyList<ConversationBlock> blocks, string locale, int width,
         bool compactExamples = false)
     {
@@ -88,6 +91,7 @@ internal static class ConversationPresentation
             {
                 ConversationRole.User => new OmniCore.Client.Localization(locale).Resolve("conversation.you"),
                 ConversationRole.Assistant => "OMNICORE",
+                ConversationRole.Reasoning => ReasoningLabel(locale),
                 ConversationRole.Tool => "▪ " + (block.ToolName ?? "tool"),
                 ConversationRole.Interaction => "!",
                 _ => "○",

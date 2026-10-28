@@ -257,12 +257,7 @@ public sealed class ReadFileTool : ITool
         }
     }
 
-    private static string JoinPath(string root, string relative)
-    {
-        if (relative is null) return root;
-        var norm = relative.Replace('\\', '/');
-        return root.TrimEnd('/') + "/" + norm;
-    }
+    private static string JoinPath(string root, string relative) => ToolPath.Join(root, relative);
 
     /// <summary>
     /// Marcador del token de versión en el resultado de una lectura. Se usa "version" (no
@@ -470,12 +465,7 @@ public sealed class ListDirectoryTool : ITool
         return defaultValue;
     }
 
-    private static string JoinPath(string root, string relative)
-    {
-        if (relative is null) return root;
-        var norm = relative.Replace("\\", "/");
-        return root.TrimEnd('/') + "/" + norm;
-    }
+    private static string JoinPath(string root, string relative) => ToolPath.Join(root, relative);
 
     private static string SerializeEntries(List<DirectoryEntry> entries, bool truncated)
     {
@@ -973,17 +963,7 @@ public sealed class SearchTextTool : ITool
 
     // ---------------------------------------------------------------- helpers
 
-    private static string JoinPath(string root, string relative)
-    {
-        var normalized = relative.Replace('\\', '/');
-        var trimmedRoot = root.TrimEnd('/').TrimEnd('\\');
-        if (normalized.Length > 0 && normalized[0] == '/')
-        {
-            return trimmedRoot + normalized;
-        }
-
-        return trimmedRoot + "/" + normalized;
-    }
+    private static string JoinPath(string root, string relative) => ToolPath.Join(root, relative);
 
     private static string RelativePath(string workspaceRoot, string fullPath)
         => Path.GetRelativePath(workspaceRoot, fullPath).Replace('\\', '/');
@@ -1152,39 +1132,46 @@ public sealed class SearchTextTool : ITool
     }
 }
 
-/// <summary>Mini parser de argumentos JSON para herramientas (objeto plano de strings).</summary>
+/// <summary>Parser de argumentos JSON para herramientas (objeto plano de valores escalares).</summary>
 internal sealed class ArgsJson
 {
     public static Dictionary<string, string> Parse(string json)
     {
         var map = new Dictionary<string, string>();
         if (json is null || json.Length == 0) return map;
-        var body = json.Trim();
-        if (body.Length >= 2 && body[0] == '{') body = body.Substring(1, body.Length - 2);
-        var i = 0;
-        while (i < body.Length)
+        try
         {
-            var colon = body.IndexOf(':', i);
-            if (colon < 0) break;
-            var key = body.Substring(i, colon - i).Trim().Trim('"');
-            var after = colon + 1;
-            while (after < body.Length && body[after] == ' ') after += 1;
-            if (after >= body.Length) break;
-            if (body[after] == '"')
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return map;
+            foreach (var property in document.RootElement.EnumerateObject())
             {
-                var end = body.IndexOf('"', after + 1);
-                if (end < 0) break;
-                map[key] = body.Substring(after + 1, end - after - 1);
-                i = body.IndexOf(',', end) < 0 ? body.Length : body.IndexOf(',', end) + 1;
+                map[property.Name] = property.Value.ValueKind switch
+                {
+                    JsonValueKind.String => property.Value.GetString() ?? "",
+                    JsonValueKind.Number => property.Value.GetRawText(),
+                    JsonValueKind.True => "true",
+                    JsonValueKind.False => "false",
+                    JsonValueKind.Null => "",
+                    _ => property.Value.GetRawText()
+                };
             }
-            else
-            {
-                var comma = body.IndexOf(',', after);
-                map[key] = comma < 0 ? body.Substring(after).Trim() : body.Substring(after, comma - after).Trim();
-                i = comma < 0 ? body.Length : comma + 1;
-            }
+        }
+        catch (JsonException)
+        {
+            // El schema validator rechaza el JSON inválido antes de llegar aquí.
         }
 
         return map;
+    }
+}
+
+internal static class ToolPath
+{
+    public static string Join(string root, string? relative)
+    {
+        if (string.IsNullOrEmpty(relative)) return root;
+        if (Path.IsPathFullyQualified(relative))
+            return Path.GetFullPath(relative);
+        return root.TrimEnd('/', '\\') + "/" + relative.Replace('\\', '/');
     }
 }

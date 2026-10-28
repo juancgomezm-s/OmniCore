@@ -16,6 +16,10 @@ public sealed record ModelRegistryModelDescriptor(
 /// <summary>Machine-neutral outcome when refreshing the current model selection.</summary>
 public sealed record ModelCatalogRefreshChange(string PreviousModelId, string? ReplacementModelId);
 
+/// <summary>Declared native reasoning facts for the configured route; null is unknown, not unsupported.</summary>
+public sealed record ModelReasoningCapabilityDto(string ModelId, string RouteId, bool? Supported,
+    IReadOnlyList<string>? EffortLevels);
+
 /// <summary>Identidad primitiva de una política de modelo; el Host aplica valores predeterminados a los detalles opcionales.</summary>
 public sealed record ModelPolicyKeyDto(
     string ProviderId,
@@ -106,6 +110,7 @@ public sealed class ModelPolicyRevisionConflict : Exception
 public sealed class ModelPolicyHost : IDisposable
 {
     private readonly ModelPolicyService _service;
+    private readonly ModelRegistry _initialRegistry;
     private ModelPickerPreferences _pickerPreferences = null!;
     private IReadOnlyList<ModelRegistryModelDescriptor> _models;
     private string? _configDirectory;
@@ -119,11 +124,23 @@ public sealed class ModelPolicyHost : IDisposable
     private ModelPolicyHost(ModelPolicyService service, ModelRegistry registry)
     {
         _service = service;
+        _initialRegistry = registry;
         _models = registry.Models().Select(ToDescriptor).ToArray();
     }
 
     /// <summary>Modelos configurados en el orden del registro, representados solo con campos primitivos.</summary>
     public IReadOnlyList<ModelRegistryModelDescriptor> Models => _models;
+
+    /// <summary>Reads local route declarations only; never discovers models or calls a provider.</summary>
+    public ModelReasoningCapabilityDto? ReadReasoningCapability(string modelId)
+    {
+        var registry = _configDirectory is null ? _initialRegistry : OmniHost.LoadModelRegistry(_configDirectory);
+        var model = registry.Model(modelId);
+        if (model is null) return null;
+        var route = ModelRoutingHost.RouteFor(model, registry.Provider(model.ProviderId));
+        return new(model.Id, route.Id.ToString(), route.ReasoningCapability.Supported,
+            route.ReasoningCapability.EffortLevels?.ToArray());
+    }
 
     public bool IsVisibleInPicker(string providerId, string modelId) => _pickerPreferences.IsVisible(providerId, modelId);
     public void SetVisibleInPicker(string providerId, string modelId, bool visible, CancellationToken ct) =>

@@ -147,7 +147,7 @@ test('helper stops before activation if the staged bytes changed after download 
   try {
     const original = Buffer.from('release bytes verified by the downloader');
     const archive = path.join(directory, 'update.tgz');
-    fs.writeFileSync(archive, Buffer.from('replaced staged bytes')); 
+    fs.writeFileSync(archive, Buffer.from('replaced staged bytes'));
     const digest = crypto.createHash('sha256').update(original).digest('hex');
     const capture = path.join(directory, 'called');
     const prefix = path.join(directory, 'prefix');

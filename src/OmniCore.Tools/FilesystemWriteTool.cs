@@ -907,10 +907,5 @@ public sealed class FilesystemWriteTool : ITool, IReconcilableTool
     private static ToolPreparation Rejected(string reason, ToolErrorCode errorCode) =>
         new PreparationRejected(reason, null, errorCode);
 
-    private static string JoinPath(string root, string relative)
-    {
-        if (relative is null) return root;
-        var norm = relative.Replace('\\', '/');
-        return root.TrimEnd('/') + "/" + norm;
-    }
+    private static string JoinPath(string root, string relative) => ToolPath.Join(root, relative);
 }

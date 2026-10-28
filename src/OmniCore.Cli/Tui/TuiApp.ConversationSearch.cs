@@ -16,7 +16,7 @@ public sealed partial class TuiApp
     {
         if (_window is null || _overlay is not null || _activeInteraction is not null) return;
         var session = _cursorSession; var run = _sidebarProjection.Snapshot?.RunId;
-        var blocks = _state.Conversation.Blocks.ToArray();
+        var blocks = DisplayedConversationBlocks().ToArray();
         var frame = OverlayFrame(SearchText("title"), _window.Frame.Height - 3);
         frame.Id = "conversation-search"; frame.Width = Dim.Percent(94); frame.Height = Dim.Fill(2);
         var search = new TextField { Id = "conversation-search-query", X = 2, Y = 3, Width = Dim.Fill(4), Height = 1 };
@@ -62,7 +62,7 @@ public sealed partial class TuiApp
             if (!ReferenceEquals(_overlay, frame) || Selected() is not { } hit) return;
             PollEvents();
             if (!ReferenceEquals(_overlay, frame)) return;
-            var current = _state.Conversation.Blocks;
+            var current = DisplayedConversationBlocks();
             if (_activeInteraction is not null || session != _cursorSession || run != _sidebarProjection.Snapshot?.RunId
                 || hit.BlockIndex >= current.Count || current[hit.BlockIndex].Id != hit.BlockId
                 || current[hit.BlockIndex].Text != blocks[hit.BlockIndex].Text)

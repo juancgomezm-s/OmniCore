@@ -407,7 +407,10 @@ public sealed class ModelCapabilityBoundary : INativeUserActionIntentBoundary
                 return ModelCapabilityDecision.Reject("Session security policy does not allow full-file writes", capability);
         }
         if (!ceiling.CapabilityCeiling.Contains(capability))
-            return ModelCapabilityDecision.Reject("capability is outside the current Session security ceiling: " + capability,
+            return ModelCapabilityDecision.Reject(
+                nativeUserAction && capability == ModelToolCapability.Shell
+                    ? "session_security.shell_ceiling_refused(category=" + ceiling.Category + ")"
+                    : "capability is outside the current security ceiling: " + capability,
                 capability);
         if (intent.RequiresPhysicalCreateCapability
             && (!ceiling.CapabilityCeiling.Contains(ModelToolCapability.CreateFile)

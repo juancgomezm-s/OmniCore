@@ -1,4 +1,4 @@
-﻿namespace OmniCore.Tests;
+namespace OmniCore.Tests;
 
 using System.Formats.Tar;
 using System.IO.Compression;
@@ -478,4 +478,3 @@ internal sealed class TempDirectory : IDisposable
         catch (UnauthorizedAccessException) { }
     }
 }
-

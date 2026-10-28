@@ -120,7 +120,7 @@ public sealed class KeyBindingTargetCatalog
     public static KeyBindingTargetCatalog Core { get; } = new(
         ClientCommandRegistry.Default.Actions.Select(action => "Action:" + action.Id)
             .Concat(ClientCommandRegistry.Default.Commands.Select(command => "Command:" + command.Name))
-            .Concat(new[] { "sidebar.toggle", "model.select", "preferences.open", "palette.open", "overlay.close", "keybindings.open", "updates.open", "session.search", "agent.inspect" }.Select(id => "Action:" + id))
+            .Concat(new[] { "sidebar.toggle", "model.select", "preferences.open", "palette.open", "overlay.close", "keybindings.open", "updates.open", "session.search", "agent.inspect", "mode.open", "permissions.open", "reasoning.open", "think.open" }.Select(id => "Action:" + id))
             .Distinct(StringComparer.Ordinal).Select(key => new KeyValuePair<string, string>(key, "Core")));
 }
 
@@ -133,6 +133,8 @@ public static class KeyBindingDefaults
         new("Ctrl+C", new(KeyBindingTargetKind.Action, ClientActionIds.RunCancel), "runActive && interruptPending"),
         new("Ctrl+Shift+C", new(KeyBindingTargetKind.Action, ClientActionIds.RunCancel), "runActive")];
     public static ImmutableArray<KeyBindingDefinition> All { get; } = Safety.AddRange(new KeyBindingDefinition[] {
+        new("F1", new(KeyBindingTargetKind.Action, "mode.open"), "!overlayOpen && !awaitingPermission"),
+        new("Ctrl+F1", new(KeyBindingTargetKind.Action, "permissions.open"), "!overlayOpen && !awaitingPermission"),
         new("F2", new(KeyBindingTargetKind.Action, "sidebar.toggle")),
         new("F3", new(KeyBindingTargetKind.Action, "model.select"), "!overlayOpen"),
         new("F4", new(KeyBindingTargetKind.Action, "preferences.open")),

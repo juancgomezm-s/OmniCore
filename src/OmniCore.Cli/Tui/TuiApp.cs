@@ -98,6 +98,9 @@ public sealed partial class TuiApp
     private readonly Dictionary<string, (CancellationTokenSource Cancellation, Task Task, string? SessionId, string? RunId)> _delegationTasks =
         new(StringComparer.OrdinalIgnoreCase);
     private bool _turnBusy;
+    private const int DoubleEscapeWindowMs = 500;
+    private long? _lastEscapeAt;
+    internal bool ExitRequestedByDoubleEscape { get; private set; }
     private string? _localActivitySession;
     private string? _pendingEscalationResume;
     private string? _pendingQuotaResume;
@@ -131,6 +134,7 @@ public sealed partial class TuiApp
     internal bool SidebarOpen => _sidebarOpen;
     internal ModelPolicyHost Policies => _policies;
     internal WorkspaceAlternative? RequestedAlternative { get; private set; }
+    internal string? RequestedWorkspace { get; private set; }
 
     public TuiApp(IOmniClient client, string locale = "es", ModelPolicyHost? policies = null, ITuiAccountHost? account = null, ITuiTurnHost? turnHost = null, ITuiProviderConnectionHost? providerConnections = null,
         string? animationSettingsPath = null, LocaleSelection? localeSelection = null,
@@ -159,6 +163,8 @@ public sealed partial class TuiApp
         _claudeAccounts = claudeAccounts ?? TuiClaudeAccountHost.Create();
         _animationStore = new(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath());
         _themeStore = new(Path.ChangeExtension(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath(), ".theme"));
+        _reasoningDisplayStore = new(Path.ChangeExtension(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath(), ".reasoning"));
+        ShowReportedReasoning = _reasoningDisplayStore.Load();
         _theme = _themeStore.Read();
         _animationPreferences = _animationStore.Load();
         RefreshSidebarPreferences();
@@ -177,6 +183,7 @@ public sealed partial class TuiApp
         {
             ConversationRole.User => "◉ " + block.Text,
             ConversationRole.Assistant => "◆ " + block.Text,
+            ConversationRole.Reasoning => "◇ " + block.Text,
             ConversationRole.Tool => "● " + (block.ToolName ?? "tool") + " · " + block.Text,
             ConversationRole.Interaction => "! " + block.Text,
             _ => "○ " + block.Text,
@@ -190,7 +197,7 @@ public sealed partial class TuiApp
     public static int Run(IOmniClient client, string locale = "es", ITuiTurnHost? turnHost = null,
         LocaleSelection? localeSelection = null, Action<string>? localeChanged = null,
         ITuiClaudeAccountHost? claudeAccounts = null, ITuiLocalEngineSupervisor? localEngineSupervisor = null,
-        Action<WorkspaceAlternative>? alternativeRequested = null)
+        Action<WorkspaceAlternative>? alternativeRequested = null, Action<string>? workspaceRequested = null)
     {
         var app = new TuiApp(client, locale, turnHost: turnHost, localeSelection: localeSelection,
             localeChanged: localeChanged, claudeAccounts: claudeAccounts, localEngineSupervisor: localEngineSupervisor);
@@ -202,6 +209,7 @@ public sealed partial class TuiApp
         application.Init();
         var result = app.RunWith(application);
         if (app.RequestedAlternative is { } target) alternativeRequested?.Invoke(target);
+        if (app.RequestedWorkspace is { } workspace) workspaceRequested?.Invoke(workspace);
         return result;
     }
 
@@ -361,7 +369,7 @@ public sealed partial class TuiApp
             presentation.Phase == ChatActivityPhase.WaitingForApproval, _animationPreferences.Ascii);
     }
 
-    /// <summary>Teclas a nivel de aplicación: F2 sidebar, F3 modelos, Esc responde/overlay.</summary>
+    /// <summary>Teclas a nivel de aplicación: F2 sidebar, F3 modelos, Esc responde/cancela y doble Esc sale.</summary>
     internal void OnApplicationKeyDown(object? sender, Key key)
     {
         PrioritizeInput();
@@ -370,25 +378,41 @@ public sealed partial class TuiApp
         // si no se marca Handled tras consumirla, el framework además cierra toda la aplicación
         // (un Esc para cerrar un overlay mataría la TUI entera). F2/F3 igual: consumidas aquí.
         var code = key.KeyCode.ToString();
+        if (code != "Esc") _lastEscapeAt = null;
         if (code is "F2" or "F3" or "F4") { key.Handled = true; }
         else if (code == "F6") { ShowConversations(); key.Handled = true; }
         else if (key.KeyCode == (KeyCode.Tab | KeyCode.ShiftMask) && _overlay is null && _activeInteraction is null)
         { CycleMode(); key.Handled = true; }
-        else if (code == "Esc" && _activeInteraction is { } interaction) { RespondDefault(interaction); key.Handled = true; }
-        else if (code == "Esc" && HandleSessionPreferencesEscape()) { key.Handled = true; }
-        else if (code == "Esc" && HandleModelCatalogPreferencesEscape()) { key.Handled = true; }
-        else if (code == "Esc" && HandleOperationalPreferencesEscape()) { key.Handled = true; }
-        else if (code == "Esc" && _preferencesReturnToCategory) { ReturnFromPreferencesSubpage(); key.Handled = true; }
-        else if (code == "Esc" && _preferencesCenterActive) { HandlePreferencesEscape(); key.Handled = true; }
-        else if (code == "Esc" && _overlay is not null) { CloseOverlay(); key.Handled = true; }
-        else if (code == "Esc" && _commandHelper is not null) { HideCommandHelper(); key.Handled = true; }
+        else if (code == "Esc" && _activeInteraction is { } interaction) { _lastEscapeAt = null; RespondDefault(interaction); key.Handled = true; }
+        else if (code == "Esc" && HandleSessionPreferencesEscape()) { _lastEscapeAt = null; key.Handled = true; }
+        else if (code == "Esc" && HandleModelCatalogPreferencesEscape()) { _lastEscapeAt = null; key.Handled = true; }
+        else if (code == "Esc" && HandleOperationalPreferencesEscape()) { _lastEscapeAt = null; key.Handled = true; }
+        else if (code == "Esc" && _preferencesReturnToCategory) { _lastEscapeAt = null; ReturnFromPreferencesSubpage(); key.Handled = true; }
+        else if (code == "Esc" && _preferencesCenterActive) { _lastEscapeAt = null; HandlePreferencesEscape(); key.Handled = true; }
+        else if (code == "Esc" && _overlay is not null) { _lastEscapeAt = null; CloseOverlay(); key.Handled = true; }
+        else if (code == "Esc" && _commandHelper is not null) { _lastEscapeAt = null; HideCommandHelper(); key.Handled = true; }
         else if (code == "Esc")
         {
-            // Esc dismisses/interrupts, never exits the chat via the framework's Quit binding.
+            // Esc dismisses/interrupts; a second Esc within the window exits the TUI.
             // Explicit app.exit commands retain their normal shutdown path.
+            if (TryRequestExitOnDoubleEscape()) { key.Handled = true; return; }
             if (_turnBusy) _turnCancellation?.Cancel();
             key.Handled = true;
         }
+    }
+
+    private bool TryRequestExitOnDoubleEscape()
+    {
+        var now = Environment.TickCount64;
+        if (_lastEscapeAt is { } previous && now >= previous && now - previous <= DoubleEscapeWindowMs)
+        {
+            _lastEscapeAt = null;
+            ExitRequestedByDoubleEscape = true;
+            _application?.RequestStop();
+            return true;
+        }
+        _lastEscapeAt = now;
+        return false;
     }
 
     private bool HandleOperationalPreferencesEscape()
@@ -404,7 +428,16 @@ public sealed partial class TuiApp
             case "policy-preferences":
                 CloseOverlay(); ShowPreferences("models_execution", categoryPage: true); return true;
             case "security-preferences":
-                CloseOverlay(); ShowPreferences("tools_security", categoryPage: true); return true;
+                CloseExecutionPermissions(); return true;
+            case "security-ceiling":
+            case "security-profile-page":
+            case "security-rules-page":
+            case "security-workspace-page":
+                CloseOverlay(); ReturnToExecutionPermissions(); return true;
+            case "mode-preferences":
+            case "reasoning-preferences":
+            case "reasoning-visibility":
+                CloseOverlay(); return true;
             case "security-preferences-confirm":
                 CancelSecurityConfirmation(); return true;
             case "diagnostics-preferences":
@@ -598,7 +631,7 @@ public sealed partial class TuiApp
                 var aliases = new UserCommandAliases((_policyPreferencesOverride ?? PolicyPreferencesHost.Create(Environment.CurrentDirectory))
                     .Read().CommandAliases);
                 var names = ReadStringArray(commandCatalogJson, "commands")
-                    .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode", "reasoning",
+                    .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode", "reasoning", "effort", "think", "permission", "permissions",
                         "cancel", "interrupt", "preferences", "model", "models", "sidebar", "agents", "delegate", "agent", "join", "fanout", "animation", "images",
                         "new", "sessions", "resume-session", "rename-session", "clear", "compact", "keybindings", "palette" })
                     .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name))
@@ -677,6 +710,9 @@ public sealed partial class TuiApp
         "/mode" => _localization.Resolve("shell.set_the_next_run_s_default_mode"),
         "/runmode" => _localization.Resolve("shell.change_the_active_run_s_mode"),
         "/ultracode" => _localization.Resolve("shell.explicit_adaptive_authority_with_finite_limits_plan_current_covers_onl"),
+        "/effort" => ExecutionControlsResources.Get(_locale, "reasoning"),
+        "/think" => ExecutionControlsResources.Get(_locale, "visibility"),
+        "/permission" or "/permissions" => ExecutionControlsResources.Get(_locale, "permissions"),
         "/reasoning" => _localization.Resolve("shell.persistent_preference_run_selection_or_one_turn_boost"),
         "/model" or "/models" => _localization.Resolve("shell.select_model"),
         "/preferences" => _localization.Resolve("shell.open_settings"),
@@ -761,6 +797,7 @@ public sealed partial class TuiApp
         var input = HumanCommandAliases.NormalizeSlashSyntax(aliases.NormalizeSlashHead(rawInput.Trim()));
         if (HandleConversationSlash(input)) return;
         if (HandleKeyBindingsSlash(input)) return;
+        if (HandleDirectControlsSlash(input)) return;
         if (input == "/palette") { _composer!.Text = ""; ShowCommandPalette(); return; }
         if (input == "/attach" || input.StartsWith("/attach ", StringComparison.Ordinal))
         {
@@ -812,7 +849,8 @@ public sealed partial class TuiApp
         if (input.Length == 0) return;
         if (input.StartsWith('!'))
         {
-            StartHumanShellAction(input[1..].TrimStart(), rawInput);
+            if (!TryHandleWorkspaceNavigation(input[1..].TrimStart()))
+                StartHumanShellAction(input[1..].TrimStart(), rawInput);
             return;
         }
         if (input == "/images")
@@ -1693,9 +1731,10 @@ public sealed partial class TuiApp
         try
         {
         // Polling must not reload identical text: doing so resets selection and history scroll.
+        var displayedBlocks = DisplayedConversationBlocks();
         var codeWidth = Math.Max(1, _conversation.Viewport.Width - 1);
         if (_renderedConversationWidth == codeWidth
-            && SameConversationContent(_renderedConversation, _state.Conversation.Blocks))
+            && SameConversationContent(_renderedConversation, displayedBlocks))
         {
             // A height change (for example, a growing composer) is layout intent and should
             // preserve follow-tail. A location-only change is the native reader scrolling;
@@ -1707,9 +1746,9 @@ public sealed partial class TuiApp
                 && _conversation.Viewport.Bottom < _conversation.Lines) _conversation.MoveEnd();
             return;
         }
-        _renderedConversation = _state.Conversation.Blocks.ToArray();
+        _renderedConversation = displayedBlocks.ToArray();
         _renderedConversationWidth = codeWidth;
-        if (_state.Conversation.Blocks.Count == 0) { _conversation.Text = ConversationText(); return; }
+        if (displayedBlocks.Count == 0) { _conversation.Text = ConversationText(); return; }
         var noColor = Environment.GetEnvironmentVariable("NO_COLOR") is not null;
         var scroll = _conversation.VerticalScrollBar;
         var follow = _followConversationEnd;
@@ -1720,7 +1759,7 @@ public sealed partial class TuiApp
         // TextView.Load consults the old insertion point while replacing its cell model.
         // Reflow may shorten a row; reset before replacement, then restore the reader below.
         _conversation.InsertionPoint = System.Drawing.Point.Empty;
-        _conversation.LoadStyled(ConversationPresentation.RenderCards(_state.Conversation.Blocks, _locale, codeWidth,
+        _conversation.LoadStyled(ConversationPresentation.RenderCards(displayedBlocks, _locale, codeWidth,
             compactExamples: !_showMarkdownExamples), codeWidth, noColor);
         _lastConversationViewportSize = _conversation.Viewport.Size;
         if (follow) _conversation.MoveEnd();
@@ -1752,12 +1791,16 @@ public sealed partial class TuiApp
         return true;
     }
 
-    private string ConversationText() => _state.Conversation.Blocks.Count == 0
+    private IReadOnlyList<ConversationBlock> DisplayedConversationBlocks() => ShowReportedReasoning
+        ? _state.Conversation.Blocks : _state.Conversation.Blocks.Where(block => block.Role != ConversationRole.Reasoning).ToArray();
+
+    private string ConversationText() => DisplayedConversationBlocks().Count == 0
         ? _localization.Resolve("shell.welcome")
-        : string.Join("\n\n", _state.Conversation.Blocks.Select(block => block.Role switch
+        : string.Join("\n\n", DisplayedConversationBlocks().Select(block => block.Role switch
     {
         ConversationRole.User => "◉ " + block.Text,
         ConversationRole.Assistant => "◆ " + block.Text,
+            ConversationRole.Reasoning => "◇ " + block.Text,
         ConversationRole.Tool => "● " + (block.ToolName ?? "tool") + " · " + block.Text,
         ConversationRole.Interaction => "! " + block.Text,
         _ => "○ " + block.Text,
@@ -2619,6 +2662,7 @@ public sealed partial class TuiApp
                 _policies.Select(WorkspaceSelectionId, key, model.Id, safe, CancellationToken.None);
                 _turnStatus = safe ? _localization.Resolve("shell.safe_mode_observeonly") : null;
                 RefreshSelectedModel(); MarkExplicitModelSelection(); CloseOverlay(); RenderState();
+                ShowReasoningPreferences(forModelSelection: true);
             }
             catch (Exception) { feedback.Text = _localization.Resolve("shell.could_not_select_model"); }
         };

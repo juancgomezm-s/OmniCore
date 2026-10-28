@@ -61,9 +61,12 @@ release: no establecen por sí mismos el esquema/configuración observados del u
 Integrado en `main` por el merge `754559b` (rama `codex/m10-keybindings`, commit
 `7ca860f`). `dotnet build OmniCore.slnx` terminó con 0 advertencias y 0 errores.
 Pasaron 37/37 focales de la consulta (26 de checker/CLI y 11 de wiring TUI) y
-62/62 de arquitectura. `omni update check` responde con su uso sin contactar la
-red; una comprobación real depende del canal y de los límites de GitHub ya
-descritos. El paquete npm local se reinstaló y `omni --help` lista el comando
+62/62 de arquitectura. Corrección de evidencia del 2026-10-27: `omni update check`
+sí consulta la red por petición humana explícita. Sólo las opciones inválidas
+responden con el uso antes de consultar. La lectura real inicial respondió
+`github_rate_limited`; la revisión posterior encontró y corrigió que una cabecera
+normal `X-RateLimit-Reset` en HTTP 200 se confundía con rechazo. La evidencia del
+corte posterior figura en [controles de ejecución](m10-execution-controls-20261027.md). El paquete npm local se reinstaló y `omni --help` lista el comando
 (`c9ea25d`). No se publicó release, no se descargó ni aplicó paquete y no se
 verificó firma de publicador.
 

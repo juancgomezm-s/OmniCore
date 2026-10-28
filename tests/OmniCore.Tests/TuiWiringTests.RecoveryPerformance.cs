@@ -76,7 +76,10 @@ public sealed partial class TuiWiringTests
                 list.SetFocus();
             });
             fx.InjectKey(new Key(KeyCode.Enter));
-            fx.Wait(() => fx.App.Overlay is null && fx.App.Header!.Text.Contains(model), "modelo cambiado");
+            fx.Wait(() => fx.App.Overlay?.Id == "reasoning-preferences" && fx.App.Header!.Text.Contains(model),
+                "modelo cambiado y esfuerzo ofrecido");
+            fx.InjectKey(new Key(KeyCode.Esc));
+            fx.Wait(() => fx.App.Overlay is null, "omitir esfuerzo conserva el chat");
             // Esc after selecting must not fall through to Terminal.Gui's default Quit.
             fx.InjectKey(new Key(KeyCode.Esc));
             fx.Invoke(() => Assert.True(fx.App.PollOnce()));

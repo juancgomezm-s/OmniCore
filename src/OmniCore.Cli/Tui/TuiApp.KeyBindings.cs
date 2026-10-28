@@ -181,6 +181,10 @@ public sealed partial class TuiApp
                 case "agent.inspect": app.ShowAgentInspector(); break;
                 case "keybindings.open": app.ShowKeyBindings(); break;
                 case "updates.open": app.ShowReleaseUpdates(); break;
+                case "mode.open": if (app._overlay is null) app.ShowModePreferences(); break;
+                case "permissions.open": if (app._overlay is null) app.ShowExecutionPermissions(); break;
+                case "reasoning.open": if (app._overlay is null) app.ShowReasoningPreferences(); break;
+                case "think.open": if (app._overlay is null) app.ShowReasoningVisibility(); break;
                 case "sidebar.toggle": app.ToggleSidebar(); break;
                 case "model.select": if (app._overlay is null) app.ShowModelPicker(); break;
                 case "preferences.open":
@@ -230,7 +234,12 @@ public sealed partial class TuiApp
                 .Select(binding => binding.Definition.Keys).Distinct().ToArray();
             text = text.Replace("{keyboard" + i + "}", keys.FirstOrDefault() ?? "—", StringComparison.Ordinal);
         }
-        return text;
+        string Shortcut(string id) => _keyBindings.Service.Bindings.Where(binding => binding.Definition.Target.Id == id)
+            .OrderByDescending(binding => binding.Definition.Priority).ThenByDescending(binding => binding.Definition.Source)
+            .Select(binding => binding.Definition.Keys).FirstOrDefault() ?? "—";
+        return Shortcut("mode.open") + " /" + HumanCommandAliases.DisplayName("mode", _locale)
+            + " · " + Shortcut("permissions.open") + " /" + HumanCommandAliases.DisplayName("permission", _locale)
+            + " · /" + HumanCommandAliases.DisplayName("effort", _locale) + " · /think · " + text;
     }
 
     private string KeyBindingsReport()

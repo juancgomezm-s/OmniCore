@@ -309,9 +309,5 @@ public sealed class FilesystemReconciler : IFilesystemReconciler
             "el hash actual no coincide con el pre-hash ni con el post-hash: estado ambiguo, el agente debe releer");
     }
 
-    private static string JoinPath(string root, string relative)
-    {
-        var norm = relative.Replace('\\', '/');
-        return root.TrimEnd('/') + "/" + norm;
-    }
+    private static string JoinPath(string root, string relative) => ToolPath.Join(root, relative);
 }

@@ -58,6 +58,34 @@ public sealed class M2ReadToolsTests
     private static JsonDocument ParseJson(string json) => JsonDocument.Parse(json);
 
     [Fact]
+    public void ArgsJson_decodes_escaped_backslashes_and_quotes()
+    {
+        var map = ArgsJson.Parse("{\"path\":\"C:\\\\Users\\\\juanc\",\"label\":\"a\\\"b\"}");
+
+        Assert.Equal(@"C:\Users\juanc", map["path"]);
+        Assert.Equal("a\"b", map["label"]);
+    }
+
+    [Fact]
+    public void ListDirectory_accepts_an_absolute_path_inside_the_workspace()
+    {
+        var ws = TempDir();
+        var executor = ListExecutor(ws);
+        File.WriteAllText(Path.Combine(ws, "absolute.txt"), "ok");
+
+        var outcome = executor.ExecuteToolWithoutJournal(ListCall(ws), false, CancellationToken.None);
+
+        Assert.True(outcome.Succeeded,
+            "El listado de una ruta absoluta dentro del workspace debe funcionar. summary=" + outcome.Summary);
+        var doc = ParseJson(outcome.Preview!);
+        var entries = doc.RootElement.GetProperty("entries").EnumerateArray().ToArray();
+        Assert.Contains(entries, entry =>
+            entry.GetProperty("path").GetString()!.EndsWith("absolute.txt", StringComparison.Ordinal));
+
+        Cleanup(ws);
+    }
+
+    [Fact]
     public void ListDirectory_non_recursive_sorted_by_path_with_kind_and_size()
     {
         var ws = TempDir();

@@ -140,6 +140,24 @@ public sealed class OmniCliRuntime : IDisposable
     public static OmniCliRuntime Create(string workspaceRoot,
         Func<string, CancellationToken, Task<ProviderQuotaSnapshot>>? queryQuota = null) => new(workspaceRoot, queryQuota);
 
+    /// <summary>Opens an explicitly selected workspace with its own Session, policies and journals.</summary>
+    public OmniCliRuntime OpenWorkspace(string workspace, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var path = Path.GetFullPath(workspace);
+        if (!Directory.Exists(path)) throw new DirectoryNotFoundException();
+        var next = Create(path, _queryQuota);
+        try
+        {
+            next.UiLocale = UiLocale; next.Localize = Localize;
+            next.CompanionClientId = CompanionClientId;
+            next.QuestionnaireInput = QuestionnaireInput; next.UseConsoleInput = UseConsoleInput;
+            next.Connect(cancellationToken);
+            return next;
+        }
+        catch { next.Dispose(); throw; }
+    }
+
     /// <summary>Opens only a published alternative of the current Session. Never rebinds the original Host/store.</summary>
     public OmniCliRuntime OpenAlternative(WorkspaceAlternative target, CancellationToken cancellationToken)
     {

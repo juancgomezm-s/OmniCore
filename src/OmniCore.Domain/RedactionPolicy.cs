@@ -23,7 +23,7 @@ public sealed class PiiRedactor
         // JWT: xxx.yyy.zzz (3 segmentos base64url)
         "\\b([A-Za-z0-9_-]{20,}\\.){2}[A-Za-z0-9_-]{20,}\\b",
         // cookies/sesiones/tokens
-        "(?i)((?:session|sid|token|api_key|apikey|password|secret|authorization)\\s*[=: ]\\s*)((?:\"[^\"]*\")|[A-Za-z0-9._~-]{6,})",
+        "(?i)((?:session(?!\\s+security\\b)|sid|token|api_key|apikey|password|secret|authorization)\\s*[=: ]\\s*)((?:\"[^\"]*\")|[A-Za-z0-9._~-]{6,})",
         // bearer en query (?Bearer=…)
         "(?i)(bearer=)([A-Za-z0-9._~-]{6,})",
     };

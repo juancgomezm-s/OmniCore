@@ -20,6 +20,7 @@ public static class ConversationSearchResources
         ["help"] = ["↑↓ elegir · Enter ir al mensaje · Esc volver al borrador", "↑↓ choose · Enter go to message · Esc return to draft", "↑↓ choisir · Entrée aller au message · Échap revenir au brouillon", "↑↓ scegli · Invio vai al messaggio · Esc torna alla bozza"],
         ["claim"] = ["Texto del asistente · no acredita verificación", "Assistant text · does not establish verification", "Texte de l’assistant · ne constitue pas une vérification", "Testo dell’assistente · non attesta una verifica"],
         ["role.User"] = ["Tú", "You", "Vous", "Tu"],
+        ["role.Reasoning"] = ["Razonamiento visible", "Visible reasoning", "Raisonnement visible", "Ragionamento visibile"],
         ["role.Assistant"] = ["Asistente", "Assistant", "Assistant", "Assistente"],
         ["role.Tool"] = ["Herramienta", "Tool", "Outil", "Strumento"],
         ["role.System"] = ["Estado local", "Local status", "État local", "Stato locale"],

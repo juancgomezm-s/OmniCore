@@ -31,6 +31,17 @@ public sealed class SessionSecurityPolicyBoundaryTests
     }
 
     [Fact]
+    public void Native_shell_under_an_observing_ceiling_explains_how_to_enable_it()
+    {
+        var boundary = Boundary(ModelPolicyPresets.FullAgent(), () => Policy(ModelPolicyCategory.ObserveOnly));
+
+        var decision = boundary.EvaluateNativeUserAction(ShellIntent());
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("session_security.shell_ceiling_refused(category=ObserveOnly)", decision.Reason);
+    }
+
+    [Fact]
     public void Session_scoped_coder_allows_exact_validation_only_when_model_already_allows_it()
     {
         var scopedSession = Policy(ModelPolicyCategory.ScopedCoder);
@@ -154,5 +165,10 @@ public sealed class SessionSecurityPolicyBoundaryTests
     private static ToolIntent GeneralProcessIntent() => new(ToolCallId.New(), new ToolId("process.exec"), "{}",
         EffectClass.NonIdempotent,
         new ResourceClaims([], [Workspace], [], new ProcessClaim("cmd", ["/c", "echo", "no"], "External",
+            NetworkRequired: false, WorkingDirectory: Workspace), []), ToolRisk.High, null);
+
+    private static ToolIntent ShellIntent() => new(ToolCallId.New(), new ToolId("shell.exec"), "{}",
+        EffectClass.NonIdempotent,
+        new ResourceClaims([], [], [], new ProcessClaim("cmd", ["/c", "echo", "hello"], "External",
             NetworkRequired: false, WorkingDirectory: Workspace), []), ToolRisk.High, null);
 }

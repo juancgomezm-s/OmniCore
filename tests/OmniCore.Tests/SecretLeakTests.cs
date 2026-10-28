@@ -46,6 +46,14 @@ public sealed class SecretLeakTests
     }
 
     [Fact]
+    public void Session_security_ceiling_phrases_are_not_redacted_as_credentials()
+    {
+        const string text = "capability is outside the current Session security ceiling: Shell";
+
+        Assert.Equal(text, new PiiRedactor().Redact(text));
+    }
+
+    [Fact]
     public void Secret_provider_and_credential_store_register_resolved_values()
     {
         var redactor = SecretRedactor.Shared;

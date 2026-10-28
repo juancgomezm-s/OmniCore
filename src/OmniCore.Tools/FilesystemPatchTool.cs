@@ -653,12 +653,7 @@ public sealed class FilesystemPatchTool : ITool, IReconcilableTool
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
-    private static string JoinPath(string root, string relative)
-    {
-        if (relative is null) return root;
-        var norm = relative.Replace('\\', '/');
-        return root.TrimEnd('/') + "/" + norm;
-    }
+    private static string JoinPath(string root, string relative) => ToolPath.Join(root, relative);
 
     /// <summary>Writes only differing bytes on the existing handle. With a length change the
     /// suffix necessarily shifts; equal-length edits leave both unchanged ends untouched.</summary>

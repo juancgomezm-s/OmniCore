@@ -1127,18 +1127,23 @@ public sealed partial class CliApp
             while (true)
             {
                 WorkspaceAlternative? requested = null;
+                string? requestedWorkspace = null;
                 var result = TuiApp.Run(client, Loc().Locale, new TuiTurnHost(Runtime),
                     localeSelection: _localeSelection, localeChanged: UpdateLocaleFromPreferences,
-                    localEngineSupervisor: Runtime.CreateTuiLocalEngineSupervisor(), alternativeRequested: target => requested = target);
-                if (requested is null) return Task.FromResult(result);
+                    localEngineSupervisor: Runtime.CreateTuiLocalEngineSupervisor(), alternativeRequested: target => requested = target,
+                    workspaceRequested: path => requestedWorkspace = path);
+                if (requested is null && requestedWorkspace is null) return Task.FromResult(result);
                 try
                 {
-                    var next = Runtime.OpenAlternative(requested, CancellationToken.None);
+                    var destination = requestedWorkspace ?? requested!.Workspace;
+                    var next = requestedWorkspace is not null
+                        ? Runtime.OpenWorkspace(destination, CancellationToken.None)
+                        : Runtime.OpenAlternative(requested!, CancellationToken.None);
                     var previous = Runtime;
                     try
                     {
                         var nextClient = next.Connect(CancellationToken.None);
-                        Environment.CurrentDirectory = requested.Workspace;
+                        Environment.CurrentDirectory = destination;
                         Runtime = next; client = nextClient; UpdateLocaleConsumers();
                     }
                     catch { next.Dispose(); throw; }

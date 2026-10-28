@@ -65,6 +65,31 @@ public sealed partial class TuiWiringTests
     });
 
     [Fact]
+    public void Double_escape_from_the_chat_requests_exit_and_a_single_escape_does_not() => RunTuiTest(fx =>
+    {
+        fx.StartTui();
+        fx.Wait(() => fx.App.Composer!.HasFocus, "composer enfocado");
+
+        fx.InjectKey(new Key(KeyCode.Esc));
+        Assert.False(fx.App.ExitRequestedByDoubleEscape);
+
+        fx.InjectKey(new Key(KeyCode.Esc));
+        Assert.True(fx.App.ExitRequestedByDoubleEscape);
+    });
+
+    [Fact]
+    public void Escape_exit_sequence_resets_after_another_key() => RunTuiTest(fx =>
+    {
+        fx.StartTui();
+        fx.Wait(() => fx.App.Composer!.HasFocus, "composer enfocado");
+
+        fx.InjectKey(new Key(KeyCode.Esc));
+        fx.InjectKey(new Key('x'));
+        fx.InjectKey(new Key(KeyCode.Esc));
+        Assert.False(fx.App.ExitRequestedByDoubleEscape);
+    });
+
+    [Fact]
     public void Provider_connection_menu_renders_host_status_timestamps_and_capability_flags() => RunTuiTest(fx =>
     {
         var validated = new DateTimeOffset(2026, 10, 1, 10, 30, 0, TimeSpan.Zero);
@@ -1403,7 +1428,18 @@ public sealed partial class TuiWiringTests
         fx.Wait(() => fx.App.Composer!.Frame.Height == 2, "composer crece por salto de línea");
         var panel = fx.App.MainWindow!.SubViews.Single(view => view.Id == "omni-composer");
         Assert.Equal(4, panel.Frame.Height);
-        fx.Wait(() => fx.App.Composer!.Cursor.Style == CursorStyle.SteadyBlock, "cursor de bloque dibujado");
+        fx.Wait(() => fx.App.Composer!.Cursor.Style == CursorStyle.Hidden, "cursor del sistema oculto");
+        var (block, text) = fx.Read(() =>
+        {
+            var position = fx.App.Composer!.Cursor.Position!.Value;
+            var contents = fx.Application.Driver!.Contents!;
+            return (contents[position.Y, position.X], contents[position.Y, position.X - 1]);
+        });
+        Assert.Equal(" ", block.Grapheme);
+        Assert.NotNull(block.Attribute);
+        Assert.NotNull(text.Attribute);
+        Assert.Equal(text.Attribute!.Value.Foreground, block.Attribute!.Value.Background);
+        Assert.Equal(text.Attribute.Value.Background, block.Attribute.Value.Foreground);
         Assert.True(fx.App.Composer!.Multiline);
         Assert.True(fx.App.Composer.WordWrap);
         KeyWithEffect(fx, KeyCode.Enter, () => host.Started.IsSet, "Enter envía sin insertar otro salto");

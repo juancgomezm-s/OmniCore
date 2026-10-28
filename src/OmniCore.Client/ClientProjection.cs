@@ -120,6 +120,7 @@ public enum ConversationRole
     Tool,
     System,
     Interaction,
+    Reasoning,
 }
 
 public sealed class ConversationModel
@@ -294,7 +295,7 @@ public sealed class ClientProjection
         if (Get(f, "conversationScope") is "child" or "ambiguous"
             && type is "user_input.received" or "assistant_message.recorded" or "toolcall.requested"
                 or "toolcall.succeeded" or "toolcall.failed" or "toolcall.rejected"
-                or "toolcall.permission_denied" or "toolcall.cancelled" or "model_step.started" or "context.checkpoint_recorded")
+                or "toolcall.permission_denied" or "toolcall.cancelled" or "model_step.started" or "model_step.completed" or "context.checkpoint_recorded")
             return state;
         switch (type)
         {
@@ -316,6 +317,12 @@ public sealed class ClientProjection
                 var budget = Get(f, "reasoningBudgetTokens");
                 var applied = kind.Length == 0 ? null : kind + (budget.Length == 0 ? "" : ":" + budget);
                 return WithStatus(state, null, null, appliedReasoning: applied, replaceAppliedReasoning: true);
+            }
+            case "model_step.completed":
+            {
+                var reasoning = Get(f, "reasoningText");
+                if (reasoning.Length == 0 || state.Conversation.Blocks.Any(block => block.Id == evt.MessageId)) return state;
+                return Append(state, Block(evt, ConversationRole.Reasoning, reasoning.Length > 16_384 ? reasoning[..16_384] : reasoning));
             }
             case "context.checkpoint_recorded":
                 if (Get(f, "automatic") != "true" || state.Conversation.Blocks.Any(block => block.Id == evt.MessageId))

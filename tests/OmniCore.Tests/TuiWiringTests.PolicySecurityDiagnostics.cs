@@ -80,22 +80,22 @@ public sealed partial class TuiWiringTests
         fx.StartTui(initialColumns: columns, initialRows: rows, securityPreferences: host);
         fx.Invoke(() => fx.App.ShowSecurityPreferences("tools_security"));
         fx.Wait(() => fx.App.Overlay?.Id == "security-preferences", "seguridad visible");
-        var form = fx.App.Overlay!.SubViews.Single(view => view.Id == "security-preferences-form");
-        Assert.True(form.VerticalScrollBar.ScrollableContentSize > 0, "controles completos deben quedar en viewport desplazable");
-        ExportPreferenceFrame(fx, columns, rows, scene, "Nivel de autonomía en ACT");
-
+        ExportPreferenceFrame(fx, columns, rows, scene, "Permisos de ejecución");
+        ClickId(fx, "security-profile-open");
+        var form = fx.App.Overlay!;
         var beforeDraft = host.Read();
-        var profile = Descendants(form).OfType<TextField>().Single(field => field.Id!.ToString() == "security-profile");
-        fx.Invoke(() => profile.Text = beforeDraft.Profile == "Balanced" ? "Conservative" : "Balanced");
+        var selected = beforeDraft.Profile == "Balanced" ? "Conservative" : "Balanced";
+        ClickId(fx, "security-level-" + selected.ToLowerInvariant());
         ClickId(fx, "security-save");
         fx.Wait(() => fx.App.Overlay?.Id == "security-preferences-confirm", "confirmación de borrador visible");
         Click(fx, "Cancelar");
         var afterCancel = host.Read();
         Assert.Equal(beforeDraft.Profile, afterCancel.Profile);
         Assert.Equal(beforeDraft.Revision, afterCancel.Revision);
-        Assert.Same(form, fx.App.Overlay!.SubViews.Single(view => view.Id == "security-preferences-form"));
-        Assert.Equal(beforeDraft.Profile == "Balanced" ? "Conservative" : "Balanced", profile.Text.ToString());
-
+        Assert.Same(form, fx.App.Overlay);
+        Assert.StartsWith("●", Descendants(form).OfType<Button>().Single(button => button.Id == "security-level-" + selected.ToLowerInvariant()).Text.ToString());
+        ClickId(fx, "security-back");
+        ClickId(fx, "security-workspace-open");
         ClickId(fx, "security-trust");
         fx.Wait(() => fx.App.Overlay?.Id == "security-preferences-confirm", "confirmación de confianza visible");
         Click(fx, "Cancelar");
@@ -104,7 +104,7 @@ public sealed partial class TuiWiringTests
         Click(fx, "Confirmar");
         Assert.True(host.Read().WorkspaceTrusted);
         ClickId(fx, "security-back");
-    });
+    }, noColor: false);
 
     [Theory]
     [InlineData(80, 25, "diagnostics-narrow")]
@@ -140,13 +140,11 @@ public sealed partial class TuiWiringTests
         fx.StartTui(initialColumns: 120, initialRows: 35, securityPreferences: host);
         fx.Invoke(() => fx.App.ShowSecurityPreferences("tools_security"));
         fx.Wait(() => fx.App.Overlay?.Id == "security-preferences", "seguridad visible");
-        var form = fx.App.Overlay!.SubViews.Single(view => view.Id == "security-preferences-form");
-        var profile = Descendants(form).OfType<TextField>().Single(field => field.Id == "security-profile");
+        ClickId(fx, "security-profile-open");
+        var form = fx.App.Overlay!;
         var restrict = Descendants(form).OfType<Button>().Single(button => button.Id == "security-level-conservative");
         ClickId(fx, "security-level-conservative");
-        Assert.Equal("Conservative", PreferenceInput.CanonicalValue("security.profile", profile.Text.ToString(), "es",
-            "Conservative", "Balanced", "Autonomous"));
-        Assert.StartsWith("\u25CF", restrict.Text.ToString());
+        Assert.StartsWith("●", restrict.Text.ToString());
         Assert.Contains(Descendants(form).OfType<Label>(), label => label.Id == "omni-detail" && label.Text.ToString().Length > 20);
         ClickId(fx, "security-save");
         fx.Wait(() => fx.App.Overlay?.Id == "security-preferences-confirm", "confirmación visible");

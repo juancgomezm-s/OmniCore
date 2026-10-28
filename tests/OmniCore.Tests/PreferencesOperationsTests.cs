@@ -19,6 +19,19 @@ public sealed class PreferencesOperationsTests
     }
 
     [Fact]
+    public void Shell_ceiling_refusal_is_localized_and_survives_redaction()
+    {
+        foreach (var locale in UiLocaleCodes.Supported)
+        {
+            var message = new Localization(locale)
+                .ResolveWire("session_security.shell_ceiling_refused(category=ObserveOnly)");
+            Assert.Contains("ObserveOnly", message, StringComparison.Ordinal);
+            Assert.DoesNotContain("session_security.shell_ceiling_refused", message, StringComparison.Ordinal);
+            Assert.DoesNotContain("[REDACTED]", OmniCliRuntime.RedactSensitive(message), StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void Policy_preferences_preserve_existing_user_settings_and_use_revision_checks()
     {
         using var fx = new Fixture();

@@ -238,6 +238,7 @@ public sealed class ProtocolMapper
             ["checkpointId"] = e.CheckpointId,
             ["automatic"] = e.MetaModelFingerprint == SessionConversationCheckpoint.Fingerprint ? "false" : "true",
         },
+        ModelStepCompleted e => VisibleReasoningFields(e.ResponseArtifact),
         AssistantMessageRecorded e => new()
         {
             ["text"] = ArtifactText(e.ContentRef),
@@ -465,6 +466,46 @@ public sealed class ProtocolMapper
         if (content is null || _artifacts is null) return "";
         try { return _redaction.Redact(_artifacts.GetText(content.Hash) ?? ""); }
         catch (InvalidDataException) { return ""; }
+    }
+
+    private Dictionary<string, string> VisibleReasoningFields(ArtifactRef? artifact)
+    {
+        var fields = new Dictionary<string, string>();
+        if (artifact is not { Kind: ArtifactKind.ModelResponse, Size: > 0 and <= 1_048_576 }
+            || _artifacts is null) return fields;
+        try
+        {
+            if (!_artifacts.Verify(artifact.Hash, artifact.Size)) return fields;
+            var payload = _artifacts.GetText(artifact.Hash);
+            if (payload is null || payload.Length > 1_048_576) return fields;
+            using var document = JsonDocument.Parse(payload);
+            if (!document.RootElement.TryGetProperty("visibleContent", out var visible)
+                || visible.ValueKind != JsonValueKind.Object
+                || !visible.TryGetProperty("version", out var version) || !version.TryGetInt32(out var schema) || schema != 1
+                || !visible.TryGetProperty("blocks", out var blocks) || blocks.ValueKind != JsonValueKind.Array
+                || blocks.GetArrayLength() > 1024) return fields;
+            var text = new StringBuilder();
+            foreach (var block in blocks.EnumerateArray())
+            {
+                if (block.ValueKind != JsonValueKind.Object
+                    || !block.TryGetProperty("kind", out var kind) || kind.ValueKind != JsonValueKind.String || kind.GetString() != "reasoning"
+                    || !block.TryGetProperty("visibility", out var visibility) || visibility.ValueKind != JsonValueKind.String
+                    || visibility.GetString() is not ("Full" or "Summarized")
+                    || !block.TryGetProperty("text", out var value) || value.ValueKind != JsonValueKind.String) continue;
+                var content = value.GetString();
+                if (string.IsNullOrWhiteSpace(content)) continue;
+                if (text.Length > 0) text.AppendLine();
+                var remaining = 16_384 - text.Length;
+                if (remaining <= 0) break;
+                text.Append(content.AsSpan(0, Math.Min(content.Length, remaining)));
+            }
+            if (text.Length > 0)
+                fields["reasoningText"] = _redaction.Redact(new string(text.ToString()
+                    .Where(character => !char.IsControl(character) || character is '\n' or '\t').ToArray()));
+        }
+        catch (Exception error) when (error is IOException or JsonException or InvalidOperationException
+            or ArgumentException or KeyNotFoundException) { }
+        return fields;
     }
 
     private string ArtifactText(ArtifactRef? content)
