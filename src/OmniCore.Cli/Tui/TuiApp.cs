@@ -251,6 +251,7 @@ public sealed partial class TuiApp
         }); }
         finally
         {
+            StopCompanionHub();
             Application.MaximumIterationsPerSecond = previousLoopRate;
             _restoreInputLoopRate = null;
             _petProbeGeneration++; _petAssets.Clear();
@@ -310,8 +311,10 @@ public sealed partial class TuiApp
         while (_uiActions.TryDequeue(out var action)) action();
         ReflowPreferencesIfNeeded();
         PollEvents();
+        ReflowCompanionHub();
         _refreshExtensionView?.Invoke(false);
         PollExtensionNotifications();
+        PollCompanionHub();
         return true;
     }
 
@@ -1551,6 +1554,7 @@ public sealed partial class TuiApp
                 _turnStatus = cancellation.IsCancellationRequested ? _localization.Resolve("shell.cancelled")
                     : code == 0 ? _localization.Resolve("shell.done") : code == 3 ? _localization.Resolve("shell.input_required") : _localization.Resolve("shell.error");
                 RefreshSelectedModel(); PollEvents();
+                NotifyCompanionTurn(code, _localActivitySession);
                 _turnUsage = _turnHost.CurrentUsage();
                 if (code != 0 && code != 3 && !cancellation.IsCancellationRequested)
                     ShowMessage(string.Join("\n", messages));
@@ -2242,7 +2246,7 @@ public sealed partial class TuiApp
         else RespondChoice(interaction, interaction.DefaultOptionId);
     }
 
-    private void RespondChoice(InteractionOverlayModel interaction, string optionId)
+    private bool RespondChoice(InteractionOverlayModel interaction, string optionId)
     {
         var resumesHumanShell = interaction.Kind == "Permission"
             && _turnHost?.IsHumanShellPermission(interaction.Id) == true;
@@ -2254,7 +2258,7 @@ public sealed partial class TuiApp
         var ack = resumesHumanShell || resumesHumanShellWeak
             ? _turnHost!.DispatchHumanShellInteractionResponse(responseCommand)
             : _client.Send(responseCommand, CancellationToken.None);
-        if (ack.Status != "ok") { ShowMessage(ack.Error ?? _localization.Resolve("shell.response_rejected")); return; }
+        if (ack.Status != "ok") { ShowMessage(ack.Error ?? _localization.Resolve("shell.response_rejected")); return false; }
         CloseOverlay(); PollEvents();
         if (resumesHumanShell && _turnHost is not null)
             StartHumanShellPermissionResume(interaction.Id, optionId, ack);
@@ -2272,6 +2276,7 @@ public sealed partial class TuiApp
             if (_turnBusy) _pendingEscalationResume = interaction.Id;
             else StartModelTurn("", resumeEscalation: interaction.Id);
         }
+        return true;
     }
 
     private void StartHumanShellPermissionResume(string interactionId, string optionId, CommandAck responseAck)
@@ -3210,6 +3215,8 @@ public sealed partial class TuiApp
 
     private void CloseOverlay()
     {
+        if (_overlay is not null && _overlay == _companionPanel)
+        { _companionPanel = null; _companionBody = null; _companionInput = null; _companionList = null; _companionInfo = null; }
         _petDetail = null;
         if (_overlay is null || _window is null) return;
         if (_overlay.Id == "release-updates") { CancelReleaseUpdateCheck(); _releaseUpdateReturnToPreferences = false; }

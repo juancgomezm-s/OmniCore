@@ -124,7 +124,7 @@ public sealed partial class CompanionPetTests
         for (var frame = 0; frame < 8; frame++)
         {
             var mini = CompanionSpriteCatalog.RenderMini(visitor, pose, frame, left);
-            Assert.Equal(3, mini.Count); Assert.All(mini, row => Assert.Equal(12, row.Count));
+            Assert.Equal(CompanionPetPlayground.SpriteHeight, mini.Count); Assert.All(mini, row => Assert.Equal(12, row.Count));
             Assert.Contains(mini.SelectMany(row => row), pixel => pixel.Glyph != " ");
         }
         Assert.Equal(regular.Species, visitor.Species); Assert.Equal(regular.Xp, visitor.Xp);

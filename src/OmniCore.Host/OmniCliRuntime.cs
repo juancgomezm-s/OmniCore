@@ -18,7 +18,7 @@ using System.Diagnostics;
 using System.Text.Json;
 
 /// <summary>Fachada tipada del runtime usada por el CLI; oculta composición y tipos internos.</summary>
-public sealed class OmniCliRuntime : IDisposable
+public sealed partial class OmniCliRuntime : IDisposable
 {
     /// <summary>Separates a human shell's real OS exit code from an internal pending interaction.</summary>
     public readonly record struct HumanShellCommandOutcome(int ExitCode, bool InputRequired);

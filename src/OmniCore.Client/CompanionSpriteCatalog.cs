@@ -124,7 +124,7 @@ public static class CompanionSpriteCatalog
         if (!Art.TryGetValue(id, out var art)) art = Art["egg"];
         var pixels = new char[16, 20];
         var phase = (int)(Math.Max(0, frame) % 16);
-        var blink = animation == "sleep" || animation == "idle" && phase == 0 || animation == "working" && phase % 4 == 1;
+        var blink = animation is "sleep" or "sad" || animation == "idle" && phase == 0 || animation == "working" && phase % 4 == 1;
         var lift = animation == "success" && phase % 2 == 1 ? -1 : animation == "working" && phase % 4 == 2
             || state.Species is null && animation == "idle" && phase % 8 == 2 ? 1 : 0;
         for (var y = 0; y < 16; y++)
@@ -142,6 +142,7 @@ public static class CompanionSpriteCatalog
         if (animation == "pet") Stamp(pixels, 15, 2 - phase / 2 % 3, [" H H ", "HHHHH", "HHHHH", " HHH ", "  H  "]);
         if (animation == "sleep") Stamp(pixels, 16, 0, ["CCC", " C ", "CCC"]);
         if (animation == "waiting") Stamp(pixels, 17, 0, ["C", "C", " ", "C"]);
+        if (animation == "sad") Stamp(pixels, 15, 5 + phase % 2, [" C ", "CCC", " C "]);
         if (animation == "failure") Stamp(pixels, 17, 0, ["NNN", "  N", " N ", "   ", " N "]);
         if (state.Stage == "legendary" && state.GuestId is null) Stamp(pixels, 6, 0, ["N N N", "NNNNN"]);
         var palette = Palette(id, state.GuestId is null && state.Variant.StartsWith("cool", StringComparison.Ordinal));

@@ -36,6 +36,7 @@ public static class CompanionPetPresentation
         (true, "idle") => "Reposo", (true, "working") => "Trabajando", (true, "waiting") => "Esperando",
         (true, "success") => "¡Bien!", (true, "failure") => "Sorpresa", (true, "sleep") => "Durmiendo",
         (true, "play") => "De paseo",
+        (true, "sad") => "Triste",
         (true, "baby") => "Bebé", (true, "young") => "Joven", (true, "adult") => "Adulto", (true, "legendary") => "Legendario",
         (false, "pet_action") => "Pet", _ => char.ToUpperInvariant(id[0]) + id[1..],
     };
@@ -65,6 +66,8 @@ public static class CompanionPetPresentation
         var action = parts.Length == 0 ? "discover" : parts[0].ToLowerInvariant();
         var request = action switch
         {
+            "restrict" or "restringir" => new CompanionPetAction("preferences", ClientId: clientId, Restricted: true),
+            "unrestrict" or "liberar" => new CompanionPetAction("preferences", ClientId: clientId, Restricted: false),
             "reduced" => new CompanionPetAction("preferences", ClientId: clientId, ReducedMotion: true),
             "motion" => new CompanionPetAction("preferences", ClientId: clientId, ReducedMotion: false),
             "mode" or "modo" => new CompanionPetAction("preferences", ClientId: clientId,

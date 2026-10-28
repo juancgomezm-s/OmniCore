@@ -93,10 +93,11 @@ public sealed partial class TuiApp
         var outside = _petRunner?.Visible == true;
         var full = visual.Effective != "text" && !outside && (_window?.Frame.Height ?? 0) >= 36 && _sidebar.Viewport.Width >= 23;
         var height = full ? 12 : visual.Effective == "text" ? 3 : 4;
+        _companionPetHeight = height;
         if (_petView.Visible != visible || _petView.Frame.Height != height)
         {
             _petView.Visible = visible; _petView.Height = height; _petView.Y = Pos.AnchorEnd(height + 1);
-            _sidebarContent.Height = Dim.Fill(visible ? height + 2 : 1);
+            _sidebarContent.Height = Dim.Fill(visible ? height + 5 : 1);
         }
         if (_pet is null) return;
         var moving = _petConnected && !_pet.Preferences.ReducedMotion && _animationPreferences.Enabled && !_animationPreferences.ReducedMotion;
@@ -124,12 +125,19 @@ public sealed partial class TuiApp
         RenderPetImage(_petView, animation, visible && full && _sidebar.Visible && _overlay is null && _commandHelper is null && _activeInteraction is null);
         if (_petDetail is not null) RenderPetImage(_petDetail, animation, visible && _petDetail.Visible && _overlay?.Id == "companion-detail"
             && (_window?.Frame.Height ?? 0) >= 26);
+        RenderCompanionHubControls();
     }
     private void RunPetAction(string argument, bool detail)
     {
         try
         {
             var localAction = argument.Trim().ToLowerInvariant();
+            if (localAction is "chat" or "avisos" or "alerts" or "sessions" or "sesiones" or "memory" or "memoria" or "memory reload")
+            {
+                if (localAction == "memory reload") { _companionMemoryVersion = ""; _companionMemoryDraft = ""; _companionSnapshot = null; }
+                OpenCompanionHub(localAction switch { "avisos" or "alerts" => "notices", "sessions" or "sesiones" => "sessions", "memory" or "memoria" or "memory reload" => "memory", _ => "chat" }); return;
+            }
+            if (localAction is "restrict" or "restringir") { _petPlayground.Home(); _petTyping.Clear(); }
             if (localAction is "detect" or "detectar")
             { ProbePetGraphics(true); RenderCompanion(); ShowPetVisualSettings(); return; }
             if (localAction is "mode" or "modo") { ShowPetVisualSettings(); return; }
@@ -137,6 +145,7 @@ public sealed partial class TuiApp
             {
                 if (localAction == "play")
                 {
+                    if (_pet?.Preferences.Restricted == true) { ShowMessage("Mascota restringida. Usa /pet unrestrict para permitir las travesuras."); return; }
                     _pet = CompanionPetPresentation.Execute(_client, _pet?.Discovered == true ? "show" : "discover");
                     _petConnected = true; _petPlayground.Play();
                 }
@@ -150,6 +159,7 @@ public sealed partial class TuiApp
             { ShowPetVisualSettings(); return; }
             if (argument.Trim() == "hide")
             {
+                CloseCompanionHub();
                 _petTicks = 0;
                 if (_petDetail is not null) CloseOverlay();
                 else if (petHadFocus) _composer?.SetFocus();

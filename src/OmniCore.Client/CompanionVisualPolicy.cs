@@ -8,7 +8,7 @@ public sealed record CompanionVisualSelection(string Requested, string Effective
 /// <summary>Portable rendering policy, also usable by a future graphical client.</summary>
 public sealed class CompanionVisualPolicy
 {
-    public const int GraphicFrameCount = 18;
+    public const int GraphicFrameCount = 20;
     public bool GraphicsFailed { get; private set; }
     public void FailGraphics() => GraphicsFailed = true;
     public void Redetect() => GraphicsFailed = false;
@@ -34,7 +34,7 @@ public sealed class CompanionVisualPolicy
     {
         var first = animation switch
         {
-            "working" => 2, "waiting" => 4, "success" => 6, "failure" => 8, "pet" => 10, "sleep" => 12, _ => 0,
+            "working" => 2, "waiting" => 4, "success" => 6, "failure" => 8, "pet" => 10, "sleep" => 12, "sad" => 18, _ => 0,
         };
         if (reducedMotion) return first;
         tick = Math.Max(0, tick);

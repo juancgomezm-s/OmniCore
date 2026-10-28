@@ -12,9 +12,10 @@ function svg(species, frame) {
  const [dark,light] = palettes[species], pose = frame>=13 ? frame===17 ? 6 : 0 : Math.floor(frame/2), phase = frame>=13 ? 0 : frame%2;
  const sway=frame===13 ? -1 : frame===14 ? 1 : 0;
  const gaze=frame===15 ? -1.8 : frame===16 ? 1.8 : 0;
+ const sad=frame>=18;
  const closed = frame===1 || pose===6 || (pose===4&&phase===1);
  const lift = pose===3&&phase ? -5 : pose===1&&phase ? -1 : 0;
- const eye = (x,y) => {x+=gaze;return closed ? `<path d="M${x-4} ${y}q4 4 8 0" fill="none" stroke="#292330" stroke-width="2.5" stroke-linecap="round"/>`
+ const eye = (x,y) => {x+=gaze;return sad ? `<path d="M${x-4} ${y+1}q4 -4 8 0M${x-5} ${y-6}l7 2" fill="none" stroke="#292330" stroke-width="2.5" stroke-linecap="round"/>` : closed ? `<path d="M${x-4} ${y}q4 4 8 0" fill="none" stroke="#292330" stroke-width="2.5" stroke-linecap="round"/>`
   : ellipse(x,y,3.4,4.8,'#292330')+ellipse(x-1,y-1.6,1.1,1.5,'#fff8e9');};
  let body = ellipse(64,92,27,22,'url(#fur)')+ellipse(64,94,17,17,light)
   +ellipse(47,109,10,6,dark)+ellipse(81,109,10,6,dark);
@@ -80,6 +81,7 @@ function svg(species, frame) {
   details=ellipse(48,50,4,6,'#fff8e3')+ellipse(81,93,5,3,'#d5c697');
  }
  let props='';
+ if(sad) props=`<path d="M87 ${frame===18?68:74}q-8 10 0 11 8-1 0-11Z" fill="#83bce0"/><path d="M97 30h10" stroke="#9badc5" stroke-width="2"/>`;
  if(pose===1) props=`<path d="M39 91h50l-5 24H44z" fill="#405e70" stroke="#9ab7c2" stroke-width="1.5"/><rect x="38" y="112" width="52" height="5" rx="2" fill="#9ab7c2"/><path d="M59 101l-4 3 4 3m10-6 4 3-4 3" stroke="#a8ead9" fill="none" stroke-width="1.6"/>`;
  if(pose===2) props=ellipse(99,87,12,12,'#f4dfae')+`<path d="M99 79v8l${phase?6:3} 4" stroke="#806547" stroke-width="2" fill="none" stroke-linecap="round"/>`;
  if(pose===3) props=`<path d="M24 33l2 6 6 2-6 2-2 6-2-6-6-2 6-2zM102 22l2 6 6 2-6 2-2 6-2-6-6-2 6-2z" fill="#ffdb78"/><path d="M18 62l6-3m78 1 7 4" stroke="#a4dfc9" stroke-width="3" stroke-linecap="round"/>`;
@@ -93,8 +95,8 @@ function svg(species, frame) {
 (async()=>{
  const selected=process.argv.slice(3);
  for(const species of Object.keys(palettes).filter(id=>!selected.length||selected.includes(id))) {
-  const frames=await Promise.all(Array.from({length:18},(_,frame)=>sharp(Buffer.from(svg(species,frame))).png().toBuffer()));
-  await sharp({create:{width:128*18,height:128,channels:4,background:'#202c3b'}})
+  const frames=await Promise.all(Array.from({length:20},(_,frame)=>sharp(Buffer.from(svg(species,frame))).png().toBuffer()));
+  await sharp({create:{width:128*20,height:128,channels:4,background:'#202c3b'}})
    .composite(frames.map((input,i)=>({input,left:i*128,top:0}))).png({palette:true,colours:64}).toFile(path.join(output,species+'.png'));
  }
  console.log('Original 128px sprite atlases prepared.');

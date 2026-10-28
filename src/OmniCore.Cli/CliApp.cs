@@ -135,6 +135,8 @@ public sealed partial class CliApp
         if (command == "update") return RunUpdateAsync(args);
         if (command is "pet" or "/pet")
         {
+            if (args.Length > 1 && args[1] is "chat" or "sessions" or "sesiones" or "alerts" or "avisos" or "memory" or "memoria")
+                return RunCompanionHubCliAsync(args);
             try
             {
                 var state = CompanionPetPresentation.Execute(Runtime.Connect(CancellationToken.None),

@@ -184,7 +184,7 @@ public sealed class CompanionPetService
             state = new() { DiscoveredAt = now, LastActivity = now, HatchAfter = _options.HatchAfter, RulesVersion = _rulesVersion };
             changed = true;
         }
-        var petted = false;
+        var petted = false; var restricted = false;
         if (Receipt(db, tx, "action/" + identity))
         {
             var preferences = state.Clients.GetValueOrDefault(action.ClientId) ?? new();
@@ -196,14 +196,17 @@ public sealed class CompanionPetService
                 case "show": case "hide": case "preferences":
                     var next = preferences with { Visible = action.Action == "show" || action.Action != "hide" && preferences.Visible,
                         ReducedMotion = action.ReducedMotion ?? preferences.ReducedMotion,
+                        Restricted = action.Restricted ?? preferences.Restricted,
                         RenderMode = action.RenderMode ?? (action.Action == "show" && preferences.RenderMode == "hidden" ? "auto" : preferences.RenderMode) };
                     if (action.RenderMode is { } mode) next = next with { Visible = mode != "hidden" };
+                    restricted = next.Restricted && !preferences.Restricted;
                     changed |= next != preferences; state.Clients[action.ClientId] = next; break;
             }
         }
         if (changed) Write(db, tx, state);
         tx.Commit();
         if (petted) React("pet", now, 3, 2);
+        if (restricted) React("sad", now, 3, 3);
         return Snapshot(state, action.ClientId);
     }
     private void React(string animation, DateTimeOffset at, int priority, int seconds)
