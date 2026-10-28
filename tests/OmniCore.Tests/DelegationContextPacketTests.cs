@@ -11,6 +11,27 @@ namespace OmniCore.Tests;
 /// <summary>Real SQLite/CAS and ExplorerTurn; delegation facts are explicit fixtures, not scheduler admission.</summary>
 public sealed class DelegationContextPacketTests
 {
+    [Theory]
+    [InlineData("workflow authorization before tools")]
+    [InlineData("Authorization: Bearer delegation_fixture_credential_123456")]
+    public async System.Threading.Tasks.Task Redacted_selected_facts_replay_after_reopen_without_reintroducing_source_text(string source)
+    {
+        using var fx = new Fixture(source);
+        var safe = new PiiRedactor().Redact("User: " + source);
+        Assert.NotEqual("User: " + source, safe);
+        var prepared = fx.Prepare();
+        var reference = fx.Record(prepared);
+        fx.Lanes.Reopen();
+        var packet = JsonSerializer.Deserialize(fx.Lanes.Artifacts.GetText(reference.Hash)!,
+            DelegationContextJson.Default.DelegationContextPacket)!;
+        Assert.Equal(safe, Assert.Single(packet.Facts).Content);
+        var projection = fx.Service.CreateDelegationProjection(fx.Lanes.Session, fx.Target.DelegationId);
+        var item = Assert.Single(await projection.GetContextAsync(Request(fx, fx.Child.Task, fx.Child.Lane),
+            TestContext.Current.CancellationToken));
+        Assert.EndsWith(safe, item.Content);
+        Assert.DoesNotContain(source, item.Content);
+    }
+
     [Fact]
     public async System.Threading.Tasks.Task Accepted_packet_automatically_reaches_child_after_reopen_without_manual_contributor_injection()
     {

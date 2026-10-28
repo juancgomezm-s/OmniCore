@@ -917,15 +917,20 @@ public static class StdioProtocolHost
                 ConversationTranscriptImport.ValidateCommandPayloadSize(command.PayloadJson);
                 using var source = JsonDocument.Parse(command.PayloadJson);
                 var importProperties = source.RootElement.EnumerateObject().Select(property => property.Name).ToArray();
-                if (importProperties.Length != 2 || importProperties.Distinct(StringComparer.Ordinal).Count() != importProperties.Length
+                if (importProperties.Length != 2 || importProperties.Distinct(StringComparer.Ordinal).Count() != 2
                     || !importProperties.Contains("cmd", StringComparer.Ordinal)
-                    || !importProperties.Contains("documentBase64", StringComparer.Ordinal)
                     || !source.RootElement.TryGetProperty("cmd", out var importCommand)
-                    || importCommand.ValueKind != JsonValueKind.String || importCommand.GetString() != commandName
-                    || !source.RootElement.TryGetProperty("documentBase64", out var encoded)
-                    || encoded.ValueKind != JsonValueKind.String || encoded.GetString() is not { } base64)
+                    || importCommand.ValueKind != JsonValueKind.String || importCommand.GetString() != commandName)
                     return false;
-                _ = ConversationTranscriptImport.Parse(ConversationTranscriptImport.DecodeBase64Document(base64));
+                if (source.RootElement.TryGetProperty("documentBase64", out var encoded)
+                    && encoded.ValueKind == JsonValueKind.String && encoded.GetString() is { } base64)
+                    _ = ConversationTranscriptImport.Parse(ConversationTranscriptImport.DecodeBase64Document(base64));
+                else if (expectedSession.Value is null
+                    || !source.RootElement.TryGetProperty("fileRelativePath", out var file)
+                    || file.ValueKind != JsonValueKind.String
+                    || !WorkspaceConversationImportSource.IsRelativePath(file.GetString())) return false;
+                // File paths are grammar-checked here without IO. Only the authenticated,
+                // scoped Host import below opens the source under its recorded workspace.
                 scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
                     CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
                 return true;
