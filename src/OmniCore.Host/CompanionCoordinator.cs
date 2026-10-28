@@ -80,7 +80,7 @@ public sealed partial class CompanionCoordinator
         catch (IOException error) { memory = new(Path.Combine(_directory, "memory.md"), "Memoria no disponible: " + error.Message, "unavailable"); }
         return new(Rows<CompanionInstance>(db, null, "SELECT json FROM instances WHERE at>$p0 ORDER BY at DESC LIMIT 64", Now - 15000),
             Rows<CompanionNotice>(db, null, "SELECT json FROM notices ORDER BY at DESC LIMIT 100"),
-            Rows<CompanionDelivery>(db, null, "SELECT json FROM deliveries ORDER BY at DESC LIMIT 100"), memory);
+            Rows<CompanionDelivery>(db, null, "SELECT json FROM deliveries ORDER BY at DESC LIMIT 100"), memory, ReadReaction());
     }
     public void Notify(CompanionNotice notice)
     {

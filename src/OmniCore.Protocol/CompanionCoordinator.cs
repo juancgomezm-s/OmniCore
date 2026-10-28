@@ -21,7 +21,12 @@ public sealed record CompanionChatUsage(string Model, string Provider, long Requ
 public sealed record CompanionUsageSample(string Id, string Model, string Provider, long? Input = null, long? Output = null,
     long? CacheRead = null, long? CacheWrite = null, long? Reasoning = null, decimal? EstimatedUsd = null, decimal? ReportedUsd = null);
 public sealed record CompanionHubSnapshot(CompanionInstance[] Instances, CompanionNotice[] Notices,
-    CompanionDelivery[] Deliveries, CompanionMemory Memory);
+    CompanionDelivery[] Deliveries, CompanionMemory Memory, CompanionReaction? Reaction = null);
+public sealed record CompanionMemoryEntry(string Id, string Text);
+public sealed record CompanionSessionTarget(string InstanceId, string SessionId, string Project, string State);
+public sealed record CompanionToolResult(bool Ok, string? Error = null, string? Text = null,
+    CompanionMemoryEntry[]? Memories = null, CompanionSessionTarget[]? Sessions = null,
+    CompanionNotice[]? Notices = null, CompanionDelivery? Delivery = null, CompanionReaction? Reaction = null, int? Total = null);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(CompanionInstance))]
@@ -35,4 +40,6 @@ public sealed record CompanionHubSnapshot(CompanionInstance[] Instances, Compani
 [JsonSerializable(typeof(CompanionModelOption[]))]
 [JsonSerializable(typeof(CompanionChatUsage))]
 [JsonSerializable(typeof(CompanionChatUsage[]))]
+[JsonSerializable(typeof(CompanionToolResult))]
+[JsonSerializable(typeof(CompanionReaction))]
 public partial class CompanionCoordinatorJson : JsonSerializerContext;

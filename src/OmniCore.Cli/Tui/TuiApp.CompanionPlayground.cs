@@ -32,6 +32,7 @@ public sealed partial class TuiApp
         && !_animationPreferences.ReducedMotion && !_animationPreferences.Ascii
         && (_window?.Frame.Height ?? 0) >= 24 && (_window?.Frame.Width ?? 0) - _mainColumnInset >= 48;
     private bool PetCanPlay() => PetPlaygroundEnabled() && _overlay is null && _activeInteraction is null && _commandHelper is null
+        && !(_companionToolReaction?.Until > DateTimeOffset.UtcNow)
         && !(_pet?.Reaction is { AnimationId: "pet" } reaction && reaction.Until > DateTimeOffset.UtcNow);
     private int PetPlayWidth => Math.Max(0, (_conversation?.Viewport.Width ?? 0) - 1);
     private int PetPlayHeight => _conversation is null ? 0 : Math.Min(_conversation.Viewport.Height,

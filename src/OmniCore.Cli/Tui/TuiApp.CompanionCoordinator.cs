@@ -15,6 +15,7 @@ public sealed partial class TuiApp
 {
     private readonly string _companionInstance = Guid.NewGuid().ToString("N");
     private CompanionHubSnapshot? _companionSnapshot;
+    private CompanionReaction? _companionToolReaction;
     private FrameView? _companionPanel;
     private Button? _companionOpen, _companionRestrict;
     private TextView? _companionBody, _companionInput;
@@ -64,6 +65,7 @@ public sealed partial class TuiApp
                     _companionPolling = false;
                     if (_companionStopped) return;
                     _companionSnapshot = snapshot;
+                    _companionToolReaction = snapshot.Reaction;
                     if (!_companionQuietLoaded) { _companionQuiet = quiet; _companionQuietLoaded = true; }
                     if (chat is not null && !_companionChatBusy)
                     { _companionChatKey = chatKey; _companionChat = chat; }
@@ -251,10 +253,10 @@ public sealed partial class TuiApp
         if (_companionAction is not null) _companionAction.Enabled = _companionTab != "chat" || _companionChatKey.Length > 0 && !_companionChatBusy;
         if (_companionTab == "chat")
         {
-            _companionInfo.Text = _companionChatBusy ? "Pensando… Solo este mini chat usa el modelo." : "Chat aparte · Sin herramientas\nEnter envía · Memoria editable";
-            var text = _companionChat.Length == 0 ? "Hola. Puedes guardar tu nombre y lo que quieras que recuerde en Memoria. ¿Qué te gustaría contarme?"
+            _companionInfo.Text = _companionChatBusy ? "Pensando… Solo este mini chat usa el modelo." : "Chat aparte · Herramientas propias\nEnter envía · Memoria editable";
+            var text = _companionChat.Length == 0 ? "Hola. Puedes pedirme que recuerde algo, consultar avisos o enviar una instrucción a la sesión que me indiques."
                 : string.Join("\n\n", _companionChat.Select(m => (m.Role == "user" ? "Tú: " : (_pet?.Name ?? "Omni") + ": ") + m.Text));
-            if (_companionBody.Text?.ToString() != text) _companionBody.Text = text;
+            if (_companionBody.Text?.ToString() != text) { _companionBody.Text = text; _companionBody.MoveEnd(); }
         }
         else if (_companionTab == "memory")
         {
@@ -294,8 +296,13 @@ public sealed partial class TuiApp
             catch (OperationCanceledException) { reply = "La consulta se canceló o agotó su tiempo de espera."; }
             catch (Exception error) { reply = "No pude conversar: " + OmniCore.Host.OmniCliRuntime.RedactSensitive(error.Message); }
             var result = history.Append(new CompanionChatMessage("assistant", reply)).TakeLast(24).ToArray();
+            CompanionHubSnapshot? snapshot = null;
+            try { snapshot = hub.Read(); } catch (Exception) { }
             try { hub.SaveChat(key, result); } catch (Exception) { }
-            _uiActions.Enqueue(() => { _companionChatBusy = false; if (_companionChatKey == key) _companionChat = result; RefreshCompanionHub(); });
+            _uiActions.Enqueue(() => { _companionChatBusy = false; if (_companionChatKey == key) _companionChat = result;
+                if (snapshot is not null) { _companionSnapshot = snapshot; _companionToolReaction = snapshot.Reaction;
+                    if (_companionPanel is null || _companionTab != "memory") { _companionMemoryVersion = ""; _companionMemoryDraft = ""; } }
+                RefreshCompanionHub(); RenderCompanion(); });
             _uiActions.Enqueue(() => { if (_companionChatCancellation == cancellation) _companionChatCancellation = null; cancellation.Dispose(); });
         });
     }

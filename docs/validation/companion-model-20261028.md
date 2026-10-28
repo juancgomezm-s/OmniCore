@@ -1,5 +1,7 @@
 # Modelo y consumo independientes de la mascota — 2026-10-28
 
+Este informe describe `492ec05a`, anterior a las siete herramientas exclusivas del mini chat. Su validación posterior está en [companion-tools-20261028.md](companion-tools-20261028.md).
+
 La configuración de **Mascota: modelo y consumo**, dentro de **Modelos y ejecución**, permite guardar un modelo propio del mini chat. **Solo local** es opcional y está desactivado por defecto. Al desactivarlo se admiten también modelos por consumo. No se hereda el modelo principal ni se consultan sus autorizaciones de ruta o sus cuotas monetarias. La elección explícita usa los proveedores y la autenticación existentes.
 
 El consumo se guarda en tablas propias de `companion/coordinator.db`: totales por modelo/proveedor y recibos de consulta. No impone cuotas. Los totales se actualizan en transacciones para compartirlos entre instancias y evitar duplicados. Un recibo sin respuesta permanece incompleto; no se supone que haya costado cero. Las estimaciones de tarifas y los costes reportados se muestran por separado. Caché y razonamiento son detalles incluidos en entrada/salida, no tokens extra que sumar.

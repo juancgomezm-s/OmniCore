@@ -1,6 +1,6 @@
 # Mascota: conversación, recuerdos y coordinación local
 
-La mascota tiene un mini chat independiente del agente principal. No recibe el historial del trabajo, no dispone de herramientas y no autoriza acciones. Los controles de **Sesiones** y **Avisos** permiten enviar una instrucción al principal o elegir una opción de una decisión real. No se dirige trabajo a los subworkers.
+La mascota tiene un mini chat independiente del agente principal. No recibe el historial del trabajo y dispone de siete herramientas exclusivas para recuerdos, avisos, sesiones, instrucciones y reacciones. No autoriza permisos del Core. Los controles de **Sesiones** y **Avisos** permiten enviar una instrucción al principal o elegir una opción de una decisión real. No se dirige trabajo a los subworkers.
 
 ## Uso
 
@@ -56,9 +56,35 @@ Por CLI:
 - `omni pet model --json` muestra la configuración guardada.
 - `omni pet usage --json` muestra sus contadores; `--text` ofrece un resumen legible.
 
-La mascota no recibe las herramientas del agente principal. El contrato de conversación queda separado para poder añadir herramientas exclusivas de su alcance más adelante. Por ahora los recuerdos y las órdenes entre instancias siguen usando sus controles explícitos. No llama al modelo por animaciones, avisos, paso del tiempo o apertura del panel.
+La mascota no recibe las herramientas del agente principal. Su catálogo exclusivo se describe abajo. Los controles manuales de memoria, sesiones y avisos siguen disponibles. No llama al modelo por animaciones, avisos, paso del tiempo o apertura del panel.
 
 La consulta conserva un timeout técnico de 60 segundos, contexto acotado y una respuesta breve; no son cuotas acumuladas. Se solicita un máximo de 512 tokens donde el adaptador lo soporta. El perfil Codex de suscripción no tiene un límite de salida comprobado y no recibe ese parámetro; el timeout y el recorte local no deben presentarse como límites de consumo del proveedor.
+
+## Herramientas exclusivas del mini chat
+
+| Herramienta | Alcance |
+| --- | --- |
+| `memory.read` | Consulta recuerdos guardados; puede buscar por texto y devuelve identificadores estables. |
+| `memory.remember` | Añade un recuerdo solicitado por la persona, de una línea y hasta 500 caracteres. No duplica hechos iguales. |
+| `memory.forget` | Elimina el recuerdo identificado, conservando el resto del documento. No borra las conversaciones visibles. |
+| `sessions.list` | Consulta instancias activas, proyecto, sesión e identificador de instancia. |
+| `notices.list` | Consulta avisos recientes reales, incluidos finalizaciones y decisiones pendientes. No aprueba ninguna decisión. |
+| `agent.message` | Encola la instrucción literal de la persona para el principal de una sesión explícita y única. |
+| `pet.react` | Expresa una reacción breve sin modificar XP, especie, visibilidad, restricción ni preferencias. |
+
+Ejemplos en `/pet chat`:
+
+- «Recuerda que mi gato se llama Miso». Después: «¿Qué recuerdas de mi gato?» o «Olvida lo de Miso».
+- «¿Qué sesiones están trabajando?» y «¿Hay avisos nuevos?».
+- «Dile a Alpha: revisa las pruebas». **Alpha** debe identificar un proyecto activo de forma única. También se puede indicar la sesión o instancia por ID; desde una TUI, «esta sesión» usa su sesión actual cuando hay un único receptor.
+
+Si coinciden varias instancias, la mascota pide un destino más preciso. El destino debe figurar en la petición humana y el texto reenviado debe ser un fragmento literal de ella; no se deducen órdenes de avisos ni recuerdos. Las opciones de permisos, cuestionarios y aprobaciones siguen en los controles validados por el Core. No existe una herramienta para responder permisos ni para ejecutar shell, editar el proyecto o dirigir subworkers.
+
+El modelo recibe resultados de herramientas y puede continuar hasta una respuesta final. Las llamadas de esta continuación se contabilizan individualmente en el consumo propio, sin cuotas monetarias. El diálogo técnico tiene timeout y un número finito de pasos para evitar bucles; las respuestas y listados son breves. El modelo elegido debe admitir llamadas de herramientas nativas. No se interpreta texto libre del modelo como código ejecutable.
+
+Los reintentos de una misma acción dentro de la consulta no repiten el envío. Los envíos siguen vinculados al identificador de instancia, sesión y Run que valida la bandeja local. La respuesta distingue **en cola** de **admitida** y de **finalizada**. Los efectos completados tienen un recibo textual: si falla la última respuesta del modelo, la persona puede ver qué se guardó o encoló antes de repetir la petición.
+
+La escritura de recuerdos usa la misma comprobación de versión que el editor manual. Una edición concurrente no se sobrescribe silenciosamente. Las reacciones se comparten como una preferencia temporal con fecha de caducidad; no generan eventos por frame, no alteran evolución y respetan ocultar, restringir y movimiento reducido. La caricia del Core mantiene prioridad sobre una reacción de la tool.
 
 ## Renderizado
 

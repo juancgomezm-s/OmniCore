@@ -17,8 +17,9 @@ public sealed partial class TuiWiringTests
         public string CompanionWorkspace => fixture.Workspace;
         public CompanionModelOption[] CompanionModels() => [new("cloud-chat", "paid", false), new("local-chat", "local", true)];
         public int Chats; public string? Input;
+        public Func<IReadOnlyList<CompanionChatMessage>, CancellationToken, Task<string>>? ChatHandler;
         public Task<string> CompanionChatAsync(IReadOnlyList<CompanionChatMessage> history, CancellationToken token)
-        { Chats++; return System.Threading.Tasks.Task.FromResult("Hola, Juan. ¿Cómo va tu proyecto?"); }
+        { Chats++; return ChatHandler?.Invoke(history, token) ?? System.Threading.Tasks.Task.FromResult("Hola, Juan. ¿Cómo va tu proyecto?"); }
         public Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken token)
         { Input = input; return System.Threading.Tasks.Task.FromResult(0); }
     }

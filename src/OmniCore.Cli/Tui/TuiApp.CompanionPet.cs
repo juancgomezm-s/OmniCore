@@ -45,6 +45,8 @@ public sealed partial class TuiApp
         var working = HasActiveModelWork;
         var waiting = _state.Overlays.Count > 0;
         if (working || waiting) _petLastActive = DateTimeOffset.UtcNow;
+        if (_companionToolReaction is { } reaction && reaction.Until > DateTimeOffset.UtcNow
+            && !(_pet?.Reaction is { } active && active.Until > DateTimeOffset.UtcNow && active.Priority >= reaction.Priority)) return reaction.AnimationId;
         return _pet is null ? "idle" : CompanionPetPresentation.Animation(_pet, working, waiting, _petLastActive, DateTimeOffset.UtcNow);
     }
     private void AnimateCompanion()

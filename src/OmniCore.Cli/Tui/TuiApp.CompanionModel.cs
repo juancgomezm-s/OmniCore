@@ -25,7 +25,7 @@ public sealed partial class TuiApp
         var close = new Button { Id = "companion-model-close", X = 2, Y = Pos.AnchorEnd(2), Height = 2, Text = "Cerrar" };
         close.Accepted += (_, args) => { args.Handled = true; CloseOverlay(); };
         frame.Add(status, local, list, usage, save, refresh, close,
-            new Label { X = 2, Y = 11, Width = Dim.Fill(2), Text = "Sin cuotas · Sin herramientas del agente" });
+            new Label { X = 2, Y = 11, Width = Dim.Fill(2), Text = "Sin cuotas · Herramientas de mascota" });
         CompanionModelOption[] models = [], filtered = []; var localOnly = false;
         string? Selected() => list.SelectedItem is { } n && n >= 0 && n < filtered.Length ? filtered[n].Id : null;
         void Refresh(string? selected)
