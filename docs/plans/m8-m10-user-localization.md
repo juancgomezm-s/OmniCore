@@ -110,6 +110,16 @@ CI del SHA exacto y aceptación visual del usuario.
 
 ## Incremento local de cierre M9 y consumidor vigente (2026-10-26)
 
+**Actualización 2026-10-28:** el recorrido TUI real → Explore/Implement/Verify
+Accepted → gate compilado completado → misma Session en OmniCoder → propuesta
+exacta aplicada → reapertura pasó íntegro, sin nueva inferencia ni permisos al
+aplicar. Verify conserva cuatro llamadas y ejecuta primero el verificador ligado
+al árbol aceptado en Strong; el SDK usa un home temporal privado. Se preservan
+lectura previa del modelo, límites de mutación y recuperación sin repetir efectos.
+Regresión 88/88 + 4/4 y Electron 1/1, según el acta enlazada abajo. Esta evidencia
+sustituye aquellos dos pendientes históricos. La generación de imagen real y
+revisión/CI/publicación conservan sus gates; OpenRouter ya está conectado.
+
 La petición posterior del usuario autoriza el cableado técnico sobre la copia
 vigente de OmniCoder, conservando su GUI y usando `!` en el composer. Este corte
 conecta shell/salida real, catálogo nativeTool, importación Imported/ObserveOnly,

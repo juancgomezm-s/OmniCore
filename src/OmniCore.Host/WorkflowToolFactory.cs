@@ -65,8 +65,11 @@ public static class WorkflowToolFactory
             throw new ArgumentException("Verification argv must contain 1 to 64 bounded arguments.", nameof(argv));
         var declaredCwd = Path.GetFullPath(declaredWorkspaceRoot);
         var effectiveCwd = Path.GetFullPath(effectiveWorkspaceRoot);
+        var declaredArguments = JsonSerializer.Serialize(new VerificationToolArguments(executable, argv,
+            declaredCwd, 120, false), VerificationToolArgumentsJsonContext.Default.VerificationToolArguments);
         var tool = new WorkflowOwnedDynamicTool(workflow, "verify_integration",
-            "Runs the workflow's exact declared integration check through process permissions and sandbox.",
+            "Runs the workflow's exact declared integration check through process permissions and sandbox. "
+                + "Call with exactly these arguments: " + declaredArguments,
             ModelToolCapability.ValidationProcess, processImplementation,
             new VerificationBinding(executable, Array.AsReadOnly(argv.ToArray()), declaredCwd, effectiveCwd, 120));
         catalog.Add(tool);

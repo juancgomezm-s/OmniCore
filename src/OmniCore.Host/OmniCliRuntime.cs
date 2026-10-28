@@ -4148,7 +4148,7 @@ public sealed class OmniCliRuntime : IDisposable
                         && codecs.Decode(evt) is ToolCallRequested)
                     .Select(evt => codecs.Decode(evt)).OfType<ToolCallRequested>().ToArray();
                 var isNativeDisposition = nativeDispositionCalls.Length == 1
-                    && nativeDispositionCalls[0].ToolName is "worktree.cleanup" or "worktree.discard" or "worktree.retention"
+                    && nativeDispositionCalls[0].ToolName is "worktree.integrate" or "worktree.cleanup" or "worktree.discard" or "worktree.retention"
                     && server.NativeToolInvocationMatches(sessionId, runId, nativeDispositionCalls[0].ProviderCallId,
                         nativeDispositionCalls[0].ToolName, nativeDispositionCalls[0].ArgumentsJson);
                 resumePreflightPassed = () =>

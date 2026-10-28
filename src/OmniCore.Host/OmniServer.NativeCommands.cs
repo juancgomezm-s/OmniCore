@@ -2574,7 +2574,17 @@ public sealed partial class OmniServer
                 && string.Equals(completedReceipt.ExecutionRunId, admission.RunId?.ToString(), StringComparison.Ordinal);
             string state;
             string? reason;
-            if (admission.Kind == "nativeTool" && receipt is
+            if (admission.CanonicalCommandId == NativeWorktreeIntegrationCommandId && receipt is
+                { State: OmniCore.Infrastructure.CommandReceiptState.Completed, OutcomeKind: "Accepted",
+                    ExecutionState: "cancelled" or "unknown" }
+                && receipt.SessionId == admission.SessionId.ToString()
+                && receipt.ExecutionRunId == admission.RunId?.ToString()
+                && NativeIntegrationReconciledNotApplied(admission, events))
+            {
+                state = "failed";
+                reason = "native_tool_not_applied";
+            }
+            else if (admission.Kind == "nativeTool" && receipt is
                 { State: OmniCore.Infrastructure.CommandReceiptState.Completed, OutcomeKind: "Accepted",
                     ExecutionState: "failed" }
                 && receipt.SessionId == admission.SessionId.ToString()
@@ -2620,6 +2630,35 @@ public sealed partial class OmniServer
                 admission.RunId?.ToString(), admission.CanonicalCommandId, admission.Kind, state, reason, value.Sequence));
         }
         return CommandCatalogJson.Encode(new NativeCommandRecoverySnapshot(rows));
+    }
+
+    private bool NativeIntegrationReconciledNotApplied(NativeCommandInvocationAdmitted admission,
+        IReadOnlyList<DomainEvent> events)
+    {
+        if (events.Count > 100_000 || admission.RunId is not { } run
+            || !TryReadNativeCommandPayload(admission.InvocationId, out _, out var json)
+            || !TryDecodeNativeCommandPayload(json, out var payload)
+            || !NativeToolActionPayloadMatches(admission, payload)) return false;
+        var own = events.Where(item => item.RunId == run).ToArray();
+        var requests = own.Where(item => _codecs.Decode(item) is ToolCallRequested request
+            && request.ProviderCallId == "native-action-" + admission.InvocationId).ToArray();
+        if (requests.Length != 1 || requests[0].ToolCallId is not { } call
+            || _codecs.Decode(requests[0]) is not ToolCallRequested requested
+            || requested.ToolName != "worktree.integrate" || requested.ArgumentsJson != payload.Arguments[1]) return false;
+        var resolutions = own.Where(item => item.ToolCallId == call && item.Sequence > requests[0].Sequence
+            && _codecs.Decode(item) is ToolCallReconciled).ToArray();
+        if (resolutions.Length != 1 || _codecs.Decode(resolutions[0]) is not ToolCallReconciled
+            { Outcome: ReconciliationOutcome.NotApplied }) return false;
+        using var arguments = JsonDocument.Parse(requested.ArgumentsJson);
+        var root = arguments.RootElement;
+        var paths = root.GetProperty("paths").EnumerateArray().Select(item => item.GetString()!).ToHashSet(StringComparer.Ordinal);
+        return own.Any(item => item.ToolCallId == call && item.Sequence >= resolutions[0].Sequence
+            && _codecs.Decode(item) is WorktreeIntegrationStateRecorded state
+            && state.State == WorktreeIntegrationState.NotApplied
+            && state.OwnershipId == root.GetProperty("ownershipId").GetString()
+            && state.ProposalId == root.GetProperty("proposalId").GetString()
+            && state.Files is { } files && files.Count == paths.Count && files.All(file => paths.Contains(file.RelativePath)
+                && file.Outcome == ReconciliationOutcome.NotApplied));
     }
 
     private string EncodeNativeWorkflowRecovery()

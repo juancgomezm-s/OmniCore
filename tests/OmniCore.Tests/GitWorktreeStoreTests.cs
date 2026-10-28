@@ -20,6 +20,39 @@ public sealed class GitWorktreeStoreTests
     private const string MutationHistoryRootVariable = "OMNICORE_M9_HISTORY_ROOT";
     private const string MutationFencePhaseVariable = "OMNICORE_M9_FENCE_PHASE";
 
+    [Theory]
+    [InlineData(false, FileMutationMode.Full, false)]
+    [InlineData(true, FileMutationMode.Full, true)]
+    [InlineData(true, FileMutationMode.PatchExisting, false)]
+    public async Task Reviewed_native_integration_preserves_model_prior_read_and_mutation_limits(
+        bool native, FileMutationMode mode, bool succeeds)
+    {
+        using var fixture = new GitFixture();
+        fixture.Init(); fixture.Write("tracked.txt", "base\n"); fixture.CommitAll("base");
+        var git = new GitWorktreeStore(new SystemProcessRuntime());
+        var worktree = Assert.IsType<WorktreeIdentity>((await git.CreateAsync(fixture.Request(), CancellationToken.None)).Worktree);
+        File.WriteAllText(Path.Combine(worktree.WorktreePath, "tracked.txt"), "implemented\n");
+        var preview = Assert.IsType<WorktreeIntegrationPreview>((await git.PreviewIntegrationAsync(new(worktree), CancellationToken.None)).Preview);
+        var artifacts = new FileArtifactStore(fixture.Data);
+        var coordinator = new WorktreeIntegrationHostCoordinator(fixture.Repository, fixture.Data, artifacts, git);
+        var registry = CreateIntegrationBoundary(requirePriorRead: true, mutationMode: mode).ReadRegistry();
+        var (tool, authorized, context, _) = MakeIntegrationCall(fixture.Repository, artifacts, coordinator,
+            worktree.OwnershipId, preview.ProposalId, ["tracked.txt"], registry, native);
+        if (!succeeds)
+        {
+            var refusal = Assert.Throws<ToolPreflightException>(() => tool.DescribeReconciliation(authorized, context, CancellationToken.None));
+            if (!native) Assert.Equal(ToolErrorCode.PriorReadRequired, refusal.ErrorCode);
+            Assert.Equal("base\n", File.ReadAllText(Path.Combine(fixture.Repository, "tracked.txt")));
+            return;
+        }
+        Assert.NotNull(tool.DescribeReconciliation(authorized, context, CancellationToken.None));
+        // A human approval does not create reusable model read authority.
+        Assert.Null(registry.VersionOf("tracked.txt"));
+        var result = await tool.ExecuteAsync(authorized, context, CancellationToken.None);
+        Assert.False(result.IsError, result.Summary);
+        Assert.Equal("implemented\n", File.ReadAllText(Path.Combine(fixture.Repository, "tracked.txt")));
+    }
+
     [Fact]
     public void Closing_legacy_event_store_releases_database_while_history_object_remains_alive()
     {
@@ -2700,7 +2733,7 @@ public sealed class GitWorktreeStoreTests
     private static (WorktreeIntegrationApplyTool Tool, AuthorizedToolIntent Authorized,
         ToolExecutionContext Context, List<DomainEventPayload> Events) MakeIntegrationCall(string repository, IArtifactStore artifacts,
         WorktreeIntegrationHostCoordinator coordinator, string ownershipId, string proposalId,
-        string[] paths, FileReadRegistry? registry = null)
+        string[] paths, FileReadRegistry? registry = null, bool native = false)
     {
         var json = System.Text.Json.JsonSerializer.Serialize(new { ownershipId, proposalId, paths });
         var callId = ToolCallId.New();
@@ -2709,7 +2742,7 @@ public sealed class GitWorktreeStoreTests
         var prepared = Assert.IsType<Prepared>(tool.Prepare(call, new ToolPreparationContext(repository, DateTimeOffset.UtcNow)));
         var authorized = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()).Authorize(prepared.Intent);
         var events = new List<DomainEventPayload>();
-        var context = new ToolExecutionContext(repository, registry, events.Add, artifacts: artifacts);
+        var context = new ToolExecutionContext(repository, registry, events.Add, artifacts: artifacts, isNativeUserAction: native);
         return (tool, authorized, context, events);
     }
 

@@ -594,7 +594,11 @@ internal sealed partial class WorktreeIntegrationHostCoordinator : IWorktreeInte
                 exists = true;
                 operation = ModelToolCapability.ReplaceFile;
             }
-            if (exists && (policy?.RequirePriorRead ?? true)
+            // A signed native human action approves this exact captured proposal, not a
+            // model-authored edit. Capture/Apply still validate all preimages, topology,
+            // ownership and mutation limits. Never manufacture model-visible read evidence:
+            // model calls retain their complete prior-read requirement, including tombstones.
+            if (!context.IsNativeUserAction && exists && (policy?.RequirePriorRead ?? true)
                 && (operation == ModelToolCapability.ReplaceFile && pre is not null
                     && context.MutationHistory?.ReadFile(context.WorkspaceRoot, image.RelativePath) is
                         { State: WorkspaceFileHistoryState.Tombstone, ExpectedHash: { } visibleTombstoneHash }
