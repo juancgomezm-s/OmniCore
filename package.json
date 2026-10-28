@@ -13,6 +13,7 @@
     "bin/",
     "dist/npm/",
     "tools/npm/launcher.js",
+    "tools/npm/windows-terminal.js",
     "README.md",
     "LICENSE",
     "THIRD-PARTY-NOTICES.md"
@@ -20,6 +21,6 @@
   "scripts": {
     "prepare": "node tools/npm/prepare.js",
     "install:cli": "node tools/npm/install.js",
-    "test": "node --test tools/npm/launcher.test.js tools/npm/install.test.js tools/npm/sync-main.test.js tools/npm/update-helper.test.cjs"
+    "test": "node --test tools/npm/launcher.test.js tools/npm/install.test.js tools/npm/sync-main.test.js tools/npm/update-helper.test.cjs tools/npm/windows-terminal.test.js"
   }
 }

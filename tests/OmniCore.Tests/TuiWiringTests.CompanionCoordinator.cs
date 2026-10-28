@@ -116,6 +116,8 @@ public sealed partial class TuiWiringTests
         SeedPlaygroundPet(fx, "fox", 1); var host = new CompanionHubTurn(fx);
         var client = new CompanionExpressionClient(fx.Server) { Expression = "sad" };
         fx.StartTui(turnHost: host, client: client, initialColumns: 120, initialRows: 40);
+        if (!fx.Read(() => fx.App.SidebarOpen)) fx.InjectKey(new Key(KeyCode.F2));
+        fx.Wait(() => fx.App.Sidebar!.Visible, "lateral visible para animación gráfica");
         Type(fx, "/pet home"); fx.InjectKey(new Key(KeyCode.Enter)); EmulatePetSixelDevice(fx);
         Type(fx, "/pet chat"); fx.InjectKey(new Key(KeyCode.Enter));
         var first = WaitForPetExpressionFrame(fx, "sad", null); ExportPetRasterFrame(fx, "sad-first");
@@ -138,6 +140,8 @@ public sealed partial class TuiWiringTests
     {
         SeedPlaygroundPet(fx, "fox", 1); var host = new CompanionHubTurn(fx);
         fx.StartTui(turnHost: host, initialColumns: 120, initialRows: 40);
+        if (!fx.Read(() => fx.App.SidebarOpen)) fx.InjectKey(new Key(KeyCode.F2));
+        fx.Wait(() => fx.App.Sidebar!.Visible, "lateral visible antes de abrir mascota");
         Type(fx, "/pet chat"); fx.InjectKey(new Key(KeyCode.Enter));
         fx.Wait(() => HubView(fx, "companion-hub-action").Enabled, "mini chat preparado");
         fx.Invoke(() => { HubView(fx, "companion-chat-input").Text = "borrador de mascota"; fx.App.Composer!.Text = "borrador de trabajo"; fx.App.Composer.SetFocus(); });

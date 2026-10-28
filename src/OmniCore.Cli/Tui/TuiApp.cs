@@ -165,6 +165,10 @@ public sealed partial class TuiApp
         _themeStore = new(Path.ChangeExtension(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath(), ".theme"));
         _reasoningDisplayStore = new(Path.ChangeExtension(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath(), ".reasoning"));
         ShowReportedReasoning = _reasoningDisplayStore.Load();
+        _densityStore = new(Path.ChangeExtension(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath(), ".sidebar-density"));
+        _compactDensity = _densityStore.Read();
+        if (Environment.GetEnvironmentVariable("OMNICORE_TUI_SIDEBAR_DENSITY") == "compact")
+        { _densityBeforePreview = _compactDensity; _compactDensity = true; }
         _theme = _themeStore.Read();
         _animationPreferences = _animationStore.Load();
         RefreshSidebarPreferences();
@@ -394,6 +398,7 @@ public sealed partial class TuiApp
         else if (code == "Esc" && _preferencesCenterActive) { _lastEscapeAt = null; HandlePreferencesEscape(); key.Handled = true; }
         else if (code == "Esc" && _overlay is not null) { _lastEscapeAt = null; CloseOverlay(); key.Handled = true; }
         else if (code == "Esc" && _commandHelper is not null) { _lastEscapeAt = null; HideCommandHelper(); key.Handled = true; }
+        else if (code == "Esc" && !_turnBusy && CancelDensityPreview()) { _lastEscapeAt = null; key.Handled = true; }
         else if (code == "Esc")
         {
             // Esc dismisses/interrupts; a second Esc within the window exits the TUI.
@@ -568,6 +573,7 @@ public sealed partial class TuiApp
         _mainColumnInset = layout.SidebarVisible ? layout.SidebarWidth : 0;
         if (_conversationFrame is not null) _conversationFrame.Width = Dim.Fill(_mainColumnInset);
         if (_composerFrame is not null) _composerFrame.Width = Dim.Fill(_mainColumnInset + 1);
+        ApplyDensitySpacing();
         UpdateComposerHeight();
         if (_header is not null) _header.Width = Dim.Fill(_mainColumnInset + PetHeaderEndPadding);
         if (_completion is not null) _completion.Width = Dim.Fill(_mainColumnInset + 2);
@@ -637,7 +643,7 @@ public sealed partial class TuiApp
                 var names = ReadStringArray(commandCatalogJson, "commands")
                     .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode", "reasoning", "effort", "think", "permission", "permissions",
                         "cancel", "interrupt", "preferences", "model", "models", "sidebar", "agents", "delegate", "agent", "join", "fanout", "animation", "images",
-                        "new", "sessions", "resume-session", "rename-session", "clear", "compact", "keybindings", "palette" })
+                        "new", "sessions", "resume-session", "rename-session", "clear", "compact", "compacto", "density", "keybindings", "palette" })
                     .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name))
                     .Where(name => !TuiMenuCommands.IsMenuOwned(name, aliases));
                 _slashAutocompleteNames = aliases.CompletionNames(names)
@@ -705,6 +711,7 @@ public sealed partial class TuiApp
         "/rename-session" => _localization.Resolve("shell.conversation.renamed"),
         "/clear" => _localization.Resolve("shell.conversation.clear"),
         "/compact" => _localization.Resolve("shell.conversation.compact"),
+        "/compacto" or "/density" => DensityText("description"),
         "/agents" => _localization.Resolve("shell.inspect_run_agents_and_lanes"),
         "/delegate" => _localization.Resolve("shell.queue_bounded_read_only_work"),
         "/fanout" => _localization.Resolve("shell.group_queued_delegations_with_direct_or_aggregate_fan_in"),
@@ -799,6 +806,7 @@ public sealed partial class TuiApp
             .Read().CommandAliases);
         // Whitespace is grammar for commands, but remains literal in a conversation prompt.
         var input = HumanCommandAliases.NormalizeSlashSyntax(aliases.NormalizeSlashHead(rawInput.Trim()));
+        if (HandleDensitySlash(input)) return;
         if (HandleConversationSlash(input)) return;
         if (HandleKeyBindingsSlash(input)) return;
         if (HandleDirectControlsSlash(input)) return;
@@ -1854,6 +1862,7 @@ public sealed partial class TuiApp
     private string HelpText()
     {
         var width = Math.Max(1, (_window?.Frame.Width ?? 80) - _mainColumnInset - 4);
+        if (_densityBeforePreview.HasValue) return FitText(DensityText("preview"), width);
         var normal = _conversation?.HasFocus == true ? _localization.Resolve("links.help")
             : CompactHelp(CurrentModeCode(), _locale, width, PermissionLevelLabel());
         return FitText(KeyboardHelp(normal) + " · " + _localization.Resolve("shell.attachment.help"), width);

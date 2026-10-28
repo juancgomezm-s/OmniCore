@@ -43,6 +43,10 @@ Los clientes dibujan la experiencia. El Core decide estado, permisos, budgets y 
 
 ## Panel lateral de sesión
 
+`/compacto` permite probar un panel lateral con menos espacios internos; `/compacto guardar` conserva la elección y `/compacto cancelar` la revierte. El chat principal conserva su diseño.
+
+En Windows, el lanzador npm abre `omni` y `omni tui` en un perfil propio de Windows Terminal con ClearType cuando está disponible. Para usar la ventana actual, ejecuta `omni --current-terminal` o define `OMNICORE_CURRENT_TERMINAL=1`. Los comandos de texto, la salida redirigida y SSH conservan el terminal actual. No se modifican los demás perfiles. [Detalles y respaldo](docs/validation/companion-density-cleartype-20261028.md).
+
 El panel reúne el estado del trabajo junto a la conversación. Su propósito es permitir
 entender qué está ejecutándose, qué contexto recibió el modelo y qué resultados están
 respaldados por evidencia, sin tener que reconstruirlo leyendo todo el chat.

@@ -99,7 +99,7 @@ public sealed partial class TuiApp
         if (_petView.Visible != visible || _petView.Frame.Height != height)
         {
             _petView.Visible = visible; _petView.Height = height; _petView.Y = Pos.AnchorEnd(height + 1);
-            _sidebarContent.Height = Dim.Fill(visible ? height + 5 : 1);
+            _sidebarContent.Height = Dim.Fill(visible ? height + 3 : 1);
         }
         if (_pet is null) return;
         var moving = _petConnected && !_pet.Preferences.ReducedMotion && _animationPreferences.Enabled && !_animationPreferences.ReducedMotion;

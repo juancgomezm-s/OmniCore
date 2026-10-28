@@ -13,6 +13,16 @@ namespace OmniCore.Cli;
 
 public sealed partial class TuiApp
 {
+    private static void CompactCompanionButtons(View parent)
+    {
+        foreach (var button in parent.SubViews.OfType<Button>().Where(b => b.Height is DimAbsolute { Size: 1 }))
+        {
+            button.NoPadding = true;
+            button.Margin.Thickness = new(0);
+            button.Border.Thickness = new(0);
+            button.Padding.Thickness = new(0);
+        }
+    }
     private readonly string _companionInstance = Guid.NewGuid().ToString("N");
     private CompanionHubSnapshot? _companionSnapshot;
     private CompanionReaction? _companionToolReaction;
@@ -128,12 +138,13 @@ public sealed partial class TuiApp
         if (_sidebar is null || _pet?.Discovered != true) return;
         if (_companionOpen is null)
         {
-            _companionOpen = new() { Id = "companion-hub-open", X = 2, Y = Pos.AnchorEnd(16), Height = 2, Text = "Conversar" };
+            _companionOpen = new CompanionRowButton { Id = "companion-hub-open", X = 2, Y = Pos.AnchorEnd(14), Height = 1, Text = "Conversar", NoDecorations = true, ShadowStyle = ShadowStyles.None };
             _companionOpen.Accepted += (_, args) => { args.Handled = true; OpenCompanionHub("chat"); };
-            _companionRestrict = new() { Id = "companion-restrict", X = Pos.Right(_companionOpen) + 1,
-                Y = Pos.AnchorEnd(16), Height = 2, Text = "Restringir" };
+            _companionRestrict = new CompanionRowButton { Id = "companion-restrict", X = Pos.Right(_companionOpen) + 1,
+                Y = Pos.AnchorEnd(14), Height = 1, Text = "Restringir", NoDecorations = true, ShadowStyle = ShadowStyles.None };
             _companionRestrict.Accepted += (_, args) => { args.Handled = true; ToggleCompanionRestriction(); };
             _sidebar.Add(_companionOpen, _companionRestrict); ApplyTheme(_companionOpen); ApplyTheme(_companionRestrict);
+            CompactCompanionButtons(_sidebar);
         }
         var unread = _companionSnapshot?.Notices.Count(n => !n.Read && n.Instance != _companionInstance) ?? 0;
         _companionOpen.Text = !_companionQuiet && unread > 0 ? $"Avisos ({unread})" : "Conversar";
@@ -141,9 +152,9 @@ public sealed partial class TuiApp
         if (_companionControlsHeight != _companionPetHeight)
         {
             _companionControlsHeight = _companionPetHeight;
-            _companionOpen.Y = _companionRestrict.Y = Pos.AnchorEnd(_companionPetHeight + 3);
+            _companionOpen.Y = _companionRestrict.Y = Pos.AnchorEnd(_companionPetHeight + 2);
             if (_companionPanel is not null && _companionPanel.SuperView == _sidebar)
-                _companionPanel.Height = Dim.Fill(_companionPetHeight + 5);
+                _companionPanel.Height = Dim.Fill(_companionPetHeight + 3);
         }
         _companionOpen.Visible = _companionRestrict.Visible = _pet.Preferences.Visible;
     }
@@ -159,43 +170,43 @@ public sealed partial class TuiApp
         if (_window.Frame.Height < 22) { ShowMessage("Amplía la terminal a 22 filas para abrir el mini chat de la mascota."); return; }
         if (_pet?.Discovered != true) RunPetAction("discover", false);
         if (_companionPanel is not null) { if (_companionTab != tab) SelectCompanionTab(tab); _companionInput?.SetFocus(); return; }
-        CloseOverlay(); _sidebarOpen = true; ApplyResponsiveLayout();
+        CloseOverlay(); ApplyResponsiveLayout();
         var wide = _sidebar?.Visible == true && _window.Frame.Width >= 100 && _window.Frame.Height >= 32;
         HideCommandHelper();
         var frame = new FrameView { Id = "companion-hub", Title = "Mascota", CanFocus = true, BorderStyle = LineStyle.Single,
             X = wide ? 1 : Pos.Center(), Y = wide ? 1 : Pos.Center(), Width = wide ? Dim.Fill(1) : Dim.Percent(90),
-            Height = wide ? Dim.Fill(_companionPetHeight + 5) : Math.Max(18, _window.Frame.Height - 2) };
+            Height = wide ? Dim.Fill(_companionPetHeight + 3) : Math.Max(18, _window.Frame.Height - 2) };
         frame.Id = "companion-hub"; _companionPanel = frame;
         _companionPanelWindowSize = _window.Frame.Size;
         _companionLayoutTab = null;
         void ButtonAt(string id, string text, int x, int y, Action click)
         {
-            var button = new Button { Id = id, Text = text, X = x, Y = y, Height = 2 };
+            var button = new CompanionRowButton { Id = id, Text = text, X = x, Y = y, Height = 1, NoDecorations = true, ShadowStyle = ShadowStyles.None };
             button.Accepted += (_, args) => { args.Handled = true; click(); }; frame.Add(button);
         }
         ButtonAt("companion-chat-tab", "Chat", 0, 0, () => SelectCompanionTab("chat"));
         ButtonAt("companion-notices-tab", "Avisos", 10, 0, () => SelectCompanionTab("notices"));
-        ButtonAt("companion-sessions-tab", "Sesiones", 0, 2, () => SelectCompanionTab("sessions"));
-        ButtonAt("companion-memory-tab", "Memoria", 14, 2, () => SelectCompanionTab("memory"));
-        _companionInfo = new() { Id = "companion-hub-info", X = 0, Y = 4, Width = Dim.Fill(), Height = 2 };
-        _companionBody = new() { Id = "companion-chat-history", X = 0, Y = 6, Width = Dim.Fill(), Height = Dim.Fill(8), ReadOnly = true, WordWrap = true };
-        _companionList = new() { Id = "companion-hub-list", X = 0, Y = 6, Width = Dim.Fill(), Height = Dim.Fill(8), Visible = false };
-        _companionInput = new() { Id = "companion-chat-input", X = 0, Y = Pos.AnchorEnd(8), Width = Dim.Fill(), Height = 3, WordWrap = true,
+        ButtonAt("companion-sessions-tab", "Sesiones", 0, 1, () => SelectCompanionTab("sessions"));
+        ButtonAt("companion-memory-tab", "Memoria", 14, 1, () => SelectCompanionTab("memory"));
+        _companionInfo = new() { Id = "companion-hub-info", X = 0, Y = 2, Width = Dim.Fill(), Height = 1 };
+        _companionBody = new() { Id = "companion-chat-history", X = 0, Y = 3, Width = Dim.Fill(), Height = Dim.Fill(6), ReadOnly = true, WordWrap = true };
+        _companionList = new() { Id = "companion-hub-list", X = 0, Y = 3, Width = Dim.Fill(), Height = Dim.Fill(6), Visible = false };
+        _companionInput = new() { Id = "companion-chat-input", X = 0, Y = Pos.AnchorEnd(6), Width = Dim.Fill(), Height = 3, WordWrap = true,
             BorderStyle = LineStyle.Single, Title = "Mensaje" };
         _companionInput.KeyDown += (_, args) => { if (args.KeyCode == KeyCode.Enter && _companionTab == "chat") { args.Handled = true; SendCompanionChat(); } };
-        var action = new Button { Id = "companion-hub-action", X = 0, Y = Pos.AnchorEnd(5), Height = 2, Text = "Enviar / Ver" };
+        var action = new CompanionRowButton { Id = "companion-hub-action", X = 0, Y = Pos.AnchorEnd(3), Height = 1, NoDecorations = true, ShadowStyle = ShadowStyles.None, Text = "Enviar / Ver" };
         _companionAction = action;
         action.Accepted += (_, args) => { args.Handled = true; CompanionHubAction(); };
-        var model = new Button { Id = "companion-model-open", X = Pos.Right(action) + 1, Y = Pos.AnchorEnd(5), Height = 2, Text = "Modelo" };
+        var model = new CompanionRowButton { Id = "companion-model-open", X = Pos.Right(action) + 1, Y = Pos.AnchorEnd(3), Height = 1, NoDecorations = true, ShadowStyle = ShadowStyles.None, Text = "Modelo" };
         model.Accepted += (_, args) => { args.Handled = true; ShowCompanionModelSettings(); };
-        var close = new Button { Id = "companion-hub-close", X = 0, Y = Pos.AnchorEnd(2), Height = 2, Text = "Cerrar" };
+        var close = new CompanionRowButton { Id = "companion-hub-close", X = 0, Y = Pos.AnchorEnd(1), Height = 1, NoDecorations = true, ShadowStyle = ShadowStyles.None, Text = "Cerrar" };
         close.Accepted += (_, args) => { args.Handled = true; CloseCompanionHub(); };
-        var quiet = new Button { Id = "companion-hub-quiet", X = Pos.Right(close) + 1, Y = Pos.AnchorEnd(2), Height = 2, Text = _companionQuiet ? "Avisar" : "Silenciar" };
+        var quiet = new CompanionRowButton { Id = "companion-hub-quiet", X = Pos.Right(close) + 1, Y = Pos.AnchorEnd(1), Height = 1, NoDecorations = true, ShadowStyle = ShadowStyles.None, Text = _companionQuiet ? "Avisar" : "Silenciar" };
         quiet.Accepted += (_, args) => { args.Handled = true; _companionQuiet = !_companionQuiet; quiet.Text = _companionQuiet ? "Avisar" : "Silenciar"; RenderCompanionHubControls();
             var value = _companionQuiet; var hub = _turnHost!.CompanionHub!; _ = Task.Run(() => { try { hub.SetQuiet(value); } catch (Exception) { } }); };
         frame.Add(_companionInfo, _companionBody, _companionList, _companionInput, action, model, close, quiet);
         if (wide) _sidebar!.Add(frame); else { _overlay = frame; _window.Add(frame); }
-        ApplyTheme(frame); SelectCompanionTab(tab); _companionInput.SetFocus(); _companionPolledAt = default; PollCompanionHub();
+        ApplyTheme(frame); CompactCompanionButtons(frame); SelectCompanionTab(tab); _companionInput.SetFocus(); _companionPolledAt = default; PollCompanionHub();
     }
     private void ReflowCompanionHub()
     {
@@ -245,29 +256,29 @@ public sealed partial class TuiApp
             _companionList.Visible = !_companionBody.Visible;
             _companionInput.Visible = _companionTab is "chat" or "memory";
             _companionInput.Title = _companionTab == "memory" ? "Recuerdos" : "Mensaje";
-            _companionInput.Height = _companionTab == "memory" ? Dim.Fill(5) : 3;
-            _companionInput.Y = _companionTab == "memory" ? 8 : Pos.AnchorEnd(8);
-            _companionBody.Height = _companionTab == "memory" ? 2 : Dim.Fill(8);
+            _companionInput.Height = _companionTab == "memory" ? Dim.Fill(3) : 3;
+            _companionInput.Y = _companionTab == "memory" ? 4 : Pos.AnchorEnd(6);
+            _companionBody.Height = _companionTab == "memory" ? 1 : Dim.Fill(6);
         }
         if (_companionAction is not null) _companionAction.Text = _companionTab switch { "chat" => "Enviar", "memory" => "Guardar memoria", "sessions" => "Elegir destino", _ => "Responder aquí" };
         if (_companionAction is not null) _companionAction.Enabled = _companionTab != "chat" || _companionChatKey.Length > 0 && !_companionChatBusy;
         if (_companionTab == "chat")
         {
-            _companionInfo.Text = _companionChatBusy ? "Pensando… Solo este mini chat usa el modelo." : "Chat aparte · Herramientas propias\nEnter envía · Memoria editable";
+            _companionInfo.Text = _companionChatBusy ? "Pensando…" : "Mascota · Enter envía";
             var text = _companionChat.Length == 0 ? "Hola. Puedes pedirme que recuerde algo, consultar avisos o enviar una instrucción a la sesión que me indiques."
-                : string.Join("\n\n", _companionChat.Select(m => (m.Role == "user" ? "Tú: " : (_pet?.Name ?? "Omni") + ": ") + m.Text));
+                : string.Join("\n", _companionChat.Select(m => (m.Role == "user" ? "Tú: " : (_pet?.Name ?? "Omni") + ": ") + m.Text));
             if (_companionBody.Text?.ToString() != text) { _companionBody.Text = text; _companionBody.MoveEnd(); }
         }
         else if (_companionTab == "memory")
         {
-            _companionInfo.Text = "Local · editable · hasta 16 KiB\nBorra recuerdos aquí para olvidarlos.";
+            _companionInfo.Text = "Memoria local · Guardar cambios";
             _companionBody.Text = _companionSnapshot?.Memory.Path ?? "Cargando…";
             if (_companionMemoryVersion.Length == 0 && _companionSnapshot is { } snapshot)
             { _companionMemoryVersion = snapshot.Memory.Version; _companionInput.Text = _companionMemoryDraft = snapshot.Memory.Text; }
         }
         else
         {
-            _companionInfo.Text = _companionTab == "notices" ? "Avisos reales · Ver responde aquí\nNo abre ni enfoca otra ventana." : "Destino: agente principal\nUna instancia por sesión activa.";
+            _companionInfo.Text = _companionTab == "notices" ? "Avisos · Responder aquí" : "Destino: agente principal";
             var rows = _companionTab == "notices" ? (_companionSnapshot?.Notices.Select(n => (n.Read ? "  " : "* ") + n.Title + " · " + Short(n.Session)).ToArray() ?? [])
                 : (_companionSnapshot?.Instances.Select(i => Path.GetFileName(i.Workspace) + " · " + i.State + " · " + Short(i.Session) + " @" + Short(i.Id)).ToArray() ?? []);
             if (!_companionRows.SequenceEqual(rows))
@@ -346,7 +357,7 @@ public sealed partial class TuiApp
         var location = new TextView { X = 1, Y = 0, Width = Dim.Fill(1), Height = 4, ReadOnly = true, WordWrap = true,
             Text = target.Workspace + "\nSesión: " + target.Session + "\nInstancia: " + target.Id + "\n" + target.State };
         var input = new TextView { Id = "companion-target-input", X = 1, Y = 5, Width = Dim.Fill(1), Height = 3, WordWrap = true };
-        var send = new Button { Id = "companion-target-send", X = 1, Y = 8, Text = "Enviar", Height = 2 };
+        var send = new CompanionRowButton { Id = "companion-target-send", X = 1, Y = 8, Text = "Enviar", Height = 2 };
         send.Accepted += (_, args) => { args.Handled = true; QueueCompanionDelivery(target, "instruction", input.Text?.ToString() ?? ""); };
         frame.Add(location, input, send);
         var y = 10;
@@ -356,12 +367,12 @@ public sealed partial class TuiApp
             for (var n = 0; n < decision.OptionIds.Length && n < 4; n++)
             {
                 var option = decision.OptionIds[n];
-                var button = new Button { Id = "companion-target-option-" + n, X = 1, Y = y, Height = 2, Text = decision.Labels.ElementAtOrDefault(n) ?? option };
+                var button = new CompanionRowButton { Id = "companion-target-option-" + n, X = 1, Y = y, Height = 2, Text = decision.Labels.ElementAtOrDefault(n) ?? option };
                 button.Accepted += (_, args) => { args.Handled = true; QueueCompanionDelivery(target, "answer", "", decision.Id, option); };
                 frame.Add(button); y += 2;
             }
         }
-        var close = new Button { X = 1, Y = Pos.AnchorEnd(2), Text = "Cerrar", Height = 2 };
+        var close = new CompanionRowButton { X = 1, Y = Pos.AnchorEnd(2), Text = "Cerrar", Height = 2 };
         close.Accepted += (_, args) => { args.Handled = true; CloseOverlay(); }; frame.Add(close);
         _overlay = frame; ApplyTheme(frame); _window!.Add(frame); input.SetFocus();
     }

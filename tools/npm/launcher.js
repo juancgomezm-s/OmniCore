@@ -3,6 +3,7 @@
 const path = require('node:path');
 const fs = require('node:fs');
 const { spawn } = require('node:child_process');
+const windowsTerminal = require('./windows-terminal');
 
 const signalExitCodes = {
   SIGHUP: 129,
@@ -17,11 +18,36 @@ function run(args = process.argv.slice(2), options = {}) {
   const parentProcess = options.process ?? process;
   const stderr = options.stderr ?? process.stderr;
   const dllPath = path.join(packageRoot, 'dist', 'npm', 'omni.dll');
+  const stayHere = options.currentTerminal || args.includes(windowsTerminal.marker);
+  args = args.filter(arg => arg !== windowsTerminal.marker);
 
   if (!fileExists(dllPath)) {
     stderr.write('Falta la CLI publicada (dist/npm/omni.dll). Reinstala el paquete sin --ignore-scripts para que npm ejecute prepare.\n');
     parentProcess.exitCode = 1;
     return null;
+  }
+
+  if (!stayHere && windowsTerminal.eligible(args, parentProcess)) {
+    let launch;
+    try { launch = windowsTerminal.prepare(packageRoot, parentProcess, options.terminalFs); }
+    catch { /* Read-only profile folders retain the current-terminal path. */ }
+    if (launch) {
+      let settled = false;
+      const fallback = () => {
+        if (settled) return;
+        settled = true;
+        run(args, { ...options, currentTerminal: true });
+      };
+      try {
+        const terminal = spawnProcess(launch.terminal, launch.args, { stdio: 'inherit', windowsHide: true });
+        terminal.once('error', fallback);
+        terminal.once('exit', code => {
+          if (code !== 0) fallback();
+          else if (!settled) { settled = true; parentProcess.exitCode = 0; }
+        });
+        return terminal;
+      } catch { fallback(); return null; }
+    }
   }
 
   const child = spawnProcess('dotnet', [dllPath, ...args], {
