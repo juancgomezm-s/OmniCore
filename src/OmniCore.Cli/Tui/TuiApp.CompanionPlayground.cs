@@ -31,7 +31,8 @@ public sealed partial class TuiApp
         && !_petPlayground.AtHome && !_pet.Preferences.ReducedMotion && _animationPreferences.Enabled
         && !_animationPreferences.ReducedMotion && !_animationPreferences.Ascii
         && (_window?.Frame.Height ?? 0) >= 24 && (_window?.Frame.Width ?? 0) - _mainColumnInset >= 48;
-    private bool PetCanPlay() => PetPlaygroundEnabled() && _overlay is null && _activeInteraction is null && _commandHelper is null;
+    private bool PetCanPlay() => PetPlaygroundEnabled() && _overlay is null && _activeInteraction is null && _commandHelper is null
+        && !(_pet?.Reaction is { AnimationId: "pet" } reaction && reaction.Until > DateTimeOffset.UtcNow);
     private int PetPlayWidth => Math.Max(0, (_conversation?.Viewport.Width ?? 0) - 1);
     private int PetPlayHeight => _conversation is null ? 0 : Math.Min(_conversation.Viewport.Height,
         Math.Max(CompanionPetPlayground.SpriteHeight, _conversation.Lines - _conversation.Viewport.Y));
@@ -81,6 +82,29 @@ public sealed partial class TuiApp
             return new(chat.X - window.X, chat.Y - window.Y);
         }
     }
+    private IReadOnlyList<Rectangle> PetWideGlyphs(Rectangle region)
+    {
+        var result = new List<Rectangle>();
+        if (_conversation is not { } chat) return result;
+        var origin = chat.ViewportToScreen(Point.Empty);
+        var viewport = new Rectangle(origin, chat.Viewport.Size);
+        region.Intersect(viewport);
+        for (var y = region.Top; y < region.Bottom; y++)
+        {
+            var row = y - origin.Y + chat.Viewport.Y;
+            if (row < 0 || row >= chat.Lines) continue;
+            var x = origin.X - chat.Viewport.X;
+            foreach (var cell in chat.GetLine(row))
+            {
+                var width = cell.Grapheme == "\t" ? Math.Max(1, chat.TabWidth - (x - origin.X + chat.Viewport.X) % Math.Max(1, chat.TabWidth))
+                    : Math.Max(1, Terminal.Gui.Text.StringExtensions.GetColumns(cell.Grapheme, false));
+                if (width == 2 && x < region.Right && x + width > region.Left) result.Add(new(x, y, width, 1));
+                x += width;
+                if (x >= region.Right) break;
+            }
+        }
+        return result;
+    }
     private void RenderPetPlayground()
     {
         if (_window is null || _conversationFrame is null) return;
@@ -91,7 +115,8 @@ public sealed partial class TuiApp
             _petRunner = new() { Id = "companion-runner", Visible = false,
                 X = Pos.Func(_ => PetPlayOrigin.X + PetPlayPose.X),
                 Y = Pos.Func(_ => PetPlayOrigin.Y + PetPlayPose.Y),
-                ClipScreen = () => new Rectangle(_conversation!.ViewportToScreen(Point.Empty), new Size(PetPlayWidth, PetOverlayHeight)) };
+                ClipScreen = () => new Rectangle(_conversation!.ViewportToScreen(Point.Empty), new Size(PetPlayWidth, PetOverlayHeight)),
+                UnderlyingWideGlyphs = PetWideGlyphs };
             _petLetter = new() { Id = "companion-letter", Visible = false,
                 X = Pos.Func(_ => PetPlayOrigin.X + PetTypingTargetX),
                 Y = Pos.Func(_ => PetPlayOrigin.Y + PetChaseHeight - 1 - (int)(_petPlayground.Frame % 2)) };

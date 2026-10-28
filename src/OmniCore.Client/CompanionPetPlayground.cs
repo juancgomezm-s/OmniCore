@@ -5,6 +5,7 @@ public sealed class CompanionPetPlayground
 {
     public const int SpriteWidth = 12;
     public const int SpriteHeight = 5;
+    public const int CanvasWidth = SpriteWidth + 4; // Two effects columns and a one-cell grapheme guard at each edge.
     public long Frame { get; private set; }
     public bool AtHome { get; private set; }
     public void Advance()
@@ -16,7 +17,7 @@ public sealed class CompanionPetPlayground
     public CompanionPlayPose Pose(int availableWidth, int availableHeight = SpriteHeight)
     {
         var phase = (int)(Frame % 120) - 20;
-        var span = Math.Max(0, availableWidth - SpriteWidth - 2);
+        var span = Math.Max(0, availableWidth - CanvasWidth);
         if (AtHome || phase is < 0 or >= 80) return new(false, span, false, "idle", Frame);
         var maxY = Math.Max(0, availableHeight - SpriteHeight);
         var upper = (int)(maxY * (1 + Frame / 120 % 3) / 4);

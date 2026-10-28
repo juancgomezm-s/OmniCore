@@ -109,8 +109,9 @@ public static class CompanionSpriteCatalog
             if (crouch) sourceY = y < height / 2 ? height : 1 + (y - height / 2) * 2;
             if (animation == "dance") sourceX += frame % 2 == 0 ? -1 : 1;
             var pixel = sourceY < height && sourceX is >= 0 and < 12 ? art[sourceY][sourceX] : ' ';
-            if (pixel == 'E' && animation == "peek" && frame % 4 < 2) pixel = 'C';
-            if (animation == "hide" && y >= (frame % 4 < 2 ? height / 2 : height / 2 + 1)) pixel = ' ';
+            // There is no physical object to hide behind at the chat edge. Keep the
+            // complete silhouette and peek with closed eyes instead of cutting off its body.
+            if (pixel == 'E' && animation is "peek" or "hide" && frame % 4 < 2) pixel = 'C';
             if (pixel is 'D' or 'N' && sourceY == height - 1 && frame % 2 == 1 && animation is "run" or "dash" or "dance")
                 pixel = ' ';
             pixels[y, x] = pixel;

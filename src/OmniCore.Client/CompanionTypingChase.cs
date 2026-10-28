@@ -19,17 +19,17 @@ public sealed class CompanionTypingChase
         var destination = Destination(targetX, width);
         var distance = destination - _x;
         _x += Math.Sign(distance) * Math.Min(Math.Abs(distance), Math.Max(2, Math.Abs(distance) / 3));
-        _x = Math.Clamp(_x, 0, Math.Max(0, width - CompanionPetPlayground.SpriteWidth - 2));
+        _x = Math.Clamp(_x, 0, Math.Max(0, width - CompanionPetPlayground.CanvasWidth));
         if (--_remaining == 0) Clear();
     }
     public CompanionPlayPose Pose(int targetX, int width, int height, long frame)
     {
         var destination = Destination(targetX, width);
-        var x = Math.Clamp(_x, 0, Math.Max(0, width - CompanionPetPlayground.SpriteWidth - 2));
+        var x = Math.Clamp(_x, 0, Math.Max(0, width - CompanionPetPlayground.CanvasWidth));
         return new(Active, x, targetX < x, Math.Abs(destination - x) <= 2 ? "pounce" : "dash", frame,
             Math.Max(0, height - CompanionPetPlayground.SpriteHeight));
     }
     private static int Destination(int targetX, int width) => Math.Clamp(
-        targetX >= CompanionPetPlayground.SpriteWidth + 2 ? targetX - CompanionPetPlayground.SpriteWidth - 2 : targetX + 3,
-        0, Math.Max(0, width - CompanionPetPlayground.SpriteWidth - 2));
+        targetX >= CompanionPetPlayground.CanvasWidth ? targetX - CompanionPetPlayground.CanvasWidth : targetX + 3,
+        0, Math.Max(0, width - CompanionPetPlayground.CanvasWidth));
 }

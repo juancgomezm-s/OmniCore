@@ -48,7 +48,7 @@ public sealed class CompanionPlaygroundTests
         Assert.All(outside, pose => Assert.InRange(pose.Y, 0, Math.Max(0, height - CompanionPetPlayground.SpriteHeight)));
         if (height > CompanionPetPlayground.SpriteHeight) Assert.True(outside.Select(pose => pose.Y).Distinct().Count() > 1);
         Assert.Contains(outside, pose => pose.X == 0);
-        Assert.Contains(outside, pose => pose.X == width - CompanionPetPlayground.SpriteWidth - 2);
+        Assert.Contains(outside, pose => pose.X == Math.Max(0, width - CompanionPetPlayground.CanvasWidth));
         Assert.Equal(new[] { "dance", "dash", "hide", "hop", "peek", "pounce", "roll", "run", "weave" },
             outside.Select(p => p.Animation).Distinct().Order().ToArray());
         Assert.False(poses[0].Outside); Assert.False(poses[^1].Outside);
@@ -97,6 +97,23 @@ public sealed class CompanionPlaygroundTests
             yield return (species, null);
         yield return ("fox", "claude-crab");
         yield return ("fox", "codex-robot");
+    }
+
+    [Fact]
+    public void Edge_hiding_keeps_the_complete_silhouette_instead_of_amputating_the_body()
+    {
+        var pet = new CompanionPetSnapshot(true, 0, "Omni", null, "egg.v1", "warm.spots-0", 0, 0, 70,
+            "egg", 0, 20, "fixture", new());
+        foreach (var (species, guest) in MiniDesigns())
+        foreach (var left in new[] { true, false })
+        {
+            var state = pet with { Species = species, GuestId = guest };
+            var silhouette = CompanionSpriteCatalog.RenderMini(state, "idle", 0, left)
+                .SelectMany(row => row).Select(cell => !string.IsNullOrWhiteSpace(cell.Glyph)).ToArray();
+            for (var frame = 0; frame < 4; frame++)
+                Assert.Equal(silhouette, CompanionSpriteCatalog.RenderMini(state, "hide", frame, left)
+                    .SelectMany(row => row).Select(cell => !string.IsNullOrWhiteSpace(cell.Glyph)).ToArray());
+        }
     }
 
     [Fact]
