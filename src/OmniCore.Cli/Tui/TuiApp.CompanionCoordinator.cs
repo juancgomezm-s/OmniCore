@@ -346,7 +346,7 @@ public sealed partial class TuiApp
         var location = new TextView { X = 1, Y = 0, Width = Dim.Fill(1), Height = 4, ReadOnly = true, WordWrap = true,
             Text = target.Workspace + "\nSesión: " + target.Session + "\nInstancia: " + target.Id + "\n" + target.State };
         var input = new TextView { Id = "companion-target-input", X = 1, Y = 5, Width = Dim.Fill(1), Height = 3, WordWrap = true };
-        var send = new Button { Id = "companion-target-send", X = 1, Y = 8, Text = "Enviar instrucción al principal", Height = 2 };
+        var send = new Button { Id = "companion-target-send", X = 1, Y = 8, Text = "Enviar", Height = 2 };
         send.Accepted += (_, args) => { args.Handled = true; QueueCompanionDelivery(target, "instruction", input.Text?.ToString() ?? ""); };
         frame.Add(location, input, send);
         var y = 10;
