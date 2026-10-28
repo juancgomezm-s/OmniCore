@@ -132,7 +132,7 @@ public sealed class PermissionGrantsTests
         var audit = new InMemoryAuditSink();
         var store = new FilePermissionGrantStore(directory, audit);
         var policy = new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>())
-            .WithModeDefaults(RunMode.Act).WithGrantStore(store, workspace, run);
+            .WithModeDefaults(RunMode.Act).WithProfile(PermissionProfile.Balanced).WithGrantStore(store, workspace, run);
         var events = new List<DomainEventPayload>();
         var runtime = new ToolRuntime(new FakeCatalog().Add(new TestProcessTool()), policy,
             payload => { events.Add(payload); return VoidBox.Instance; }, null, new TestExecutableResolver());

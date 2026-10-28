@@ -19,7 +19,7 @@ public sealed class ModeDefaultsPolicy
     public PermissionDecision ForRunMode(RunMode mode, PermissionResource resource)
     {
         if (resource == PermissionResource.ReadInsideWorkspace) return PermissionDecision.Allow;
-        if (resource == PermissionResource.ReadOutsideWorkspace) return PermissionDecision.Ask;
+        if (resource == PermissionResource.ReadOutsideWorkspace) return AskUnlessAutonomous();
         if (resource == PermissionResource.WriteInsideWorkspace)
         {
             return mode == RunMode.Plan ? PermissionDecision.Deny
@@ -28,7 +28,7 @@ public sealed class ModeDefaultsPolicy
 
         if (resource == PermissionResource.WriteOutsideWorkspace)
         {
-            return mode == RunMode.Plan ? PermissionDecision.Deny : PermissionDecision.Ask;
+            return mode == RunMode.Plan ? PermissionDecision.Deny : AskUnlessAutonomous();
         }
 
         if (resource == PermissionResource.ObservationalProcess) return PermissionDecision.Allow;
@@ -39,7 +39,7 @@ public sealed class ModeDefaultsPolicy
 
         if (resource == PermissionResource.ExternalOrUnknownProcess)
         {
-            return mode == RunMode.Plan ? PermissionDecision.Deny : PermissionDecision.Ask;
+            return mode == RunMode.Plan ? PermissionDecision.Deny : AskUnlessAutonomous();
         }
 
         if (resource == PermissionResource.PrivateExtensionProcess)
@@ -61,15 +61,17 @@ public sealed class ModeDefaultsPolicy
 
         if (resource == PermissionResource.OtherNetwork)
         {
-            return mode == RunMode.Plan ? PermissionDecision.Deny : PermissionDecision.Ask;
+            return mode == RunMode.Plan ? PermissionDecision.Deny : AskUnlessAutonomous();
         }
 
         if (resource == PermissionResource.Shell)
         {
-            return mode == RunMode.Plan ? PermissionDecision.Deny : PermissionDecision.Ask;
+            return mode == RunMode.Plan ? PermissionDecision.Deny : AskUnlessAutonomous();
         }
 
         if (resource == PermissionResource.SecretPaths) return PermissionDecision.Deny;
+        if (resource == PermissionResource.UnverifiedOperation)
+            return mode == RunMode.Plan ? PermissionDecision.Deny : PermissionDecision.Ask;
         if (resource == PermissionResource.PlanAndReferenceTools) return PermissionDecision.Allow;
         return PermissionDecision.Ask;
     }
@@ -96,5 +98,6 @@ public enum PermissionResource
     OtherNetwork,
     Shell,
     SecretPaths,
+    UnverifiedOperation,
     PlanAndReferenceTools,
 }

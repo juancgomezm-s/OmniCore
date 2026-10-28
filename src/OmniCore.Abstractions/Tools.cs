@@ -71,8 +71,15 @@ public interface IExtensionBatchPublicationCoordinator
         CancellationToken cancellationToken);
 }
 
-/// <summary>Host-resolved operation intents whose exact targets are unavailable to pure Prepare.
-/// The runtime resolves them after Prepare and before permission/model-boundary evaluation.</summary>
+/// <summary>Current User permission level intersected with exact tool rules and AgentProfile.
+/// The model cannot request this authority through tool arguments.</summary>
+public interface IAutomaticToolPermissionAuthority
+{
+    bool AllowsAutomaticToolActionCurrently(ToolIntent intent);
+    PermissionDecision EvaluateCurrentPermission(ToolIntent intent);
+}
+
+/// <summary>Host-resolved private process and batch authority, including current policy checks.</summary>
 public interface IAutomaticExtensionBatchAuthority
 {
     bool AllowsAutomaticExtensionBatch(ToolIntent intent);
@@ -390,9 +397,18 @@ public sealed class ToolExecutionContext
     /// launch before ToolCallStarted and expose a one-call Weak consent interaction.</summary>
     public bool AllowDeferredWeakSandboxConsent { get; }
 
-    /// <summary>Set only by rehydrating the exact accepted WeakSandboxConsent interaction for this
-    /// ToolCall. It authorizes one launch attempt and is never persisted as a grant.</summary>
-    public bool WeakSandboxConsentForThisCall { get; }
+    /// <summary>One-call sandbox fallback authorization from an exact accepted interaction or
+    /// the currently checked Autonomous permission level; never persisted as a grant.</summary>
+    public bool WeakSandboxConsentForThisCall { get; private set; }
+
+    /// <summary>Host use after checking the current Autonomous level and every effective
+    /// intent. Copying keeps this one-call choice out of reusable Session context.</summary>
+    public ToolExecutionContext WithAutomaticSandboxConsentForThisCall()
+    {
+        var copy = (ToolExecutionContext)MemberwiseClone();
+        copy.WeakSandboxConsentForThisCall = true;
+        return copy;
+    }
 
     /// <summary>Host durability hook after authorization, before any tool effect; never authorizes.</summary>
     public Action<ToolIntent>? BeforeEffect { get; }

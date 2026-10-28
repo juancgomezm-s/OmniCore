@@ -12,7 +12,7 @@ using OmniCore.Domain;
 /// process argv patterns match the complete ordered argv, not a permissive prefix.
 /// </summary>
 public sealed class AgentProfilePermissionPolicy : IPermissionPolicy, IGrantablePermissionPolicy,
-    IAutomaticExtensionBatchAuthority
+    IAutomaticExtensionBatchAuthority, IAutomaticToolPermissionAuthority
 {
     private readonly IPermissionPolicy _inner;
     private readonly AgentProfile _profile;
@@ -20,6 +20,11 @@ public sealed class AgentProfilePermissionPolicy : IPermissionPolicy, IGrantable
     private readonly string _workspaceRoot;
 
     public AgentProfile Profile => _profile;
+
+    public bool AllowsAutomaticToolActionCurrently(ToolIntent intent) =>
+        _inner is IAutomaticToolPermissionAuthority authority
+        && authority.AllowsAutomaticToolActionCurrently(intent)
+        && Ceiling(intent) == PermissionDecision.Allow;
 
     public bool AllowsAutomaticExtensionBatch(ToolIntent intent) =>
         _inner is IAutomaticExtensionBatchAuthority authority

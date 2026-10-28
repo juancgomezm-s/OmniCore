@@ -49,3 +49,56 @@ Evidencia primaria local: `artifacts/m9-final-wiring-20261026/`. Los intentos ro
 | Publicación | PR10/f21 conserva CI exacta **5/5** (`40421687536`); `main` remoto sigue en `f02d3b5`. | Esta candidata cambia C# y consumidor: **no hereda el verde f21**. Falta revisión de Dot, CI de la nueva candidata y promoción de main. No se publicó a falta del dictamen. |
 
 No se encontró resultado de modelo simulado en las rutas productivas modificadas. Los fixtures están confinados a tests opt-in; la visión live conserva su evidencia independiente. Los límites anteriores impiden declarar M9 global cerrado por un build o por contar handlers.
+
+## Seguimiento local 2026-10-27: hijo real y bloqueo de paquete
+
+Sin workers de construcción, cambios visuales, publicación ni instalación. En un repositorio temporal propio, la TUI productiva admitió y ejecutó un hijo con ChatGPT OAuth existente / gpt-6-luna (IncludedQuota). El hijo hizo `filesystem.read` de README.md y devolvió el código aleatorio del archivo, ausente del objetivo. Se verificó el resultado contra su hash CAS. Se cerró la TUI normalmente y OmniCoder vigente retomó exactamente la Session `01a17df6-0c0b-744a-98c0-c45eaf423d9e`. El composer `!core:delegation.disposition` produjo `result_disposition.recorded` (76), `lane.completed` (77) y `task.completed` (78), sin otro input ni model-step. Electron: **1/1**; evidencia `artifacts/m9-dot-acceptance-20261026/live-child-coder-acceptance.json` y `live-child-coder-handoff-e2e.log`. Esta aceptación positiva sustituye únicamente el pendiente de disposición del consumidor; no cierra toda la homologación ni M9.
+
+La aplicación positiva de un worktree **sigue pendiente**. El workflow real `/orq-auth` desde la TUI se detiene antes de la inferencia del hijo con `InvalidDataException: The packet facts differ from the selected canonical parent context`. La comparación de los blobs propios identifica una discrepancia de redacción: el snapshot conserva `workflow authorization before tools`, mientras `PacketRef.Facts` guarda `workflow [REDACTED] tools`. `CreateDelegationProjection` reconstruye los hechos y los compara literalmente. Evidencia primaria: `live-workflow-packet-mismatch.json`, `live-workflow-failed-journal.json` y `live-workflow-manifest.json` en el mismo directorio de artifacts. No se desactivó la validación ni se sembraron eventos/bindings o resultados. La ruta genérica `/delegate` es de solo lectura; sus respuestas sin cambios no se aceptaron como implementación.
+
+Se detuvo esta aceptación ante el impedimento conforme a la instrucción del usuario y se notificó a Dot. Pendiente una corrección coherente de redacción/canonicalización con regresión específica y repetir implementación verificada → preview → aplicación desde el consumidor. La candidata local y su corrección previa de importación TOCTOU no heredan el verde de f21 ni tienen aprobación de publicación.
+
+## Corrección de permisos compartidos y actualización de pendientes (2026-10-27)
+
+La recuperación de importación confinada y redacción canónica quedó en `3097030`,
+integrada en main local. La regresión de importación/paquetes pasó 55/55 y la de
+importación nativa 2/2. La implementación real Luna ya superó aquel bloqueo:
+creó FeatureModule.cs y lo conectó a Program.Main en su worktree propio. El
+verificador ejecutado de forma independiente terminó con código cero; no se
+afirma que la etapa Verify del workflow se completara: agotó sus cuatro llamadas
+antes de ejecutar el verificador. No se relajó ese presupuesto.
+
+Por petición del usuario, Libre/Autonomous resuelve las confirmaciones por defecto
+en Core, sin cambios visuales ni selectores adicionales. Ask/Deny explícitos,
+ObserveOnly, AgentProfile, PLAN y límites físicos conservan su autoridad.
+Regresión local: 109/109 (permisos, sandbox, importación, paquetes y Session),
+dos recorridos nativos de recibos 2/2; SDK/adapter 55/55. CLI real: cuatro casos
+Libre/Intermedio/Conservador/ObserveOnly con shell OS, cero inferencia; Libre
+ejecuta sin petición de permiso. Electron vigente: shell es/en/fr/it 4/4 con
+perfil Libre sin regla Allow adicional; importación y sustitución por junction 2/2.
+Evidencia: `artifacts/m9-dot-acceptance-20261026/` y sus logs de intentos rojos
+preservados; `core-cli-permission-levels.json`,
+`post-recovery-permission-regression-result.json`,
+`native-recovery-receipts-regression-result.json`,
+`current-consumer-free-permissions-integral.log`.
+
+**La aplicación real del worktree continúa pendiente.** La Session
+`01a180ad-43b7-78c5-9b53-fd1680e89a7b` se retomó en OmniCoder vigente, preview
+devolvió exactamente los dos archivos y el composer admitió la integración
+`f5ee5c19-aaa3-4c98-837f-e1b000f22c3c`. La herramienta fue autorizada sin
+preguntas, pero falló antes de Started con `PRIOR_READ_REQUIRED` (secuencias
+217–225): el destino del padre no tiene lectura completa a su versión en ese
+Run. No se eliminó esa protección ni se sembró evidencia de lectura. El padre
+conserva sus archivos originales. Las denegaciones y fallos determinados se
+distinguen de los resultados inciertos para no bloquear otras órdenes.
+
+Sin workers de construcción, cambios visuales, instalación o publicación.
+La candidata conserva revisión de Dot y CI propia pendientes; M9 global no cerrado.
+
+Comprobación final de recuperación: build Core 0 errores/advertencias;
+`live-native-failure-recovery.e2e.test.ts` 1/1 sobre la misma Session real,
+reabierta desde el consumidor actual, reconoce tanto la denegación antigua como
+el fallo `PRIOR_READ_REQUIRED` como `failed`, sin aplicar ni repetir el efecto.
+`current-consumer-known-failure-recovery.log` y
+`permission-gui-preservation.json` acreditan recuperación y preservación visual.
+Los dos recorridos de recibos nativos volvieron a pasar sobre ese build.

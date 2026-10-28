@@ -461,3 +461,8 @@ de patch; §5/§5.1 gobiernan write. [Contrato y pruebas](../validation/frontier
 | `ModelPolicySetup` y `Preferences > Models` en TUI | **M4** |
 | Recomendaciones basadas en suite `quick` y `FileMutationReliability` empírico | **M5** |
 | Suite `full`, calibración y búsqueda semántica opcional sobre evidencia | **M10+** |
+
+
+### Precisión de confirmaciones por nivel (2026-10-27)
+
+El Ask destructivo del preset se resuelve mediante el nivel humano vigente de ADR-0037 §4.1. Libre no solicita una confirmación adicional cuando todas las capas autorizan el intent exacto; Balanced/Conservative conservan la confirmación. La frontera mantiene su rechazo antes de permisos y antes del efecto: Libre no amplía el catálogo, el techo de Session, el modo de mutación ni un Deny. Las reglas explícitas de tool siguen restringiendo. La selección del modelo y los argumentos de una tool no pueden activar Libre.
