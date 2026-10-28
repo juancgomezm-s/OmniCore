@@ -123,4 +123,34 @@ Estas son validaciones focales y fixtures; no una suite global, una aceptación
 manual del proveedor/terminal o una prueba real de apply/rollback. No se acredita
 una suite por invocaciones con cero casos.
 
-Instalación local: pendiente de registrar paquete, SHA y launchers exactos.
+Instalación local verificada en ZephyrusG14: `0.1.0+5b7f66de6d9434b30ea6f2b0494b5e77e8f1edeb`,
+con el endurecimiento del actualizador en `58735abe` y controles en `5b7f66de`.
+Destino: `%LOCALAPPDATA%/OmniCore/cli/releases/5b7f66de`. SHA-256 del tgz:
+`308EBB1BD8F852EF671671E9A48E0B92990CBBA5723CEDF89DBFBDB3BB6CCFE6`.
+Los 160 archivos publicados de dist coinciden por SHA-256, sin ausentes ni extras.
+Los scripts/manifest coinciden, salvo la normalización estándar del CR del shebang
+de bin/omni.js que realiza npm; el resto de sus bytes coincide.
+
+Los tres launchers públicos se generaron con cmd-shim oficial después de verificar
+que seguían iguales al baseline. Hay copia anterior en `previous-launchers` dentro
+del destino. Tanto CMD como PowerShell pasan `--help`; ProductVersion del DLL
+instalado coincide con el commit construido. Manifest del paquete, hashes por archivo
+e `installation-verification.json` están guardados en esa carpeta. No se sustituyen
+los DLL de procesos abiertos ni se termina una ventana del usuario.
+
+La consulta real por el launcher público pasó (exit 0): «No hay releases publicados
+en este canal», stable. `update status` pasó sin operaciones registradas. Esto
+comprueba el recorrido real del checker y la corrección del falso rate limit; no
+acredita descargar/aplicar una release ni aceptación con un modelo real.
+
+La limpieza de dist/npm y del staging propio habría eliminado 748.474.150 bytes
+(aproximadamente 714 MiB), pero la revisión automática de la herramienta rechazó
+la operación por política, incluida la variante con ruta literal. No dio otro
+motivo. No se ejecutó el borrado ni se intentó otra vía. Esos archivos permanecen
+junto con las evidencias. No se eliminó ningún checkout activo; el inventario no
+encontró otro worktree Core registrado que pudiera podarse sin perder trabajo.
+
+Main conserva sus cambios de OpenCode; las correcciones están comprometidas en
+esta rama aislada y en la instalación local, sin nuevo merge/push sobre el trabajo
+compartido de M9. M10 global y la recuperación/aceptación real del actualizador
+siguen abiertos.
