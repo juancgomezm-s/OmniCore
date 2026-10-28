@@ -1,5 +1,6 @@
 using StbImageSharp;
 using Terminal.Gui.Drawing;
+using OmniCore.Client;
 
 namespace OmniCore.Cli;
 
@@ -26,8 +27,8 @@ internal sealed class CompanionGraphicAssets
             ?? typeof(CompanionGraphicAssets).Assembly.GetManifestResourceStream("OmniCore.Cli.Assets.Companions." + id + ".png")
             ?? throw new IOException("Companion sprite unavailable.");
         var decoded = ImageResult.FromStream(stream, ColorComponents.RedGreenBlueAlpha);
-        if (decoded.Width != 128 * 13 || decoded.Height != 128) throw new IOException("Invalid companion sprite atlas.");
-        var frames = new Color[13][,];
+        if (decoded.Width != 128 * CompanionVisualPolicy.GraphicFrameCount || decoded.Height != 128) throw new IOException("Invalid companion sprite atlas.");
+        var frames = new Color[CompanionVisualPolicy.GraphicFrameCount][,];
         var background = new Color(decoded.Data[0], decoded.Data[1], decoded.Data[2]);
         for (var frame = 0; frame < frames.Length; frame++)
         {

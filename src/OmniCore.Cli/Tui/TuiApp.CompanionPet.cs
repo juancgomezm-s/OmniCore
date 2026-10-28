@@ -60,7 +60,10 @@ public sealed partial class TuiApp
         if (DateTimeOffset.UtcNow < _petQuietUntil) return;
         var playing = PetCanPlay();
         if (!playing && _petRunner?.Visible == true) RenderPetPlayground();
-        if (!playing && !(_petView?.Visible == true && _sidebar?.Visible == true || _petDetail?.Visible == true)) return;
+        var panelVisible = _petView?.Visible == true && _sidebar?.Visible == true
+            && _overlay is null && _commandHelper is null && _activeInteraction is null;
+        var detailVisible = _petDetail?.Visible == true && _overlay?.Id == "companion-detail";
+        if (!playing && !panelVisible && !detailVisible) return;
         // Roaming/chasing keeps its existing cadence. A panel sprite needs fewer updates.
         if (++_petTicks < (playing ? 4 : 6)) return;
         _petTicks = 0; _petFrame++;

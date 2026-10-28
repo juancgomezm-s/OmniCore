@@ -44,15 +44,21 @@ public sealed class CompanionVisualTests
         Assert.Equal("hidden", policy.Select(requested, false, new(true, true, true)).Effective);
     }
     [Fact]
-    public void Failure_is_latched_until_explicit_redetection_and_rest_is_static_except_brief_blinks()
+    public void Failure_is_latched_until_explicit_redetection_and_idle_gestures_keep_long_still_pauses()
     {
         var policy = new CompanionVisualPolicy(); var caps = new CompanionVisualCapabilities(true, true, true);
         policy.FailGraphics();
         for (var tick = 0; tick < 100; tick++) Assert.Equal("unicode", policy.Select("auto", true, caps).Effective);
         policy.Redetect(); Assert.Equal("graphics", policy.Select("auto", true, caps).Effective);
-        Assert.Equal(2, Enumerable.Range(0, 100).Count(tick => CompanionVisualPolicy.SpriteFrame("idle", tick, false) == 1));
+        var idle = Enumerable.Range(0, 64).Select(tick => CompanionVisualPolicy.SpriteFrame("idle", tick, false)).ToArray();
+        Assert.All(idle, frame => Assert.InRange(frame, 0, CompanionVisualPolicy.GraphicFrameCount - 1));
+        Assert.True(idle.Count(frame => frame == 0) >= idle.Length * .75);
+        Assert.Equal(new[] { 0, 1, 13, 14, 15, 16 }, idle.Distinct().Order().ToArray());
+        Assert.True(idle.Zip(idle.Skip(1)).Count(pair => pair.First != pair.Second) < idle.Length / 2);
+        Assert.Equal(new[] { 12, 17 }, Enumerable.Range(0, 24)
+            .Select(tick => CompanionVisualPolicy.SpriteFrame("sleep", tick, false)).Distinct().Order().ToArray());
         foreach (var pose in new[] { "idle", "working", "waiting", "success", "failure", "pet", "sleep" })
-            Assert.Single(Enumerable.Range(0, 20).Select(tick => CompanionVisualPolicy.SpriteFrame(pose, tick, true)).Distinct());
+            Assert.Single(Enumerable.Range(0, 64).Select(tick => CompanionVisualPolicy.SpriteFrame(pose, tick, true)).Distinct());
         Assert.Equal("graphics", CompanionVisualPolicy.Normalize("gráfico"));
         Assert.Equal("text", CompanionVisualPolicy.Normalize("texto"));
         Assert.Throws<ArgumentException>(() => CompanionVisualPolicy.Normalize("surprise"));
@@ -65,7 +71,7 @@ public sealed class CompanionVisualTests
         {
             var first = assets.Load(species); Assert.Same(first, assets.Load(species));
             var frames = await first;
-            Assert.Equal(13, frames.Length); Assert.True(assets.Count <= 2);
+            Assert.Equal(CompanionVisualPolicy.GraphicFrameCount, frames.Length); Assert.True(assets.Count <= 2);
             foreach (var frame in frames)
             {
                 Assert.Equal(128, frame.GetLength(0)); Assert.Equal(128, frame.GetLength(1));
@@ -73,6 +79,9 @@ public sealed class CompanionVisualTests
             }
             Assert.Equal(6, new[] { 0, 2, 4, 6, 8, 10 }.Select(index => string.Join(",", frames[index]
                 .Cast<Terminal.Gui.Drawing.Color>().Select(color => $"{color.R:X2}{color.G:X2}{color.B:X2}"))).Distinct().Count());
+            Assert.Equal(6, new[] { 0, 1, 13, 14, 15, 16 }.Select(index => string.Join(",", frames[index]
+                .Cast<Terminal.Gui.Drawing.Color>().Select(color => $"{color.R:X2}{color.G:X2}{color.B:X2}"))).Distinct().Count());
+            Assert.False(frames[12].Cast<Terminal.Gui.Drawing.Color>().SequenceEqual(frames[17].Cast<Terminal.Gui.Drawing.Color>()));
         }
         assets.Clear(); Assert.Equal(0, assets.Count);
         var warm = await assets.Load("ox");

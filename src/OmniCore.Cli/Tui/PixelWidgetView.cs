@@ -26,28 +26,47 @@ internal sealed class PixelWidgetView : View
     private bool _lastLineOnly;
     internal bool LineOnly { get; set; }
     private CompanionImageView? _raster;
+    private readonly List<CompanionImageView> _rasterFrames = [];
+    internal const int MaxCachedRasterFrames = 6;
+    internal int CachedRasterFrameCount => _rasterFrames.Count;
     private Action<View>? _retireRaster;
     internal CompanionImageView? Raster => _raster;
     internal void RenderRaster(Color[,] image, int colors, Action<Exception> failed, Action<View> retire)
     {
-        if (_raster is null)
+        _retireRaster = retire;
+        var next = _rasterFrames.FirstOrDefault(frame => ReferenceEquals(frame.Image, image)
+            && frame.MaxSixelPaletteColors == colors);
+        if (next is null)
         {
-            _retireRaster = retire;
-            _raster = new() { X = 0, Y = 1, Width = 20, Height = 8, Failed = failed, MaxSixelPaletteColors = colors };
-            Add(_raster);
+            if (_rasterFrames.Count >= MaxCachedRasterFrames)
+            {
+                var oldest = _rasterFrames[0];
+                _rasterFrames.RemoveAt(0); RetireRaster(oldest);
+            }
+            next = new() { X = 0, Y = 1, Width = 20, Height = 8, Failed = failed,
+                MaxSixelPaletteColors = colors, Image = image, Visible = false };
+            Add(next);
         }
-        if (_raster.MaxSixelPaletteColors != colors) { _raster.MaxSixelPaletteColors = colors; RefreshRasterScale(); }
-        if (!ReferenceEquals(_raster.Image, image)) _raster.Image = image;
+        // Each retained ImageView owns its scale/encode cache. Visibility pruning in
+        // Terminal.Gui removes inactive placements; switching back reuses encoded pixels.
+        _rasterFrames.Remove(next); _rasterFrames.Add(next);
+        if (ReferenceEquals(_raster, next)) return;
+        if (_raster is not null) _raster.Visible = false;
+        _raster = next; _raster.Visible = true; _raster.SetNeedsDraw();
     }
     internal void RefreshRasterScale()
     {
         // The setter invalidates the framework's bounded scale/encode cache after a font-size report.
-        if (_raster is not null) _raster.Image = _raster.Image;
+        foreach (var frame in _rasterFrames) frame.Image = frame.Image;
     }
     internal void ClearRaster()
     {
-        if (_raster is null) return;
-        var retired = _raster; _raster = null;
+        _raster = null;
+        foreach (var frame in _rasterFrames) RetireRaster(frame);
+        _rasterFrames.Clear();
+    }
+    private void RetireRaster(CompanionImageView retired)
+    {
         retired.Visible = false; retired.Image = null; Remove(retired);
         if (_retireRaster is { } retire) retire(retired); else retired.Dispose();
     }

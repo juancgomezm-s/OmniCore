@@ -83,9 +83,8 @@ Sixel no proporciona esa confirmación. El usuario puede seleccionar Unicode/tex
 ## Peso y ejecución
 
 - Nueve atlas originales (seis especies, huevo y dos invitados), cada uno de
-  **1664×128**: 13 frames de **128×128** para seis expresiones con dos frames, más
-  sueño estático. Total PNG: **71 663 bytes (70,0 KiB)**; los invitados añaden
-  17 221 bytes a los siete atlas iniciales. Son recursos embebidos, sin accesos
+  **2304×128**: 18 frames de **128×128**, con expresiones, respiración y miradas.
+  Total PNG: **136 336 bytes (133,1 KiB)**. Son recursos embebidos, sin accesos
   por frame al sistema de archivos. Las mediciones de abajo corresponden al buey;
   no se han repetido como comparación de CPU entre especies o invitados.
 - `StbImageSharp 2.30.16` ya formaba parte del cierre de dependencias de Host;
@@ -94,11 +93,13 @@ Sixel no proporciona esa confirmación. El usuario puede seleccionar Unicode/tex
 - Caché acotada a dos atlas decodificados. La carga/decodificación se ejecuta
   en tareas; la TUI no espera sincrónicamente. Las variantes cálidas/frías,
   manchas y corona legendaria se preparan una vez en esa tarea.
-- El mismo array se reutiliza mientras el frame no cambia. ImageView conserva
-  una preparación vigente y una pendiente; no se construye una lista ilimitada.
+- El mismo array se reutiliza mientras el frame no cambia. Cada vista conserva
+  hasta seis ImageView, reutilizando sus cuadros ya escalados y codificados.
   La escala/codificación se realiza mediante su backend de preparación asíncrona.
-- Hasta **2,5 cambios/s** en animaciones breves. Reposo estático, con un parpadeo
-  de unos 400 ms cada 20 s; trabajo/espera usan ráfagas breves cada 8 s.
+- El panel avanza cada **600 ms** como máximo. En reposo alterna respiración,
+  un pequeño acomodo, parpadeo y miradas dentro de un ciclo nominal de 19,2 s, con pausas
+  estáticas durante el 78 % de los pasos. Trabajo/espera usan ráfagas breves;
+  al dormir respira suavemente. Las escapadas conservan su cadencia de 400 ms.
   Éxito/fallo/caricia respetan las reacciones efímeras existentes de Core.
 - Se invalida la región de la mascota. Ocultar/cambiar modo/cerrar panel/abrir
   menús retira el ImageView y sus comandos de raster. El framework elimina
@@ -168,6 +169,10 @@ Resultados reproducibles: `TestResults/pet-render-regression.trx`,
 habituales. Los TRX/logs pertenecen a la salida local de pruebas, no al runtime.
 
 ## Mediciones
+
+La ampliación de animaciones del panel tiene [mediciones y validación propias
+del 27 de octubre](panel-animation-20261027.md). Los resultados siguientes
+corresponden a la implementación inicial y conservan su contexto histórico.
 
 [Datos completos](benchmark.json): tres muestras de **8 segundos** por caso,
 precedidas de preparación y un segundo de estabilización, a 120×40. Misma TUI,

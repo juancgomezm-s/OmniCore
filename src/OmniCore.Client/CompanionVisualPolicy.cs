@@ -8,6 +8,7 @@ public sealed record CompanionVisualSelection(string Requested, string Effective
 /// <summary>Portable rendering policy, also usable by a future graphical client.</summary>
 public sealed class CompanionVisualPolicy
 {
+    public const int GraphicFrameCount = 18;
     public bool GraphicsFailed { get; private set; }
     public void FailGraphics() => GraphicsFailed = true;
     public void Redetect() => GraphicsFailed = false;
@@ -27,10 +28,22 @@ public sealed class CompanionVisualPolicy
         "unicode" => "unicode", "text" or "texto" => "text", "hidden" or "oculto" => "hidden",
         _ => throw new ArgumentException("/pet mode auto | gráfico | unicode | texto | oculto"),
     };
-    // Two frames per expression; static rest, with one brief blink every twenty seconds.
-    public static int SpriteFrame(string animation, long tick, bool reducedMotion) => (animation switch
+    // Brief gestures at the existing panel cadence, separated by long still pauses.
+    // Original expression IDs 0..12 remain stable; 13..17 add breathing and glances.
+    public static int SpriteFrame(string animation, long tick, bool reducedMotion)
     {
-        "working" => 2, "waiting" => 4, "success" => 6, "failure" => 8, "pet" => 10, "sleep" => 12, _ => 0,
-    }) + (animation == "sleep" || reducedMotion ? 0 : animation is "idle" ? tick % 50 == 49 ? 1 : 0
-        : animation is "working" or "waiting" && tick % 20 >= 4 ? 0 : (int)(tick % 2));
+        var first = animation switch
+        {
+            "working" => 2, "waiting" => 4, "success" => 6, "failure" => 8, "pet" => 10, "sleep" => 12, _ => 0,
+        };
+        if (reducedMotion) return first;
+        tick = Math.Max(0, tick);
+        if (animation == "idle") return (tick % 32) switch
+        {
+            3 or 5 => 13, 4 => 14, 12 => 1,
+            20 or 22 => 15, 21 => 16, _ => 0,
+        };
+        if (animation == "sleep") return tick % 12 is 6 or 7 ? 17 : 12;
+        return first + (animation is "working" or "waiting" && tick % 20 >= 4 ? 0 : (int)(tick % 2));
+    }
 }
