@@ -39,7 +39,8 @@ function run(args = process.argv.slice(2), options = {}) {
         run(args, { ...options, currentTerminal: true });
       };
       try {
-        const terminal = spawnProcess(launch.terminal, launch.args, { stdio: 'inherit', windowsHide: true });
+        // This is the user-facing window; SW_HIDE would leave a live TUI invisible.
+        const terminal = spawnProcess(launch.terminal, launch.args, { stdio: 'inherit', windowsHide: false });
         terminal.once('error', fallback);
         terminal.once('exit', code => {
           if (code !== 0) fallback();

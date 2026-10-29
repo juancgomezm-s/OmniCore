@@ -110,3 +110,18 @@ test('failed Windows Terminal startup invokes dotnet once; marker bypasses redir
   assert.equal(calls[0][0], 'dotnet'); assert.equal(calls[0][1].at(-1), 'tui');
   assert.equal(calls[0][1].includes('--current-terminal'), false);
 });
+
+test('interactive Windows Terminal handoff creates a visible window and successful exit does not fall back', t => {
+  const { parent } = fixture(t);
+  const calls = [], children = [];
+  run([], { process: parent, packageRoot: 'package-root', existsSync: () => true,
+    spawn: (...args) => {
+      calls.push(args);
+      const child = new EventEmitter(); child.exitCode = null; children.push(child); return child;
+    } });
+  assert.match(calls[0][0], /wt\.exe$/);
+  assert.deepEqual(calls[0][2], { stdio: 'inherit', windowsHide: false });
+  children[0].emit('exit', 0);
+  assert.equal(parent.exitCode, 0);
+  assert.equal(calls.length, 1);
+});
