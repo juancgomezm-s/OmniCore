@@ -1,5 +1,11 @@
 # Cierre de verificaciones Linux — 2026-10-14
 
+**Actualización 2026-10-29:** esta acta conserva la evidencia histórica. El backend
+Strong batch Linux y Secret Service que figuran abajo como no implementados ya
+están construidos y validados localmente en una candidata pendiente de revisión
+y CI. M2/M3 reales quedaron pospuestos por Juan por ocupación de la GPU; M8 fue
+aceptado en Windows. [Estado y evidencia vigentes](m1-m8-closure-20261029.md).
+
 Cierre Linux de M1, M4/TUI v0, M5.5, M6 y M7 acreditado por la evidencia de esta acta. La integración final con M9-B se acepta únicamente con los gates del PR aprobados; el resultado vigente se consulta en [los checks del PR](https://github.com/juancgomezm-s/OmniCore/pull/1/checks). Los intentos fallidos no se presentan como aprobados.
 
 ## Alcance y entorno

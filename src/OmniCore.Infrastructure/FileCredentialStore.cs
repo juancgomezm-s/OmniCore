@@ -2,6 +2,7 @@ namespace OmniCore.Infrastructure;
 
 using System.Security.Cryptography;
 using System.Text;
+using System.Diagnostics;
 using OmniCore.Abstractions;
 
 /// <summary>
@@ -10,10 +11,9 @@ using OmniCore.Abstractions;
 /// <list type="bullet">
 /// <item>Windows: DPAPI con ámbito <c>CurrentUser</c> (<c>enc:v2:dpapi:…</c>). Solo el mismo
 /// usuario en la misma máquina puede descifrar.</item>
-/// <item>Linux/macOS (provisional hasta Secret Service/Keychain): AES-256-GCM con una clave
-/// aleatoria de 32 bytes en <c>credentials.key</c>, junto al archivo, creada con modo 0600
-/// (<c>enc:v2:aesgcm:…</c>). Protege frente a copiar el archivo de credenciales solo, no frente a
-/// otro proceso del mismo usuario.</item>
+/// <item>Linux: AES-256-GCM con clave de 32 bytes en Secret Service/libsecret y archivo 0600.
+/// La clave histórica se migra sólo después de verificar su persistencia nativa.</item>
+/// <item>macOS: AES-256-GCM con clave local 0600, provisional hasta Keychain.</item>
 /// </list>
 /// Un valor que no se puede descifrar (formato antiguo XOR, archivo de otra máquina o
 /// manipulado) se trata como ausente: nunca se devuelve el texto cifrado como si fuera la key.
@@ -39,11 +39,16 @@ public sealed class FileCredentialStore : ICredentialStore
     private readonly string _path;
 
     private readonly string _keyPath;
+    private readonly ICredentialKeyStore? _keyStore;
 
-    public FileCredentialStore(string path)
+    public FileCredentialStore(string path) : this(path,
+        OperatingSystem.IsLinux() ? new LinuxSecretServiceKeyStore(path) : null) { }
+
+    internal FileCredentialStore(string path, ICredentialKeyStore? keyStore)
     {
         _path = path;
         _keyPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".", "credentials.key");
+        _keyStore = keyStore;
     }
 
     public void Save(string key, string value, CancellationToken cancellationToken)
@@ -53,20 +58,22 @@ public sealed class FileCredentialStore : ICredentialStore
         if (value.Length < Secret.MinimumLength)
             throw new OmniCore.Domain.SecretValueTooShortException(Secret.MinimumLength);
         cancellationToken.ThrowIfCancellationRequested();
+        using var lease = AcquireStoreLease(cancellationToken);
         EnsureFile();
 
         var map = LoadMap();
-        map[key] = Protect(value);
+        map[key] = Protect(value, cancellationToken);
         WriteMap(map);
     }
 
     public string? Load(string key, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        using var lease = AcquireStoreLease(cancellationToken);
         EnsureFile();
         var map = LoadMap();
         if (!map.TryGetValue(key, out var stored)) return null;
-        var value = Unprotect(stored);
+        var value = Unprotect(stored, cancellationToken);
         if (value is not null)
         {
             if (value.Length < Secret.MinimumLength)
@@ -79,6 +86,7 @@ public sealed class FileCredentialStore : ICredentialStore
     public void Delete(string key, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        using var lease = AcquireStoreLease(cancellationToken);
         EnsureFile();
         var map = LoadMap();
         map.Remove(key);
@@ -88,6 +96,14 @@ public sealed class FileCredentialStore : ICredentialStore
     /// <summary>Borrado físico del archivo de credenciales (no solo la entrada).</summary>
     public void Purge()
     {
+        if (_keyStore is not null)
+        {
+            using var lease = AcquireStoreLease(CancellationToken.None);
+            File.Delete(_path);
+            File.Delete(_keyPath);
+            _keyStore.Delete(CancellationToken.None);
+            return;
+        }
         TryDelete(_path);
         TryDelete(_keyPath);
     }
@@ -109,10 +125,10 @@ public sealed class FileCredentialStore : ICredentialStore
         }
     }
 
-    private string Protect(string value)
+    private string Protect(string value, CancellationToken cancellationToken)
     {
         var plain = Encoding.UTF8.GetBytes(value);
-        if (OperatingSystem.IsWindows())
+        if (OperatingSystem.IsWindows() && _keyStore is null)
         {
             var blob = ProtectedData.Protect(plain, DpapiEntropy, DataProtectionScope.CurrentUser);
             return DpapiPrefix + Convert.ToBase64String(blob);
@@ -121,10 +137,13 @@ public sealed class FileCredentialStore : ICredentialStore
         var nonce = RandomNumberGenerator.GetBytes(NonceSize);
         var cipher = new byte[plain.Length];
         var tag = new byte[TagSize];
-        using (var aes = new AesGcm(LoadOrCreateKey(), TagSize))
+        var key = CredentialKey(create: true, cancellationToken)!;
+        try
         {
+            using var aes = new AesGcm(key, TagSize);
             aes.Encrypt(nonce, plain, cipher, tag);
         }
+        finally { CryptographicOperations.ZeroMemory(key); }
 
         var packed = new byte[NonceSize + TagSize + cipher.Length];
         nonce.CopyTo(packed, 0);
@@ -133,8 +152,11 @@ public sealed class FileCredentialStore : ICredentialStore
         return AesGcmPrefix + Convert.ToBase64String(packed);
     }
 
-    private string? Unprotect(string stored)
+    private string? Unprotect(string stored, CancellationToken cancellationToken)
     {
+        // Unavailable Secret Service must not become a missing API key or create a replacement key.
+        var key = stored.StartsWith(AesGcmPrefix, StringComparison.Ordinal)
+            ? CredentialKey(create: false, cancellationToken) : null;
         try
         {
             if (stored.StartsWith(DpapiPrefix, StringComparison.Ordinal))
@@ -151,7 +173,7 @@ public sealed class FileCredentialStore : ICredentialStore
 
             if (stored.StartsWith(AesGcmPrefix, StringComparison.Ordinal))
             {
-                if (!File.Exists(_keyPath))
+                if (key is null)
                 {
                     return null;
                 }
@@ -166,7 +188,7 @@ public sealed class FileCredentialStore : ICredentialStore
                 var tag = packed.AsSpan(NonceSize, TagSize);
                 var cipher = packed.AsSpan(NonceSize + TagSize);
                 var plain = new byte[cipher.Length];
-                using var aes = new AesGcm(LoadOrCreateKey(), TagSize);
+                using var aes = new AesGcm(key, TagSize);
                 aes.Decrypt(nonce, cipher, tag, plain);
                 return Encoding.UTF8.GetString(plain);
             }
@@ -176,13 +198,73 @@ public sealed class FileCredentialStore : ICredentialStore
         {
             return null;
         }
+        finally { if (key is not null) CryptographicOperations.ZeroMemory(key); }
 
         // Formato desconocido o antiguo (XOR de M2): no se interpreta.
         return null;
     }
 
+    private FileStream? AcquireStoreLease(CancellationToken cancellationToken)
+    {
+        if (_keyStore is null) return null;
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_path))!);
+        var started = Stopwatch.StartNew();
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var options = new FileStreamOptions
+                { Mode = FileMode.OpenOrCreate, Access = FileAccess.ReadWrite, Share = FileShare.None };
+                if (!OperatingSystem.IsWindows()) options.UnixCreateMode = OwnerOnly;
+                return new FileStream(_path + ".keyring.lock", options);
+            }
+            catch (IOException) when (started.Elapsed < TimeSpan.FromSeconds(10)) { Thread.Sleep(10); }
+        }
+    }
+
+    private byte[]? CredentialKey(bool create, CancellationToken cancellationToken)
+    {
+        if (_keyStore is null) return create || File.Exists(_keyPath) ? LoadOrCreateKey() : null;
+        var native = _keyStore.Load(cancellationToken);
+        if (native is not null && native.Length != KeySize)
+            throw new CryptographicException("The native credential wrapping key is invalid.");
+        if (File.Exists(_keyPath))
+        {
+            var legacy = File.ReadAllBytes(_keyPath);
+            try
+            {
+                if (legacy.Length != KeySize || native is not null && !CryptographicOperations.FixedTimeEquals(legacy, native))
+                    throw new CryptographicException("The existing credential wrapping keys do not agree; migration was not applied.");
+                if (native is null)
+                {
+                    _keyStore.Save(legacy, cancellationToken);
+                    native = _keyStore.Load(cancellationToken);
+                }
+                if (native is null || !CryptographicOperations.FixedTimeEquals(legacy, native))
+                    throw new CryptographicException("The native credential wrapping key could not be verified; the original was preserved.");
+                File.Delete(_keyPath);
+                return native;
+            }
+            finally { CryptographicOperations.ZeroMemory(legacy); }
+        }
+        if (native is not null || !create) return native;
+        if (LoadMap().Values.Any(value => value.StartsWith(AesGcmPrefix, StringComparison.Ordinal)))
+            throw new CryptographicException("The credential wrapping key is missing; existing credentials were preserved.");
+        var generated = RandomNumberGenerator.GetBytes(KeySize);
+        try
+        {
+            _keyStore.Save(generated, cancellationToken);
+            var verified = _keyStore.Load(cancellationToken);
+            if (verified is null || !CryptographicOperations.FixedTimeEquals(generated, verified))
+                throw new CryptographicException("The native credential wrapping key could not be verified.");
+            return verified;
+        }
+        finally { CryptographicOperations.ZeroMemory(generated); }
+    }
+
     /// <summary>
-    /// Clave AES local (solo fuera de Windows). Se crea de forma exclusiva con modo 0600 desde el
+    /// Clave AES local histórica/macOS. Se crea de forma exclusiva con modo 0600 desde el
     /// primer byte, sin lanzar procesos <c>chmod</c>.
     /// </summary>
     private byte[] LoadOrCreateKey()

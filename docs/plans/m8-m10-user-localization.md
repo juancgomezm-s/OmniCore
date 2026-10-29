@@ -4,6 +4,11 @@ Revisión inicial del 2026-10-11, ampliada e integrada el 2026-10-12 por petici�
 
 ## Directiva M9-M10-UI-OWNERSHIP — un producto, interfaz preservada (2026-10-23)
 
+**Actualización de aceptación 2026-10-29:** Juan validó M8 en Windows y confirmó el
+funcionamiento del catálogo de modelos. [M8 queda cerrado en ese alcance](../validation/m8-windows-user-acceptance-20261029.md).
+Las menciones históricas inferiores a M8 manual/OR4/OR5 pendientes quedan
+sustituidas. Este cierre no acredita M2/M3, Linux ni M9.
+
 **Petición vigente del usuario.** OmniCore es el núcleo de OmniCoder, no un servicio
 externo que el usuario deba conectar o administrar. La terminal es otra superficie
 del mismo producto. Terminar M9/M10 autoriza completar capacidades, no sustituir la
@@ -107,6 +112,34 @@ CI del SHA exacto y aceptación visual del usuario.
 - **UX-07 Entrega:** diffs revisados por coordinación de OmniCoder, pruebas con
   Electron/Host reales y perfiles aislados; capturas comparables y aceptación del
   usuario para cambios visuales. Un fixture prueba cableado, no proveedor live.
+
+## Corte vigente M9 — 2026-10-29
+
+La TUI ya realizó una implementación real con Explore/Implement/Verify y la misma
+Session se retomó en OmniCoder para aplicar exactamente el worktree. La generación
+real de imagen también está recibida: se recuperó/exportó desde TUI y se reabrió
+dos veces en OmniCoder actual, con bytes idénticos y cero llamadas nuevas.
+Esos pendientes históricos no se reconstruyen ni se vuelven a generar imágenes.
+
+Linux: el recorrido nativo completo reveló una carrera entre stop y Dispose del
+proceso; se corrigió en el control real, conservando exit code y una observación
+única de salida. **22 casos integrales/focales Linux pasaron**, sin omisiones;
+incluyen procesos persistentes, lease, reconexión, stream, cuatro idiomas,
+importación, modelo y grants. No se afirma soporte PTY o Weak persistente Linux
+que ADR-0038 no acredita.
+
+**Candidata funcional M9 completa; falta cerrar su entrega:** Juan autorizó
+corregir los dos pendientes de OmniCoder sin cambiar su GUI. Se construyó la
+recuperación cercada de seguridad y se tradujo el error de importación conservando
+su código. App 205/205; seguridad/importación/control activo E2E 3/3; imagen real
+reabierta 2/2, sin nueva generación. El main remoto `e4d6669e` tiene CI 5/5 verde;
+el diff local de ambos repositorios requiere dictamen de Dot y CI propia antes de publicar.
+No se difiere ninguno de estos pendientes a otra fase. [Evidencia, reproducción
+y matriz efectiva](../validation/m9-final-audit-20261029.md).
+
+Los cortes inferiores conservan su fecha y trazabilidad; no sustituyen este estado
+vigente ni reabren las aceptaciones que ya pasaron. M2/M3 locales pospuestos por
+Juan por ocupación de GPU permanecen separados.
 
 ## Incremento local de cierre M9 y consumidor vigente (2026-10-26)
 

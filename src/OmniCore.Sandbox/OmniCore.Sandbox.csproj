@@ -14,4 +14,21 @@
     <InternalsVisibleTo Include="OmniCore.Tests" />
   </ItemGroup>
 
+  <Target Name="CompileLinuxSandboxHelper" Condition="$([MSBuild]::IsOSPlatform('Linux'))"
+          Inputs="$(MSBuildProjectDirectory)/native/linux_sandbox.c"
+          Outputs="$(IntermediateOutputPath)native/omnicore-linux-sandbox">
+    <Error Condition="'$(RuntimeIdentifier)' != '' and '$(RuntimeIdentifier)' != '$(NETCoreSdkRuntimeIdentifier)'"
+           Text="Build the Linux sandbox helper on the target architecture; cross-publishing an incorrect native helper is not supported." />
+    <MakeDir Directories="$(IntermediateOutputPath)native" />
+    <Exec Command="cc -std=c11 -O2 -Wall -Wextra -Werror -D_FORTIFY_SOURCE=2 &quot;$(MSBuildProjectDirectory)/native/linux_sandbox.c&quot; -o &quot;$(IntermediateOutputPath)native/omnicore-linux-sandbox&quot;" />
+  </Target>
+  <Target Name="IncludeLinuxSandboxHelper" BeforeTargets="AssignTargetPaths"
+          Condition="$([MSBuild]::IsOSPlatform('Linux'))" DependsOnTargets="CompileLinuxSandboxHelper">
+    <ItemGroup>
+      <Content Include="$(IntermediateOutputPath)native/omnicore-linux-sandbox"
+               Link="omnicore-linux-sandbox" CopyToOutputDirectory="PreserveNewest"
+               CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
+
 </Project>

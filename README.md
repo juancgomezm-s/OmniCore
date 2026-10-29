@@ -176,20 +176,20 @@ funciones declaradas no significan que haya sólo 11 operaciones accesibles por 
 
 ## Estado actual
 
-Resumen documental al **12 de octubre de 2026**. La [arquitectura §24](docs/architecture/arquitectura.md) y las evidencias enlazadas son la fuente de verdad; este README no sustituye la aceptación de cada hito.
+Resumen documental al **29 de octubre de 2026**. La [arquitectura §24](docs/architecture/arquitectura.md) y las evidencias enlazadas son la fuente de verdad; este README no sustituye la aceptación de cada hito.
 
 | Hito | Estado | Evidencia y alcance |
 |---|---|---|
-| **M1 · Runtime y planning** | Cerrado en Windows | Dominio, journal, permisos, simulación y reconciliación determinista. |
-| **M2 · Explorer** | Código completo | Contexto y turnos persistidos; aceptación del usuario con su modelo local pendiente según [validación M1–M4](docs/validation/m1-m4.md). |
-| **M3 · Mutaciones y procesos** | Código completo | Herramientas, fronteras y errores tipados; aceptación real local pendiente. Sandbox Strong en Linux diferido. |
-| **M4 · Contexto y TUI v0** | Cerrado en Windows | [200 turnos, recuperación en otro proceso y TUI en PTY](docs/validation/m4-closure-20261005.md). No acredita reinicio de Windows ni validación Linux. |
+| **M1 · Runtime y planning** | Cerrado en Windows/Linux | Dominio, journal, permisos, simulación y reconciliación determinista; [aceptación Linux](docs/validation/linux-milestones-closure-20261014.md). |
+| **M2 · Explorer** | Código completo; aceptación pospuesta | Contexto y turnos persistidos. Juan pospuso la prueba real local porque la GPU está ocupada; [estado vigente M1–M8](docs/validation/m1-m8-closure-20261029.md). |
+| **M3 · Mutaciones y procesos** | Código completo; aceptación pospuesta | Prueba real local pospuesta por Juan. Strong Linux y credenciales nativas construidos y validados localmente; candidata pendiente de revisión y CI. [Alcance y evidencia](docs/validation/m1-m8-closure-20261029.md). |
+| **M4 · Contexto y TUI v0** | Cerrado en Windows/Linux | [200 turnos, recuperación en otro proceso y TUI en PTY](docs/validation/m4-closure-20261005.md); [aceptación Linux](docs/validation/linux-milestones-closure-20261014.md). No acredita reinicio físico de Windows. |
 | **M5 · Modelos y cualificación** | Cerrado en Windows | [Quick real de ChatGPT por suscripción y Qwen local](docs/validation/m5-closure-20261007.md). Una recomendación no modifica automáticamente la política. |
-| **M5.5 · Fronteras pre-M6** | Cerrado en Windows | [Acta integral](docs/validation/m55-closure-20261007.md): continuidad protegida, cotas y autoridad, atribución, fingerprint, preimágenes y contratos. 2.958 PASS, 0 FAIL, 4 SKIP; arquitectura 56 PASS. |
-| **M6 · Multiagente** | Cerrado en Windows | [Acta integral](docs/validation/m6-integration-20261008.md): Explore/Implement/Verify con Plan reconciliado, scheduler, budgets, joins/FanOut, supervisión/mailbox, background e inspector. [Revisión de cableado del 09-10](docs/validation/m6-wiring-audit-20261009.md): 3.292 PASS, 0 FAIL, 4 SKIP; arquitectura 56 PASS y recuperación M4 serial verde. Un Host compartido. |
-| **M7 · Aislamiento** | Cerrado en Windows | [Acta y alcance](docs/validation/m7-isolation-20261010.md): integración autorizada y recuperación, lanes aisladas, continuidad Implement→Verify, undo compensatorio y retención. |
-| **M8 · Extensibilidad** | En construcción | Extensiones/comandos/skills Project y Session Memory integrados, incluida memoria efectiva en el modelo. Faltan scopes/aportes, hooks, MCP, preferencias de herramientas y candidatos/promoción. [Matriz de entregas](docs/validation/m8-extensibility-20261011.md). |
-| **M9–M10** | Avance parcial | Bases Protocol/Client, inspección y undo disponibles; transporte/Host separado, memoria multiscoped y cierre v1 pendientes. [Plan restante, idiomas y herramientas](docs/plans/m8-m10-user-localization.md). |
+| **M5.5 · Fronteras pre-M6** | Cerrado en Windows/Linux | [Acta integral](docs/validation/m55-closure-20261007.md): continuidad protegida, cotas y autoridad, atribución, fingerprint, preimágenes y contratos. [Aceptación Linux](docs/validation/linux-milestones-closure-20261014.md). |
+| **M6 · Multiagente** | Cerrado en Windows/Linux | [Acta integral](docs/validation/m6-integration-20261008.md): Explore/Implement/Verify, scheduler, budgets, joins/FanOut, supervisión/mailbox e inspector. [Revisión de cableado](docs/validation/m6-wiring-audit-20261009.md) y [aceptación Linux](docs/validation/linux-milestones-closure-20261014.md). |
+| **M7 · Aislamiento** | Cerrado en Windows/Linux | [Acta y alcance](docs/validation/m7-isolation-20261010.md): integración autorizada y recuperación, lanes aisladas, Implement→Verify, undo y retención; [aceptación Linux](docs/validation/linux-milestones-closure-20261014.md). |
+| **M8 · Extensibilidad** | Cerrado en Windows | A–H integrados; aceptación manual de Juan el 29-10-2026, incluido el funcionamiento de OpenRouter y su catálogo de modelos. [Aceptación y alcance](docs/validation/m8-windows-user-acceptance-20261029.md). La deuda Linux permanece separada. |
+| **M9–M10** | Ver plan vigente | El cierre M1–M8 no acredita estos hitos. [Bloques construidos, pendientes y aceptación](docs/plans/m8-m10-user-localization.md). |
 
 La evidencia de cierre M5 documenta **2995 casos: 2991 correctos, 0 fallos y 4 omitidos por permisos de symlink**. Es un resultado fechado, no un contador actualizado automáticamente aquí. Las pruebas con fixtures se distinguen de llamadas autenticadas reales.
 
@@ -201,7 +201,7 @@ La evidencia de cierre M5 documenta **2995 casos: 2991 correctos, 0 fallos y 4 o
 | **Local / llama.cpp** | Chat compatible, configuración y supervisión de host local | Quick real de Qwen en la configuración documentada; no cualifica automáticamente cualquier modelo local. |
 | **OpenAI Responses API** | Adapter nativo | Fixtures; aceptación con API de pago no acreditada en el cierre M5. |
 | **Anthropic Messages** | Adapter nativo y semántica del proveedor | Fixtures; aceptación autenticada de API pendiente. |
-| **OpenRouter** | Conexiones User, catálogo/registro de modelos, adapter compatible y créditos en CLI/TUI | Base integrada en `3273026`; OR4 reabierto por aceptación de interfaz y OR5 autenticado pendiente. [Plan](docs/plans/openrouter-closure.md) y [auditoría del menú](docs/validation/tui-menu-audit-20261016.md); M8 sigue abierto. |
+| **OpenRouter** | Conexiones User, catálogo/registro de modelos, adapter compatible y créditos en CLI/TUI | Juan confirmó funcionamiento y catálogo de modelos; [M8 aceptado en Windows](docs/validation/m8-windows-user-acceptance-20261029.md). No se atribuyen nuevas mediciones de créditos a esta aceptación. |
 
 Disponibilidad y cuotas dependen de la cuenta y del proveedor en el momento de la consulta. No hay una lista universal de modelos garantizados para todos los usuarios.
 
@@ -258,6 +258,13 @@ En WSL, utiliza una terminal interactiva como Windows Terminal.
 Si instalaste el SDK manualmente en `~/.dotnet`, agrega antes
 `export DOTNET_ROOT="$HOME/.dotnet"` y
 `export PATH="$DOTNET_ROOT:$PATH"` a la sesión y a `~/.profile`.
+
+La candidata Linux añade aislamiento Strong con `bubblewrap` y un kernel con
+Landlock, y credenciales mediante `libsecret-1-0` y un Secret Service desbloqueado
+(por ejemplo `gnome-keyring`). Al construir desde fuente necesita también un
+compilador C, incluido en `build-essential`. Sin esos componentes, las operaciones
+que los requieren fallan explícitamente. La [validación y los límites de esta
+candidata](docs/validation/m1-m8-closure-20261029.md) están pendientes de revisión y CI.
 
 ```bash
 git clone https://github.com/juancgomezm-s/OmniCore.git

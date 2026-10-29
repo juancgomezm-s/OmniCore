@@ -1,5 +1,11 @@
 # Cierre completo de OpenRouter — M8
 
+**Actualización 2026-10-29: aceptación manual de M8 en Windows confirmada por Juan.**
+El funcionamiento y el catálogo de modelos están aceptados; la conexión ya estaba
+disponible. [Acta y límites](../validation/m8-windows-user-acceptance-20261029.md).
+Los estados de OR4/OR5 pendientes a continuación son históricos y quedan
+sustituidos por esta aceptación en Windows.
+
 Requisito incorporado el 2026-10-13 por petición del usuario. Estado al 2026-10-16:
 **OR1–OR4 integrados inicialmente en main `3273026`; OR4 reabierto por aceptación
 manual y OR5 autenticado pendiente**. La verificación histórica M8 obtuvo 4,505
