@@ -5108,7 +5108,8 @@ public sealed class ExplorerTurn
         {
             var visibleIds = new HashSet<string>(StringComparer.Ordinal)
                 { "filesystem.read", "filesystem.list", "filesystem.search", "search.text",
-                    "reference.resolve", "tool.search", "user.ask", "artifact.read", "skill.load" };
+                    "reference.resolve", "tool.search", "user.ask", "artifact.read", "skill.load",
+                    "agents.list", "agents.send", "agents.read" };
             visibleIds.UnionWith(_activeSkillToolIds);
             if (_companionRequested) visibleIds.Add("companion.pet");
             if (discoveredToolIds is not null) visibleIds.UnionWith(discoveredToolIds);

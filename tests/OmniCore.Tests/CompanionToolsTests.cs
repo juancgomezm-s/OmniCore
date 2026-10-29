@@ -18,9 +18,9 @@ public sealed class CompanionToolsTests : IDisposable
     internal static ToolCallBlock Call(string name, string json = "{}") => new(ToolCallId.New(), null, name, json);
 
     [Fact]
-    public void Closed_catalog_contains_exactly_the_seven_companion_tools()
+    public void Closed_catalog_contains_only_the_eight_companion_tools()
     {
-        Assert.Equal(new[] { "agent.message", "memory.forget", "memory.read", "memory.remember", "notices.list", "pet.react", "sessions.list" },
+        Assert.Equal(new[] { "agent.message", "memory.forget", "memory.read", "memory.remember", "notices.list", "pet.react", "sessions.create", "sessions.list" },
             CompanionChatTools.Definitions.Select(t => t.Name).Order());
         var tools = new CompanionChatTools(Hub(), "Hola");
         Assert.False(tools.Execute(Call("filesystem.read", "{\"path\":\"secret\"}"), TestContext.Current.CancellationToken).Ok);
@@ -98,7 +98,7 @@ public sealed class CompanionToolsTests : IDisposable
             response => hub.FinishChatUsage(OmniCliRuntime.UsageSample(usageId!, "test-model", "test", response, new(1, 1))), tools,
             () => { usageId = Guid.NewGuid().ToString(); hub.BeginChatUsage(usageId, "test-model", "test"); });
         Assert.Contains("Juan", answer); Assert.Contains("Juan", hub.ReadMemory().Text);
-        Assert.Equal(2, provider.Requests.Count); Assert.Equal(7, provider.Requests[0].Tools.Count); Assert.Equal("auto", provider.Requests[0].ToolChoice.Mode);
+        Assert.Equal(2, provider.Requests.Count); Assert.Equal(8, provider.Requests[0].Tools.Count); Assert.Equal("auto", provider.Requests[0].ToolChoice.Mode);
         Assert.Equal(state, provider.Requests[1].Continuation);
         var toolResult = Assert.Single(provider.Requests[1].Messages.SelectMany(m => m.Content).OfType<ToolResultBlock>());
         Assert.False(toolResult.IsError); Assert.Equal(call.Id, toolResult.Id);

@@ -1,6 +1,18 @@
 # Mascota: conversación, recuerdos y coordinación local
 
-La mascota tiene un mini chat independiente del agente principal. No recibe el historial del trabajo y dispone de siete herramientas exclusivas para recuerdos, avisos, sesiones, instrucciones y reacciones. No autoriza permisos del Core. Los controles de **Sesiones** y **Avisos** permiten enviar una instrucción al principal o elegir una opción de una decisión real. No se dirige trabajo a los subworkers.
+La mascota tiene un mini chat independiente del agente principal. No recibe el historial del trabajo y dispone de ocho herramientas exclusivas para recuerdos, avisos, sesiones, instrucciones y reacciones. No autoriza permisos del Core. Los controles de **Sesiones** y **Avisos** permiten enviar una instrucción al principal o elegir una opción de una decisión real. No se dirige trabajo a los subworkers.
+
+`sessions.create(title)` crea una conversación vacía y persistida en el workspace actual. Conserva la conversación seleccionada y sus borradores, aplica los valores normales de seguridad y rutas de una sesión nueva y devuelve su ID. La creación no ejecuta un modelo ni abre otra ventana. Se puede seleccionar desde la lista de sesiones (F6); no aparece como agente activo antes de abrirla. Los reintentos de una misma llamada devuelven la misma sesión.
+
+## Comunicación lateral en el mismo buzón
+
+Los principales disponen de `agents.list`, `agents.send(target, text)` y `agents.read(after)`. Usan la misma tabla `deliveries` del mismo `companion/coordinator.db` que las instrucciones humanas, con los mismos IDs de presencia. Funcionan entre procesos del mismo perfil local y no dependen de PowerShell, del renderizador ni de que la mascota esté visible o descubierta.
+
+Las órdenes humanas conservan `kind=instruction/answer`, `origin=user`, `relation=human`. Los mensajes de agentes usan `kind=message`, `origin=agent`, `relation=lateral`, y remitente y sesión de origen fijados por el Host. Son comunicaciones entre pares: no crean un supervisor ni un subworker, no amplían el objetivo autorizado ni conceden permisos o aprobaciones.
+
+El receptor consulta sus mensajes con `agents.read`; recibe el cursor `next` para continuar con `after`. Repetir un cursor permite recuperar una respuesta perdida. Un envío repetido con el mismo ID no se duplica. Los mensajes laterales generan un aviso y nunca pasan por `StartModelTurn` como si fueran entradas humanas. Un principal en reposo los verá al consultar su buzón en un turno posterior; no se generan llamadas al modelo, ciclos de conversación o gasto automáticamente. Los principales activos pueden consultar y contestar durante su trabajo.
+
+La presencia caduca y no se redirige un mensaje destinado a una instancia cerrada hacia otra sesión. La mascota conserva sus herramientas exclusivas; el catálogo de comunicación se registra sólo para principales, no para ejecuciones delegadas. El buzón jerárquico ya existente de los subworkers conserva su contrato y sus atribuciones de Core.
 
 ## Uso
 
@@ -33,11 +45,11 @@ La memoria y la cola funcionan dentro del mismo perfil del mismo equipo. No son 
 
 Cada TUI registra un identificador aleatorio que dura lo mismo que su proceso, además del proyecto, sesión y Run exactos. Un sondeo de dos segundos ejecutado fuera del hilo de dibujo publica su estado y consulta la bandeja. La presencia caduca a los quince segundos. No se usan títulos de ventana, índices de pestañas, `wt focus-tab`, procesos por frame ni automatización de PowerShell.
 
-La cola admite hasta 32 entregas pendientes por instancia. Una instrucción espera mientras el principal trabaja o tiene una decisión pendiente. El receptor comprueba otra vez sesión y Run antes de usar la admisión normal del agente. Las decisiones llevan el identificador de interacción y una opción explícita; el Core vuelve a validarlas. No se interpreta texto libre como permiso. Los cuestionarios estructurados se contestan en su sesión original.
+La cola admite hasta 32 órdenes humanas pendientes por instancia; los datos laterales no ocupan ese cupo. Una instrucción espera mientras el principal trabaja o tiene una decisión pendiente. El receptor comprueba otra vez sesión y Run antes de usar la admisión normal del agente. Las decisiones llevan el identificador de interacción y una opción explícita; el Core vuelve a validarlas. No se interpreta texto libre como permiso. Los cuestionarios estructurados se contestan en su sesión original.
 
 La recepción se reclama en una transacción antes de ejecutar: no hay repetición automática después de un cierre inesperado. Si se pierde el proceso antes de reclamar, se rechaza la entrega. Si se pierde después, el estado queda **unknown** y hay que revisar el resultado antes de reenviar. **accepted** significa admisión, no finalización; la terminación del turno produce otro aviso. Los avisos de decisiones se deduplican y se marcan resueltos cuando dejan de estar pendientes. Las filas antiguas se limpian a los siete días.
 
-Solo las TUI de esta versión anuncian un consumidor disponible. Una TUI anterior o un comando CLI breve no recibe órdenes. Una instancia cerrada no se abre ni se duplica al seleccionar su aviso. El comando `omni pet sessions --json` permite inspeccionar la presencia; `omni pet alerts --json` devuelve avisos y acuses. `--text` ofrece salida textual sin gráficos.
+Las TUI anuncian un consumidor de órdenes humanas. Los principales headless activos anuncian presencia lateral durante su turno, con `acceptsInstructions=false`: sus herramientas pueden intercambiar mensajes, pero no anuncian una recepción de órdenes que no poseen. Una instancia cerrada no se abre ni se duplica al seleccionar su aviso. El comando `omni pet sessions --json` permite inspeccionar la presencia; `omni pet alerts --json` devuelve avisos y acuses. `--text` ofrece salida textual sin gráficos.
 
 ## Modelo y consumo propios
 

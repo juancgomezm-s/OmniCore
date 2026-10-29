@@ -6,10 +6,17 @@ namespace OmniCore.Protocol;
 // Portable UI contracts. No renderer, window handle, tool call or shell command crosses this boundary.
 public sealed record CompanionDecision(string Id, string Title, string Kind, string[] OptionIds, string[] Labels);
 public sealed record CompanionInstance(string Id, string Workspace, string Session, string? Run, string State,
-    DateTimeOffset Seen, CompanionDecision[] Decisions);
+    DateTimeOffset Seen, CompanionDecision[] Decisions, bool AcceptsInstructions = true, bool SupportsLateral = false);
 public sealed record CompanionNotice(string Id, string Instance, string Session, string Title, DateTimeOffset At, bool Read = false, bool Resolved = false);
 public sealed record CompanionDelivery(string Id, string Target, string Session, string? Run, string Kind,
-    string Text, string? Interaction = null, string? Option = null, string Status = "queued", string? Detail = null);
+    string Text, string? Interaction = null, string? Option = null, string Status = "queued", string? Detail = null,
+    string? SenderInstance = null, string? SenderSession = null, long Sequence = 0)
+{
+    public string Origin => Kind == "message" ? "agent" : "user";
+    public string Relation => Kind == "message" ? "lateral" : "human";
+}
+public sealed record CompanionCreatedSession(string SessionId, string Title, string Workspace, bool Running = false);
+public sealed record CompanionMailboxPage(CompanionDelivery[] Messages, long Next);
 public sealed record CompanionMemory(string Path, string Text, string Version);
 public sealed record CompanionChatMessage(string Role, string Text);
 public sealed record CompanionChatSettings(string? ModelId = null, bool LocalOnly = false);
@@ -26,7 +33,8 @@ public sealed record CompanionMemoryEntry(string Id, string Text);
 public sealed record CompanionSessionTarget(string InstanceId, string SessionId, string Project, string State);
 public sealed record CompanionToolResult(bool Ok, string? Error = null, string? Text = null,
     CompanionMemoryEntry[]? Memories = null, CompanionSessionTarget[]? Sessions = null,
-    CompanionNotice[]? Notices = null, CompanionDelivery? Delivery = null, CompanionReaction? Reaction = null, int? Total = null);
+    CompanionNotice[]? Notices = null, CompanionDelivery? Delivery = null, CompanionReaction? Reaction = null, int? Total = null,
+    CompanionCreatedSession? CreatedSession = null);
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(CompanionInstance))]
@@ -42,4 +50,6 @@ public sealed record CompanionToolResult(bool Ok, string? Error = null, string? 
 [JsonSerializable(typeof(CompanionChatUsage[]))]
 [JsonSerializable(typeof(CompanionToolResult))]
 [JsonSerializable(typeof(CompanionReaction))]
+[JsonSerializable(typeof(CompanionMailboxPage))]
+[JsonSerializable(typeof(CompanionCreatedSession))]
 public partial class CompanionCoordinatorJson : JsonSerializerContext;

@@ -23,7 +23,8 @@ public sealed partial class TuiApp
             button.Padding.Thickness = new(0);
         }
     }
-    private readonly string _companionInstance = Guid.NewGuid().ToString("N");
+    private readonly string _fallbackCompanionInstance = Guid.NewGuid().ToString("N");
+    private string _companionInstance => _turnHost?.CompanionInstanceId ?? _fallbackCompanionInstance;
     private CompanionHubSnapshot? _companionSnapshot;
     private CompanionReaction? _companionToolReaction;
     private FrameView? _companionPanel;
@@ -47,7 +48,7 @@ public sealed partial class TuiApp
     private void PollCompanionHub()
     {
         var hub = _turnHost?.CompanionHub;
-        if (hub is null || _companionStopped || _pet?.Discovered != true || _companionPolling
+        if (hub is null || _companionStopped || _companionPolling
             || DateTimeOffset.UtcNow - _companionPolledAt < TimeSpan.FromSeconds(2)) return;
         _companionPolledAt = DateTimeOffset.UtcNow; _companionPolling = true;
         var session = _cursorSession ?? ""; var run = _sidebarProjection.Snapshot?.RunId;
@@ -55,7 +56,7 @@ public sealed partial class TuiApp
         var decisions = _state.Overlays.Where(o => o.Questionnaire is null).Select(o =>
             new CompanionDecision(o.Id, o.Title, o.Kind, o.OptionIds.ToArray(), o.Options.ToArray())).ToArray();
         var instance = new CompanionInstance(_companionInstance, _turnHost!.CompanionWorkspace, session, run,
-            decisions.Length > 0 ? "Espera una decisión" : busy ? "Trabajando" : "Disponible", DateTimeOffset.UtcNow, decisions);
+            decisions.Length > 0 ? "Espera una decisión" : busy ? "Trabajando" : "Disponible", DateTimeOffset.UtcNow, decisions, SupportsLateral: true);
         // SQLite, filesystem and provider work never run in Terminal.Gui's input/drawing loop.
         _ = Task.Run(() =>
         {

@@ -28,6 +28,7 @@ public sealed partial class CompanionCoordinator
             CREATE TABLE IF NOT EXISTS instances(id TEXT PRIMARY KEY, at INTEGER NOT NULL, json TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS notices(id TEXT PRIMARY KEY, at INTEGER NOT NULL, json TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS deliveries(id TEXT PRIMARY KEY, target TEXT NOT NULL, at INTEGER NOT NULL, status TEXT NOT NULL, json TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS deliveries_target ON deliveries(target);
             CREATE TABLE IF NOT EXISTS chats(id TEXT PRIMARY KEY, json TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS preferences(id TEXT PRIMARY KEY, value TEXT NOT NULL);
             """; cmd.ExecuteNonQuery(); return db;
@@ -101,9 +102,11 @@ public sealed partial class CompanionCoordinator
         var target = Rows<CompanionInstance>(db, tx, "SELECT json FROM instances WHERE id=$p0 AND at>$p1", delivery.Target, Now - 15000).FirstOrDefault();
         if (target is null || target.Session != delivery.Session || target.Run != delivery.Run)
             throw new InvalidOperationException("La instancia se desconectó o cambió de sesión. Selecciona el destino de nuevo.");
+        if (!target.AcceptsInstructions)
+            throw new InvalidOperationException("Ese principal está en modo headless: admite mensajes laterales, pero no nuevas órdenes humanas desde otra instancia.");
         if (delivery.Kind == "answer" && !target.Decisions.Any(d => d.Id == delivery.Interaction && d.OptionIds.Contains(delivery.Option)))
             throw new InvalidOperationException("La decisión ya no está pendiente.");
-        using var count = Cmd(db, tx, "SELECT count(*) FROM deliveries WHERE target=$p0 AND status='queued'", delivery.Target);
+        using var count = Cmd(db, tx, "SELECT count(*) FROM deliveries WHERE target=$p0 AND status='queued' AND json_extract(json,'$.kind')!='message'", delivery.Target);
         if (Convert.ToInt32(count.ExecuteScalar()) >= 32) throw new InvalidOperationException("La bandeja de esta instancia está llena.");
         using var cmd = Cmd(db, tx, "INSERT OR IGNORE INTO deliveries VALUES($p0,$p1,$p2,'queued',$p3)", delivery.Id, delivery.Target, Now,
             Encode(delivery with { Status = "queued", Detail = null })); cmd.ExecuteNonQuery(); tx.Commit();
@@ -114,6 +117,7 @@ public sealed partial class CompanionCoordinator
         var deliveries = Rows<CompanionDelivery>(db, tx, "SELECT json FROM deliveries WHERE target=$p0 AND status='queued' ORDER BY at LIMIT 32", instance);
         foreach (var item in deliveries)
         {
+            if (item.Kind == "message") continue; // Lateral data is read by agents.read, never executed as human input.
             var stale = item.Session != session || item.Run != run;
             if (!stale && busy && item.Kind == "instruction") continue;
             var next = item with { Status = stale ? "rejected" : "claimed", Detail = stale ? "La sesión cambió antes de recibir la instrucción." : "Recibida; si el proceso termina no se reintentará automáticamente." };

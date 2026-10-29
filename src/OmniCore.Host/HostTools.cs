@@ -223,6 +223,9 @@ public sealed class HostTools
 
     internal void RegisterCompanionTool(CompanionPetTool tool) => _catalog.Add(tool);
 
+    internal void RegisterAgentCommunicationTools(IEnumerable<ITool> tools)
+    { foreach (var tool in tools) _catalog.Add(tool); }
+
     /// <summary>Registers a source-namespaced extension tool after consented Host composition.</summary>
     internal void RegisterExtensionTool(ITool tool)
     {

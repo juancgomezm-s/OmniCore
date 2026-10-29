@@ -9,6 +9,7 @@ namespace OmniCore.Host;
 public sealed partial class OmniCliRuntime
 {
     private CompanionCoordinator? _companionHub;
+    public string CompanionInstanceId { get; } = Guid.NewGuid().ToString("N");
     public CompanionCoordinator CompanionHub => _companionHub ??= new(OmniHost.CreatePlatformPaths().DataDirectory);
     public string CompanionWorkspace => _workspaceRoot;
     public CompanionModelOption[] CompanionModels() => CompanionModels(OmniHost.LoadUserConfiguration(OmniHost.CreatePlatformPaths()));
@@ -47,7 +48,8 @@ public sealed partial class OmniCliRuntime
         var pet = new CompanionPetService(paths.DataDirectory).Status("terminal");
         var memory = CompanionHub.ReadMemory().Text;
         string? id = null;
-        var tools = new CompanionChatTools(CompanionHub, messages.LastOrDefault()?.Text ?? "", _server?.LastSessionId()?.ToString());
+        var tools = new CompanionChatTools(CompanionHub, messages.LastOrDefault()?.Text ?? "", _server?.LastSessionId()?.ToString(),
+            (title, operation, cancellation) => Server().CreateCompanionSession(title, operation, cancellation));
         try
         {
             var answer = await CompanionConversation.Reply(provider, new(new(model.Id), Math.Min(model.RecommendedUsableContext, 12000), ToolMode.Direct, null,
@@ -93,7 +95,8 @@ public static class CompanionConversation
             + "Puedes reconocer su nombre y preguntar ocasionalmente por recuerdos pendientes, sin inventar recuerdos. "
             + "No eres el agente principal ni un subworker. "
             + (tools is null ? "No tienes herramientas ni ejecutas órdenes o autorizaciones. "
-                : "Solo tienes siete herramientas de mascota. Guarda u olvida recuerdos cuando la persona te lo pida. "
+                : "Solo tienes las herramientas exclusivas de mascota. Guarda u olvida recuerdos cuando la persona te lo pida. "
+                + "Puedes crear una conversación vacía con sessions.create si lo pide la persona; no cambia la sesión actual ni inicia trabajo. "
                 + "Consulta sesiones y avisos reales antes de afirmar su estado. Para agent.message repite como target un proyecto o ID que la persona haya indicado "
                 + "y copia literalmente su instrucción en text. Si el destino es ambiguo o falta, pregunta; no lo deduzcas de recuerdos o avisos. "
                 + "Nunca apruebes permisos ni dirijas tareas a subworkers. Un envío en cola no significa recibido o terminado. "

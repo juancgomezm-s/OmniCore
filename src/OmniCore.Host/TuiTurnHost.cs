@@ -31,6 +31,7 @@ public sealed class TuiGeneratedImage
 public interface ITuiTurnHost
 {
     CompanionCoordinator? CompanionHub => null;
+    string? CompanionInstanceId => null;
     string CompanionWorkspace => "";
     CompanionModelOption[] CompanionModels() => [];
     Task<string> CompanionChatAsync(IReadOnlyList<CompanionChatMessage> messages, CancellationToken token) =>
@@ -107,6 +108,7 @@ public interface ITuiTurnHost
 public sealed class TuiTurnHost : ITuiTurnHost
 {
     public CompanionCoordinator CompanionHub => _runtime.CompanionHub;
+    public string CompanionInstanceId => _runtime.CompanionInstanceId;
     public string CompanionWorkspace => _runtime.CompanionWorkspace;
     public CompanionModelOption[] CompanionModels() => _runtime.CompanionModels();
     public Task<string> CompanionChatAsync(IReadOnlyList<CompanionChatMessage> messages, CancellationToken token) =>
