@@ -15,14 +15,16 @@ $fragment = @'
       "commandline": "powershell.exe -NoLogo -NoProfile -NoExit -Command \"$env:OMNICORE_TUI_SIDEBAR_DENSITY='compact'; omni\"",
       "antialiasingMode": "cleartype",
       "font": {
-        "face": "Cascadia Mono",
-        "weight": 600
+        "face": "Consolas",
+        "size": 12,
+        "weight": 400
       }
     }
   ]
 }
 '@
-$withoutFont = [regex]::Replace($fragment, ',\s*"font": \{\s*"face": "Cascadia Mono",\s*"weight": 600\s*\}', '')
+$withoutFont = [regex]::Replace($fragment, ',\s*"font": \{\s*"face": "Consolas",\s*"size": 12,\s*"weight": 400\s*\}', '')
+$cascadiaFragment = [regex]::Replace($fragment.Replace('"face": "Consolas"', '"face": "Cascadia Mono"').Replace('"weight": 400', '"weight": 600'), '[ \t]*"size": 12,\r?\n', '')
 $legacyFragment = $withoutFont.Replace('OmniCore · Panel compacto (prueba)', 'OmniCore · Compacto (prueba)').Replace('OMNICORE_TUI_SIDEBAR_DENSITY', 'OMNICORE_TUI_DENSITY')
 $folder = Join-Path ([IO.Path]::GetFullPath($FragmentsDirectory)) 'OmniCoreCompactPreview'
 $file = Join-Path $folder 'fragment.json'
@@ -33,8 +35,9 @@ if (!$Apply -and !$Restore) {
     return
 }
 if (Test-Path -LiteralPath $file) {
-    $existing = (Get-Content -LiteralPath $file -Raw -Encoding UTF8).Trim()
-    if ($existing -ne $fragment.Trim() -and $existing -ne $withoutFont.Trim() -and $existing -ne $legacyFragment.Trim()) {
+    $existing = (Get-Content -LiteralPath $file -Raw -Encoding UTF8).Replace("`r`n", "`n").Trim()
+    $ownedFragments = @($fragment, $withoutFont, $legacyFragment, $cascadiaFragment) | ForEach-Object { $_.Replace("`r`n", "`n").Trim() }
+    if ($existing -notin $ownedFragments) {
         throw 'Ese perfil tiene cambios distintos a este mock; se conserva sin sobrescribirlo.'
     }
 }

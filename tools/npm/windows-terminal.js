@@ -43,7 +43,8 @@ function prepare(packageRoot, parent, io = fs) {
   const receipt = path.join(local, 'OmniCore', 'terminal-profile.sha256');
   const commandline = [parent.execPath, launcher, marker, 'tui'].map(quote).join(' ');
   const content = JSON.stringify({ profiles: [{ guid: profileId, name: 'OmniCore', commandline,
-    antialiasingMode: 'cleartype' }] }, null, 2) + '\n';
+    // Windows Terminal uses points: 12 pt corresponds to the approved 16 px mock at 96 DPI.
+    antialiasingMode: 'cleartype', font: { face: 'Consolas', size: 12, weight: 400 } }] }, null, 2) + '\n';
   if (io.existsSync(fragment)) {
     const existing = io.readFileSync(fragment, 'utf8');
     if (existing !== content) {

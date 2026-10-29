@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const { eligible, prepare, profileId, quote } = require('./windows-terminal');
 const { run } = require('./launcher');
@@ -43,10 +44,28 @@ test('owns one profile, preserves cwd, avoids recursion, and never edits termina
     parent.execPath, path.join('C:\\Omni Core', 'bin', 'omni.js'), '--current-terminal', 'tui']);
   const profile = JSON.parse(fs.readFileSync(fragment, 'utf8')).profiles[0];
   assert.equal(profile.antialiasingMode, 'cleartype');
+  assert.deepEqual(profile.font, { face: 'Consolas', size: 12, weight: 400 });
   assert.match(profile.commandline, /--current-terminal/);
   assert.equal(fs.readFileSync(settings, 'utf8'), 'user settings');
   assert.deepEqual(prepare('C:\\Omni Core', parent), launch);
   assert.equal(JSON.parse((fs.readFileSync(fragment, 'utf8'))).profiles.length, 1);
+});
+
+test('upgrades an owned fontless profile to the approved font without changing its launch command', t => {
+  const { parent, fragment, local } = fixture(t);
+  prepare('package-root', parent);
+  const previous = JSON.parse(fs.readFileSync(fragment, 'utf8'));
+  const commandline = previous.profiles[0].commandline;
+  delete previous.profiles[0].font;
+  const legacyContent = JSON.stringify(previous, null, 2) + '\n';
+  fs.writeFileSync(fragment, legacyContent);
+  fs.writeFileSync(path.join(local, 'OmniCore', 'terminal-profile.sha256'),
+    crypto.createHash('sha256').update(legacyContent).digest('hex'));
+  assert.ok(prepare('package-root', parent));
+  const upgraded = JSON.parse(fs.readFileSync(fragment, 'utf8')).profiles[0];
+  assert.deepEqual(upgraded.font, { face: 'Consolas', size: 12, weight: 400 });
+  assert.equal(upgraded.commandline, commandline);
+  assert.equal(upgraded.guid, profileId);
 });
 
 test('updates its own installation path but respects a user-edited profile', t => {
