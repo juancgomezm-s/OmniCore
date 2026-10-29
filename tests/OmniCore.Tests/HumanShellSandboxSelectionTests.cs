@@ -26,9 +26,8 @@ public sealed class HumanShellSandboxSelectionTests
         var manager = new PersistentProcessSessionManager(SessionId.New(), new InMemoryEventStore(),
             EventCodecs.Create(), Guid.NewGuid().ToString("N"), root, null, static () => true);
         var launcher = new RecordingLauncher(availability);
-        var output = new StringBuilder();
         var tool = new HumanShellProcessTool(manager, launcher, SandboxStrength.Strong,
-            new PathBoundaryValidator(), chunk => output.Append(chunk));
+            new PathBoundaryValidator(), writeOutput: null);
         var policy = new ScriptedPermissionPolicy(new()).WithModeDefaults(RunMode.Act)
             .WithProfile(PermissionProfile.Autonomous);
         var events = new List<DomainEventPayload>();
@@ -48,7 +47,16 @@ public sealed class HumanShellSandboxSelectionTests
             Assert.DoesNotContain(events, item => item is InteractionRequested);
             Assert.False(context.WeakSandboxConsentForThisCall);
             Assert.False(context.AutomaticSandboxConsentForThisCall);
-            if (succeeds) Assert.Contains("human-shell-marker", output.ToString());
+            // Display output is subject to the process-wide secret redactor. Validate
+            // the sandbox's terminal receipt and effect, independent of display text.
+            if (succeeds)
+            {
+                using var preview = JsonDocument.Parse(result.Preview!);
+                Assert.Equal("exited", preview.RootElement.GetProperty("state").GetString());
+                Assert.Equal(0, preview.RootElement.GetProperty("exitCode").GetInt32());
+                Assert.Equal(EffectOutcome.Applied, result.Effect);
+            }
+            else Assert.Equal(EffectOutcome.Unknown, result.Effect);
         }
         finally
         {
