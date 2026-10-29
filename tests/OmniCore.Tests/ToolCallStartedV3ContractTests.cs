@@ -10,11 +10,11 @@ using OmniCore.Security;
 public sealed class ToolCallStartedV3ContractTests
 {
     [Fact]
-    public void Started_contract_and_registered_codec_are_version_four_with_durable_attribution()
+    public void Started_contract_and_registered_codec_are_version_five_with_durable_attribution()
     {
         var payload = new ToolCallStarted(ToolCallId.New(), EffectClass.None, null);
-        Assert.Equal(4, payload.SchemaVersion());
-        Assert.Equal(4, EventCodecs.Create().CurrentVersion(payload.Type()));
+        Assert.Equal(5, payload.SchemaVersion());
+        Assert.Equal(5, EventCodecs.Create().CurrentVersion(payload.Type()));
     }
 
     [Fact]
@@ -88,6 +88,33 @@ public sealed class ToolCallStartedV3ContractTests
         Assert.Equal(payload.ToolCallId, call);
         Assert.Equal(EffectClass.NonIdempotent, effect);
         Assert.Equal(payload.ReconciliationJson, reconciliation);
+    }
+
+    [Fact]
+    public void Version_four_started_event_preserves_attribution_without_inventing_MCP_identity()
+    {
+        var codecs = EventCodecs.Create();
+        var payload = new ToolCallStarted(ToolCallId.New(), EffectClass.NonIdempotent, "{\"pre\":\"hash\"}")
+        {
+            Reversibility = Reversibility.Reversible,
+            TargetRef = "src/one.txt",
+            Attribution = new("fixture.inspect", "Extension", "fixture.package", "1.0.0", new string('A', 64)),
+        };
+        var json = System.Text.Json.Nodes.JsonNode.Parse(codecs.CodecFor(payload.Type()).Encode(payload))!.AsObject();
+        json["Attribution"]!.AsObject().Remove("McpServerId");
+        var stored = DomainEvent.Stored(EventId.New(), SessionId.New(), 1, payload.Type(), 4,
+            DateTimeOffset.UtcNow, null, null, null, null, null, null, null, payload.ToolCallId, [], json.ToJsonString());
+
+        var decoded = Assert.IsType<ToolCallStarted>(codecs.Decode(stored));
+        Assert.Equal(4, stored.SchemaVersion);
+        Assert.Equal(payload.ToolCallId, decoded.ToolCallId);
+        Assert.Equal(payload.EffectClass, decoded.EffectClass);
+        Assert.Equal(payload.ReconciliationJson, decoded.ReconciliationJson);
+        Assert.Equal(payload.Reversibility, decoded.Reversibility);
+        Assert.Equal(payload.TargetRef, decoded.TargetRef);
+        Assert.Equal(payload.Attribution, decoded.Attribution);
+        Assert.Null(decoded.Attribution!.McpServerId);
+        Assert.Equal(payload.BeforeStateRef, decoded.BeforeStateRef);
     }
 
     [Theory]

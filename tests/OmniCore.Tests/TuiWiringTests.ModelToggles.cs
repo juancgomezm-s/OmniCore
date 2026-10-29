@@ -79,6 +79,13 @@ public sealed partial class TuiWiringTests
         Assert.DoesNotContain(items, row => row.Contains("local00") || row.Contains("local01") || row.Contains("org/first"));
         Assert.Contains(items, row => row.Contains("org/second"));
         ChoosePickerItem(fx, "local02");
+        fx.Wait(() => fx.App.Overlay?.Id == "reasoning-preferences", "la selección ofrece configurar razonamiento");
+        Assert.Contains("local02", fx.App.Header!.Text);
+        // This case promises no conversation changes: explicitly skip effort customization.
+        // Applying it would legitimately append a Run reasoning preference event.
+        var reasoningBefore = fx.Server.Query("runReasoningPreference", default)?.Json;
+        KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "omitir esfuerzo conserva la selección del modelo");
+        Assert.Equal(reasoningBefore, fx.Server.Query("runReasoningPreference", default)?.Json);
         fx.Wait(() => fx.App.Overlay is null && fx.App.Header!.Text.Contains("local02"), "elegir activo");
         Assert.Equal(sequence, fx.Server.SubscribeSince(0).Count);
         Assert.Equal(1, http.RequestCount);

@@ -401,11 +401,16 @@ public sealed class ToolExecutionContext
     /// the currently checked Autonomous permission level; never persisted as a grant.</summary>
     public bool WeakSandboxConsentForThisCall { get; private set; }
 
+    /// <summary>Fallback permission derived from Autonomous, rather than an exact Weak
+    /// continuation. Tools must still prefer Strong when it is available.</summary>
+    public bool AutomaticSandboxConsentForThisCall { get; private set; }
+
     /// <summary>Host use after checking the current Autonomous level and every effective
     /// intent. Copying keeps this one-call choice out of reusable Session context.</summary>
     public ToolExecutionContext WithAutomaticSandboxConsentForThisCall()
     {
         var copy = (ToolExecutionContext)MemberwiseClone();
+        copy.AutomaticSandboxConsentForThisCall |= !copy.WeakSandboxConsentForThisCall;
         copy.WeakSandboxConsentForThisCall = true;
         return copy;
     }

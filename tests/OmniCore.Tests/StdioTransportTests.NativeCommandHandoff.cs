@@ -260,7 +260,9 @@ public sealed partial class StdioTransportTests
 
         await using var fixture = await NativeCommandHandoffFixture.StartAsync(string.Empty,
             includeWorkflowAgentProfile: true, providerResponse: WorkflowResponse,
-            permissionsYaml: "profile: autonomous\nrules:\n  dyn.core.verify_integration: allow\n",
+            // Exercise the explicit Weak consent route, not Autonomous's per-call fallback.
+            // Permit the fixture's exact file operations without introducing a separate Ask.
+            permissionsYaml: "profile: balanced\nrules:\n  filesystem.write: allow\n  filesystem.patch: allow\n  dyn.core.verify_integration: allow\n",
             includeZeroModelPricing: true, isolateAgentRoots: true, workflowModel: true,
             includeNativeWeakSandboxCapability: true,
             workflowSandboxCapabilitiesProbeForTests: workflowSandboxProbe,

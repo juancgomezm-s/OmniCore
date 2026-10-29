@@ -8,6 +8,26 @@ using Terminal.Gui.Views;
 
 public sealed partial class TuiWiringTests
 {
+    // Selecting a model now offers two explicit choices. Retain the current effort
+    // and visibility in picker tests; dedicated controls tests exercise changing them.
+    private static void ConfirmSelectedModelPreferences(TuiFixture fx, string modelId)
+    {
+        fx.Wait(() => fx.App.Overlay?.Id == "reasoning-preferences", "model selection offers effort configuration");
+        Assert.Contains(modelId, fx.App.Header!.Text);
+        var userDefault = fx.Server.Query("reasoningPreference", default)?.Json;
+        var visible = fx.App.ShowReportedReasoning;
+        Assert.True(Descendants(fx.App.Overlay!).OfType<Button>().Single(view => view.Id == "reasoning-apply").Enabled);
+        ClickId(fx, "reasoning-apply");
+        fx.Wait(() => fx.App.Overlay?.Id == "reasoning-visibility", "confirming effort offers provider reasoning visibility");
+        Assert.Equal(userDefault, fx.Server.Query("reasoningPreference", default)?.Json);
+        Assert.Equal(visible, fx.App.ShowReportedReasoning);
+        ClickId(fx, visible ? "reasoning-visible" : "reasoning-hidden");
+        ClickId(fx, "reasoning-visibility-apply");
+        fx.Wait(() => fx.App.Overlay is null && fx.App.Composer!.HasFocus, "confirming visibility returns to the conversation");
+        Assert.Equal(visible, fx.App.ShowReportedReasoning);
+        Assert.Contains(modelId, fx.App.Header!.Text);
+    }
+
     [Theory]
     [InlineData(80, 25, "es")]
     [InlineData(130, 38, "en")]

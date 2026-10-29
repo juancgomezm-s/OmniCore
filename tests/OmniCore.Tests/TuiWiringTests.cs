@@ -1383,7 +1383,8 @@ public sealed partial class TuiWiringTests
         finally { Environment.SetEnvironmentVariable("NO_COLOR", previous); }
     });
 
-    private static Terminal.Gui.Drawing.Cell[,] CaptureConversationFrame(TuiFixture fx, int columns, int rows, string marker)
+    private static Terminal.Gui.Drawing.Cell[,] CaptureConversationFrame(TuiFixture fx, int columns, int rows, string marker,
+        Func<Terminal.Gui.Drawing.Cell[,], bool>? frameReady = null)
     {
         using var captured = new ManualResetEventSlim();
         Terminal.Gui.Drawing.Cell[,]? result = null;
@@ -1396,6 +1397,7 @@ public sealed partial class TuiWiringTests
             lastFrame = $"{cells.GetLength(1)}x{cells.GetLength(0)}\n{drawn}";
             if (cells.GetLength(0) != rows || cells.GetLength(1) != columns) return;
             if (!drawn.Contains(marker, StringComparison.Ordinal)) return;
+            if (frameReady is not null && !frameReady(cells)) return;
             result = (Terminal.Gui.Drawing.Cell[,])cells.Clone();
             captured.Set();
         };
@@ -2883,6 +2885,7 @@ public sealed partial class TuiWiringTests
         }
         Assert.True(list.Viewport.Y > 0);
         fx.InjectKey(new Key(KeyCode.Enter));
+        ConfirmSelectedModelPreferences(fx, "model29");
         fx.Wait(() => fx.App.Overlay is null, "seleccionar cierra el selector sin abrir mantenimiento");
         Assert.DoesNotContain(fx.App.MainWindow!.SubViews.OfType<FrameView>(), v => v.Title?.Contains("Modelos") == true);
         fx.Wait(() => fx.App.Header!.Text.ToString().Contains("model29"), "modelo seleccionado en encabezado");
@@ -2901,6 +2904,7 @@ public sealed partial class TuiWiringTests
         fx.Invoke(() => Assert.DoesNotContain(fx.App.Overlay!.SubViews.OfType<Button>(),
             b => b.Text.ToString().Contains("Añadir")));
         ChoosePickerItem(fx, "Subscription Test");
+        ConfirmSelectedModelPreferences(fx, "subscription-test-model");
         fx.Wait(() => fx.App.Overlay is null, "selección rápida sin formulario de política");
         Assert.True(policies.CurrentSelection(ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory), default)!.ObserveOnly);
         fx.Wait(() => fx.App.Header!.Text.ToString().Contains("subscription-test-model"), "modelo seleccionado en encabezado");

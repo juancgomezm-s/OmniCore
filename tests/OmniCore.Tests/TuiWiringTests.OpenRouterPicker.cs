@@ -51,6 +51,7 @@ public sealed partial class TuiWiringTests
             list.SetFocus();
         });
         fx.InjectKey(new Key(KeyCode.Enter));
+        ConfirmSelectedModelPreferences(fx, "org/second");
         fx.Wait(() => fx.App.Overlay is null && fx.App.Header!.Text.Contains("org/second"), "Enter elige el modelo directamente");
         var registered = Assert.Single(OmniHost.LoadUserConfiguration(paths).Registry.Models());
         Assert.Equal("org/second", registered.Id);

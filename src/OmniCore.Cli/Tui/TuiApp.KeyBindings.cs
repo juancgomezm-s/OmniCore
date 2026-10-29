@@ -237,9 +237,11 @@ public sealed partial class TuiApp
         string Shortcut(string id) => _keyBindings.Service.Bindings.Where(binding => binding.Definition.Target.Id == id)
             .OrderByDescending(binding => binding.Definition.Priority).ThenByDescending(binding => binding.Definition.Source)
             .Select(binding => binding.Definition.Keys).FirstOrDefault() ?? "—";
-        return Shortcut("mode.open") + " /" + HumanCommandAliases.DisplayName("mode", _locale)
+        // Keep mode, permissions and Send visible when the terminal clips the footer.
+        // The extra controls remain available in full help and the command palette.
+        return text + " · " + Shortcut("mode.open") + " /" + HumanCommandAliases.DisplayName("mode", _locale)
             + " · " + Shortcut("permissions.open") + " /" + HumanCommandAliases.DisplayName("permission", _locale)
-            + " · /" + HumanCommandAliases.DisplayName("effort", _locale) + " · /think · " + text;
+            + " · /" + HumanCommandAliases.DisplayName("effort", _locale) + " · /think";
     }
 
     private string KeyBindingsReport()

@@ -27,7 +27,8 @@ public sealed partial class TuiWiringTests
                 .FindIndex(item => item.Contains("chosen-subscription", StringComparison.Ordinal));
             list.SetFocus();
         });
-        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is null, "choose subscription");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay?.Id == "reasoning-preferences", "choose subscription and offer reasoning preferences");
+        ConfirmSelectedModelPreferences(fx, "chosen-subscription");
         fx.Wait(() => fx.App.Header!.Text.Contains("chosen-subscription"), "explicit choice in header");
         var session = fx.Server.LastSessionId()!;
         var sequence = fx.Server.AcquireStore().CurrentSequence(session);
@@ -135,10 +136,27 @@ public sealed partial class TuiWiringTests
         bool SearchFocused() => Descendants(fx.App.Overlay!).Single(view => view.Id == "preferences-search").HasFocus;
         fx.Wait(() => Navigation().HasFocus, "opening focuses the category menu");
         Assert.False(Language().HasFocus); Assert.False(SearchFocused());
-        var origin = System.Drawing.Point.Empty;
-        fx.Invoke(() => origin = Language().ViewportToScreen(System.Drawing.Point.Empty));
-        var previewCells = CaptureConversationFrame(fx, 120, 40, "Español");
-        Assert.Equal(Language().GetScheme().Normal.Background, previewCells[origin.Y, origin.X + 1].Attribute?.Background);
+        void AssertLanguageSelectionFrame(bool focused)
+        {
+            // Category navigation rebuilds the language view, and focusing it can scroll
+            // its parent. Sample the current selected row after that layout has drawn.
+            var selectedCell = System.Drawing.Point.Empty;
+            var frame = CaptureConversationFrame(fx, 120, 40, "Español", cells =>
+            {
+                var language = Language();
+                selectedCell = language.ViewportToScreen(new System.Drawing.Point(1,
+                    (language.SelectedItem ?? 0) - language.Viewport.Y));
+                if (selectedCell.X < 0 || selectedCell.X >= cells.GetLength(1)
+                    || selectedCell.Y < 0 || selectedCell.Y >= cells.GetLength(0)) return false;
+                var expected = focused ? language.GetScheme().Focus : language.GetScheme().Normal;
+                return language.HasFocus == focused && cells[selectedCell.Y, selectedCell.X].Attribute?.Background == expected.Background;
+            });
+            var scheme = fx.Read(() => Language().GetScheme());
+            Assert.NotEqual(scheme.Normal.Background, scheme.Focus.Background);
+            Assert.Equal((focused ? scheme.Focus : scheme.Normal).Background,
+                frame[selectedCell.Y, selectedCell.X].Attribute?.Background);
+        }
+        AssertLanguageSelectionFrame(focused: false);
         KeyWithEffect(fx, KeyCode.CursorDown, () => Navigation().SelectedItem == 1, "browse accounts without entering");
         Assert.True(Navigation().HasFocus); Assert.False(SearchFocused());
         KeyWithEffect(fx, KeyCode.CursorUp, () => Navigation().SelectedItem == 0, "browse General without entering");
@@ -146,8 +164,7 @@ public sealed partial class TuiWiringTests
         Assert.Equal("es", fx.App.PreferencesDraftLocale);
         KeyWithEffect(fx, enter, () => Language().HasFocus, "explicit key enters language controls");
         Assert.False(SearchFocused());
-        var activeCells = CaptureConversationFrame(fx, 120, 40, "Español");
-        Assert.NotEqual(Language().GetScheme().Normal.Background, activeCells[origin.Y, origin.X + 1].Attribute?.Background);
+        AssertLanguageSelectionFrame(focused: true);
         KeyWithEffect(fx, KeyCode.CursorDown, () => Language().SelectedItem == 1, "browse English after entering");
         Assert.Equal("es", fx.App.PreferencesDraftLocale); Assert.Equal("es", fx.App.PreferencesLocale);
         Assert.True(Language().HasFocus); Assert.False(SearchFocused());
@@ -187,7 +204,8 @@ public sealed partial class TuiWiringTests
             list.SetFocus();
         });
         ExportPreferenceFrame(fx, width, 30, "cached-model-after-failure", "cached-next");
-        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is null, "Enter selects the registered model despite lookup failure");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay?.Id == "reasoning-preferences", "Enter selects the registered model despite lookup failure");
+        ConfirmSelectedModelPreferences(fx, "cached-next");
         Assert.Equal("cached-next", policies.CurrentSelection(workspace, default)!.ModelId);
         Assert.Equal("chatgpt", policies.CurrentSelection(workspace, default)!.Key.ProviderId);
         Assert.True(policies.CurrentSelection(workspace, default)!.ObserveOnly);
@@ -260,7 +278,8 @@ public sealed partial class TuiWiringTests
             list.SelectedItem = list.Source!.ToList().Cast<object>().Select(row => row.ToString()!).ToList().FindIndex(row => row.Contains("registered-only", StringComparison.Ordinal));
             Assert.True(list.SelectedItem >= 0); list.SetFocus();
         });
-        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is null, "registered model can be selected directly");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay?.Id == "reasoning-preferences", "registered model can be selected directly");
+        ConfirmSelectedModelPreferences(fx, "registered-only");
         Assert.Equal("registered-only", policies.CurrentSelection(ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory), default)!.ModelId);
         Assert.Equal(0, account.CatalogCalls);
     });

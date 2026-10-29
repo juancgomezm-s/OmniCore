@@ -147,6 +147,7 @@ public sealed partial class TuiWiringTests
                 list.SetFocus();
             });
             fx.InjectKey(new Key(KeyCode.Enter));
+            ConfirmSelectedModelPreferences(fx, "cached-b");
             fx.Wait(() => fx.App.Overlay is null && fx.App.Header!.Text.Contains("cached-b"), "selección sin esperar la red");
             Assert.False(account.Release.Task.IsCompleted);
             account.Release.SetResult([new("cached-a", "A"), new("cached-b", "B")]);

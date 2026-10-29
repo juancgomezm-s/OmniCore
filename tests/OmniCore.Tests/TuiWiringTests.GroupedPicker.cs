@@ -73,6 +73,7 @@ public sealed partial class TuiWiringTests
         fx.Invoke(() => fx.App.Overlay!.SubViews.OfType<TextField>().Single().Text = "meta");
         fx.Wait(() => PickerItems(fx).Length == 1, "buscar fabricante conserva únicamente sus modelos");
         fx.InjectKey(new Key(KeyCode.Enter));
+        ConfirmSelectedModelPreferences(fx, "meta-llama/paid");
         fx.Wait(() => fx.App.Overlay is null, "Enter selecciona modelo, nunca encabezados");
         Assert.Equal("meta-llama/paid", policies.CurrentSelection(ModelPolicyHost.WorkspaceSelectionId(Environment.CurrentDirectory), default)!.ModelId);
         Assert.Equal(1, http.Requests);

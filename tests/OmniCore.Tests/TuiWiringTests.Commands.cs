@@ -53,17 +53,39 @@ public sealed partial class TuiWiringTests
         KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "Esc cierra la ayuda");
     });
 
-    [Fact]
-    public void Shift_tab_cycles_the_mode_and_the_footer_shows_it() => RunTuiTest(fx =>
+    [Theory]
+    [InlineData(80, 25, false)]
+    [InlineData(80, 25, true)]
+    [InlineData(120, 40, false)]
+    [InlineData(120, 40, true)]
+    public void Shift_tab_cycles_the_mode_and_the_footer_shows_it(int columns, int rows, bool sidebar) => RunTuiTest(fx =>
     {
-        fx.StartTui();
+        fx.StartTui(initialColumns: columns, initialRows: rows);
+        if (sidebar)
+        {
+            fx.InjectKey(new Key(KeyCode.F2));
+            fx.Wait(() => fx.App.Sidebar!.Visible, "panel lateral abierto");
+        }
+        void AssertVisibleMode(string mode)
+        {
+            var lead = StatusLinePresentation.ModeLabel(mode, "es") + " · Permisos: Libre · Enter enviar";
+            fx.Wait(() => FooterText(fx).StartsWith(lead, StringComparison.Ordinal), "modo, permisos y envío preceden los atajos adicionales");
+            var cells = CaptureConversationFrame(fx, columns, rows, lead);
+            Assert.Contains(Enumerable.Range(0, rows), y => string.Concat(Enumerable.Range(0, columns)
+                .Select(x => cells[y, x].Grapheme)).Contains(lead, StringComparison.Ordinal));
+        }
         fx.Wait(() => FooterText(fx).StartsWith("act", StringComparison.Ordinal), "el pie arranca en ACT");
         Assert.Contains("Permisos: Libre", FooterText(fx));
         Assert.Contains("⇧Tab", FooterText(fx) + CompactHelpProbe());
+        AssertVisibleMode("act");
         KeyWithEffect(fx, KeyCode.Tab | KeyCode.ShiftMask, () => FooterText(fx).StartsWith("orq", StringComparison.OrdinalIgnoreCase)
             || FooterText(fx).StartsWith(StatusLinePresentation.ModeLabel("orchestrate", "es"), StringComparison.Ordinal), "ACT → ORQ");
+        // run.mode.select reports the canonical wire value "orq" to this live Run.
+        AssertVisibleMode("orq");
         KeyWithEffect(fx, KeyCode.Tab | KeyCode.ShiftMask, () => FooterText(fx).StartsWith(StatusLinePresentation.ModeLabel("plan", "es"), StringComparison.Ordinal), "ORQ → PLAN");
+        AssertVisibleMode("plan");
         KeyWithEffect(fx, KeyCode.Tab | KeyCode.ShiftMask, () => FooterText(fx).StartsWith("act", StringComparison.Ordinal), "PLAN → ACT");
+        AssertVisibleMode("act");
     });
 
     private static string CompactHelpProbe() => TuiApp.CompactHelp("act", "es", 200, "Permisos: Libre");

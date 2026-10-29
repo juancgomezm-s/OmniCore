@@ -93,10 +93,14 @@ internal sealed class HumanShellProcessTool : ITool, INativeUserActionOnlyTool,
                 OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)
             || !processClaim.Args.SequenceEqual(expectedArguments, StringComparer.Ordinal))
             return ToolResult.Error(ToolErrorCode.CapabilityRefused, "shell.process_claim_mismatch");
-        var effectiveStrength = context.WeakSandboxConsentForThisCall
+        var effectiveStrength = context.WeakSandboxConsentForThisCall && !context.AutomaticSandboxConsentForThisCall
             ? SandboxStrength.Weak : _requestedStrength;
         var launch = CreateLaunchSpec(effectiveStrength, processClaim.Executable, processClaim.Args, cwd,
             context.WorkspaceRoot, TimeSpan.FromSeconds(timeout));
+        if (effectiveStrength == SandboxStrength.Strong && context.AutomaticSandboxConsentForThisCall
+            && _launcher is IStrongSandboxPreflight preflight
+            && preflight.CheckStrongAvailability(launch) == StrongSandboxPreflightResult.UnavailableBeforeLaunch)
+            launch = launch with { RequestedStrength = SandboxStrength.Weak };
         var started = await _manager.StartAsync(context.MutationRunId, context.MutationLaneId,
             launch, _launcher, context.EmitEvent, cancellationToken, workspaceRoot: context.WorkspaceRoot,
             sourceCall: authorized.Intent.ToolCallId, sourceTool: new ToolId(ProcessOwnerSource),

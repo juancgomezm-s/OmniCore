@@ -582,7 +582,7 @@ public sealed class ExtensionManifestTests
             var tool = new ExtensionTool(extension, extension.Manifest!.Provides!.Tools!.Single(),
                 File.ReadAllText(schemaPath), new ExtensionRpcProcessInvoker(launcher), workspace);
             var policy = new PackageMutatingPermissionPolicy(
-                ScriptedPermissionPolicy.WithTool("ext.fixture.rpc.mutate", PermissionDecision.Allow)
+                ScriptedPermissionPolicy.WithTool("ext.fixture.rpc.mutate", PermissionDecision.Ask)
                     .WithModeDefaults(OmniCore.Domain.RunMode.Act), schemaPath);
             var executor = new ScriptedToolExecutor(new FakeCatalog().Add(tool), policy, workspace,
                 null, null, null, false, additionalBoundaries: [tool.Boundary]);
@@ -776,7 +776,7 @@ public sealed class ExtensionManifestTests
         Assert.Equal(0, rpc.Invocations);
 
         var askExecutor = new ScriptedToolExecutor(new FakeCatalog().Add(tool),
-            ScriptedPermissionPolicy.WithTool("ext.fixture.rpc.compile", PermissionDecision.Allow)
+            ScriptedPermissionPolicy.WithTool("ext.fixture.rpc.compile", PermissionDecision.Ask)
                 .WithModeDefaults(OmniCore.Domain.RunMode.Act), "C:\\workspace",
             null, null, null, false, additionalBoundaries: [tool.Boundary]);
         var pending = askExecutor.ExecuteToolWithoutJournal(new ValidatedToolCall(ToolCallId.New(), tool.Descriptor.Id,

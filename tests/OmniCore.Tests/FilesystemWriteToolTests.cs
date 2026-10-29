@@ -1367,7 +1367,7 @@ public sealed class FilesystemWriteToolTests
             Assert.False(stale.Succeeded);
             Persist(stale);
 
-            // Reabrimos antes del replay para comprobar que el contrato v4 conserva atribución
+            // Reabrimos antes del replay para comprobar que el contrato v5 conserva atribución
             // además de los metadatos canónicos de reconciliación.
             store.Close();
             store = new SqliteEventStore(storePath);
@@ -1389,8 +1389,8 @@ public sealed class FilesystemWriteToolTests
                     Assert.Equal("nuevo.txt", started.TargetRef);
                     Assert.Equal(Reversibility.Unknown, started.Reversibility);
                     Assert.Null(started.BeforeStateRef); // Reconciliation hashes are not a captured pre-image.
-                    Assert.Equal(4, evt.SchemaVersion);
-                    Assert.Equal(4, started.SchemaVersion());
+                    Assert.Equal(5, evt.SchemaVersion);
+                    Assert.Equal(5, started.SchemaVersion());
                     Assert.Equal("filesystem.write", started.Attribution!.ToolId);
                     Assert.Equal("BuiltIn", started.Attribution.SourceKind);
                     Assert.Null(started.Attribution.ExtensionId);

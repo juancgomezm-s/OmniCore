@@ -291,9 +291,11 @@ public sealed class ProcessExecToolsTests
             var intent = Assert.IsType<Prepared>(tool.Prepare(call, new ToolPreparationContext(workspace, DateTimeOffset.UtcNow))).Intent;
             Assert.Contains(raw, intent.Claims.Process!.Args);
             Assert.Equal(PermissionDecision.Deny,
-                new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()).WithModeDefaults(RunMode.Plan).Evaluate(intent).Final);
+                new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()).WithModeDefaults(RunMode.Plan)
+                    .WithProfile(PermissionProfile.Balanced).Evaluate(intent).Final);
             Assert.Equal(PermissionDecision.Ask,
-                new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()).WithModeDefaults(RunMode.Act).Evaluate(intent).Final);
+                new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()).WithModeDefaults(RunMode.Act)
+                    .WithProfile(PermissionProfile.Balanced).Evaluate(intent).Final);
         }
         finally { Cleanup(workspace); }
     }
