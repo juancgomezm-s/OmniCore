@@ -18,7 +18,7 @@ public sealed partial class CompanionCoordinator
     {
         text = text.Trim(); if (text.Length is < 1 or > 2000 || text.Any(char.IsControl) || project?.Length > 200) throw new ArgumentException("Recuerdo inválido.");
         using var db = Open(); using var tx = db.BeginTransaction();
-        using var cmd = Cmd(db, tx, "UPDATE companion_facts SET text=$p1,project=$p2,source='user',at=$p3 WHERE id=$p0 AND text=$p4 AND project IS $p5", original.Id, text, project, Now, original.Text, original.Project);
+        using var cmd = Cmd(db, tx, "UPDATE companion_facts SET text=$p1,project=$p2,at=$p3 WHERE id=$p0 AND text=$p4 AND project IS $p5", original.Id, text, project, Now, original.Text, original.Project);
         if (cmd.ExecuteNonQuery() == 0)
         {
             using var existing = Cmd(db, tx, "SELECT 1 FROM companion_facts WHERE id=$p0", original.Id);

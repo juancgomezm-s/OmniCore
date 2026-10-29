@@ -112,6 +112,20 @@ public sealed class CompanionNaturalConversationTests : IDisposable
     }
 
     [Fact]
+    public void Long_instructions_keep_the_full_delivery_with_atomic_followup_and_disconnect_status()
+    {
+        var hub = Hub(); var peer = Peer("Alpha"); hub.Heartbeat(peer); var label = hub.ProjectLabel(peer.Workspace);
+        var text = new string('x', 3000);
+        var tools = new CompanionChatTools(hub, "Dile a " + label + " " + text);
+        var sent = tools.Execute(CompanionToolsTests.Call("agent.message", "{\"target\":\"" + label + "\",\"text\":\"" + text + "\"}"), TestContext.Current.CancellationToken);
+        Assert.True(sent.Ok); Assert.Equal(text, sent.Delivery!.Text);
+        var fact = Assert.Single(hub.MaintainMemory("followup")); Assert.Equal("queued", fact.Status); Assert.True(fact.Text.Length <= 2000);
+        hub.EditMemory(fact, "Esperar revisión", fact.Project);
+        hub.Disconnect(peer.Id); hub.Read();
+        Assert.Equal("rejected", Assert.Single(hub.MaintainMemory("followup")).Status);
+    }
+
+    [Fact]
     public void Categorized_memory_can_be_searched_edited_forgotten_and_followups_resolved()
     {
         var hub = Hub(); hub.Remember("Mi nombre es Juan");

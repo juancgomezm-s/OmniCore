@@ -102,7 +102,7 @@ public sealed partial class CompanionCoordinator
         if (notice is not null) { using var cmd = Cmd(db, tx, "UPDATE notices SET json=$p1 WHERE id=$p0", id, Encode(notice with { Read = true })); cmd.ExecuteNonQuery(); }
         tx.Commit();
     }
-    public void Send(CompanionDelivery delivery)
+    public void Send(CompanionDelivery delivery, string? followupProject = null)
     {
         if (!Guid.TryParse(delivery.Id, out _) || delivery.Text.Length > 8000 || string.IsNullOrWhiteSpace(delivery.Text) && delivery.Kind == "instruction"
             || delivery.Kind is not ("instruction" or "answer")) throw new ArgumentException("Instrucción inválida.");
@@ -117,7 +117,14 @@ public sealed partial class CompanionCoordinator
         using var count = Cmd(db, tx, "SELECT count(*) FROM deliveries WHERE target=$p0 AND status='queued' AND json_extract(json,'$.kind')!='message'", delivery.Target);
         if (Convert.ToInt32(count.ExecuteScalar()) >= 32) throw new InvalidOperationException("La bandeja de esta instancia está llena.");
         using var cmd = Cmd(db, tx, "INSERT OR IGNORE INTO deliveries VALUES($p0,$p1,$p2,'queued',$p3)", delivery.Id, delivery.Target, Now,
-            Encode(delivery with { Status = "queued", Detail = null })); cmd.ExecuteNonQuery(); tx.Commit();
+            Encode(delivery with { Status = "queued", Detail = null }));
+        if (cmd.ExecuteNonQuery() > 0 && followupProject is not null)
+        {
+            var excerpt = delivery.Text.Length <= 2000 ? delivery.Text : delivery.Text[..1998] + " …";
+            using var followup = Cmd(db, tx, "INSERT OR IGNORE INTO companion_facts VALUES($p0,'followup',$p1,$p2,$p3,'queued',$p4)",
+                Hash(delivery.Id), followupProject, excerpt, "delivery/" + delivery.Id, Now); followup.ExecuteNonQuery();
+        }
+        tx.Commit();
     }
     public CompanionDelivery? Claim(string instance, string session, string? run, bool busy)
     {
@@ -134,11 +141,15 @@ public sealed partial class CompanionCoordinator
         tx.Commit(); return null;
     }
     private static void WriteDelivery(SqliteConnection db, SqliteTransaction? tx, CompanionDelivery delivery, string? expectedStatus = null)
-    { using var cmd = Cmd(db, tx, "UPDATE deliveries SET status=$p1,json=$p2 WHERE id=$p0 AND ($p3 IS NULL OR status=$p3)", delivery.Id, delivery.Status, Encode(delivery), expectedStatus); cmd.ExecuteNonQuery(); }
+    {
+        using var cmd = Cmd(db, tx, "UPDATE deliveries SET status=$p1,json=$p2 WHERE id=$p0 AND ($p3 IS NULL OR status=$p3)", delivery.Id, delivery.Status, Encode(delivery), expectedStatus);
+        if (cmd.ExecuteNonQuery() > 0 && delivery.Status is "rejected" or "unknown")
+        { using var followup = Cmd(db, tx, "UPDATE companion_facts SET status=$p1 WHERE source=$p0 AND status!='resolved'", "delivery/" + delivery.Id, delivery.Status); followup.ExecuteNonQuery(); }
+    }
     public void Complete(CompanionDelivery delivery, bool accepted, string detail)
     {
         using var db = Open(); WriteDelivery(db, null, delivery with { Status = accepted ? "accepted" : "rejected", Detail = detail });
-        using (var followup = Cmd(db, null, "UPDATE companion_facts SET status=$p1,at=$p2 WHERE source=$p0", "delivery/" + delivery.Id, accepted ? "received" : "rejected", Now)) followup.ExecuteNonQuery();
+        using (var followup = Cmd(db, null, "UPDATE companion_facts SET status=$p1,at=$p2 WHERE source=$p0 AND status!='resolved'", "delivery/" + delivery.Id, accepted ? "received" : "rejected", Now)) followup.ExecuteNonQuery();
         Notify(new("delivery/" + delivery.Id, delivery.Target, delivery.Session,
             (accepted ? "Orden recibida · " : "Orden rechazada · ") + detail, _clock()));
     }

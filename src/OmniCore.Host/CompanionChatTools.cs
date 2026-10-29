@@ -80,7 +80,7 @@ public sealed class CompanionChatTools(CompanionCoordinator hub, string userRequ
         {
             _effects[fingerprint] = result;
             var note = result.CreatedSession is { } created ? "Sesión creada: " + created.Title + " · " + created.SessionId + " · sin iniciar trabajo"
-                : result.Delivery is { } delivery ? "Instrucción en cola para el principal de " + delivery.Session[..Math.Min(delivery.Session.Length, 36)] + " · envío " + delivery.Id
+                : result.Delivery is not null ? result.Text ?? "Instrucción en cola."
                 : result.Memories is [var fact] ? "Recuerdo guardado: " + fact.Text[..Math.Min(fact.Text.Length, 80)]
                 : result.Text ?? (result.Reaction is { } reaction ? "Reacción: " + reaction.AnimationId : "Acción realizada.");
             if (!_actions.Contains(note)) _actions.Add(note);
@@ -133,10 +133,9 @@ public sealed class CompanionChatTools(CompanionCoordinator hub, string userRequ
         var key = chosen.Id + "\n" + chosen.Session + "\n" + chosen.Run + "\n" + text;
         if (_sent.TryGetValue(key, out var previous)) return previous;
         var delivery = new CompanionDelivery(Guid.NewGuid().ToString(), chosen.Id, chosen.Session, chosen.Run, "instruction", text);
-        hub.Send(delivery);
-        hub.RememberCategorized(text, "followup", hub.ProjectLabel(chosen.Workspace), "delivery/" + delivery.Id, "queued", HashDelivery(delivery.Id));
-        return _sent[key] = new(true, Text: "Instrucción en cola para el agente principal; todavía no confirma ejecución ni finalización.", Delivery: delivery);
+        var project = hub.ProjectLabel(chosen.Workspace);
+        hub.Send(delivery, project);
+        return _sent[key] = new(true, Text: "Instrucción en cola para " + project + "; todavía no confirma ejecución ni finalización.", Delivery: delivery);
     }
-    private static string HashDelivery(string id) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(id)));
     public static string Encode(CompanionToolResult result) => JsonSerializer.Serialize(result, CompanionCoordinatorJson.Default.CompanionToolResult);
 }
