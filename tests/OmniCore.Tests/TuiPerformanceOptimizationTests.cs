@@ -76,8 +76,13 @@ public sealed partial class TuiWiringTests
         }
         finally { fx.Application.LayoutAndDrawComplete -= onInitialDraw; }
 
-        fx.Invoke(() =>
+        var changed = model with { Pixels = [[new PixelCell("#", "#23C9EE", "#000000")]] };
+        // An unrelated application tick can invalidate the parent after the first
+        // frame. Wait for a clean widget and check both cache paths in that same
+        // UI invocation, so no timer or layout pass can invalidate it in between.
+        fx.Wait(() => fx.Read(() =>
         {
+            if (renderer.NeedsLayout || renderer.NeedsDraw) return false;
             var equivalent = model with
             {
                 Pixels = [[new PixelCell("·", "#23C9EE", "#000000")]],
@@ -88,15 +93,11 @@ public sealed partial class TuiWiringTests
             Assert.False(needsBefore.Item2);
             render.Invoke(renderer, [equivalent, false]);
             Assert.Equal(needsBefore, (renderer.NeedsLayout, renderer.NeedsDraw));
-        });
-
-        var changed = model with { Pixels = [[new PixelCell("#", "#23C9EE", "#000000")]] };
-        fx.Invoke(() =>
-        {
             render.Invoke(renderer, [changed, false]);
             Assert.True(renderer.NeedsLayout || renderer.NeedsDraw
                 || renderer.SubViews.OfType<Label>().Any(label => label.NeedsDraw));
-        });
+            return true;
+        }), "clean pixel frame and atomic cache invalidation checks");
         fx.Wait(() => renderer.SubViews.OfType<Label>().Any(label => label.Text == "#"), "changed pixel rendered");
 
         fx.Invoke(() =>
