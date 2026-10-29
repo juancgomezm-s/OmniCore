@@ -119,17 +119,23 @@ data: {"type":"message_stop"}
         Assert.Equal(8192, root.GetProperty("max_tokens").GetInt32());
         Assert.Equal("You are OmniCore.", root.GetProperty("system")[0].GetProperty("text").GetString());
         var wireName = root.GetProperty("tools")[0].GetProperty("name").GetString();
-        Assert.StartsWith("omni_", wireName);
+        Assert.Equal("read_file", wireName);
         Assert.Equal("object", root.GetProperty("tools")[0].GetProperty("input_schema").GetProperty("type").GetString());
         Assert.Equal("auto", root.GetProperty("tool_choice").GetProperty("type").GetString());
         Assert.False(root.TryGetProperty("functions", out _));
         Assert.All(root.GetProperty("messages").EnumerateArray(), m => Assert.NotEqual("system", m.GetProperty("role").GetString()));
     }
 
-    [Fact]
-    public async System.Threading.Tasks.Task Dotted_tool_names_are_mapped_in_definitions_choice_history_and_stream_results()
+    [Theory]
+    [InlineData("filesystem.read", "read_file")]
+    [InlineData("filesystem.search", "grep_files")]
+    [InlineData("filesystem.patch", "apply_patch")]
+    [InlineData("shell.exec", "exec_command")]
+    [InlineData("process.send_input", "write_stdin")]
+    [InlineData("user.ask", "request_user_input")]
+    public async System.Threading.Tasks.Task Dotted_tool_names_are_mapped_in_definitions_choice_history_and_stream_results(
+        string canonical, string expectedAlias)
     {
-        var canonical = "filesystem.read";
         var priorCall = new ToolCallBlock(ToolCallId.New(), "old-call", canonical, "{\"path\":\"a.cs\"}");
         var hiddenCall = new ToolCallBlock(ToolCallId.New(), "hidden-call", "extension.hidden.tool", "{}");
         var priorMessages = new ModelMessage[]
@@ -139,12 +145,13 @@ data: {"type":"message_stop"}
                 new ToolResultBlock(hiddenCall.Id, [new TextBlock("old result")], false)]),
             new(MessageRole.User, [new TextBlock("read again")]),
         };
-        var definition = new ToolDefinition(canonical, "read", "{\"type\":\"object\"}");
-        var request = new ModelRequest(Request().Model, priorMessages, null,
+        var definition = new ToolDefinition(canonical, "Use `" + canonical + "`.", "{\"type\":\"object\"}");
+        var request = new ModelRequest(Request().Model, priorMessages, "Use `" + canonical + "`.",
             [definition, new ToolDefinition("custom_tool-2", "valid wire name", "{\"type\":\"object\"}")], ToolChoice.Exact(canonical),
             null, null, null, null);
         var names = ToolNameWireMap.ForRequest(request, 128);
         var alias = names.ToWire(canonical);
+        Assert.Equal(expectedAlias, alias);
         var hiddenAlias = names.ToWire("extension.hidden.tool");
         var handler = new QueueHandler(_ => Sse(TextAndToolStream.Replace("\"name\":\"filesystem.read\"",
             "\"name\":\"" + alias + "\"", StringComparison.Ordinal)));
@@ -154,6 +161,8 @@ data: {"type":"message_stop"}
         using var body = JsonDocument.Parse(handler.Requests.Single().Body);
         var root = body.RootElement;
         Assert.Equal(alias, root.GetProperty("tools")[0].GetProperty("name").GetString());
+        Assert.Equal("Use `" + alias + "`.", root.GetProperty("system")[0].GetProperty("text").GetString());
+        Assert.Equal("Use `" + alias + "`.", root.GetProperty("tools")[0].GetProperty("description").GetString());
         Assert.Equal("custom_tool-2", root.GetProperty("tools")[1].GetProperty("name").GetString());
         Assert.Equal(alias, root.GetProperty("tool_choice").GetProperty("name").GetString());
         var historical = root.GetProperty("messages").EnumerateArray()

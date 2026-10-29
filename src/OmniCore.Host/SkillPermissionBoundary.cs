@@ -38,7 +38,7 @@ internal sealed class SkillPermissionBoundary(Func<IReadOnlyList<LoadedSkill>> a
     {
         var claims = intent.Claims;
         if (claims.Secrets.Count != 0) return false;
-        var recursiveRead = intent.ToolId.ToString() is "filesystem.list" or "search.text";
+        var recursiveRead = intent.ToolId.ToString() is "filesystem.list" or "filesystem.search";
         if (claims.Reads.Any(path => NormalizeWorkspacePath(path, workspaceRoot) is not { } normalized
                 || !IsPathClaimAllowed(ceiling.Filesystem?.Read, normalized, recursiveRead))
             || claims.Writes.Any(path => NormalizeWorkspacePath(path, workspaceRoot) is not { } normalized

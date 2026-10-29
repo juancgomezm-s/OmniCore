@@ -214,7 +214,7 @@ public sealed class ToolSchemaValidationTests
         Assert.NotEmpty(definitions);
         Assert.Contains(definitions, d => d.Name == "filesystem.read");
         Assert.Contains(definitions, d => d.Name == "filesystem.write");
-        Assert.Contains(definitions, d => d.Name == "search.text");
+        Assert.Contains(definitions, d => d.Name == "filesystem.search");
 
         foreach (var definition in definitions)
         {
@@ -256,7 +256,7 @@ public sealed class ToolSchemaValidationTests
     {
         var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(),
             includeSimulationTools: false, includeMutationTools: true);
-        var search = hostTools.Catalog().Find(new ToolId("search.text"));
+        var search = hostTools.Catalog().Find(new ToolId("filesystem.search"));
         Assert.NotNull(search);
         var schema = search!.Descriptor.InputSchema;
 

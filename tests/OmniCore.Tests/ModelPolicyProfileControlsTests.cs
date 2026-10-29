@@ -15,7 +15,7 @@ public sealed class ModelPolicyProfileControlsTests
     {
         var definitions = new[]
         {
-            "filesystem.read", "filesystem.list", "search.text", "reference.resolve",
+            "filesystem.read", "filesystem.list", "filesystem.search", "reference.resolve",
             "filesystem.write", "filesystem.patch", "dyn.core.verify_integration", "process.exec",
         }.Select(name => new ToolDefinition(name, name, "{}" )).ToArray();
         var capabilities = ModelCapabilityBoundary.CoreTools.ToDictionary(
@@ -130,7 +130,7 @@ public sealed class ModelPolicyProfileControlsTests
         // ExplorerTurn excludes tool.search in Direct mode: hidden tools cannot be discovered.
         var visible = new ModelCapabilityBoundary(effective).VisibleTools(
             tools.Definitions().Where(tool => tool.Name != "tool.search")).Select(tool => tool.Name).ToArray();
-        var basicTools = new[] { "user.ask", "filesystem.list", "filesystem.read", "search.text",
+        var basicTools = new[] { "user.ask", "filesystem.list", "filesystem.read", "filesystem.search",
             "filesystem.patch", "filesystem.write" };
         if (category == ModelPolicyCategory.FullAgent)
         {
@@ -165,10 +165,10 @@ public sealed class ModelPolicyProfileControlsTests
                 .Select(tool => tool.Name).ToArray();
 
             Assert.Contains("user.ask", patchVisible);
-            Assert.Contains("search.text", patchVisible);
+            Assert.Contains("filesystem.search", patchVisible);
             Assert.Contains("filesystem.read", patchVisible);
             Assert.Contains("filesystem.patch", patchVisible);
-            Assert.DoesNotContain("filesystem.search", patchVisible);
+            Assert.Single(patchVisible, name => name == "filesystem.search");
 
             var observe = ModelPolicyPresets.ObserveOnly();
             var mediaTools = OmniHost.CreateExplorerTools(mediaReadTool: new MediaReadTool(
@@ -198,7 +198,7 @@ public sealed class ModelPolicyProfileControlsTests
             var observeVisible = new ModelCapabilityBoundary(observePolicy).VisibleTools(definitions)
                 .Select(tool => tool.Name).ToArray();
             Assert.Contains("user.ask", observeVisible);
-            Assert.Contains("search.text", observeVisible);
+            Assert.Contains("filesystem.search", observeVisible);
             Assert.Contains("filesystem.read", observeVisible);
             Assert.DoesNotContain("mode.propose", observeVisible);
             Assert.DoesNotContain("plan.propose", observeVisible);

@@ -80,21 +80,27 @@ public sealed class OpenAiChatCompatibleMediaSerializationTests
             part.GetProperty("image_url").GetProperty("url").GetString()));
     }
 
-    [Fact]
-    public async System.Threading.Tasks.Task Dotted_tool_names_map_in_choice_and_history_and_restore_stream_results()
+    [Theory]
+    [InlineData("filesystem.read", "read_file")]
+    [InlineData("filesystem.search", "grep_files")]
+    [InlineData("filesystem.patch", "apply_patch")]
+    [InlineData("shell.exec", "exec_command")]
+    [InlineData("process.send_input", "write_stdin")]
+    [InlineData("user.ask", "request_user_input")]
+    public async System.Threading.Tasks.Task Dotted_tool_names_map_in_choice_and_history_and_restore_stream_results(
+        string canonical, string expectedAlias)
     {
-        const string canonical = "filesystem.read";
         var call = new ToolCallBlock(ToolCallId.New(), "old-call", canonical, "{}");
         var request = new ModelRequest(new ModelSelection(new ModelIdValue("fixture-model"), 4096,
                 ToolMode.Direct, null),
             [new ModelMessage(MessageRole.Assistant, [call]),
                 new ModelMessage(MessageRole.Tool, [new ToolResultBlock(call.Id, [new TextBlock("ok")], false)]),
                 new ModelMessage(MessageRole.User, [new TextBlock("again")])],
-            null, [new ToolDefinition(canonical, "read", "{\"type\":\"object\"}")], ToolChoice.Exact(canonical),
+            "Use `" + canonical + "`.", [new ToolDefinition(canonical, "Use `" + canonical + "`.", "{\"type\":\"object\"}")], ToolChoice.Exact(canonical),
             null, null, null, null);
         var names = ToolNameWireMap.ForRequest(request, 64);
         var alias = names.ToWire(canonical);
-        Assert.NotEqual(canonical, alias);
+        Assert.Equal(expectedAlias, alias);
         Assert.DoesNotContain('.', alias);
         var handler = new CaptureHandler("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"new-call\",\"function\":{\"name\":\"" + alias + "\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n");
         var provider = new OpenAiChatCompatibleProvider(new ProviderDescriptor("fixture",
@@ -107,8 +113,10 @@ public sealed class OpenAiChatCompatibleMediaSerializationTests
         using var body = JsonDocument.Parse(handler.Body!);
         var root = body.RootElement;
         Assert.Equal(alias, root.GetProperty("tools")[0].GetProperty("function").GetProperty("name").GetString());
+        Assert.Equal("Use `" + alias + "`.", root.GetProperty("messages")[0].GetProperty("content").GetString());
+        Assert.Equal("Use `" + alias + "`.", root.GetProperty("tools")[0].GetProperty("function").GetProperty("description").GetString());
         Assert.Equal(alias, root.GetProperty("tool_choice").GetProperty("function").GetProperty("name").GetString());
-        var historical = root.GetProperty("messages")[0].GetProperty("tool_calls")[0]
+        var historical = root.GetProperty("messages")[1].GetProperty("tool_calls")[0]
             .GetProperty("function").GetProperty("name").GetString();
         Assert.Equal(alias, historical);
         var responseCall = Assert.Single(Assert.IsType<ResponseCompleted>(events[^1]).Response.Content

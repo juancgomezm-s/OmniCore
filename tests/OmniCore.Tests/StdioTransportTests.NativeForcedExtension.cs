@@ -91,8 +91,7 @@ public sealed partial class StdioTransportTests
         var providerBodies = fixture.ProviderBodies.ToArray();
         Assert.True(providerBodies.Length >= 2, "The provider accepted two requests but did not capture both bodies.");
         var forcedRequest = JsonDocument.Parse(providerBodies[1]);
-        var wireToolName = "omni_" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            Encoding.UTF8.GetBytes("ext.fixture.native.mutate"))).ToLowerInvariant()[..48];
+        const string wireToolName = "ext_fixture_native_mutate";
         var providerToolNames = forcedRequest.RootElement.GetProperty("tools").EnumerateArray()
             .Where(tool => tool.GetProperty("type").GetString() == "function")
             .Select(tool => tool.GetProperty("name").GetString()).ToArray();

@@ -269,7 +269,11 @@ public sealed partial class OmniServer
                 (_lastSessionId, _lastRunId) = previous;
                 if (attempted is { } failed)
                     return FailedDurableCommandAck(command.MessageId, failed, sequenceBefore, "conversation.failed", restoreRunIdentity: false);
-                return new(command.MessageId, "error", "conversation.failed", RuntimeCommandOutcome.Rejected());
+                // Invalid import data is rejected before any destination Session exists.
+                // Preserve the specific validation result used by CLI and native clients.
+                var errorCode = name == "conversation.import" && error is InvalidDataException
+                    ? "conversation.import.invalid" : "conversation.failed";
+                return new(command.MessageId, "error", errorCode, RuntimeCommandOutcome.Rejected());
             }
             finally
             {

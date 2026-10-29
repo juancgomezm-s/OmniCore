@@ -2696,6 +2696,16 @@ public sealed partial class StdioTransportTests
             ClearPool(Path.Combine(_root, "data", "user.db"));
             ClearPool(Path.Combine(_root, "data", "spend-reservations.db"));
             ClearPool(JournalPath);
+            var mailboxPath = Path.Combine(_root, "data", "companion", "coordinator.db");
+            if (File.Exists(mailboxPath))
+            {
+                // The shared mailbox uses a separate pool with a one-second timeout.
+                // Release only this fixture's idle connections after its Host has stopped.
+                using var mailbox = new Microsoft.Data.Sqlite.SqliteConnection(
+                    new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+                    { DataSource = mailboxPath, DefaultTimeout = 1 }.ToString());
+                Microsoft.Data.Sqlite.SqliteConnection.ClearPool(mailbox);
+            }
 
             static void ClearPool(string path)
             {

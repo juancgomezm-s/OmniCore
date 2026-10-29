@@ -34,6 +34,8 @@ public sealed partial class OmniCliRuntime : IDisposable
     private readonly object _serverInitializationGate = new();
     private readonly ProviderResilienceCatalog _providerCircuits = new();
     private readonly LocalServerSupervisor _localServers = new();
+    private readonly object _webResearchGate = new();
+    private readonly Dictionary<RunId, WebResearchController> _webResearchControllers = [];
     private int _turnExecutionActive;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<DelegationId, byte> _activeDelegations = new();
     private readonly Func<string, CancellationToken, Task<ProviderQuotaSnapshot>> _queryQuota;
@@ -66,6 +68,11 @@ public sealed partial class OmniCliRuntime : IDisposable
     public void Dispose()
     {
         _localServers.Dispose();
+        lock (_webResearchGate)
+        {
+            foreach (var research in _webResearchControllers.Values) research.Dispose();
+            _webResearchControllers.Clear();
+        }
         _server?.ClosePersistentStore();
     }
 
@@ -3776,6 +3783,31 @@ public sealed partial class OmniCliRuntime : IDisposable
                 ? CreateActHostTools()
                 : OmniHost.CreateExplorerTools(artifactReadTool, mediaReadTool);
             var extensionBoundaries = new List<IToolIntentBoundary>();
+            WebResearchController? webResearch = null;
+            try
+            {
+                var researchObjective = server.AcquireStore().ReadFrom(sessionId, 1)
+                    .Where(evt => evt.RunId == runId).Select(server.AcquireCodecs().Decode)
+                    .OfType<RunCreated>().FirstOrDefault()?.Objective ?? prompt;
+                lock (_webResearchGate)
+                {
+                    if (!_webResearchControllers.TryGetValue(runId, out webResearch))
+                    {
+                        webResearch = WebResearchHost.Create(paths, workspaceData, runId.ToString(), researchObjective);
+                        if (webResearch is not null) _webResearchControllers.Add(runId, webResearch);
+                    }
+                }
+                if (webResearch is not null)
+                {
+                    if (workflowStage is null) hostTools.RegisterWebResearchTools(webResearch);
+                    extensionBoundaries.Add(new WebResearchIntentBoundary());
+                }
+            }
+            catch (Exception failure) when (failure is JsonException or IOException or InvalidDataException or ArgumentException)
+            {
+                writeLine("Web research configuration is invalid; the Run cannot continue with an unchecked network configuration.");
+                return 1;
+            }
             IReadOnlyList<LoadedSkill> loadedProjectSkills = [];
             IReadOnlyList<IHook> lifecycleHooks = Array.Empty<IHook>();
             IReadOnlyList<IContextContributor> extensionContributors = Array.Empty<IContextContributor>();
@@ -4102,6 +4134,7 @@ public sealed partial class OmniCliRuntime : IDisposable
                     sessionSecurityPolicy: () => server.ReadSessionSecurityPolicy(sessionId),
                     workflowStageDefinition: turnWorkflowStage,
                     externalContextAdmission: server.ValidateApprovedExtensionContext,
+                    webResearchContext: WebResearchHost.ContextGuard(workspaceData, webResearch),
                     resolveLifecycleValidations: delegation is null
                         ? (ids, read, context, token) =>
                         {
@@ -4275,6 +4308,8 @@ public sealed partial class OmniCliRuntime : IDisposable
                         : childRequiresActTools ? HostTools.DelegatedAgent(work.Profile, artifactReadTool,
                             processSessionManager: childProcessSessionManager)
                             : HostTools.DelegatedReaderWithMailbox(artifactReadTool);
+                    if (webResearch is not null && workflowStage is null)
+                        childTools.RegisterWebResearchTools(webResearch);
                     var childBoundary = CreateBoundary(effectivePolicy, laneRoot, childTools.Catalog(),
                         () => server.ReadSessionSecurityPolicy(work.Session));
                     if (workflowStage?.Definition.Stage == WorkflowStage.Verify)
@@ -4296,6 +4331,7 @@ public sealed partial class OmniCliRuntime : IDisposable
                         ? OmniHost.CreateActExecutor(childTools.Catalog(), laneRoot, childBoundary,
                             restrictions, work.Run, audit, interactionResponder, interactive, artifacts,
                             work.Profile, receiveMailbox,
+                            additionalBoundaries: webResearch is null ? null : [new WebResearchIntentBoundary()],
                             acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission,
                             mutationHistory: server.MutationHistoryStore,
                             allowDeferredInteraction: allowDeferredNativePermission
@@ -4304,6 +4340,7 @@ public sealed partial class OmniCliRuntime : IDisposable
                                 && workflowStage?.Definition.Stage == WorkflowStage.Verify)
                         : OmniHost.CreateExplorerExecutor(childTools.Catalog(), laneRoot, childBoundary,
                             restrictions, work.Run, work.Profile, receiveMailbox, artifacts: artifacts,
+                            additionalBoundaries: webResearch is null ? null : [new WebResearchIntentBoundary()],
                             acquireSessionSecurityAdmission: server.AcquireSessionSecurityAdmission,
                             mutationHistory: server.MutationHistoryStore,
                             allowDeferredInteraction: allowDeferredNativePermission

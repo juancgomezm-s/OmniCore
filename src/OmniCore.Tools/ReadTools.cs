@@ -542,7 +542,7 @@ public sealed class ListDirectoryTool : ITool
 }
 
 /// <summary>
-/// Tool Core `search.text` (M2 EPIC-018): búsqueda de texto read-only dentro del workspace.
+/// Tool Core `filesystem.search` (M2 EPIC-018): búsqueda de texto read-only dentro del workspace.
 /// Args: pattern (requerido), regex (bool, default false; compila con RegexOptions.NonBacktracking
 /// y un patrón inválido produce un ToolResult fallido, nunca una excepción), path (default ".",
 /// raíz de una búsqueda RECURSIVA estilo ripgrep), glob (opcional, contra el nombre de archivo),
@@ -578,7 +578,7 @@ public sealed class SearchTextTool : ITool
     {
         _boundary = boundary;
         _descriptor = new ToolDescriptor(
-            new ToolId("search.text"),
+            new ToolId("filesystem.search"),
             "Searches workspace files recursively for a text pattern (read-only) and returns matching lines.",
             new InputSchema("{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"regex\":{\"type\":\"boolean\"},\"path\":{\"type\":\"string\"},\"glob\":{\"type\":\"string\"},\"maxResults\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":1000},\"caseSensitive\":{\"type\":\"boolean\"}},\"required\":[\"pattern\"],\"additionalProperties\":false}"),
             new string[] { "read" },

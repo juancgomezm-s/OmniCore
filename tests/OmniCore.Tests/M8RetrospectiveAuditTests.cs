@@ -332,7 +332,7 @@ public sealed class M8RetrospectiveAuditTests
         {
             Id = "audit.reader",
             Version = "1",
-            Tools = ["filesystem.read", "filesystem.list", "search.text"],
+            Tools = ["filesystem.read", "filesystem.list", "filesystem.search"],
             Permissions = new SkillPermissionManifest
             {
                 Filesystem = new SkillPathPermissionManifest { Read = ["src/*"] }
@@ -345,11 +345,11 @@ public sealed class M8RetrospectiveAuditTests
         Assert.True(boundary.Evaluate(Intent("filesystem.read", "{\"path\":\"src/file.txt\"}", ["src/file.txt"])).Allowed);
         Assert.False(boundary.Evaluate(Intent("filesystem.read", "{\"path\":\"src/**\"}", ["src/**"])).Allowed);
         Assert.False(boundary.Evaluate(Intent("filesystem.list", "{\"path\":\"src\",\"recursive\":false}", ["src"])).Allowed);
-        Assert.False(boundary.Evaluate(Intent("search.text", "{\"path\":\"src\",\"pattern\":\"secret\"}", ["src"])).Allowed);
+        Assert.False(boundary.Evaluate(Intent("filesystem.search", "{\"path\":\"src\",\"pattern\":\"secret\"}", ["src"])).Allowed);
 
         manifest.Permissions.Filesystem!.Read = ["src/**"];
         Assert.True(boundary.Evaluate(Intent("filesystem.list", "{\"path\":\"src\",\"recursive\":false}", ["src"])).Allowed);
-        Assert.True(boundary.Evaluate(Intent("search.text", "{\"path\":\"src\",\"pattern\":\"secret\"}", ["src"])).Allowed);
+        Assert.True(boundary.Evaluate(Intent("filesystem.search", "{\"path\":\"src\",\"pattern\":\"secret\"}", ["src"])).Allowed);
         Assert.True(boundary.Evaluate(Intent("filesystem.read", "{\"path\":\"src/**\"}", ["src/**"])).Allowed);
         Assert.False(boundary.Evaluate(Intent("filesystem.read", "{\"path\":\"other/**\"}", ["other/**"])).Allowed);
 

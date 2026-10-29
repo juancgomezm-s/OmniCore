@@ -108,11 +108,11 @@ public sealed class RuntimeTurnFingerprintFactoryTests
         var first = With(new Dictionary<string, string> { ["filesystem.write"] = "ext.fs.write" });
         var reordered = With(new Dictionary<string, string>
         {
-            ["search.text"] = "ext.search.text", ["filesystem.write"] = "ext.fs.write",
+            ["filesystem.search"] = "ext.filesystem.search", ["filesystem.write"] = "ext.fs.write",
         });
         var sameReordered = With(new Dictionary<string, string>
         {
-            ["filesystem.write"] = "ext.fs.write", ["search.text"] = "ext.search.text",
+            ["filesystem.write"] = "ext.fs.write", ["filesystem.search"] = "ext.filesystem.search",
         });
         Assert.NotEqual(Component(first, "tools.preferences").Hash, Component(reordered, "tools.preferences").Hash);
         Assert.Equal(Component(reordered, "tools.preferences").Hash, Component(sameReordered, "tools.preferences").Hash);

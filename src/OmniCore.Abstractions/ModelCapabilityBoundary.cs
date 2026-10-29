@@ -56,8 +56,9 @@ public sealed class ModelCapabilityBoundary : INativeUserActionIntentBoundary
             { "filesystem.list", ModelToolCapability.WorkspaceRead },
             { "artifact.read", ModelToolCapability.WorkspaceRead },
             { "filesystem.search", ModelToolCapability.Search },
-            { "search.text", ModelToolCapability.Search },
             { "tool.search", ModelToolCapability.Search },
+            { "search.web", ModelToolCapability.Network },
+            { "web.read", ModelToolCapability.Network },
             { "companion.pet", ModelToolCapability.PlanProposal },
             // Lateral coordination exchanges data; it grants no workspace/process authority.
             { "agents.list", ModelToolCapability.PlanProposal },

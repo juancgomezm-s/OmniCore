@@ -33,7 +33,7 @@ internal sealed partial class AcceptanceRunner
         : TimeSpan.FromMinutes(25);
     public static IReadOnlyList<string> KnownCaseIds { get; } = new[]
     {
-        "filesystem.read", "filesystem.list", "search.text", "reference.resolve",
+        "filesystem.read", "filesystem.list", "filesystem.search", "reference.resolve",
         "filesystem.write", "filesystem.patch", "process.exec", "shell.exec",
         "artifact.read", "plan.propose", "mode.propose", "user.ask", "model-command-boundary",
         "core.agents.mailbox.receive", "worktree.integrate",
@@ -245,7 +245,7 @@ internal sealed partial class AcceptanceRunner
         {
             "filesystem.read" => new { path = "read-me.txt" },
             "filesystem.list" => new { path = ".", recursive = false, maxEntries = 30 },
-            "search.text" => new { pattern = Marker, regex = false, path = ".", caseSensitive = true },
+            "filesystem.search" => new { pattern = Marker, regex = false, path = ".", caseSensitive = true },
             "reference.resolve" => new { @ref = "@read-me.txt" },
             "filesystem.write" => new { path = "new-file.txt", content = Marker + "-WRITTEN", expectedVersion = (string?)null },
             "filesystem.patch" => new { path = "patch-target.txt", expectedVersion = FileVersion.VersionToken(Encoding.UTF8.GetBytes("before marker\nkeep-this-line\n")), oldText = "before", newText = "after" },
@@ -391,7 +391,7 @@ internal sealed partial class AcceptanceRunner
                 "path", "read-me.txt", "fixture read content contains " + Marker),
             new("filesystem.list", "List the fixture workspace root only (path is dot) with recursive false and maxEntries 30.",
                 "path", ".", "entries include read-me.txt and patch-target.txt"),
-            new("search.text", "Search the workspace root for the exact literal marker OMNICORE-LIVE-ACCEPTANCE, regex false, caseSensitive true.",
+            new("filesystem.search", "Search the workspace root for the exact literal marker OMNICORE-LIVE-ACCEPTANCE, regex false, caseSensitive true.",
                 "pattern", Marker, "results include read-me.txt and patch-target.txt"),
             new("reference.resolve", "Resolve only the workspace reference @read-me.txt.",
                 "ref", "@read-me.txt", "file reference resolves inside the fixture"),
@@ -686,7 +686,7 @@ internal sealed partial class AcceptanceRunner
                 "read_preview_contains_fixture_marker");
             case "filesystem.list": return Check(outcome.Preview?.Contains("read-me.txt", StringComparison.Ordinal) == true
                 && outcome.Preview.Contains("patch-target.txt", StringComparison.Ordinal), "listing_contains_seeded_files");
-            case "search.text": return Check(outcome.Preview?.Contains(Marker, StringComparison.Ordinal) == true,
+            case "filesystem.search": return Check(outcome.Preview?.Contains(Marker, StringComparison.Ordinal) == true,
                 "search_matches_fixture_marker");
             case "reference.resolve": return Check(outcome.Preview?.Contains("fixture read content " + Marker,
                 StringComparison.Ordinal) == true, "reference_resolves_fixture_file");
@@ -733,7 +733,7 @@ internal sealed partial class AcceptanceRunner
                 case "filesystem.read": return Keys("path") && String("path") == "read-me.txt";
                 case "filesystem.list": return Keys("path", "recursive", "maxEntries") && String("path") == "."
                     && Bool("recursive", false) && Int("maxEntries", 30);
-                case "search.text": return Keys("pattern", "regex", "path", "glob", "maxResults", "caseSensitive")
+                case "filesystem.search": return Keys("pattern", "regex", "path", "glob", "maxResults", "caseSensitive")
                     && String("pattern") == Marker && (String("path") is null or ".")
                     && Bool("regex", false) && Bool("caseSensitive", true);
                 case "reference.resolve": return Keys("ref") && String("ref") == "@read-me.txt";

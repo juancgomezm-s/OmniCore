@@ -108,13 +108,23 @@ public static class UserPermissionsLoader
                 continue;
             }
 
-            switch (((YamlScalarNode)rule.Value).Value)
+            PermissionDecision? decision = ((YamlScalarNode)rule.Value).Value switch
             {
-                case "allow": rules[tool] = PermissionDecision.Allow; break;
-                case "ask": rules[tool] = PermissionDecision.Ask; break;
-                case "deny": rules[tool] = PermissionDecision.Deny; break;
-                default: ConfigLoader.AddAtNode(diagnostics, FileName, path, "config.outOfRange", rule.Value); break;
+                "allow" => PermissionDecision.Allow,
+                "ask" => PermissionDecision.Ask,
+                "deny" => PermissionDecision.Deny,
+                _ => null,
+            };
+            if (decision is null)
+            {
+                ConfigLoader.AddAtNode(diagnostics, FileName, path, "config.outOfRange", rule.Value);
+                continue;
             }
+
+            // Read legacy configuration without dropping a saved Deny/Ask after the rename.
+            var canonicalTool = tool == "search.text" ? "filesystem.search" : tool;
+            rules[canonicalTool] = rules.TryGetValue(canonicalTool, out var previous) && previous < decision.Value
+                ? previous : decision.Value;
         }
     }
 }

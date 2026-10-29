@@ -91,6 +91,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(ModelRequest request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        var wireNames = ToolNameWireMap.ForRequest(request, 64);
         var halfOpenProbe = _resilience.EnterCircuit();
         string body;
         SubscriptionCredential? credential;
@@ -132,7 +133,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
             await foreach (var item in ReadSseAsync(response, request, cancellationToken).ConfigureAwait(false))
             {
                 if (item is ResponseCompleted) { completed = true; _resilience.MarkSuccess(); }
-                yield return item;
+                yield return wireNames.Restore(item);
             }
             if (!completed) throw new ModelProviderException("ProviderUnavailable", "El stream terminó sin completar la respuesta.");
         }
@@ -183,6 +184,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
 
     internal static string BuildBody(ModelRequest request, OpenAIResponsesOptions options)
     {
+        var wireNames = ToolNameWireMap.ForRequest(request, 64);
         var reasoning = request.Reasoning ?? request.Model.Reasoning;
         request.Model.Route?.ReasoningCapability.ValidateRequest(reasoning);
         // Native Responses effort vocabulary, not a Domain-wide ranking or a claim
@@ -209,7 +211,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
             w.WriteString("model", request.Model.Model.ToString());
             w.WriteBoolean("stream", true);
             w.WriteBoolean("store", false);
-            if (!string.IsNullOrEmpty(request.Instructions)) w.WriteString("instructions", request.Instructions);
+            if (!string.IsNullOrEmpty(request.Instructions)) w.WriteString("instructions", wireNames.ToWireText(request.Instructions));
             if (maxOutput is { } max) w.WriteNumber("max_output_tokens", max);
 
             if (effort is not null)
@@ -223,7 +225,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
             w.WriteStringValue("reasoning.encrypted_content");
             w.WriteEndArray();
 
-            WriteInput(w, request);
+            WriteInput(w, request, wireNames);
 
             var imageGenerationEnabled = request.Model.OutputModalities.Contains("image", StringComparer.Ordinal)
                 && request.Model.ImageGenerationMaxCostUsd is > 0m;
@@ -240,8 +242,8 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
                     {
                         w.WriteStartObject();
                         w.WriteString("type", "function");
-                        w.WriteString("name", WireToolName(tool.Name));
-                        w.WriteString("description", tool.Description);
+                        w.WriteString("name", wireNames.ToWire(tool.Name));
+                        w.WriteString("description", wireNames.ToWireText(tool.Description));
                         w.WritePropertyName("parameters");
                         WriteRawJsonOrEmptyObject(w, tool.InputSchemaJson);
                         w.WriteEndObject();
@@ -257,7 +259,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
                 {
                     w.WriteStartObject("tool_choice");
                     w.WriteString("type", "function");
-                    w.WriteString("name", WireToolName(request.ToolChoice.ToolName));
+                    w.WriteString("name", wireNames.ToWire(request.ToolChoice.ToolName));
                     w.WriteEndObject();
                 }
                 else
@@ -270,7 +272,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
         return Encoding.UTF8.GetString(buffer.WrittenSpan);
     }
 
-    private static void WriteInput(Utf8JsonWriter w, ModelRequest request)
+    private static void WriteInput(Utf8JsonWriter w, ModelRequest request, ToolNameWireMap wireNames)
     {
         JsonElement[]? replayReasoning = null;
         if (request.Continuation is { } continuation &&
@@ -330,7 +332,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
                         w.WriteStartObject();
                         w.WriteString("type", "function_call");
                         w.WriteString("call_id", ids[call.Id.ToString()]);
-                        w.WriteString("name", WireToolName(call.ToolName));
+                        w.WriteString("name", wireNames.ToWire(call.ToolName));
                         w.WriteString("arguments", string.IsNullOrWhiteSpace(call.ArgumentsJson) ? "{}" : call.ArgumentsJson);
                         w.WriteEndObject();
                         break;
@@ -484,7 +486,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
                         var item = root.GetProperty("item");
                         if (!items.TryGetValue(index, out var acc)) items[index] = acc = new ItemAccumulator(Str(item, "type") ?? "");
                         acc.Done = item.Clone();
-                        if (acc.ToContentBlock() is { } block) yield return new BlockCompleted(index, RestoreToolName(block, request));
+                        if (acc.ToContentBlock() is { } block) yield return new BlockCompleted(index, block);
                         break;
                     }
                     case "response.completed":
@@ -530,7 +532,7 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
         var reasoningItems = new List<JsonElement>();
         foreach (var acc in items.Values)
         {
-            if (acc.ToContentBlock() is { } block) content.Add(RestoreToolName(block, request));
+            if (acc.ToContentBlock() is { } block) content.Add(block);
             if (acc.Kind == "reasoning" && acc.Done is { } done && done.TryGetProperty("encrypted_content", out var enc) &&
                 enc.ValueKind == JsonValueKind.String)
                 reasoningItems.Add(done);
@@ -584,19 +586,6 @@ public sealed class OpenAIResponsesProvider : IModelProvider, IReportsRateLimits
         if (u.TryGetProperty("output_tokens_details", out var o) && o.ValueKind == JsonValueKind.Object &&
             o.TryGetProperty("reasoning_tokens", out var reasoning) && reasoning.TryGetInt64(out _)) fields |= TokenUsageFields.Reasoning;
         return fields;
-    }
-
-    // Provider aliases never become canonical tool IDs or bypass the effective catalog.
-    internal static string WireToolName(string name) => name.Length is > 0 and <= 64
-        && !name.StartsWith("omni_", StringComparison.Ordinal)
-        && name.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-') ? name
-        : "omni_" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(name))).ToLowerInvariant()[..48];
-
-    private static ContentBlock RestoreToolName(ContentBlock block, ModelRequest request)
-    {
-        if (block is not ToolCallBlock call) return block;
-        var definition = request.Tools.FirstOrDefault(tool => WireToolName(tool.Name) == call.ToolName);
-        return definition is null ? block : call with { ToolName = definition.Name };
     }
 
     private static string? Str(JsonElement obj, string name) =>

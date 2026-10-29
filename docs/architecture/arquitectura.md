@@ -1253,7 +1253,7 @@ No acredita memoria multiscoped M10. OR5 M8 permanece pendiente.
 | 015 Permission Engine | Hecho | Grants de Run y de workspace (solo levantan `Ask` de UserPolicy/perfil), `/permissions`, topes de gasto con precios de config y gasto derivado del journal, entorno de procesos por allowlist |
 | 016 Perfil y tokens | Hecho | Conteo exacto con `/tokenize` (llama.cpp/ik_llama por tipo de provider), estimación con margen del 10 %, caché por tokenizer |
 | 017 Contexto | Hecho | Conversación presupuestada, `WorkingState` al final también con recorte, snapshot referenciado desde `TurnStarted` |
-| 018 Pipeline de tools | Hecho | `filesystem.list` y `search.text` sin recorrer enlaces fuera del workspace; validación de argumentos por schema antes de `Prepare` para todas las tools; tools `Protected` no sustituibles |
+| 018 Pipeline de tools | Hecho | `filesystem.list` y `filesystem.search` sin recorrer enlaces fuera del workspace; validación de argumentos por schema antes de `Prepare` para todas las tools; tools `Protected` no sustituibles |
 | 019 Artifact store (CAS) | Hecho | CAS con marca `Redacted`; GC, `verify-journal`, purga y herramienta de relectura de outputs externalizados |
 | 020 Explorer | Hecho en código | `/context`, `/tools`, `PromptCommand` (`/explain`), `PlanApproval` real con el Run en espera; test del criterio exige un turno correcto. Falta la prueba real con el modelo local |
 | **M3** | | |

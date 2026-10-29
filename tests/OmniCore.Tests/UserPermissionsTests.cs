@@ -24,6 +24,32 @@ public sealed class UserPermissionsTests
 
     // ---------------------------------------------------------------- carga y validación
 
+    [Theory]
+    [InlineData("allow", PermissionDecision.Allow)]
+    [InlineData("ask", PermissionDecision.Ask)]
+    [InlineData("deny", PermissionDecision.Deny)]
+    public void Legacy_search_rules_apply_to_the_canonical_filesystem_search(string decision, PermissionDecision expected)
+    {
+        var parsed = UserPermissionsLoader.Parse("rules:\n  search.text: " + decision + "\n");
+
+        Assert.Equal("filesystem.search", Assert.Single(parsed.Rules).Key);
+        Assert.Equal(expected, Policy(RunMode.Act, rules: parsed.Rules.ToDictionary()).Evaluate(Intent("filesystem.search")).Final);
+    }
+
+    [Theory]
+    [InlineData("search.text: deny", "filesystem.search: allow", PermissionDecision.Deny)]
+    [InlineData("filesystem.search: allow", "search.text: deny", PermissionDecision.Deny)]
+    [InlineData("search.text: ask", "filesystem.search: allow", PermissionDecision.Ask)]
+    [InlineData("filesystem.search: allow", "search.text: ask", PermissionDecision.Ask)]
+    public void Legacy_and_canonical_search_rules_keep_the_stricter_decision_in_either_order(
+        string first, string second, PermissionDecision expected)
+    {
+        var parsed = UserPermissionsLoader.Parse("rules:\n  " + first + "\n  " + second + "\n");
+
+        Assert.Equal("filesystem.search", Assert.Single(parsed.Rules).Key);
+        Assert.Equal(expected, Policy(RunMode.Act, rules: parsed.Rules.ToDictionary()).Evaluate(Intent("filesystem.search")).Final);
+    }
+
     [Fact]
     public void Permissions_yaml_declares_the_profile_and_the_user_rules_and_defaults_without_the_file()
     {
