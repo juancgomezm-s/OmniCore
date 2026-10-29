@@ -978,13 +978,33 @@ public sealed partial class StdioTransportTests
         string sessionId, string runId)
     {
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
+        string? sourceInvocation = null;
         while (DateTimeOffset.UtcNow < deadline)
         {
             TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
-            if (fixture.ReadEvents(sessionId).Any(item => item.Envelope.RunId?.ToString() == runId
-                && item.Payload is PermissionRequested)) return;
+            var events = fixture.ReadEvents(sessionId);
+            var pending = events.LastOrDefault(item => item.Envelope.RunId?.ToString() == runId
+                && item.Payload is PermissionRequested);
+            if (pending.Payload is PermissionRequested permission
+                && events.Any(item => item.Envelope.RunId?.ToString() == runId
+                    && item.Payload is InteractionRequested request
+                    && request.Kind == InteractionKind.Permission && request.InteractionId == permission.InteractionId)
+                && events.LastOrDefault(item => item.Envelope.RunId?.ToString() == runId
+                    && item.Payload is ToolCallRequested call && call.ToolCallId == permission.ToolCallId).Payload
+                    is ToolCallRequested source && source.ProviderCallId.StartsWith("native-action-", StringComparison.Ordinal))
+            {
+                sourceInvocation = source.ProviderCallId["native-action-".Length..];
+                // PermissionRequested is emitted before the original runner settles.
+                // Respond only after its exact native invocation has suspended durably.
+                if (fixture.ReadReceipt(sourceInvocation) is { OutcomeKind: "Accepted",
+                        ExecutionState: "deferred", ExecutionCode: "input_required" } receipt
+                    && receipt.SessionId == sessionId && receipt.ExecutionRunId == runId) return;
+            }
             await Task.Delay(25, TestContext.Current.CancellationToken);
         }
-        throw new TimeoutException("Native worktree action did not reach the Ask decision.");
+        var finalReceipt = sourceInvocation is null ? null : fixture.ReadReceipt(sourceInvocation);
+        throw new TimeoutException("Native worktree action did not reach a durable Ask decision. "
+            + $"invocation={sourceInvocation}; receipt={finalReceipt?.State}/{finalReceipt?.OutcomeKind}/"
+            + $"{finalReceipt?.ExecutionState}/{finalReceipt?.ExecutionCode}.");
     }
 }

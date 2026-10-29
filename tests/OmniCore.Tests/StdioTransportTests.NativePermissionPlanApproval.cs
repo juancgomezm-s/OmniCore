@@ -1499,6 +1499,7 @@ public sealed partial class StdioTransportTests
         public string DefaultRevision { get; private set; } = "";
         public string? Nonce { get; private set; }
         public string? CurrentSessionId { get; private set; }
+        public string? LastStartCommandId { get; private set; }
         public TaskCompletionSource ContinuationGateEntered => _continuationGateEntered;
 
         public static async Task<NativeChoiceRecoveryFixture> StartAsync(string mode = "permission")
@@ -1650,6 +1651,7 @@ public sealed partial class StdioTransportTests
             var start = Command("conversation.start", "\"text\":\"Propose a recovery plan\",\"mode\":\"plan\","
                 + "\"expectedRevision\":null,\"expectedPolicyRevision\":null,\"expectedDefaultRevision\":"
                 + JsonSerializer.Serialize(DefaultRevision));
+            LastStartCommandId = start.MessageId;
             Assert.Equal(RuntimeCommandOutcomeKind.Accepted, SendTrusted(start, null, null).Outcome?.Kind);
             await Provider.WaitForRequestAsync(3, TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
@@ -1668,6 +1670,7 @@ public sealed partial class StdioTransportTests
                         && item.Payload is ToolCallRequested tool && tool.ToolName == "plan.propose");
                     if (source.Envelope?.TurnId is not { } turn)
                         throw new InvalidOperationException("The real plan proposal has no source Turn in its Lane.");
+                    await WaitForDeferredPlanStartAsync(start.MessageId, request.InteractionId);
                     return (request, turn);
                 }
                 await Task.Delay(25, TestContext.Current.CancellationToken);
@@ -1687,6 +1690,23 @@ public sealed partial class StdioTransportTests
             }).TakeLast(24);
             throw new TimeoutException("The real PlanApproval interaction was not persisted. events=["
                 + string.Join(";", safeEvents) + "]");
+        }
+
+        private async Task WaitForDeferredPlanStartAsync(string commandId,
+            InteractionId interactionId)
+        {
+            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
+            CommandReceipt? receipt = null;
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                TestContext.Current.CancellationToken.ThrowIfCancellationRequested();
+                receipt = ReadReceipt(commandId);
+                if (receipt is { ExecutionState: "deferred", ExecutionCode: "input_required" }) return;
+                await Task.Delay(25, TestContext.Current.CancellationToken);
+            }
+
+            receipt = ReadReceipt(commandId);
+            throw new TimeoutException($"PlanApproval {interactionId} was persisted before its start command reached durable deferred/input_required state. startReceipt={receipt?.State}/{receipt?.OutcomeKind}/{receipt?.ExecutionState}/{receipt?.ExecutionCode}; command={commandId}");
         }
 
         public CommandAck RespondLegacy(InteractionRequested request, string optionId)
@@ -1948,6 +1968,14 @@ public sealed partial class StdioTransportTests
         var proof = TrustedActionEnvelope(response, fixture.Key, fixture.Nonce!, fixture.Workspace,
             sessionId, runId);
         var ack = Ack(fixture.Exchange(proof));
+        if (ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted)
+        {
+            var startReceipt = fixture.ReadReceipt(fixture.LastStartCommandId!);
+            var safeEvents = fixture.ReadEvents().Where(item => item.Envelope.RunId == RunId.Parse(runId))
+                .Select(item => $"{item.Envelope.Sequence}:{item.Payload.GetType().Name}:turn={item.Envelope.TurnId}")
+                .TakeLast(24);
+            Assert.Fail($"Plan approval choice was not accepted after durable input_required. status={ack.Status}; error={ack.Error}; outcome={ack.Outcome?.Kind}; startReceipt={startReceipt?.State}/{startReceipt?.OutcomeKind}/{startReceipt?.ExecutionState}/{startReceipt?.ExecutionCode}; interaction={interaction.InteractionId}; run={runId}; turn={sourceTurn}; events=[{string.Join(";", safeEvents)}]");
+        }
         Assert.Equal(RuntimeCommandOutcomeKind.Accepted, ack.Outcome?.Kind);
         await fixture.ContinuationGateEntered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
         Assert.Equal(3, fixture.Provider.RequestCount);
