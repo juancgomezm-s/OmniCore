@@ -1205,8 +1205,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 RuntimeCommandOutcome.Rejected());
         }
 
-        var requestedConversationCommand = fields.TryGetValue("cmd", out var requestedName)
-            && requestedName is "conversation.new" or "conversation.resume" or "conversation.import";
+        var commandName = fields.TryGetValue("cmd", out var requestedName) ? requestedName : null;
+        var requestedConversationCommand = commandName is "conversation.new" or "conversation.resume" or "conversation.import";
         // Reject a plainly stale native input before lease recovery can perform the separate,
         // conservative legacy-policy migration for the active Session.
         if (!requestedConversationCommand && fields.GetValueOrDefault("cmd") == "session.input"
@@ -1219,11 +1219,13 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             && currentPolicy.PolicyRevision != expectedPolicyRevision)
             return new CommandAck(command.MessageId, "error", "session_security.stale_revision",
                 RuntimeCommandOutcome.Rejected());
-        if (!requestedConversationCommand && !EnsureWriterOwnershipForCommand())
+        // The pet is profile-scoped state in companion/pet.db, not a Session journal write.
+        // Its own transactional receipts serialize/deduplicate actions across clients.
+        if (!requestedConversationCommand && commandName != CompanionPetProtocol.Command
+            && !EnsureWriterOwnershipForCommand())
             return WriterOwnershipFailureAck(command.MessageId);
 
         using var causation = CausationScope.Begin(new CommandCausation(new CommandId(commandGuid)));
-        var commandName = fields.TryGetValue("cmd", out var c) ? c : null;
         if (commandName == CompanionPetProtocol.Command) return ChangeCompanion(command);
         if (commandName == "extensions.package")
             return ChangeExtensionPackage(command, fields, trustedUserAction, cancellationToken);

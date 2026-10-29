@@ -3212,6 +3212,7 @@ public sealed partial class TuiApp
                 ? _localization.Resolve("shell.json_label." + name) : null);
         }
         catch (System.Text.Json.JsonException) { }
+        message = _localization.ResolveWire(message);
         var lines = message.Replace("\r\n", "\n").Split('\n');
         var available = Math.Max(1, (_window.Frame.Height > 0 ? _window.Frame.Height : 25) - 9);
         var visible = lines.Take(available).ToArray();
