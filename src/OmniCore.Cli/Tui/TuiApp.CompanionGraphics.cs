@@ -96,10 +96,13 @@ public sealed partial class TuiApp
         { _petObservedSize = window.Frame.Size; _petCellRefreshAt = DateTimeOffset.UtcNow.AddMilliseconds(500); }
         if (_petCellRefreshAt is { } refresh && DateTimeOffset.UtcNow >= refresh && selection.Effective == "graphics")
         { _petCellRefreshAt = null; RefreshPetCellSize(_petProbeGeneration); }
-        if (_overlay?.Id == "companion-visual-settings")
+        if (_overlay?.Id == "companion-settings")
         {
-            var status = _overlay.SubViews.Single(view => view.Id == "companion-visual-status");
-            if (status.Text != PetVisualDescription) status.Text = PetVisualDescription;
+            var mode = _overlay.SubViews.FirstOrDefault(view => view.Id == "companion-settings-visual");
+            var label = "Visual: " + selection.Requested + " → " + selection.Effective;
+            if (mode is not null && mode.Text != label) mode.Text = label;
+            if (_petVisualNotice is not null && _overlay.SubViews.FirstOrDefault(view => view.Id == "companion-settings-status") is { } status
+                && string.IsNullOrEmpty(status.Text)) status.Text = _petVisualNotice;
         }
     }
     private void RenderPetImage(PixelWidgetView view, string animation, bool enabled)
@@ -132,29 +135,5 @@ public sealed partial class TuiApp
         + (_pet?.Preferences.RenderMode ?? "auto") + (_locale == "es" ? " | Efectivo: " : " | Effective: ") + CompanionVisual.Effective
         + (CompanionVisual.Backend is { } backend ? " (" + backend + ")" : "")
         + (_petVisualNotice is { } notice ? "\n" + notice : "");
-    private void ShowPetVisualSettings()
-    {
-        if (_window is null || _pet is null) return;
-        CloseOverlay();
-        if (_window.Frame.Width < 62 || _window.Frame.Height < 18)
-        { ShowMessage(PetVisualDescription + "\n/pet mode auto|graphics|unicode|text|hidden\n/pet detect"); return; }
-        var panel = OverlayFrame(_locale == "es" ? "Vista de la mascota" : "Companion display", 14);
-        panel.Id = "companion-visual-settings"; panel.Width = 60; panel.Height = 14;
-        var status = new Terminal.Gui.Views.Label { Id = "companion-visual-status", X = 2, Y = 1, Width = Dim.Fill(2), Height = 3,
-            Text = PetVisualDescription };
-        panel.Add(status);
-        Terminal.Gui.Views.Button? previous = null;
-        foreach (var (id, caption) in new[] { ("auto", "Auto"), ("graphics", "Gráfico"), ("unicode", "Unicode"), ("text", "Texto"), ("hidden", "Oculto") })
-        {
-            var button = new Terminal.Gui.Views.Button { Id = "companion-mode-" + id, Text = caption,
-                X = previous is null ? 2 : Pos.Right(previous) + 1, Y = 5, Height = 2 };
-            button.Accepted += (_, args) => { args.Handled = true; RunPetAction("mode " + id, false); status.Text = PetVisualDescription; };
-            panel.Add(button); previous = button;
-        }
-        var detect = new Terminal.Gui.Views.Button { Id = "companion-redetect", Text = _locale == "es" ? "Detectar de nuevo" : "Detect again", X = 2, Y = 8, Height = 2 };
-        detect.Accepted += (_, args) => { args.Handled = true; ProbePetGraphics(true); status.Text = PetVisualDescription; };
-        var close = new Terminal.Gui.Views.Button { Text = _locale == "es" ? "Cerrar" : "Close", X = 2, Y = 11, Height = 2 };
-        close.Accepted += (_, args) => { args.Handled = true; CloseOverlay(); };
-        panel.Add(detect, close); ApplyTheme(panel); _overlay = panel; _window.Add(panel); panel.SetFocus(); RenderCompanion();
-    }
+    private void ShowPetVisualSettings() => ShowCompanionSettings();
 }

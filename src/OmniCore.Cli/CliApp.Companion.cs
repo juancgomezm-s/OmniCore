@@ -32,9 +32,12 @@ public sealed partial class CliApp
             {
                 var text = string.Join(" ", args.Skip(2).Where(a => a is not ("--json" or "--text")));
                 var key = "cli/" + Environment.CurrentDirectory;
-                var history = hub.Chat(key).Append(new CompanionChatMessage("user", text)).TakeLast(24).ToArray();
-                var reply = await Runtime.CompanionChatAsync(history, CancellationToken.None).ConfigureAwait(false);
-                hub.SaveChat(key, history.Append(new("assistant", reply)));
+                hub.ImportLegacyChat(key);
+                var notices = hub.PresentNotices();
+                var user = new CompanionChatMessage("user", text, Guid.NewGuid().ToString()); hub.AppendDialogue(user);
+                var history = hub.DialogueTail();
+                var reply = await Runtime.CompanionChatAsync(history, CancellationToken.None, notices.Length == 1 ? notices[0].NoticeId : null).ConfigureAwait(false);
+                hub.AppendDialogue(new("assistant", reply, Guid.NewGuid().ToString()));
                 Console.WriteLine(args.Contains("--text") ? reply : JsonSerializer.Serialize(new CompanionChatMessage("assistant", reply),
                     CompanionCoordinatorJson.Default.CompanionChatMessage));
             }

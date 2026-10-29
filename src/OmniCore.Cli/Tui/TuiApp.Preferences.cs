@@ -338,7 +338,7 @@ public sealed partial class TuiApp
                 if (_pet?.Discovered == true)
                 {
                     AddNamedAction("preferences-companion", CompanionPetPresentation.Word("pet", _locale), y,
-                        () => { CloseOverlay(); ShowPetDetail(); }); y += 2;
+                        () => { CloseOverlay(); ShowCompanionSettings(); }); y += 2;
                 }
                 AddNamedAction("preferences-theme-open", _localization.Resolve("shell.theme.open"), y, () =>
                 { CloseOverlay(); ShowThemePreferences(); _preferencesReturnToCategory = true; });
@@ -430,7 +430,7 @@ public sealed partial class TuiApp
                 break;
             case "models_execution":
                 Section("section_models", y++);
-                AddNamedAction("preferences-companion-model", "Mascota: modelo y consumo", y, ShowCompanionModelSettings); y += 2;
+                AddNamedAction("preferences-companion-model", "Mascota", y, ShowCompanionSettings); y += 2;
                 AddNamedAction("preferences-models-enabled", _localization.Resolve("shell.models.enable"), y, () =>
                 { CloseOverlay(); ShowModelToggles(); _preferencesReturnToCategory = true; }); y += 2;
                 AddAction("preferences-models-open", "models_open", y, () => { CloseOverlay(); ShowPolicyPreferences("models_execution"); }); y += 2;

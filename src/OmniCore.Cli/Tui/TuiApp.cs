@@ -3225,7 +3225,8 @@ public sealed partial class TuiApp
     private void CloseOverlay()
     {
         if (_overlay is not null && _overlay == _companionPanel)
-        { _companionPanel = null; _companionBody = null; _companionInput = null; _companionList = null; _companionInfo = null; }
+        { _companionChatDraft = _companionInput?.Text?.ToString() ?? "";
+            _companionPanel = null; _companionBody = null; _companionInput = null; _companionList = null; _companionInfo = null; }
         _petDetail = null;
         if (_overlay is null || _window is null) return;
         if (_overlay.Id == "release-updates") { CancelReleaseUpdateCheck(); _releaseUpdateReturnToPreferences = false; }

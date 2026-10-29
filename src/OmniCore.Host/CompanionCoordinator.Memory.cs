@@ -24,8 +24,10 @@ public sealed partial class CompanionCoordinator
     public bool Forget(string id)
     {
         if (id.Length != 64 || !id.All(Uri.IsHexDigit)) throw new ArgumentException("Usa el identificador devuelto por memory.read.");
-        var memory = ReadMemory(); var match = MemoryEntries(memory).FirstOrDefault(row => row.Entry.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
-        if (match.Entry is null) return false;
+        var categorized = CategorizedFact(id); var deleted = ForgetCategorized(id);
+        var memory = ReadMemory(); var match = MemoryEntries(memory).FirstOrDefault(row => row.Entry.Id.Equals(id, StringComparison.OrdinalIgnoreCase)
+            || categorized?.Category == "personal" && row.Entry.Text.Equals(categorized.Text, StringComparison.OrdinalIgnoreCase));
+        if (match.Entry is null) return deleted;
         var lines = memory.Text.Replace("\r\n", "\n").Split('\n').Where(line => line.Trim() != match.Line);
         SaveMemory(string.Join('\n', lines), memory.Version); return true;
     }

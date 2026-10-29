@@ -78,7 +78,7 @@ public sealed partial class TuiWiringTests
         Assert.Equal("sad", fx.Read(() => fx.App.CompanionPet!.Reaction!.AnimationId));
         HubClick(fx, "companion-hub-open");
         fx.Wait(() => Descendants(fx.App.MainWindow!).Any(v => v.Id == "companion-chat-input"), "chat disponible estando restringida");
-        ExportPreferenceFrame(fx, 120, 40, "companion-restricted-chat", "Chat");
+        ExportPreferenceFrame(fx, 120, 40, "companion-restricted-chat", "Mensaje");
     }, noColor: false);
 
     [Fact]
@@ -87,11 +87,11 @@ public sealed partial class TuiWiringTests
         SeedPlaygroundPet(fx, "ox", 0); var host = new CompanionHubTurn(fx);
         fx.StartTui(turnHost: host, initialColumns: 120, initialRows: 40);
         Type(fx, "/pet memory"); fx.InjectKey(new Key(KeyCode.Enter));
-        fx.Wait(() => HubView(fx, "companion-chat-input").Text.Contains("Nombre preferido"), "memoria cargada");
-        fx.Invoke(() => { fx.App.Composer!.Text = "borrador privado"; HubView(fx, "companion-chat-input").Text = "Nombre preferido: Juan\nPreguntar por el proyecto"; });
-        HubClick(fx, "companion-hub-action");
-        fx.Wait(() => host.CompanionHub.ReadMemory().Text.Contains("Juan"), "guardado local");
-        Assert.DoesNotContain("borrador privado", host.CompanionHub.ReadMemory().Text);
+        fx.Wait(() => fx.App.Overlay?.Id == "companion-settings", "mantenimiento en una ventana");
+        fx.Invoke(() => { fx.App.Composer!.Text = "borrador privado"; HubView(fx, "companion-settings-memory-text").Text = "Mi nombre es Juan"; });
+        HubClick(fx, "companion-settings-add");
+        fx.Wait(() => host.CompanionHub.MaintainMemory("personal").Any(f => f.Text.Contains("Juan")), "guardado local");
+        Assert.Equal("borrador privado", fx.Read(() => fx.App.Composer!.Text));
         Assert.Equal(0, host.Chats); ExportPreferenceFrame(fx, 120, 40, "companion-memory", "Juan");
     }, noColor: false);
 

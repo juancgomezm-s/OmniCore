@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using OmniCore.Client;
+using OmniCore.Host;
 using OmniCore.Protocol;
 using Terminal.Gui.Input;
 using Terminal.Gui.Drivers;
@@ -34,16 +35,24 @@ public sealed partial class TuiApp
     private Button? _companionAction;
     private ListView? _companionList;
     private string _companionTab = "chat", _companionChatKey = "";
+    private string _companionChatDraft = "";
     private string _companionMemoryVersion = "", _companionMemoryDraft = "";
     private string[] _companionRows = [];
     private CompanionChatMessage[] _companionChat = [];
     private DateTimeOffset _companionPolledAt;
     private bool _companionPolling, _companionChatBusy, _companionStopped, _companionSending;
-    private bool _companionQuiet, _companionQuietLoaded;
+    private bool _companionQuiet;
     private int _companionPetHeight = 12, _companionControlsHeight;
     private string? _companionLayoutTab;
     private System.Drawing.Size _companionPanelWindowSize;
     private CancellationTokenSource? _companionChatCancellation;
+    private bool _presentCompanionNotices;
+    private string? _companionFocusNotice;
+    private string _companionPendingKey = "";
+    private int _companionPendingCount;
+    private DateTimeOffset _companionAttentionUntil;
+    private CompanionRowButton? _companionBadge;
+    private long _companionDialogueRevision = -1;
 
     private void PollCompanionHub()
     {
@@ -58,6 +67,8 @@ public sealed partial class TuiApp
         var instance = new CompanionInstance(_companionInstance, _turnHost!.CompanionWorkspace, session, run,
             decisions.Length > 0 ? "Espera una decisión" : busy ? "Trabajando" : "Disponible", DateTimeOffset.UtcNow, decisions, SupportsLateral: true);
         // SQLite, filesystem and provider work never run in Terminal.Gui's input/drawing loop.
+        var present = _presentCompanionNotices || _companionPanel is not null && _companionTab == "chat";
+        _presentCompanionNotices = false;
         _ = Task.Run(() =>
         {
             try
@@ -67,20 +78,37 @@ public sealed partial class TuiApp
                     hub.Notify(new("decision/" + session + "/" + decision.Id, instance.Id, session,
                         "Decisión pendiente · " + decision.Title, DateTimeOffset.UtcNow));
                 var snapshot = hub.Read();
+                var pending = hub.PendingNotices();
+                var presented = present && pending.Length > 0 ? hub.PresentNotices(acknowledge: false) : [];
                 var quiet = hub.ReadQuiet();
                 var delivery = hub.Claim(instance.Id, session, run, busy);
-                var chatKey = instance.Workspace + "\n" + session;
-                var chat = _companionChatKey == chatKey ? null : hub.Chat(chatKey);
+                hub.ImportLegacyChat(instance.Workspace + "\n" + session);
+                var chatKey = CompanionCoordinator.DialogueId;
+                var revision = hub.DialogueRevision();
+                var chat = revision == _companionDialogueRevision ? null : hub.DialogueTail();
+                var pendingKey = string.Join("/", pending.Select(n => n.Id).Order());
+                var attention = hub.AttentionEnabled();
                 _uiActions.Enqueue(() =>
                 {
                     _companionPolling = false;
                     if (_companionStopped) return;
                     _companionSnapshot = snapshot;
+                    _companionPendingCount = pending.Length;
+                    if (_companionPendingKey != pendingKey && pending.Length > 0 && !quiet && attention)
+                        _companionAttentionUntil = DateTimeOffset.UtcNow.AddMilliseconds(1800);
+                    _companionPendingKey = pendingKey;
+                    if (presented.Length == 1 && string.IsNullOrWhiteSpace(_companionInput?.Text)) _companionFocusNotice = presented[0].NoticeId;
+                    else if (presented.Length > 1) _companionFocusNotice = null;
                     _companionToolReaction = snapshot.Reaction;
-                    if (!_companionQuietLoaded) { _companionQuiet = quiet; _companionQuietLoaded = true; }
-                    if (chat is not null && !_companionChatBusy)
-                    { _companionChatKey = chatKey; _companionChat = chat; }
+                    _companionQuiet = quiet;
+                    if (!_companionChatBusy)
+                    { _companionChatKey = chatKey; if (chat is not null) { _companionChat = chat; _companionDialogueRevision = revision; } }
                     RenderCompanionHubControls(); RefreshCompanionHub();
+                    if (_companionPanel is not null && _companionTab == "chat" && !_companionChatBusy && presented.Length > 0)
+                    {
+                        _companionPendingCount = Math.Max(0, pending.Length - presented.Length); RenderCompanionBadge();
+                        _ = Task.Run(() => { try { hub.AcknowledgeNotices(presented.Select(n => n.NoticeId!)); } catch (Exception) { } });
+                    }
                     if (delivery is not null) ReceiveCompanionDelivery(delivery);
                 });
             }
@@ -147,8 +175,8 @@ public sealed partial class TuiApp
             _sidebar.Add(_companionOpen, _companionRestrict); ApplyTheme(_companionOpen); ApplyTheme(_companionRestrict);
             CompactCompanionButtons(_sidebar);
         }
-        var unread = _companionSnapshot?.Notices.Count(n => !n.Read && n.Instance != _companionInstance) ?? 0;
-        _companionOpen.Text = !_companionQuiet && unread > 0 ? $"Avisos ({unread})" : "Conversar";
+        _companionOpen.Text = "Conversar";
+        RenderCompanionBadge();
         _companionRestrict!.Text = _pet.Preferences.Restricted ? "Permitir" : "Restringir";
         if (_companionControlsHeight != _companionPetHeight)
         {
@@ -167,6 +195,8 @@ public sealed partial class TuiApp
     }
     private void OpenCompanionHub(string tab)
     {
+        if (tab == "memory") { ShowCompanionSettings(); return; }
+        tab = "chat"; _presentCompanionNotices = true;
         if (_window is null || _turnHost?.CompanionHub is null) { ShowMessage("El canal local necesita una sesión interactiva de OmniCore."); return; }
         if (_window.Frame.Height < 22) { ShowMessage("Amplía la terminal a 22 filas para abrir el mini chat de la mascota."); return; }
         if (_pet?.Discovered != true) RunPetAction("discover", false);
@@ -180,17 +210,8 @@ public sealed partial class TuiApp
         frame.Id = "companion-hub"; _companionPanel = frame;
         _companionPanelWindowSize = _window.Frame.Size;
         _companionLayoutTab = null;
-        void ButtonAt(string id, string text, int x, int y, Action click)
-        {
-            var button = new CompanionRowButton { Id = id, Text = text, X = x, Y = y, Height = 1, NoDecorations = true, ShadowStyle = ShadowStyles.None };
-            button.Accepted += (_, args) => { args.Handled = true; click(); }; frame.Add(button);
-        }
-        ButtonAt("companion-chat-tab", "Chat", 0, 0, () => SelectCompanionTab("chat"));
-        ButtonAt("companion-notices-tab", "Avisos", 10, 0, () => SelectCompanionTab("notices"));
-        ButtonAt("companion-sessions-tab", "Sesiones", 0, 1, () => SelectCompanionTab("sessions"));
-        ButtonAt("companion-memory-tab", "Memoria", 14, 1, () => SelectCompanionTab("memory"));
-        _companionInfo = new() { Id = "companion-hub-info", X = 0, Y = 2, Width = Dim.Fill(), Height = 1 };
-        _companionBody = new() { Id = "companion-chat-history", X = 0, Y = 3, Width = Dim.Fill(), Height = Dim.Fill(6), ReadOnly = true, WordWrap = true };
+        _companionInfo = new() { Id = "companion-hub-info", X = 0, Y = 0, Width = Dim.Fill(), Height = 1 };
+        _companionBody = new() { Id = "companion-chat-history", X = 0, Y = 1, Width = Dim.Fill(), Height = Dim.Fill(6), ReadOnly = true, WordWrap = true };
         _companionList = new() { Id = "companion-hub-list", X = 0, Y = 3, Width = Dim.Fill(), Height = Dim.Fill(6), Visible = false };
         _companionInput = new() { Id = "companion-chat-input", X = 0, Y = Pos.AnchorEnd(6), Width = Dim.Fill(), Height = 3, WordWrap = true,
             BorderStyle = LineStyle.Single, Title = "Mensaje" };
@@ -198,16 +219,14 @@ public sealed partial class TuiApp
         var action = new CompanionRowButton { Id = "companion-hub-action", X = 0, Y = Pos.AnchorEnd(3), Height = 1, NoDecorations = true, ShadowStyle = ShadowStyles.None, Text = "Enviar / Ver" };
         _companionAction = action;
         action.Accepted += (_, args) => { args.Handled = true; CompanionHubAction(); };
-        var model = new CompanionRowButton { Id = "companion-model-open", X = Pos.Right(action) + 1, Y = Pos.AnchorEnd(3), Height = 1, NoDecorations = true, ShadowStyle = ShadowStyles.None, Text = "Modelo" };
-        model.Accepted += (_, args) => { args.Handled = true; ShowCompanionModelSettings(); };
+        var model = new CompanionRowButton { Id = "companion-model-open", X = Pos.Right(action) + 1, Y = Pos.AnchorEnd(3), Height = 1, NoDecorations = true, ShadowStyle = ShadowStyles.None, Text = "Preferencias" };
+        model.Accepted += (_, args) => { args.Handled = true; ShowCompanionSettings(); };
         var close = new CompanionRowButton { Id = "companion-hub-close", X = 0, Y = Pos.AnchorEnd(1), Height = 1, NoDecorations = true, ShadowStyle = ShadowStyles.None, Text = "Cerrar" };
         close.Accepted += (_, args) => { args.Handled = true; CloseCompanionHub(); };
-        var quiet = new CompanionRowButton { Id = "companion-hub-quiet", X = Pos.Right(close) + 1, Y = Pos.AnchorEnd(1), Height = 1, NoDecorations = true, ShadowStyle = ShadowStyles.None, Text = _companionQuiet ? "Avisar" : "Silenciar" };
-        quiet.Accepted += (_, args) => { args.Handled = true; _companionQuiet = !_companionQuiet; quiet.Text = _companionQuiet ? "Avisar" : "Silenciar"; RenderCompanionHubControls();
-            var value = _companionQuiet; var hub = _turnHost!.CompanionHub!; _ = Task.Run(() => { try { hub.SetQuiet(value); } catch (Exception) { } }); };
-        frame.Add(_companionInfo, _companionBody, _companionList, _companionInput, action, model, close, quiet);
+        frame.Add(_companionInfo, _companionBody, _companionList, _companionInput, action, model, close);
         if (wide) _sidebar!.Add(frame); else { _overlay = frame; _window.Add(frame); }
-        ApplyTheme(frame); CompactCompanionButtons(frame); SelectCompanionTab(tab); _companionInput.SetFocus(); _companionPolledAt = default; PollCompanionHub();
+        ApplyTheme(frame); CompactCompanionButtons(frame); SelectCompanionTab(tab); _companionInput.Text = _companionChatDraft;
+        _companionInput.SetFocus(); _companionPolledAt = default; PollCompanionHub();
     }
     private void ReflowCompanionHub()
     {
@@ -225,6 +244,7 @@ public sealed partial class TuiApp
     private void CloseCompanionHub()
     {
         if (_companionPanel is not { } panel) return;
+        _companionChatDraft = _companionInput?.Text?.ToString() ?? "";
         if (_companionTab == "memory") _companionMemoryDraft = _companionInput?.Text?.ToString() ?? "";
         if (_overlay == panel) CloseOverlay();
         else { _sidebar?.Remove(panel); _retiredOverlays.Add(panel); }
@@ -296,21 +316,23 @@ public sealed partial class TuiApp
         if (_companionChatBusy || _turnHost is null || _companionInput is null) return;
         if (_companionChatKey.Length == 0) { if (_companionInfo is not null) _companionInfo.Text = "Cargando el mini chat…"; return; }
         var text = _companionInput.Text?.ToString()?.Trim() ?? "";
-        if (text.Length is < 1 or > 4000) return;
-        _companionChatBusy = true; _companionInput.Text = "";
-        var history = _companionChat.Append(new CompanionChatMessage("user", text)).TakeLast(24).ToArray();
+        if (text.Length < 1) return;
+        _companionChatBusy = true; _companionInput.Text = ""; _companionChatDraft = "";
+        var user = new CompanionChatMessage("user", text, Guid.NewGuid().ToString());
+        var history = _companionChat.Append(user).ToArray();
         _companionChat = history; var key = _companionChatKey; var hub = _turnHost.CompanionHub!;
+        var focusNotice = _companionFocusNotice;
         var cancellation = _companionChatCancellation = new(); RefreshCompanionHub();
         _ = Task.Run(async () =>
         {
             string reply;
-            try { reply = await _turnHost.CompanionChatAsync(history, cancellation.Token).ConfigureAwait(false); }
+            try { hub.AppendDialogue(user); reply = await _turnHost.CompanionChatAsync(history, focusNotice, cancellation.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) { reply = "La consulta se canceló o agotó su tiempo de espera."; }
             catch (Exception error) { reply = "No pude conversar: " + OmniCore.Host.OmniCliRuntime.RedactSensitive(error.Message); }
-            var result = history.Append(new CompanionChatMessage("assistant", reply)).TakeLast(24).ToArray();
+            var result = history.Append(new CompanionChatMessage("assistant", reply, Guid.NewGuid().ToString())).ToArray();
             CompanionHubSnapshot? snapshot = null;
             try { snapshot = hub.Read(); } catch (Exception) { }
-            try { hub.SaveChat(key, result); } catch (Exception) { }
+            try { hub.AppendDialogue(result[^1]); result = hub.DialogueTail(); } catch (Exception) { }
             _uiActions.Enqueue(() => { _companionChatBusy = false; if (_companionChatKey == key) _companionChat = result;
                 if (snapshot is not null) { _companionSnapshot = snapshot; _companionToolReaction = snapshot.Reaction;
                     if (_companionPanel is null || _companionTab != "memory") { _companionMemoryVersion = ""; _companionMemoryDraft = ""; } }

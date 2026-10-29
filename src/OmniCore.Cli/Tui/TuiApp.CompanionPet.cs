@@ -42,6 +42,7 @@ public sealed partial class TuiApp
     }
     private string PetAnimation()
     {
+        if (CompanionNeedsAttention && !(_pet?.Reaction?.Until > DateTimeOffset.UtcNow)) return "waiting";
         var working = HasActiveModelWork;
         var waiting = _state.Overlays.Count > 0;
         if (working || waiting) _petLastActive = DateTimeOffset.UtcNow;
@@ -51,6 +52,7 @@ public sealed partial class TuiApp
     }
     private void AnimateCompanion()
     {
+        RenderCompanionBadge();
         if (_pet is null || !_petConnected || !_pet.Preferences.Visible || _pet.Preferences.ReducedMotion || !_animationPreferences.Enabled
             || _animationPreferences.ReducedMotion || CompanionVisual.Effective is "text" or "hidden")
         {
@@ -142,8 +144,8 @@ public sealed partial class TuiApp
             }
             if (localAction is "restrict" or "restringir") { _petPlayground.Home(); _petTyping.Clear(); }
             if (localAction is "detect" or "detectar")
-            { ProbePetGraphics(true); RenderCompanion(); ShowPetVisualSettings(); return; }
-            if (localAction is "mode" or "modo") { ShowPetVisualSettings(); return; }
+            { ProbePetGraphics(true); RenderCompanion(); ShowCompanionSettings(); return; }
+            if (localAction is "mode" or "modo") { ShowCompanionSettings(); return; }
             if (localAction is "play" or "home")
             {
                 if (localAction == "play")

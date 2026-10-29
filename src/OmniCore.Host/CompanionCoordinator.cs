@@ -31,6 +31,11 @@ public sealed partial class CompanionCoordinator
             CREATE INDEX IF NOT EXISTS deliveries_target ON deliveries(target);
             CREATE TABLE IF NOT EXISTS chats(id TEXT PRIMARY KEY, json TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS preferences(id TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS dialogue(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE NOT NULL,json TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS dialogue_imports(id TEXT PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS notice_routes(id TEXT PRIMARY KEY,json TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY AUTOINCREMENT,workspace TEXT UNIQUE NOT NULL);
+            CREATE TABLE IF NOT EXISTS companion_facts(id TEXT PRIMARY KEY,category TEXT NOT NULL,project TEXT,text TEXT NOT NULL,source TEXT NOT NULL,status TEXT NOT NULL,at INTEGER NOT NULL);
             """; cmd.ExecuteNonQuery(); return db;
     }
     private static void CheckPath(string path)
@@ -85,7 +90,10 @@ public sealed partial class CompanionCoordinator
     }
     public void Notify(CompanionNotice notice)
     {
-        using var db = Open(); using var cmd = Cmd(db, null, "INSERT OR IGNORE INTO notices VALUES($p0,$p1,$p2)", notice.Id, Now, Encode(notice)); cmd.ExecuteNonQuery();
+        using var db = Open(); using var tx = db.BeginTransaction();
+        var route = Rows<CompanionInstance>(db, tx, "SELECT json FROM instances WHERE id=$p0", notice.Instance).FirstOrDefault(i => i.Session == notice.Session);
+        if (route is not null) { using var binding = Cmd(db, tx, "INSERT OR IGNORE INTO notice_routes VALUES($p0,$p1)", notice.Id, Encode(route)); binding.ExecuteNonQuery(); }
+        using var cmd = Cmd(db, tx, "INSERT OR IGNORE INTO notices VALUES($p0,$p1,$p2)", notice.Id, Now, Encode(notice)); cmd.ExecuteNonQuery(); tx.Commit();
     }
     public void MarkRead(string id)
     {
@@ -130,6 +138,7 @@ public sealed partial class CompanionCoordinator
     public void Complete(CompanionDelivery delivery, bool accepted, string detail)
     {
         using var db = Open(); WriteDelivery(db, null, delivery with { Status = accepted ? "accepted" : "rejected", Detail = detail });
+        using (var followup = Cmd(db, null, "UPDATE companion_facts SET status=$p1,at=$p2 WHERE source=$p0", "delivery/" + delivery.Id, accepted ? "received" : "rejected", Now)) followup.ExecuteNonQuery();
         Notify(new("delivery/" + delivery.Id, delivery.Target, delivery.Session,
             (accepted ? "Orden recibida · " : "Orden rechazada · ") + detail, _clock()));
     }

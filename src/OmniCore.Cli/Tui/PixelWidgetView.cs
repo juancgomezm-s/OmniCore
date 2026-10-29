@@ -25,6 +25,7 @@ internal sealed class PixelWidgetView : View
     private bool _hasRendered;
     private bool _lastLineOnly;
     internal bool LineOnly { get; set; }
+    internal int HeadingInset { set { if (_heading.Frame.X != value) _heading.X = value; } }
     private CompanionImageView? _raster;
     private readonly List<CompanionImageView> _rasterFrames = [];
     internal const int MaxCachedRasterFrames = 6;

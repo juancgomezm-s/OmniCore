@@ -36,6 +36,7 @@ public interface ITuiTurnHost
     CompanionModelOption[] CompanionModels() => [];
     Task<string> CompanionChatAsync(IReadOnlyList<CompanionChatMessage> messages, CancellationToken token) =>
         System.Threading.Tasks.Task.FromResult("El mini chat no está disponible en este cliente.");
+    Task<string> CompanionChatAsync(IReadOnlyList<CompanionChatMessage> messages, string? focusNotice, CancellationToken token) => CompanionChatAsync(messages, token);
     /// <summary>Checks writer admission before the renderer clears a human draft; never submits input.</summary>
     bool TryAcquireSessionWriter() => true;
     bool SessionSecurityRecoveryBlocked => false;
@@ -113,6 +114,8 @@ public sealed class TuiTurnHost : ITuiTurnHost
     public CompanionModelOption[] CompanionModels() => _runtime.CompanionModels();
     public Task<string> CompanionChatAsync(IReadOnlyList<CompanionChatMessage> messages, CancellationToken token) =>
         _runtime.CompanionChatAsync(messages, token);
+    public Task<string> CompanionChatAsync(IReadOnlyList<CompanionChatMessage> messages, string? focusNotice, CancellationToken token) =>
+        _runtime.CompanionChatAsync(messages, token, focusNotice);
     private readonly OmniCliRuntime _runtime;
     public bool TryAcquireSessionWriter() => _runtime.TryAcquireSessionWriter();
     public bool SessionSecurityRecoveryBlocked => _runtime.SessionSecurityRecoveryBlocked;

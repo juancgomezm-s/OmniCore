@@ -16,17 +16,17 @@ public sealed partial class TuiWiringTests
         fx.StartTui(turnHost: host, initialColumns: 120, initialRows: 40);
         var session = fx.Server.LastSessionId();
         Type(fx, "/pet model"); fx.InjectKey(new Key(KeyCode.Enter));
-        fx.Wait(() => fx.App.Overlay?.Id == "companion-model-settings" && HubView(fx, "companion-model-save").Enabled, "configuración independiente preparada");
-        Assert.Contains("120 entrada / 40 salida", fx.Read(() => HubView(fx, "companion-model-usage").Text));
-        HubClick(fx, "companion-model-save");
+        fx.Wait(() => fx.App.Overlay?.Id == "companion-settings" && HubView(fx, "companion-settings-save").Enabled, "configuración independiente preparada");
+        Assert.Contains("120 / 40", fx.Read(() => HubView(fx, "companion-settings-usage").Text));
+        HubClick(fx, "companion-settings-save");
         fx.Wait(() => host.CompanionHub.ChatSettings().ModelId == "cloud-chat", "modelo por consumo guardado sin autorización del principal");
-        fx.Wait(() => HubView(fx, "companion-model-local").Enabled, "guardado finalizado");
-        HubClick(fx, "companion-model-local");
-        fx.Wait(() => ((ListView)HubView(fx, "companion-model-list")).Source!.ToList().Count == 1, "solo modelos locales");
-        HubClick(fx, "companion-model-save");
+        fx.Wait(() => HubView(fx, "companion-settings-local").Enabled, "guardado finalizado");
+        HubClick(fx, "companion-settings-local");
+        fx.Wait(() => ((ListView)HubView(fx, "companion-settings-model")).Source!.ToList().Count == 1, "solo modelos locales");
+        HubClick(fx, "companion-settings-save");
         fx.Wait(() => host.CompanionHub.ChatSettings() == new CompanionChatSettings("local-chat", true), "opción local persistente");
-        fx.Wait(() => HubView(fx, "companion-model-status").Text.Contains("local-chat"), "confirmación visible");
+        fx.Wait(() => HubView(fx, "companion-settings-status").Text.Contains("local-chat"), "confirmación visible");
         Assert.Equal(session, fx.Server.LastSessionId()); Assert.Equal(0, host.Chats); Assert.Null(host.Input);
-        ExportPreferenceFrame(fx, 120, 40, "companion-model-config", "Sin cuotas");
+        ExportPreferenceFrame(fx, 120, 40, "companion-model-config", "Memoria: Personal");
     }, noColor: false);
 }

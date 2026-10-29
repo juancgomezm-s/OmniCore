@@ -154,7 +154,7 @@ public sealed partial class TuiApp
         }
         if (outside)
         {
-            _petRunner.Render(_pet!, pose, _theme, PetNoColor);
+            _petRunner.Render(_pet!, CompanionNeedsAttention ? pose with { Animation = "waiting" } : pose, _theme, PetNoColor);
             var placement = new Point(PetPlayOrigin.X + pose.X, PetPlayOrigin.Y + pose.Y);
             if (_petRunnerPlacement != placement)
             { _petRunnerPlacement = placement; _petRunner.SetNeedsLayout(); }

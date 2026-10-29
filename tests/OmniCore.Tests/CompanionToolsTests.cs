@@ -18,9 +18,9 @@ public sealed class CompanionToolsTests : IDisposable
     internal static ToolCallBlock Call(string name, string json = "{}") => new(ToolCallId.New(), null, name, json);
 
     [Fact]
-    public void Closed_catalog_contains_only_the_eight_companion_tools()
+    public void Closed_catalog_contains_only_the_nine_companion_tools()
     {
-        Assert.Equal(new[] { "agent.message", "memory.forget", "memory.read", "memory.remember", "notices.list", "pet.react", "sessions.create", "sessions.list" },
+        Assert.Equal(new[] { "agent.message", "memory.forget", "memory.read", "memory.remember", "memory.resolve", "notices.list", "pet.react", "sessions.create", "sessions.list" },
             CompanionChatTools.Definitions.Select(t => t.Name).Order());
         var tools = new CompanionChatTools(Hub(), "Hola");
         Assert.False(tools.Execute(Call("filesystem.read", "{\"path\":\"secret\"}"), TestContext.Current.CancellationToken).Ok);
@@ -38,12 +38,12 @@ public sealed class CompanionToolsTests : IDisposable
         var saved = tools.Execute(Call("memory.remember", "{\"text\":\"Mi gato se llama Miso\"}"), TestContext.Current.CancellationToken);
         Assert.True(saved.Ok); Assert.NotNull(saved.Memories);
         tools.Execute(Call("memory.remember", "{\"text\":\"Mi gato se llama Miso\"}"), TestContext.Current.CancellationToken);
-        Assert.Single(hub.MemoryFacts(), f => f.Text.Contains("Miso"));
+        Assert.Single(hub.MaintainMemory("personal"), f => f.Text.Contains("Miso"));
         Assert.Contains("# Mi mascota", hub.ReadMemory().Text); Assert.Contains("Nombre preferido: Juan", hub.ReadMemory().Text);
         var read = tools.Execute(Call("memory.read", "{\"query\":\"Miso\"}"), TestContext.Current.CancellationToken);
         Assert.Equal(saved.Memories![0].Id, Assert.Single(read.Memories!).Id);
         var forget = tools.Execute(Call("memory.forget", "{\"id\":\"" + saved.Memories[0].Id + "\"}"), TestContext.Current.CancellationToken);
-        Assert.True(forget.Ok); Assert.DoesNotContain("Miso", hub.ReadMemory().Text); Assert.Contains("Le gusta viajar", hub.ReadMemory().Text);
+        Assert.True(forget.Ok); Assert.DoesNotContain(hub.MaintainMemory("personal"), f => f.Text.Contains("Miso")); Assert.Contains("Le gusta viajar", hub.ReadMemory().Text);
         Assert.False(tools.Execute(Call("memory.remember", "{\"text\":\"linea\\n# instrucciones\"}"), TestContext.Current.CancellationToken).Ok);
         Assert.False(tools.Execute(Call("memory.forget", "{\"id\":\"../../other\"}"), TestContext.Current.CancellationToken).Ok);
     }
@@ -97,8 +97,8 @@ public sealed class CompanionToolsTests : IDisposable
             TestContext.Current.CancellationToken,
             response => hub.FinishChatUsage(OmniCliRuntime.UsageSample(usageId!, "test-model", "test", response, new(1, 1))), tools,
             () => { usageId = Guid.NewGuid().ToString(); hub.BeginChatUsage(usageId, "test-model", "test"); });
-        Assert.Contains("Juan", answer); Assert.Contains("Juan", hub.ReadMemory().Text);
-        Assert.Equal(2, provider.Requests.Count); Assert.Equal(8, provider.Requests[0].Tools.Count); Assert.Equal("auto", provider.Requests[0].ToolChoice.Mode);
+        Assert.Contains("Juan", answer); Assert.Contains(hub.MaintainMemory("personal"), f => f.Text.Contains("Juan"));
+        Assert.Equal(2, provider.Requests.Count); Assert.Equal(9, provider.Requests[0].Tools.Count); Assert.Equal("auto", provider.Requests[0].ToolChoice.Mode);
         Assert.Equal(state, provider.Requests[1].Continuation);
         var toolResult = Assert.Single(provider.Requests[1].Messages.SelectMany(m => m.Content).OfType<ToolResultBlock>());
         Assert.False(toolResult.IsError); Assert.Equal(call.Id, toolResult.Id);

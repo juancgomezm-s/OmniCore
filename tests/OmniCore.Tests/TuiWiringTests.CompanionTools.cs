@@ -37,10 +37,10 @@ public sealed partial class TuiWiringTests
         fx.Wait(() => host.CompanionHub.Read().Deliveries.Any(d => d.Status == "accepted"), "acuse de la sesión");
         Assert.Equal("borrador del trabajo", fx.Read(() => fx.App.Composer!.Text));
         Assert.True(fx.Read(() => HubView(fx, "companion-chat-input").HasFocus));
-        Assert.Contains("Mi nombre es Juan", host.CompanionHub.ReadMemory().Text);
+        Assert.Contains(host.CompanionHub.MaintainMemory("personal"), f => f.Text == "Mi nombre es Juan");
         Assert.Single(host.CompanionHub.Read().Deliveries);
         ExportPreferenceFrame(fx, 120, 40, "companion-tools-message", "instrucción en cola");
-        HubClick(fx, "companion-memory-tab");
-        fx.Wait(() => HubView(fx, "companion-chat-input").Text.Contains("Mi nombre es Juan"), "memoria actualizada tras tool");
+        HubClick(fx, "companion-model-open");
+        fx.Wait(() => HubView(fx, "companion-settings-memory-text").Text.Contains("Mi nombre es Juan"), "memoria actualizada tras tool");
     }, noColor: false);
 }

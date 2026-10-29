@@ -34,7 +34,7 @@ public sealed partial class TuiWiringTests
         SeedPlaygroundPet(fx, "ox", 0);
         fx.Server.CompanionService.GuestSelector = (_, _, _) => design;
         var client = new CompanionExpressionClient(fx.Server);
-        fx.StartTui(initialColumns: 120, initialRows: 40, client: client);
+        fx.StartTui(turnHost: new CompanionHubTurn(fx), initialColumns: 120, initialRows: 40, client: client);
         if (!fx.Read(() => fx.App.SidebarOpen)) fx.InjectKey(new Key(KeyCode.F2));
         fx.Wait(() => fx.App.CompanionPet?.GuestId == design && fx.App.CompanionPet.Species == "ox", "guest connected; ordinary species preserved");
         Type(fx, "/pet home"); KeyWithEffect(fx, KeyCode.Enter, () => fx.App.CompanionPlayFrame == 0, "home");
@@ -66,7 +66,7 @@ public sealed partial class TuiWiringTests
     {
         SeedPlaygroundPet(fx, "ox", 0);
         var client = new CompanionExpressionClient(fx.Server);
-        fx.StartTui(initialColumns: 120, initialRows: 40, client: client);
+        fx.StartTui(turnHost: new CompanionHubTurn(fx), initialColumns: 120, initialRows: 40, client: client);
         if (!fx.Read(() => fx.App.SidebarOpen)) fx.InjectKey(new Key(KeyCode.F2));
         fx.Wait(() => fx.App.CompanionPet?.Discovered == true, "ox connected");
         Type(fx, "/pet home"); KeyWithEffect(fx, KeyCode.Enter, () => fx.App.CompanionPlayFrame == 0, "home for detailed renderer");
@@ -124,7 +124,7 @@ public sealed partial class TuiWiringTests
         Assert.Equal("unicode", fx.Read(() => fx.App.CompanionVisual.Effective));
         Assert.Equal(draft, fx.Read(() => fx.App.Composer!.Text)); Assert.True(fx.Read(() => fx.App.Composer!.HasFocus));
         fx.Invoke(() => fx.App.Composer!.Text = "");
-        Type(fx, "/pet detect"); KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay?.Id == "companion-visual-settings", "explicit redetection");
+        Type(fx, "/pet detect"); KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay?.Id == "companion-settings", "explicit redetection");
         fx.Wait(() => fx.App.CompanionVisual.Effective == "graphics", "only explicit redetection clears failure latch");
         fx.InjectKey(new Key(KeyCode.Esc));
         fx.Wait(() => fx.App.Overlay is null && fx.Application.Driver!.GetOutputBuffer().GetRasterImages().Count == 1, "image resumes after explicit recovery");
@@ -140,7 +140,7 @@ public sealed partial class TuiWiringTests
     [InlineData("fox", 1)] [InlineData("owl", 2)] [InlineData("beaver", 3)] [InlineData("cat", 4)] [InlineData("capybara", 5)]
     public void Companion_graphics_other_species_reuse_native_renderer(string species, int index) => RunTuiTest(fx =>
     {
-        SeedPlaygroundPet(fx, species, index); fx.StartTui(initialColumns: 120, initialRows: 40);
+        SeedPlaygroundPet(fx, species, index); fx.StartTui(turnHost: new CompanionHubTurn(fx), initialColumns: 120, initialRows: 40);
         if (!fx.Read(() => fx.App.SidebarOpen)) fx.InjectKey(new Key(KeyCode.F2));
         fx.Wait(() => fx.App.CompanionPet?.Discovered == true, "species connected");
         Type(fx, "/pet home"); KeyWithEffect(fx, KeyCode.Enter, () => fx.App.CompanionPlayFrame == 0, "home");
@@ -156,16 +156,16 @@ public sealed partial class TuiWiringTests
     [Fact]
     public void Companion_graphics_unverified_names_redirected_output_and_user_settings_choose_safe_fallback() => RunTuiTest(fx =>
     {
-        SeedPlaygroundPet(fx, "ox", 0); fx.StartTui(initialColumns: 120, initialRows: 40);
+        SeedPlaygroundPet(fx, "ox", 0); fx.StartTui(turnHost: new CompanionHubTurn(fx), initialColumns: 120, initialRows: 40);
         fx.Wait(() => fx.App.CompanionPet?.Discovered == true, "ox connected");
         Type(fx, "/pet home"); KeyWithEffect(fx, KeyCode.Enter, () => fx.App.CompanionPlayFrame == 0, "home");
         fx.Invoke(() => fx.Application.Driver!.SetKittyGraphicsSupport(new() { IsSupported = true }));
         fx.Wait(() => fx.Application.Driver!.KittyGraphicsSupport?.IsSupported == false, "environment-only Kitty hint is disarmed");
         Assert.Equal("unicode", fx.Read(() => fx.App.CompanionVisual.Effective));
-        Type(fx, "/pet mode gráfico"); KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay?.Id == "companion-visual-settings", "display settings");
+        Type(fx, "/pet mode gráfico"); KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay?.Id == "companion-settings", "display settings");
         fx.Wait(() => OverlayText(fx.App.Overlay!).Contains("Gráficos no disponibles", StringComparison.Ordinal), "requested graphics reports compatible fallback");
-        ExportPreferenceFrame(fx, 120, 40, "companion-mode-settings", "Vista de la mascota");
-        ClickId(fx, "companion-mode-text");
+        ExportPreferenceFrame(fx, 120, 40, "companion-mode-settings", "Mascota");
+        ClickId(fx, "companion-settings-visual"); ClickId(fx, "companion-settings-visual");
         fx.Wait(() => fx.App.CompanionVisual.Effective == "text", "text mode selected from native button");
         Assert.Equal("text", new OmniCore.Host.CompanionPetService(Path.Combine(fx.Root, "host-data")).Status().Preferences.RenderMode);
         fx.InjectKey(new Key(KeyCode.Esc));

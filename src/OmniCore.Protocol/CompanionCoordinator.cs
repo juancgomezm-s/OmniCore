@@ -18,9 +18,9 @@ public sealed record CompanionDelivery(string Id, string Target, string Session,
 public sealed record CompanionCreatedSession(string SessionId, string Title, string Workspace, bool Running = false);
 public sealed record CompanionMailboxPage(CompanionDelivery[] Messages, long Next);
 public sealed record CompanionMemory(string Path, string Text, string Version);
-public sealed record CompanionChatMessage(string Role, string Text);
+public sealed record CompanionChatMessage(string Role, string Text, string? Id = null, string? NoticeId = null);
 public sealed record CompanionChatSettings(string? ModelId = null, bool LocalOnly = false);
-public sealed record CompanionModelOption(string Id, string Provider, bool Local);
+public sealed record CompanionModelOption(string Id, string Provider, bool Local, long ContextWindow = 0);
 public sealed record CompanionChatUsage(string Model, string Provider, long Requests = 0, long Responses = 0,
     long Failed = 0, long Input = 0, long Output = 0, long CacheRead = 0, long CacheWrite = 0, long Reasoning = 0,
     long MeasuredTokenRequests = 0, decimal EstimatedUsd = 0, long PricedResponses = 0,
@@ -29,7 +29,8 @@ public sealed record CompanionUsageSample(string Id, string Model, string Provid
     long? CacheRead = null, long? CacheWrite = null, long? Reasoning = null, decimal? EstimatedUsd = null, decimal? ReportedUsd = null);
 public sealed record CompanionHubSnapshot(CompanionInstance[] Instances, CompanionNotice[] Notices,
     CompanionDelivery[] Deliveries, CompanionMemory Memory, CompanionReaction? Reaction = null);
-public sealed record CompanionMemoryEntry(string Id, string Text);
+public sealed record CompanionMemoryEntry(string Id, string Text, string Category = "personal", string? Project = null,
+    string Source = "user", string Status = "active");
 public sealed record CompanionSessionTarget(string InstanceId, string SessionId, string Project, string State);
 public sealed record CompanionToolResult(bool Ok, string? Error = null, string? Text = null,
     CompanionMemoryEntry[]? Memories = null, CompanionSessionTarget[]? Sessions = null,

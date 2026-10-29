@@ -32,8 +32,9 @@ public sealed partial class CompanionCoordinator
             SenderInstance: sender, SenderSession: session, Sequence: next);
         using var insert = Cmd(db, tx, "INSERT INTO deliveries VALUES($p0,$p1,$p2,'queued',$p3)", delivery.Id, delivery.Target, Now, Encode(delivery));
         insert.ExecuteNonQuery();
-        var notice = new CompanionNotice("message/" + delivery.Id, delivery.Target, delivery.Session,
+        var notice = new CompanionNotice("message/" + delivery.Id, source.Id, source.Session,
             "Mensaje lateral · " + session + " · " + text[..Math.Min(text.Length, 160)], _clock());
+        using var binding = Cmd(db, tx, "INSERT OR IGNORE INTO notice_routes VALUES($p0,$p1)", notice.Id, Encode(source)); binding.ExecuteNonQuery();
         using var notification = Cmd(db, tx, "INSERT OR IGNORE INTO notices VALUES($p0,$p1,$p2)", notice.Id, Now, Encode(notice));
         notification.ExecuteNonQuery(); tx.Commit();
         return delivery;
