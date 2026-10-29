@@ -21,9 +21,15 @@ public sealed partial class CompanionCoordinator
     {
         Directory.CreateDirectory(_directory); CheckPath(_directory);
         var path = Path.Combine(_directory, "coordinator.db"); CheckPath(path);
-        var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, DefaultTimeout = 1 }.ToString());
-        db.Open();
-        using var cmd = db.CreateCommand(); cmd.CommandText = """
+        // Connections are short-lived and opened per operation. Pooling would keep the
+        // coordinator.db file handle alive after each using-scope on Windows, preventing
+        // the owning data directory from being removed or replaced during Host shutdown.
+        var db = new SqliteConnection(new SqliteConnectionStringBuilder
+        { DataSource = path, DefaultTimeout = 1, Pooling = false }.ToString());
+        try
+        {
+            db.Open();
+            using var cmd = db.CreateCommand(); cmd.CommandText = """
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS instances(id TEXT PRIMARY KEY, at INTEGER NOT NULL, json TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS notices(id TEXT PRIMARY KEY, at INTEGER NOT NULL, json TEXT NOT NULL);
@@ -36,7 +42,16 @@ public sealed partial class CompanionCoordinator
             CREATE TABLE IF NOT EXISTS notice_routes(id TEXT PRIMARY KEY,json TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY AUTOINCREMENT,workspace TEXT UNIQUE NOT NULL);
             CREATE TABLE IF NOT EXISTS companion_facts(id TEXT PRIMARY KEY,category TEXT NOT NULL,project TEXT,text TEXT NOT NULL,source TEXT NOT NULL,status TEXT NOT NULL,at INTEGER NOT NULL);
-            """; cmd.ExecuteNonQuery(); return db;
+            """;
+            cmd.ExecuteNonQuery();
+            return db;
+        }
+        catch
+        {
+            try { db.Dispose(); }
+            catch { /* Preserve the original open/bootstrap failure. */ }
+            throw;
+        }
     }
     private static void CheckPath(string path)
     {

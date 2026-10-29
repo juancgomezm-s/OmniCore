@@ -641,7 +641,7 @@ public sealed partial class StdioTransportTests
             + $"receipt={fixture.ReadReceipt(invocationId)?.ExecutionState}/{fixture.ReadReceipt(invocationId)?.ExecutionCode}; "
             + $"diagnostics={string.Join(',', fixture.Diagnostics)}; detailed={string.Join(" || ", fixture.DetailedDiagnostics)}; "
             + $"events={string.Join(',', terminal.Select(item => item.Payload.GetType().Name))}");
-        Assert.Single(terminal, item => item.Payload is ToolCallSucceeded);
+        var succeeded = Assert.Single(terminal, item => item.Payload is ToolCallSucceeded);
         Assert.DoesNotContain(terminal, item => item.Payload is ToolCallEffectUnknown);
         var prunedReference = reference.GetProperty("name").GetString()!;
         var remainingReferences = Git(identity.RepositoryRoot, "for-each-ref", "--format=%(refname)",
@@ -649,7 +649,15 @@ public sealed partial class StdioTransportTests
         Assert.DoesNotContain(prunedReference, remainingReferences);
         Assert.Equal(retainedMetadata, File.ReadAllBytes(identity.OwnershipMetadataPath));
         Assert.False(Directory.Exists(identity.WorktreePath));
-        var effectSequence = terminal.Max(item => item.Envelope.Sequence);
+        // The tool effect precedes TurnCompleted and the two command receipts. Take
+        // the replay boundary only after the native continuation has durably settled.
+        await fixture.WaitForTurnCompletedAsync(sessionId, succeeded.Envelope.Sequence);
+        await fixture.WaitForReceiptExecutionAsync(approval.MessageId, "completed");
+        await fixture.WaitForReceiptExecutionAsync(invocationId, "completed");
+        var settled = fixture.ReadEvents(sessionId);
+        Assert.Contains(settled, item => item.Envelope.TurnId == succeeded.Envelope.TurnId
+            && item.Payload is TurnCompleted);
+        var effectSequence = settled.Max(item => item.Envelope.Sequence);
         await fixture.RestartHostAsync();
         _ = fixture.QueryJson("worktree.retention:" + identity.OwnershipId);
         var duplicate = Ack(fixture.ExchangeTrusted(invoke, sessionId, actionRun.ToString()));

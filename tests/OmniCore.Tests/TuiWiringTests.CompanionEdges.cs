@@ -62,10 +62,17 @@ public sealed partial class TuiWiringTests
             for (var x = baseline.Chat.Left; x <= baseline.Chat.Right; x++)
                 Assert.Equal(baseline.Cells[baseline.Chat.Bottom, x], frame.Cells[baseline.Chat.Bottom, x]);
         }
+        // Return through the real action: changing Visible alone leaves the playground
+        // active, so a timer can show it again before a slower driver draws the frame.
+        Type(fx, "/pet home");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.CompanionPlayFrame == 0
+            && fx.App.CompanionRunner?.Visible == false, "home stops the outing before restoring text");
         var restored = CapturePetOverlay(fx, false, () =>
         {
-            fx.App.CompanionRunner!.Visible = false;
+            for (var tick = 0; tick < 12; tick++) fx.App.AnimateActivity();
+            fx.App.Conversation!.SetNeedsDraw();
         });
+        Assert.Equal(0, fx.Read(() => fx.App.CompanionPlayFrame));
         AssertOverlayCells(baseline, restored);
     }, noColor: false);
 

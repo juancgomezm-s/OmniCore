@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using OmniCore.Protocol;
 
@@ -59,12 +60,17 @@ public sealed partial class CompanionCoordinator
     }
     public CompanionNotice[] PendingNotices()
     {
-        using var db = Open(); return Rows<CompanionNotice>(db, null, """
+        using var db = Open();
+        db.CreateFunction<string, long>("notice_utc_ticks",
+            value => DateTimeOffset.Parse(value, CultureInfo.InvariantCulture).UtcDateTime.Ticks,
+            isDeterministic: true);
+        return Rows<CompanionNotice>(db, null, """
             SELECT json FROM (
-              SELECT json,at,ROW_NUMBER() OVER(PARTITION BY json_extract(json,'$.instance'),json_extract(json,'$.session'),
-                CASE WHEN instr(id,'/')=0 THEN id ELSE substr(id,1,instr(id,'/')-1) END ORDER BY at DESC) AS position
+              SELECT json,at,id,ROW_NUMBER() OVER(PARTITION BY json_extract(json,'$.instance'),json_extract(json,'$.session'),
+                CASE WHEN instr(id,'/')=0 THEN id ELSE substr(id,1,instr(id,'/')-1) END
+                ORDER BY notice_utc_ticks(json_extract(json,'$.at')) DESC,at DESC,id DESC) AS position
               FROM notices WHERE COALESCE(json_extract(json,'$.read'),0)=0 AND COALESCE(json_extract(json,'$.resolved'),0)=0
-            ) WHERE position=1 ORDER BY at DESC
+            ) WHERE position=1 ORDER BY notice_utc_ticks(json_extract(json,'$.at')) DESC,at DESC,id DESC
             """);
     }
     public CompanionChatMessage[] PresentNotices(bool acknowledge = true, int count = 8)

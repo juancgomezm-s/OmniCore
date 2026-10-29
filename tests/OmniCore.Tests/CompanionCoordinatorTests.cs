@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using Microsoft.Data.Sqlite;
 using OmniCore.Abstractions;
 using OmniCore.Client;
 using OmniCore.Domain;
@@ -78,6 +79,31 @@ public sealed class CompanionCoordinatorTests : IDisposable
         hub.Heartbeat(Instance() with { Decisions = [] });
         Assert.True(Assert.Single(hub.Read().Notices).Resolved); Assert.True(hub.Read().Notices[0].Read);
         hub.SetQuiet(true); Assert.True(Hub().ReadQuiet()); hub.SetQuiet(false); Assert.False(Hub().ReadQuiet());
+    }
+    [Fact]
+    public void Disposed_operation_releases_coordinator_database_directory()
+    {
+        Hub().Heartbeat(Instance());
+
+        Directory.Delete(Path.Combine(_root, "companion"), recursive: true);
+
+        Assert.False(Directory.Exists(Path.Combine(_root, "companion")));
+    }
+    [Fact]
+    public void Failed_bootstrap_releases_connection_and_preserves_sqlite_error()
+    {
+        var directory = Path.Combine(_root, "companion");
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "coordinator.db");
+        // A nonempty invalid header fails while opening/initializing the database,
+        // before Heartbeat can run any application statements.
+        File.WriteAllBytes(path, Enumerable.Repeat((byte)0x5A, 512).ToArray());
+
+        var error = Assert.Throws<SqliteException>(() => Hub().Heartbeat(Instance()));
+
+        Assert.Equal(26, error.SqliteErrorCode); // SQLITE_NOTADB, preserved by Open's cleanup.
+        Directory.Delete(directory, recursive: true);
+        Assert.False(Directory.Exists(directory));
     }
     [Fact]
     public void Companion_mailbox_measurement()
@@ -178,5 +204,16 @@ public sealed class CompanionCoordinatorTests : IDisposable
         Assert.Equal("accepted", Assert.Single(hub.Read().Deliveries).Status);
     }
     public void Dispose()
-    { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); if (Directory.Exists(_root)) Directory.Delete(_root, true); }
+    {
+        // Only this fixture's pet service uses a pool; coordinator connections must
+        // already be closed, including in the deletion regressions above.
+        var petPath = Path.Combine(_root, "companion", "pet.db");
+        if (File.Exists(petPath))
+        {
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            { DataSource = petPath, DefaultTimeout = 10 }.ToString());
+            SqliteConnection.ClearPool(connection);
+        }
+        if (Directory.Exists(_root)) Directory.Delete(_root, true);
+    }
 }

@@ -61,16 +61,42 @@ public sealed class CompanionNaturalConversationTests : IDisposable
     [Fact]
     public void Grouped_notices_share_one_conversation_and_are_read_only_after_presentation_is_acknowledged()
     {
-        var hub = Hub(); hub.Heartbeat(Peer("Alpha")); var peer = Peer("Alpha");
-        hub.Notify(new("turn/one", peer.Id, peer.Session, "Terminó un turno", DateTimeOffset.UtcNow.AddSeconds(-2)));
-        hub.Notify(new("turn/two", peer.Id, peer.Session, "Terminó sus cambios", DateTimeOffset.UtcNow));
+        var at = new DateTimeOffset(2026, 10, 29, 12, 0, 0, TimeSpan.Zero);
+        var hub = new CompanionCoordinator(_root, () => at); var peer = Peer("Alpha");
+        hub.Heartbeat(peer);
+        hub.Notify(new("turn/one", peer.Id, peer.Session, "Terminó un turno", at.AddSeconds(-2)));
+        hub.Notify(new("turn/two", peer.Id, peer.Session, "Terminó sus cambios", at));
         Assert.Single(hub.PendingNotices());
         var presented = hub.PresentNotices(acknowledge: false); Assert.Single(presented); Assert.Single(hub.PendingNotices());
+        Assert.Equal("turn/two", presented[0].NoticeId);
         Assert.Contains(hub.ProjectLabel(peer.Workspace), presented[0].Text);
         Assert.Equal(peer.Id, hub.NoticeRoute(presented[0].NoticeId!)!.Id);
         hub.PresentNotices(acknowledge: false); Assert.Single(hub.DialogueTail());
+
+        hub.Notify(new("turn/three", peer.Id, peer.Session, "Terminó una notificación nueva", at.AddSeconds(1)));
         new CompanionCoordinator(_root).AcknowledgeNotices(presented.Select(n => n.NoticeId!));
+        Assert.Equal("turn/three", Assert.Single(hub.PendingNotices()).Id);
+        hub.AcknowledgeNotices(["turn/three"]);
         Assert.Empty(hub.PendingNotices()); Assert.Single(new CompanionCoordinator(_root).DialogueTail());
+    }
+
+    [Fact]
+    public void Late_ack_uses_exact_notice_time_and_preserves_a_newer_tick_with_another_offset()
+    {
+        var insertionTime = new DateTimeOffset(2026, 10, 29, 12, 0, 0, TimeSpan.FromHours(-5));
+        var hub = new CompanionCoordinator(_root, () => insertionTime);
+        var peer = Peer("Alpha"); hub.Heartbeat(peer);
+        var oldAt = insertionTime;
+        var newAt = oldAt.AddTicks(1).ToOffset(TimeSpan.Zero);
+        hub.Notify(new("turn/z-old", peer.Id, peer.Session, "Aviso anterior", oldAt));
+        var presented = hub.PresentNotices(acknowledge: false);
+        Assert.Equal("turn/z-old", Assert.Single(presented).NoticeId);
+
+        hub.Notify(new("turn/a-new", peer.Id, peer.Session, "Aviso un tick posterior", newAt));
+        Assert.Equal("turn/a-new", Assert.Single(hub.PendingNotices()).Id);
+        hub.AcknowledgeNotices(presented.Select(notice => notice.NoticeId!));
+
+        Assert.Equal("turn/a-new", Assert.Single(hub.PendingNotices()).Id);
     }
 
     [Fact]
