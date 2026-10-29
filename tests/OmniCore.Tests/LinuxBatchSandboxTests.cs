@@ -199,7 +199,9 @@ public sealed class LinuxBatchSandboxTests : IDisposable
         File.WriteAllText(Path.Combine(workspace, "Program.cs"), "System.Console.WriteLine(\"built-inside-strong\");");
         var source = Path.Combine(workspace, "empty-package-source");
         Directory.CreateDirectory(source);
-        var result = await Run(Spec(workspace, Environment.ProcessPath!, "build", "Probe.csproj",
+        // MTP may start this suite through its apphost; that executable is not the SDK.
+        // Resolve the actual SDK command instead of inheriting the test runner's host.
+        var result = await Run(Spec(workspace, "dotnet", "build", "Probe.csproj",
             "-p:RestoreSources=" + source, "-p:NuGetAudit=false", "-v:q")
             with { Timeout = TimeSpan.FromSeconds(90) }, TestContext.Current.CancellationToken);
 

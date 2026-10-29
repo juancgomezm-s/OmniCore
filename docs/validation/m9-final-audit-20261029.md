@@ -163,3 +163,31 @@ desde el composer durante inferencia fixture sin una llamada adicional. Los rojo
 originales se conservan por separado; los tres pases finales no los borran.
 M8 Windows está aceptado por Juan. M2/M3 reales siguen pospuestos por ocupación de
 la GPU y no se usan como un bloqueo nuevo de M9.
+
+## CI de la candidata y corrección del runner Linux
+
+El consumidor `05d540a3e535093bb628ffd5ccfac5027881f98e` aprobó los tres jobs
+de [CI 40971132579](https://github.com/juancgomezm-s/OmniCode/actions/runs/40971132579):
+tests Windows, tests Ubuntu y package-gate. Los tres E2E locales conservan su
+evidencia separada; no se atribuyen a pasos que esa CI no ejecuta.
+
+Core `6c3ee0cf43a005fc64bd214f836335fa0dd05c67` aprobó paquete Linux/AOT e
+instalación npm Windows/Ubuntu en
+[CI 40971113662](https://github.com/juancgomezm-s/OmniCore/actions/runs/40971113662).
+La suite Ubuntu registró 5.970 casos: 5.905 aprobados, 64 omitidos y un fallo.
+`Dotnet_sdk_builds_a_real_project_with_private_home_and_no_network` confundía
+`Environment.ProcessPath` con el SDK: bajo `dotnet test`, MTP usa el apphost de
+tests, cuya DLL vecina queda correctamente fuera del sandbox. La salida 154
+acredita ese error de fixture, no una necesidad de ampliar el aislamiento.
+
+La prueba ahora resuelve el comando `dotnet` mediante la ruta normal del launcher;
+conserva la compilación real sin red, el HOME privado y la comprobación de
+`Probe.dll`. La siguiente candidata incorpora además el main publicado
+`68294a83ce2aae0b8a8bad4c2c3afddc63e658e7` para validar la combinación completa.
+La CI roja se conserva; el cierre requiere CI nueva verde y aprobación final de Dot.
+
+La corrección pasó localmente con el runner DLL y, después, invocando directamente
+el apphost Linux de tests: un caso aprobado en cada modo, cero errores/omisiones,
+sin reconstrucción entre ambos. Recibos `focused-tests.xml` y
+`focused-native-apphost.xml` en la evidencia Linux persistente. Ambos compilaron
+el proyecto real dentro de Strong sin modificar sus grants ni simular resultados.
