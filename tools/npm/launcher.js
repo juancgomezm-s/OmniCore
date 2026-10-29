@@ -18,8 +18,9 @@ function run(args = process.argv.slice(2), options = {}) {
   const parentProcess = options.process ?? process;
   const stderr = options.stderr ?? process.stderr;
   const dllPath = path.join(packageRoot, 'dist', 'npm', 'omni.dll');
-  const stayHere = options.currentTerminal || args.includes(windowsTerminal.marker);
-  args = args.filter(arg => arg !== windowsTerminal.marker);
+  const newWindow = args.includes('--new-window');
+  const stayHere = options.currentTerminal || args.includes(windowsTerminal.marker) || !newWindow;
+  args = args.filter(arg => arg !== windowsTerminal.marker && arg !== '--new-window');
 
   if (!fileExists(dllPath)) {
     stderr.write('Falta la CLI publicada (dist/npm/omni.dll). Reinstala el paquete sin --ignore-scripts para que npm ejecute prepare.\n');
