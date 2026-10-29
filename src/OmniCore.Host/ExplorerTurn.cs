@@ -30,6 +30,7 @@ public sealed class ExplorerTurn
     public const int MaxSteps = 8;
 
     private readonly Func<ModelRequest, CancellationToken, ModelResponse> _complete;
+    private readonly WebResearchContextGuard _webResearchContext;
 
     private readonly IModelProvider? _metaModelProvider;
     private readonly long? _modelContextCapacity;
@@ -350,7 +351,8 @@ public sealed class ExplorerTurn
         Func<SessionSecurityPolicySet?>? sessionSecurityPolicy = null,
         bool exposeForcedInitialToolInDiscoveredMode = false,
         WorkflowStageDefinition? workflowStageDefinition = null,
-        Action<IReadOnlyList<ContextItem>, SessionId, RunId>? externalContextAdmission = null)
+        Action<IReadOnlyList<ContextItem>, SessionId, RunId>? externalContextAdmission = null,
+        WebResearchContextGuard? webResearchContext = null)
     {
         if (sessionCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(sessionCapUsd));
         if (dailyCapUsd < 0m) throw new ArgumentOutOfRangeException(nameof(dailyCapUsd));
@@ -358,6 +360,7 @@ public sealed class ExplorerTurn
         if (maxToolCallsPerTurn is < 1 or > 64) throw new ArgumentOutOfRangeException(nameof(maxToolCallsPerTurn));
         if (maxGenerationSeconds is < 1 or > 3600) throw new ArgumentOutOfRangeException(nameof(maxGenerationSeconds));
         _complete = complete;
+        _webResearchContext = webResearchContext ?? new WebResearchContextGuard();
         _externalContextAdmission = externalContextAdmission;
         _tools = tools;
         _resolvedAgentProfile = (tools as ScriptedToolExecutor)?.AgentProfile;
@@ -1965,7 +1968,11 @@ public sealed class ExplorerTurn
                         if (stepReservation is not null || tokenReservation is not null)
                             ownedPrimary = RunBudgetPool.For(_store).TrackOwnedPrimary(primaryIdentity);
                     }
-                    using var generationAttempts = GenerationRequestAttemptScope.Enter();
+                    var webInvocation = _webResearchContext.Admit(runId.ToString(),
+                        primaryIdentity + "/web-context", request,
+                        _webResearchContext.Project(runId.ToString(), stream.EventsSince(1), _codecs));
+                    request = webInvocation.Request;
+                    using var generationAttempts = GenerationRequestAttemptScope.Enter(webInvocation.BeforePhysicalSend);
                     providerEntered = true;
                     using var generationDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                     var generationStartedAt = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -3802,7 +3809,7 @@ public sealed class ExplorerTurn
         }
 
         var checkpoint = SessionConversationCheckpoint.Read(journal, _codecs, _artifacts, runId, activeLaneId);
-        if (checkpoint is null) return history;
+        if (checkpoint is null || _webResearchContext.Project(runId.ToString(), journal, _codecs).ProtectsContext) return history;
         var firstInput = history.FindIndex(message => message.Role == MessageRole.User);
         var firstCanonicalInput = journal.FirstOrDefault(evt => conversationScope.CanRead(evt) && _codecs.Decode(evt) is UserInputReceived)?.Sequence;
         return history.Where((_, index) => index == firstInput || historySequences[index] == firstCanonicalInput
@@ -4272,12 +4279,13 @@ public sealed class ExplorerTurn
         Action<LifecyclePoint, string?>? dispatchLifecycle = null)
     {
         var contextTask = FindTaskForLane(stream.EventsSince(1), runId, laneId);
+        var webProjection = _webResearchContext.Project(runId.ToString(), stream.EventsSince(1), _codecs);
         var contributors = new List<IContextContributor>();
         // Only explicit, canonically accepted selected-context packets. No automatic parent
         // transcript import, worker admission, scheduler decision or authority transfer.
         var inherited = new ContextInheritanceService(_store, _codecs, _artifacts)
             .FindDelegationProjection(sessionId, runId, laneId);
-        if (inherited is not null) contributors.Add(new ValidatedContextContributor(inherited));
+        if (inherited is not null && !webProjection.ProtectsContext) contributors.Add(new ValidatedContextContributor(inherited));
         if (hookAnnotations is { Count: > 0 })
             contributors.Add(new ValidatedContextContributor(
                 new LifecycleAnnotationContributor(hookAnnotations)));
@@ -4305,7 +4313,7 @@ public sealed class ExplorerTurn
         var prompt = EffectiveSystemPrompt(instruction);
         contributors.Add(new ValidatedContextContributor(new SystemPromptContributor(prompt)));
         var sessionCheckpoint = SessionConversationCheckpoint.Read(stream.EventsSince(1), _codecs, _artifacts, runId, laneId);
-        if (sessionCheckpoint is not null)
+        if (sessionCheckpoint is not null && !webProjection.ProtectsContext)
             contributors.Add(new ContextCheckpointContributor(sessionCheckpoint.Id, sessionCheckpoint.ThroughSequence,
                 sessionCheckpoint.Summary, sessionCheckpoint.Artifact));
         // Pressure probes and final planning share one contribution read. An RPC
@@ -4328,7 +4336,7 @@ public sealed class ExplorerTurn
         }
         for (var i = 0; i < messages.Count; i++)
         {
-            var safe = PreserveMessage(messages[i]);
+            var safe = PreserveMessage(webProjection.Apply(messages[i]));
             var id = "conversation-" + i.ToString("D6", System.Globalization.CultureInfo.InvariantCulture);
             var kind = safe.Role switch
             {
@@ -4338,7 +4346,8 @@ public sealed class ExplorerTurn
             };
             // Historical context must never silently evict the user's current intent.
             // If protected input itself cannot fit, the existing overflow barrier stops dispatch.
-            var preserve = !policy.AutomaticCompaction || safe.Role == MessageRole.User && (firstUser || i == latestUserIndex);
+            var preserve = !policy.AutomaticCompaction || webProjection.IsWebMessage(safe)
+                || safe.Role == MessageRole.User && (firstUser || i == latestUserIndex);
             if (safe.Role == MessageRole.User)
             {
                 firstUser = false;
@@ -4353,7 +4362,7 @@ public sealed class ExplorerTurn
         var summarizedIds = new HashSet<string>(StringComparer.Ordinal);
         var summaryService = new RunSummaryService(_store, _codecs, _artifacts, static text => text);
         var summaries = summaryService.Read(sessionId, runId);
-        if (policy.AutomaticCompaction && summaries.Count > 0)
+        if (policy.AutomaticCompaction && summaries.Count > 0 && !webProjection.ProtectsContext)
         {
             // Probe the existing budget policy, not a new percentage/character heuristic.
             // Prepared artifacts are not published by this probe.
@@ -4451,7 +4460,7 @@ public sealed class ExplorerTurn
                 ?.AcquirePublicationLease(CancellationToken.None))
             {
                 checkpointArtifact = PersistCheckpointArtifact(checkpointId, runId, laneId, throughSequence,
-                    compactedThroughIndex, summary, metaFingerprint);
+                    compactedThroughIndex, summary, metaFingerprint, webProjection.ProtectsContext);
                 stream.Append(new ContextCheckpointRecorded(checkpointId, runId, throughSequence,
                     checkpointArtifact, metaFingerprint));
             }
@@ -4610,6 +4619,9 @@ public sealed class ExplorerTurn
             {
                 using var document = System.Text.Json.JsonDocument.Parse(json);
                 var root = document.RootElement;
+                if (_webResearchContext.Project(runId.ToString(), journal, _codecs).ProtectsContext
+                    && (!root.TryGetProperty("webResearchContextProjectionVersion", out var projected)
+                        || projected.ValueKind != JsonValueKind.Number || !projected.TryGetInt32(out var version) || version != 1)) continue;
                 if (root.TryGetProperty("laneId", out var owner))
                 {
                     if (owner.GetString() != laneId.ToString())
@@ -4655,7 +4667,7 @@ public sealed class ExplorerTurn
     }
 
     private ArtifactRef PersistCheckpointArtifact(string checkpointId, RunId runId, LaneId laneId, long throughSequence,
-        int compactedThroughItemIndex, string summary, string metaModelFingerprint)
+        int compactedThroughItemIndex, string summary, string metaModelFingerprint, bool webContextProjected)
     {
         var lines = summary.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         string[] Section(params string[] labels) => lines.Where(line => labels.Any(label =>
@@ -4678,6 +4690,7 @@ public sealed class ExplorerTurn
             writer.WriteString("laneId", laneId.ToString());
             writer.WriteNumber("throughEventSequence", throughSequence);
             writer.WriteString("metaModelFingerprint", metaModelFingerprint);
+            if (webContextProjected) writer.WriteNumber("webResearchContextProjectionVersion", 1);
             writer.WriteString("summary", summary);
             WriteCheckpointSection(writer, "goals", Section("Goal", "Goals"));
             WriteCheckpointSection(writer, "constraints", Section("Constraint", "Constraints"));
@@ -5107,7 +5120,7 @@ public sealed class ExplorerTurn
         else if (_boundary?.UsesFullToolCatalog() != true)
         {
             var visibleIds = new HashSet<string>(StringComparer.Ordinal)
-                { "filesystem.read", "filesystem.list", "filesystem.search", "search.text",
+                { "filesystem.read", "filesystem.list", "filesystem.search",
                     "reference.resolve", "tool.search", "user.ask", "artifact.read", "skill.load",
                     "agents.list", "agents.send", "agents.read" };
             visibleIds.UnionWith(_activeSkillToolIds);

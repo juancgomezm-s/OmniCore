@@ -54,7 +54,7 @@ public sealed class ToolsInspectionTests
         Assert.Equal("Reads a bounded page of project file lines without changing it. Set offset from line 1 and limit up to 500; the result shows line numbers, continuation and the full file hash.",
             ToolInspectionPresentation.Description(row, Localization.English()));
         Assert.Equal("Original model-facing description", row.Description);
-        foreach (var id in new[] { "user.ask", "filesystem.read", "filesystem.list", "search.text", "reference.resolve",
+        foreach (var id in new[] { "user.ask", "filesystem.read", "filesystem.list", "filesystem.search", "reference.resolve",
             "plan.propose", "mode.propose", "filesystem.write", "filesystem.patch", "process.exec", "shell.exec",
             "artifact.read", "core.agents.mailbox.receive", "worktree.integrate", "tool.search" })
             Assert.True(Localization.HasInBoth("client.tool." + id + ".description"), id);

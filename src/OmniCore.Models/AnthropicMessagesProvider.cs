@@ -268,7 +268,7 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
                 w.WriteStartArray("system");
                 w.WriteStartObject();
                 w.WriteString("type", "text");
-                w.WriteString("text", request.Instructions);
+                w.WriteString("text", wireNames.ToWireText(request.Instructions));
                 if (cache) WriteCacheControl(w);
                 w.WriteEndObject();
                 w.WriteEndArray();
@@ -283,7 +283,7 @@ public sealed class AnthropicMessagesProvider : IModelProvider, IReportsRateLimi
                 {
                     w.WriteStartObject();
                     w.WriteString("name", wireNames.ToWire(tool.Name));
-                    w.WriteString("description", tool.Description);
+                    w.WriteString("description", wireNames.ToWireText(tool.Description));
                     w.WritePropertyName("input_schema");
                     WriteRawJsonOrEmptyObject(w, tool.InputSchemaJson);
                     w.WriteEndObject();

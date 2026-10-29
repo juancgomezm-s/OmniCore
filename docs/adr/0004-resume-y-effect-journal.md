@@ -41,7 +41,7 @@ La **declara el `ToolIntent`** en `Prepare` (ADR-0014); no se infiere en tiempo 
 
 | `EffectClass` | Ejemplos | ¿Reejecutar tras un crash? |
 |---|---|---|
-| `None` | `filesystem.read`, `search.text`, `git.status` | Sí, siempre |
+| `None` | `filesystem.read`, `filesystem.search`, `git.status` | Sí, siempre |
 | `Rerunnable` | build y test cuyos efectos quedan confinados a outputs regenerables | Sí, según la política de la tool |
 | `Reconcilable` | write/patch con version token, operaciones Git con resultado esperado | Solo tras reconciliar |
 | `NonIdempotent` | APIs externas sin idempotency key, `shell.exec` y procesos con efecto desconocido | Nunca automáticamente |

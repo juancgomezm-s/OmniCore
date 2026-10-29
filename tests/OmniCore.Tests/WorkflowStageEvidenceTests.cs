@@ -3,6 +3,8 @@ using OmniCore.Host;
 using OmniCore.Infrastructure;
 using OmniCore.Abstractions;
 using OmniCore.Engine;
+using OmniCore.Tools;
+using OmniCore.Execution;
 
 namespace OmniCore.Tests;
 
@@ -11,6 +13,33 @@ public sealed class WorkflowStageEvidenceTests
     private const string Cwd = "C:\\workflow-workspace";
     private const string CheckArguments = "{\"executable\":\"dotnet\",\"argv\":[\"test\",\"tests/Connected.csproj\"],"
         + "\"cwd\":\"C:\\\\workflow-workspace\",\"timeoutSeconds\":120,\"networkRequired\":false}";
+
+    [Fact]
+    public void Explore_accepts_a_successful_receipt_from_the_registered_filesystem_search_tool()
+    {
+        var fixture = new Fixture(WorkflowStage.Explore);
+        fixture.AppendSearch(sibling: false);
+
+        var evidence = fixture.Evaluate();
+
+        Assert.True(evidence.Passed, evidence.Reason);
+        Assert.Single(evidence.Receipts);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_read_only_filesystem_search_does_not_invalidate_verification(bool completed)
+    {
+        var fixture = new Fixture();
+        fixture.AppendVerification();
+        fixture.AppendSearch(sibling: true, completed: completed);
+
+        var evidence = fixture.Evaluate();
+
+        Assert.True(evidence.Passed, evidence.Reason);
+        Assert.Single(evidence.Receipts);
+    }
 
     [Fact]
     public void Verify_receipt_remains_current_when_no_workspace_mutation_follows()
@@ -91,12 +120,29 @@ public sealed class WorkflowStageEvidenceTests
         private readonly ExecutionId _siblingExecution = ExecutionId.New();
         private readonly WorkflowStageContract _contract;
 
-        internal Fixture()
+        internal Fixture(WorkflowStage stage = WorkflowStage.Verify)
         {
             _contract = new WorkflowStageContract(CompiledWorkflowCatalog.ExploreImplementVerify.Reference,
-                "fixture-instance", CompiledWorkflowCatalog.Stage(WorkflowStage.Verify), _verifyTask, _verifyLane,
+                "fixture-instance", CompiledWorkflowCatalog.Stage(stage), _verifyTask, _verifyLane,
                 "dotnet", "[\"test\",\"tests/Connected.csproj\"]", Cwd,
                 "Verify fixture", "profile-fixture", _verifyExecution, 0, "", "");
+        }
+
+        internal void AppendSearch(bool sibling, bool completed = true)
+        {
+            var call = ToolCallId.New();
+            var task = sibling ? _siblingTask : _verifyTask;
+            var lane = sibling ? _siblingLane : _verifyLane;
+            var execution = sibling ? _siblingExecution : _verifyExecution;
+            const string arguments = "{\"pattern\":\"connected\",\"path\":\"src\"}";
+            var tool = new SearchTextTool(new PathBoundaryValidator());
+            Append(task, lane, execution,
+                new ToolCallRequested(call, "provider-search", tool.Descriptor.Id.ToString(), arguments));
+            if (!completed) return;
+            Append(task, lane, execution, new ToolCallPrepared(call, arguments));
+            Append(task, lane, execution, new ToolCallAuthorized(call));
+            Append(task, lane, execution, new ToolCallStarted(call, EffectClass.None, null));
+            Append(task, lane, execution, new ToolCallSucceeded(call, "{\"matches\":[]}"));
         }
 
         internal void AppendVerification()

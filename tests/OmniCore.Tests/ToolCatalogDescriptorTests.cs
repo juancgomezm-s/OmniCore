@@ -16,6 +16,18 @@ public sealed class ToolCatalogDescriptorTests
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     [Fact]
+    public void Filesystem_search_is_the_single_registered_text_search_tool()
+    {
+        var catalog = HostTools.Explorer().Catalog();
+        var definition = Assert.Single(catalog.Definitions(), tool => tool.Name == "filesystem.search");
+
+        Assert.IsType<SearchTextTool>(catalog.Find(new ToolId(definition.Name)));
+        Assert.DoesNotContain(catalog.Definitions(), tool => tool.Name == "search.text");
+        Assert.Contains(definition.Name, CompiledWorkflowCatalog.Stage(WorkflowStage.Explore).RequiredSuccessfulToolIds);
+        Assert.Equal(ModelToolCapability.Search, ModelCapabilityBoundary.CoreTools[definition.Name]);
+    }
+
+    [Fact]
     public void Duplicate_tool_registration_is_rejected_without_replacing_existing_tool()
     {
         var existing = FakeTool.Read("fake.duplicate");

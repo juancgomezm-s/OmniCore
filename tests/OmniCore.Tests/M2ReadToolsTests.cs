@@ -431,7 +431,7 @@ public sealed class M2ReadToolsTests
     private static ScriptedToolExecutor SearchExecutor(string wsDir)
     {
         var hostTools = new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false, includeMutationTools: false);
-        var policy = ScriptedPermissionPolicy.WithTool("search.text", PermissionDecision.Allow);
+        var policy = ScriptedPermissionPolicy.WithTool("filesystem.search", PermissionDecision.Allow);
         return ScriptedToolExecutor.WithWorkspace(hostTools.Catalog(), policy, wsDir);
     }
 
@@ -445,11 +445,11 @@ public sealed class M2ReadToolsTests
         if (caseSensitive.HasValue) args["caseSensitive"] = caseSensitive.Value;
 
         var json = JsonSerializer.Serialize(args);
-        return new ValidatedToolCall(ToolCallId.New(), new ToolId("search.text"),
+        return new ValidatedToolCall(ToolCallId.New(), new ToolId("filesystem.search"),
             "pc-" + Guid.NewGuid().ToString("N").Substring(0, 6), json);
     }
 
-    // ---------------------------------------------------------------- search.text (M2 EPIC-018)
+    // ---------------------------------------------------------------- filesystem.search (M2 EPIC-018)
 
     [Fact]
     public void Search_literal_match_returns_relative_path_line_and_text()

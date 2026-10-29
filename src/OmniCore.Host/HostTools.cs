@@ -240,6 +240,13 @@ public sealed class HostTools
                 extensionTool.ValidateCurrentBatchProposal);
     }
 
+    internal void RegisterWebResearchTools(WebResearchController controller)
+    {
+        ArgumentNullException.ThrowIfNull(controller);
+        _catalog.Add(new WebResearchTool(controller, read: false));
+        _catalog.Add(new WebResearchTool(controller, read: true));
+    }
+
     internal void RegisterMcpTool(ITool tool)
     {
         ArgumentNullException.ThrowIfNull(tool);

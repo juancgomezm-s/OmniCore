@@ -34,7 +34,7 @@ public sealed record ToolPresentation(ActivityCategory Category, string RunningK
             ["filesystem.read"] = For("filesystem.read", ActivityCategory.Read, "path"),
             ["tool.search"] = For("tool.search", ActivityCategory.Search, "query"),
             ["filesystem.list"] = For("filesystem.list", ActivityCategory.Read, "path"),
-            ["search.text"] = For("search.text", ActivityCategory.Search, "pattern"),
+            ["filesystem.search"] = For("filesystem.search", ActivityCategory.Search, "pattern"),
             ["filesystem.write"] = For("filesystem.write", ActivityCategory.Edit, "path"),
             ["filesystem.patch"] = For("filesystem.patch", ActivityCategory.Edit, "path"),
             ["process.exec"] = For("process.exec", ActivityCategory.Execute, "executable"),

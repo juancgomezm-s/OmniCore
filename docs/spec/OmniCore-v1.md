@@ -1648,7 +1648,7 @@ MVP read-only:
 ```text
 filesystem.read
 filesystem.list
-search.text
+filesystem.search
 ```
 
 Posteriormente:

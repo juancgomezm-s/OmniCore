@@ -158,7 +158,7 @@ data: {"type":"response.completed","response":{"id":"resp_1","status":"completed
         Assert.Equal("reasoning.encrypted_content", root.GetProperty("include")[0].GetString());
         Assert.Equal("function", root.GetProperty("tools")[0].GetProperty("type").GetString());
         Assert.Matches("^[a-zA-Z0-9_-]{1,64}$", root.GetProperty("tools")[0].GetProperty("name").GetString()!);
-        Assert.NotEqual("filesystem.read", root.GetProperty("tools")[0].GetProperty("name").GetString());
+        Assert.Equal("read_file", root.GetProperty("tools")[0].GetProperty("name").GetString());
         Assert.False(root.TryGetProperty("messages", out _));
         Assert.Equal("input_text", root.GetProperty("input")[0].GetProperty("content")[0].GetProperty("type").GetString());
     }
@@ -201,10 +201,63 @@ data: {"type":"response.completed","response":{"id":"resp_1","status":"completed
         });
         var events = await Collect(CreateProvider(handler).StreamAsync(Request(tools: [
             new ToolDefinition("filesystem.read", "Read", "{}"),
-            new ToolDefinition("filesystem_read", "Other", "{}"),
+            new ToolDefinition("read_file", "Other", "{}"),
             new ToolDefinition("omni_reserved", "Reserved", "{}")]), TestContext.Current.CancellationToken));
         Assert.Equal("filesystem.read", Assert.Single(Assert.IsType<ResponseCompleted>(events[^1]).Response.Content.OfType<ToolCallBlock>()).ToolName);
         Assert.Contains(events, e => e is BlockCompleted { Block: ToolCallBlock { ToolName: "filesystem.read" } });
+    }
+
+    [Theory]
+    [InlineData(ResponsesProfile.Api, "filesystem.read", "read_file")]
+    [InlineData(ResponsesProfile.Codex, "filesystem.read", "read_file")]
+    [InlineData(ResponsesProfile.Api, "filesystem.search", "grep_files")]
+    [InlineData(ResponsesProfile.Codex, "filesystem.search", "grep_files")]
+    [InlineData(ResponsesProfile.Api, "filesystem.patch", "apply_patch")]
+    [InlineData(ResponsesProfile.Codex, "filesystem.patch", "apply_patch")]
+    [InlineData(ResponsesProfile.Api, "shell.exec", "exec_command")]
+    [InlineData(ResponsesProfile.Codex, "shell.exec", "exec_command")]
+    [InlineData(ResponsesProfile.Api, "process.send_input", "write_stdin")]
+    [InlineData(ResponsesProfile.Codex, "process.send_input", "write_stdin")]
+    [InlineData(ResponsesProfile.Api, "user.ask", "request_user_input")]
+    [InlineData(ResponsesProfile.Codex, "user.ask", "request_user_input")]
+    public async System.Threading.Tasks.Task Readable_aliases_stay_consistent_in_choice_history_and_colliding_stream_results(
+        ResponsesProfile profile, string canonical, string readableAlias)
+    {
+        var prior = new ToolCallBlock(ToolCallId.New(), "prior-call", canonical, "{}");
+        var hidden = new ToolCallBlock(ToolCallId.New(), "hidden-call", "ext.fixture.old", "{}");
+        var request = new ModelRequest(Request().Model,
+            [new ModelMessage(MessageRole.Assistant, [prior, hidden]),
+                new ModelMessage(MessageRole.Tool, [new ToolResultBlock(prior.Id, [new TextBlock("done")], false),
+                    new ToolResultBlock(hidden.Id, [new TextBlock("old result")], false)]),
+                new ModelMessage(MessageRole.User, [new TextBlock("again")])], "Use `" + canonical + "`.",
+            [new ToolDefinition(canonical, "Use " + canonical + ".", "{}"), new ToolDefinition(readableAlias, "Other", "{}")],
+            ToolChoice.Exact(canonical), null, null, null, null);
+        var handler = new QueueHandler(http =>
+        {
+            using var document = JsonDocument.Parse(http.Content!.ReadAsStringAsync().GetAwaiter().GetResult());
+            var root = document.RootElement;
+            var alias = root.GetProperty("tools")[0].GetProperty("name").GetString()!;
+            Assert.StartsWith(readableAlias + "_", alias);
+            Assert.Equal("Use `" + alias + "`.", root.GetProperty("instructions").GetString());
+            Assert.Equal("Use " + alias + ".", root.GetProperty("tools")[0].GetProperty("description").GetString());
+            Assert.Equal(readableAlias, root.GetProperty("tools")[1].GetProperty("name").GetString());
+            Assert.Equal(alias, root.GetProperty("tool_choice").GetProperty("name").GetString());
+            var historical = root.GetProperty("input").EnumerateArray()
+                .Where(item => item.GetProperty("type").GetString() == "function_call").ToArray();
+            Assert.Equal(alias, historical[0].GetProperty("name").GetString());
+            Assert.Equal("ext_fixture_old", historical[1].GetProperty("name").GetString());
+            Assert.Equal(2, root.GetProperty("tools").GetArrayLength());
+            return Sse(ToolStream.Replace("filesystem.read", alias, StringComparison.Ordinal));
+        });
+        var provider = CreateProvider(handler, options: new OpenAIResponsesOptions { Profile = profile },
+            subscription: profile == ResponsesProfile.Codex
+                ? new FakeSubscription(new SubscriptionCredential("oauth-fixture", "acct-fixture")) : null);
+
+        var events = await Collect(provider.StreamAsync(request, TestContext.Current.CancellationToken));
+
+        Assert.Equal(canonical, Assert.Single(Assert.IsType<ResponseCompleted>(events[^1]).Response.Content
+            .OfType<ToolCallBlock>()).ToolName);
+        Assert.Contains(events, item => item is BlockCompleted { Block: ToolCallBlock call } && call.ToolName == canonical);
     }
 
     [Fact]

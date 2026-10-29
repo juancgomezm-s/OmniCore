@@ -356,6 +356,39 @@ public sealed partial class CliEndToEndTests
     }
 
     [Fact]
+    public async Task Filesystem_search_executes_through_the_cli_with_a_readable_provider_alias()
+    {
+        await InIsolatedCli(async (workspace, _, _, provider) =>
+        {
+            const string marker = "OMNICORE_SEARCH_CANONICAL_FIXTURE";
+            File.WriteAllText(Path.Combine(workspace, "search-fixture.cs"), marker);
+            string? followUpRequest = null;
+            provider.RespondWith((index, request) =>
+            {
+                if (index == 0)
+                {
+                    var alias = DisclosedChatToolName(request, "filesystem.search");
+                    Assert.Equal("grep_files", alias);
+                    return ToolCallResponse("search-fixture", alias,
+                        "{\"pattern\":\"" + marker + "\",\"path\":\".\",\"glob\":\"*.cs\"}");
+                }
+                followUpRequest = request;
+                return TextResponse("Found the search fixture.");
+            });
+
+            var result = await Run("ask", "Find the marker in the C# files.");
+
+            Assert.True(result.Code == 0, result.Output);
+            Assert.Equal(2, provider.RequestCount);
+            Assert.Contains(marker, followUpRequest!);
+            var events = ReadCurrentSessionEvents(workspace);
+            var call = Assert.Single(events.OfType<ToolCallRequested>());
+            Assert.Equal("filesystem.search", call.ToolName);
+            Assert.Contains(events.OfType<ToolCallSucceeded>(), success => success.ToolCallId == call.ToolCallId);
+        });
+    }
+
+    [Fact]
     public async Task Explicit_project_skill_read_ceiling_is_applied_by_the_real_cli_runtime()
     {
         await InIsolatedCli(async (workspace, _, data, provider) =>
@@ -3709,10 +3742,7 @@ public sealed partial class CliEndToEndTests
 
     internal static string ResponsesToolCallResponse(string id, string name, string arguments)
     {
-        var wireName = name.Length is > 0 and <= 64 && !name.StartsWith("omni_", StringComparison.Ordinal)
-            && name.All(character => char.IsAsciiLetterOrDigit(character) || character is '_' or '-')
-            ? name
-            : "omni_" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(name))).ToLowerInvariant()[..48];
+        var wireName = ToolNameWireMap.Create([name], 64).ToWire(name);
         var encodedArguments = System.Text.Json.JsonSerializer.Serialize(arguments);
         var encodedName = System.Text.Json.JsonSerializer.Serialize(wireName);
         var encodedId = System.Text.Json.JsonSerializer.Serialize(id);

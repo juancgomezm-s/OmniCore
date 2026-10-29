@@ -71,7 +71,7 @@ Contrato efectivo de `permissions`:
 - La evaluación usa claims de `ToolIntent` antes de autorizar ejecución. Claims filesystem con
   `..`, rutas fuera del workspace o globs no demostrables se rechazan. Un glob de claim sólo se
   admite si coincide exactamente con su techo, o si un techo recursivo literal lo cubre. Para
-  `filesystem.list` y `search.text`, el claim de directorio puede consumir descendientes, por lo
+  `filesystem.list` y `filesystem.search`, el claim de directorio puede consumir descendientes, por lo
   que requiere cobertura explícita de subárbol (`src/**`); `src/*` no habilita lectura recursiva.
   Para claims de archivo concreto, `*` y `?` coinciden dentro de un segmento y `**` cubre cero o
   más segmentos. No se intenta demostrar inclusión entre globs arbitrarios.

@@ -290,7 +290,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
             throw new NotSupportedException("Selected reasoning has no representation in this adapter.");
         var messages = new List<ChatRequestMessage>();
         if (!string.IsNullOrEmpty(request.Instructions))
-            messages.Add(new ChatRequestMessage { Role = "system", Content = JsonSerializer.SerializeToElement(request.Instructions, OpenAiJsonContext.Default.String) });
+            messages.Add(new ChatRequestMessage { Role = "system", Content = JsonSerializer.SerializeToElement(wireNames.ToWireText(request.Instructions), OpenAiJsonContext.Default.String) });
         var serverIds = CollectServerCallIds(request.Messages);
         for (var index = 0; index < request.Messages.Count; index++)
         {
@@ -338,7 +338,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
             Function = new ChatRequestFunction
             {
                 Name = wireNames.ToWire(tool.Name),
-                Description = tool.Description,
+                Description = wireNames.ToWireText(tool.Description),
                 Parameters = ParseJsonElementOrEmpty(tool.InputSchemaJson),
             },
         }).ToList();

@@ -31,7 +31,7 @@
 
 - **Sensibles:** son `Protected` por defecto todas las tools `BuiltIn` con `MaxEffect ≠ None`, `Risk ≥ Medium`, o que acceden a secretos o a la red.
 - **Protegidas:** una tool `Protected` **no puede ser sustituida** por ninguna fuente. Una extensión puede ofrecer una *alternativa* con su propio id, pero el planner solo la usa en lugar de la built-in si el usuario lo configura explícitamente (`toolPreferences: { "filesystem.write": "ext.acme.fs.write" }` en scope User) y aprueba con un `Ask` una única vez. La preferencia queda en el fingerprint.
-- **No protegidas** (por ejemplo, `search.text`): se pueden preferir alternativas con la misma configuración explícita y sin `Ask`.
+- **No protegidas** (por ejemplo, `filesystem.search`): se pueden preferir alternativas con la misma configuración explícita y sin `Ask`.
 - **Entre fuentes no built-in:** si dos extensiones ofrecen capacidades equivalentes, no hay ganador implícito. Ambas quedan disponibles con sus ids, y el planner elige por relevancia al Task, no por "la última registrada".
 
 ### 4. Confianza en tiempo de uso
