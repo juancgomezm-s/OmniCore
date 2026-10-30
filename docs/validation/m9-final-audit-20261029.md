@@ -1,10 +1,12 @@
 # M9: TUI operativa, imagen real y cierre técnico Linux — 2026-10-29
 
-Estado: candidata funcional completa; inspección inicial sobre `e4d6669e` y base
-de integración `2f39002d` (avances npm ajenos al código M9), con las dos
-correcciones del consumidor ya validadas. **El cierre de entrega de M9 espera
-revisión de Dot y CI de la candidata.** No se trasladan requisitos a M10 ni a otra
-fase. Sin workers, cambios visuales, nueva generación, GPU ni instalación.
+Estado vigente: **M9 de OmniCore/Core cerrado y publicado en main**, con aprobación
+técnica final de Dot sobre `c20d7cf285922cc55b105e201866ca19337edfd1` y CI propia
+5/5 aprobada. El consumidor OmniCoder conserva su plan y revisión independientes;
+su entrega no bloquea este cierre Core. Las solicitudes de aprobación pendientes
+y los rojos inferiores son historia, sustituidos por el cierre al final del acta.
+No se trasladan requisitos Core a M10. Sin workers, cambios visuales, nueva
+generación, GPU ni instalación.
 
 ## Lo que ya puede hacer la TUI
 
@@ -252,3 +254,30 @@ limpio de `86b3c31d` en el worktree existente. Recibos:
 dos casos que fallaron y la recuperación de plan al control previo de Windows;
 el barrido completo permanece íntegro. Ese ajuste posterior sólo cambia CI y
 documentación; no requiere recompilar ni repetir estos 19 casos localmente.
+
+## Cierre Core aprobado y publicado
+
+Dot aprobó técnicamente el cierre M9/Core de la candidata exacta
+`c20d7cf285922cc55b105e201866ca19337edfd1` ([PR11](https://github.com/juancgomezm-s/OmniCore/pull/11)),
+independientemente del trabajo de Coder. La autorización de integración y
+publicación procede de Juan; el dictamen técnico no se presenta como autorización
+Git ni como una aprobación formal de revisión en GitHub.
+
+La [CI 40992633911](https://github.com/juancgomezm-s/OmniCore/actions/runs/40992633911)
+terminó **Success, 5/5 trabajos**: tests Windows/Ubuntu, instalación npm en ambos
+sistemas y paquete Linux. Windows: control previo 15/15 y suite completa con
+5.949 aprobados, 28 omitidos y cero fallos. Ubuntu: 5.912 aprobados, 65 omitidos y
+cero fallos. Las omisiones se conservan como tales y las repeticiones no se suman
+como casos únicos.
+
+El dictamen verificó además el artefacto `linux-package-evidence`, digest
+`sha256:9fe1873b7226d9e4cc3dd583c55c2b8b507d8a29d559e045139b348f9c804b82`.
+Es el digest del artefacto de CI, no el hash de cada ejecutable. Los recibos
+locales 19/19 y del paquete posterior al ajuste de lifecycle se conservan arriba.
+
+Main remoto se integró por fast-forward de `d0dd08f1` al mismo `c20d7cf2`
+validado, sin reescribir historia ni incluir commits/WIP M10 del checkout
+principal. El registro posterior de cierre sólo modifica documentación.
+OmniCoder `05d540a3` conserva su CI 3/3 y PR2 para su entrega independiente;
+este acta no declara aprobado ni publicado ese repositorio. M2/M3 locales siguen
+pospuestos por Juan y M8 Windows conserva su aceptación manual.

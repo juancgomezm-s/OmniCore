@@ -128,14 +128,20 @@ incluyen procesos persistentes, lease, reconexión, stream, cuatro idiomas,
 importación, modelo y grants. No se afirma soporte PTY o Weak persistente Linux
 que ADR-0038 no acredita.
 
-**Candidata funcional M9 completa; falta cerrar su entrega:** Juan autorizó
-corregir los dos pendientes de OmniCoder sin cambiar su GUI. Se construyó la
-recuperación cercada de seguridad y se tradujo el error de importación conservando
-su código. App 205/205; seguridad/importación/control activo E2E 3/3; imagen real
-reabierta 2/2, sin nueva generación. El main remoto `e4d6669e` tiene CI 5/5 verde;
-el diff local de ambos repositorios requiere dictamen de Dot y CI propia antes de publicar.
-No se difiere ninguno de estos pendientes a otra fase. [Evidencia, reproducción
-y matriz efectiva](../validation/m9-final-audit-20261029.md).
+**M9 de OmniCore/Core cerrado y publicado:** Dot aprobó técnicamente la candidata
+`c20d7cf2`; su CI propia 40992633911 aprobó los cinco trabajos, incluidos Windows,
+Ubuntu, npm en ambos sistemas y paquete Linux/AOT. Main remoto recibió ese mismo
+commit mediante fast-forward, con la autorización de publicación de Juan. Las
+fixtures nativas completas pasaron 19/19 y los casos de admisión/recuperación
+también se comprueban antes del barrido de Windows. No se difieren requisitos
+Core a otra fase. [Acta de cierre y evidencia](../validation/m9-final-audit-20261029.md#cierre-core-aprobado-y-publicado).
+
+OmniCoder conserva su plan y revisión independientes, sin bloquear el cierre Core,
+según el dictamen de Dot. Sus dos correcciones no visuales están construidas:
+recuperación cercada de seguridad y error de importación traducido sin cambiar
+su código; app 205/205, E2E seguridad/importación/control activo 3/3 e imagen real
+reabierta 2/2 sin generación nueva. La candidata `05d540a3` tiene CI3/3 y PR2;
+no se declara aquí aprobada ni publicada esa entrega.
 
 Los cortes inferiores conservan su fecha y trazabilidad; no sustituyen este estado
 vigente ni reabren las aceptaciones que ya pasaron. M2/M3 locales pospuestos por
