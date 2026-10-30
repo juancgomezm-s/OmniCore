@@ -243,3 +243,12 @@ requests del proveedor fixture. No depende de que CI alcance una ventana tempora
 Los cambios de M10 aparecidos en el checkout principal se conservan aparte.
 La validación nueva usa el worktree M9 existente y el commit exacto de candidata;
 no crea clones ni incluye cambios locales ajenos en la publicación de M9.
+
+Las dos fixtures completas aprobaron localmente **19/19 casos** (14 métodos,
+incluidas variantes de teoría), sin errores ni omisiones, con build Release
+limpio de `86b3c31d` en el worktree existente. Recibos:
+`native-readiness-final-build.log`, `native-readiness-all.xml` y
+`native-readiness-methods.txt` dentro de la evidencia persistente. Se agregan los
+dos casos que fallaron y la recuperación de plan al control previo de Windows;
+el barrido completo permanece íntegro. Ese ajuste posterior sólo cambia CI y
+documentación; no requiere recompilar ni repetir estos 19 casos localmente.
