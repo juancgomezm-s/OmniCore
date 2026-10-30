@@ -191,3 +191,27 @@ el apphost Linux de tests: un caso aprobado en cada modo, cero errores/omisiones
 sin reconstrucción entre ambos. Recibos `focused-tests.xml` y
 `focused-native-apphost.xml` en la evidencia Linux persistente. Ambos compilaron
 el proyecto real dentro de Strong sin modificar sus grants ni simular resultados.
+
+## Resultado integral y admisión de dos permisos sucesivos
+
+La [CI de `804b31c1`](https://github.com/juancgomezm-s/OmniCore/actions/runs/40974209592)
+aprobó Ubuntu, paquete Linux/AOT e instalación npm en ambos sistemas. Windows
+aprobó los 12 casos previos; en la suite completa registró 5.976 casos: 5.947
+aprobados, 28 omitidos y un fallo de
+`Two_successive_permission_choices_resume_the_same_run_and_turn_once_each`.
+La segunda respuesta esperaba `Accepted` inmediatamente después de observar
+`InteractionRequested`, pero la primera continuación aún retenía su slot y el
+Host devolvió `busy / Deferred / conversation_turn_busy`, sin admisión.
+
+La fixture ahora contempla esa transición del protocolo existente, con un límite
+de 20 segundos: sólo repite el mismo envelope/ID/HMAC ante ese resultado exacto,
+comprobando que no hay receipt ni eventos causados por el segundo comando.
+`Accepted`, `Unknown`, reservas y otros errores no entran en ese reintento.
+Conserva la exigencia final de `Accepted`, replay del mismo ACK, dos permisos
+Once, dos escrituras únicas en el Turn original y exactamente cuatro requests
+al proveedor fixture. No se modifica el sandbox, la seguridad ni la admisión productiva.
+
+La candidata incorpora además main `d0dd08f1`, cuya
+[CI propia](https://github.com/juancgomezm-s/OmniCore/actions/runs/40978522527)
+aprobó los cinco jobs. Su corrección independiente de marcadores AppContainer se
+conserva; ese verde acredita la base, no sustituye la CI de la combinación M9.

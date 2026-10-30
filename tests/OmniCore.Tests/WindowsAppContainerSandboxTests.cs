@@ -925,9 +925,12 @@ public sealed class WindowsAppContainerSandboxTests
                 .StartAsync(launch, TestContext.Current.CancellationToken);
 
             Assert.True(SpinWait.SpinUntil(() => File.Exists(parentPidFile), TimeSpan.FromSeconds(10)), "The child should lock the file and the root should publish its pid before exiting.");
-            var parentPid = int.Parse(await File.ReadAllTextAsync(parentPidFile, TestContext.Current.CancellationToken));
+            var parentPidText = await ReadExclusiveFileAsync(parentPidFile, TimeSpan.FromSeconds(10),
+                TestContext.Current.CancellationToken);
+            var parentPid = int.Parse(parentPidText, System.Globalization.CultureInfo.InvariantCulture);
             Assert.True(WaitUntilExited(parentPid), "The root process should exit while its child still holds the file.");
-            Assert.Equal("locked", await File.ReadAllTextAsync(readyFile, TestContext.Current.CancellationToken));
+            Assert.Equal("locked", await ReadExclusiveFileAsync(readyFile, TimeSpan.FromSeconds(10),
+                TestContext.Current.CancellationToken));
             await process.TerminateAsync(TestContext.Current.CancellationToken);
             await process.DisposeAsync();
             // TerminateAsync completion means every process in the Job Object has exited.
@@ -1026,6 +1029,57 @@ public sealed class WindowsAppContainerSandboxTests
             }, new SandboxNetworkPolicy(SandboxNetworkMode.Deny, Array.Empty<string>()), TimeSpan.FromSeconds(10));
         await using var process = await launcher.StartAsync(launch, TestContext.Current.CancellationToken);
         return await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Exclusive_ready_marker_read_waits_for_the_writer_to_finish_its_complete_content()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("This regression verifies Windows sharing while an AppContainer fixture publishes its marker.");
+            return;
+        }
+        var root = Path.Combine(Path.GetTempPath(), "OmniCoreReadyMarkerTest-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "parent.pid");
+        try
+        {
+            Task<string> read;
+            await using (var writer = new FileStream(path, FileMode.CreateNew, FileAccess.Write,
+                FileShare.Read, 256, FileOptions.Asynchronous))
+            {
+                await writer.WriteAsync(Encoding.UTF8.GetBytes("12"), TestContext.Current.CancellationToken);
+                await writer.FlushAsync(TestContext.Current.CancellationToken);
+                read = ReadExclusiveFileAsync(path, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+                Assert.False(read.IsCompleted, "An existing file with an open writer is not a complete ready marker.");
+                await writer.WriteAsync(Encoding.UTF8.GetBytes("34"), TestContext.Current.CancellationToken);
+            }
+            Assert.Equal("1234", await read);
+        }
+        finally { TryDelete(root); }
+    }
+
+    private static async Task<string> ReadExclusiveFileAsync(string path, TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None,
+                    bufferSize: 256, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                using var reader = new StreamReader(stream, Encoding.UTF8);
+                return await reader.ReadToEndAsync(cancellationToken);
+            }
+            catch (IOException error)
+            {
+                if (DateTimeOffset.UtcNow >= deadline)
+                    throw new TimeoutException($"The file '{Path.GetFileName(path)}' did not become exclusively readable before the test deadline.", error);
+                await Task.Delay(TimeSpan.FromMilliseconds(25), cancellationToken);
+            }
+        }
     }
 
     private static string HelperExecutable() => Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows()

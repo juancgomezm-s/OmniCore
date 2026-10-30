@@ -430,7 +430,23 @@ public sealed partial class StdioTransportTests
                 first.PolicyRevision, "allow_once", Ids.NewV7());
             var secondProof = TrustedActionEnvelope(secondCommand, fixture.Key, fixture.Nonce!, fixture.Workspace,
                 fixture.CurrentSessionId, first.RunId);
-            var secondAck = Ack(RawExchange(fixture.Host!, secondProof));
+            // InteractionRequested is durable before the preceding runner has released its
+            // execution slot. Only an unadmitted busy reply may be retried with the SAME id.
+            // An accepted/unknown/reserved command must never be sent again as a new action.
+            CommandAck secondAck;
+            var admissionDeadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
+            while (true)
+            {
+                secondAck = Ack(RawExchange(fixture.Host!, secondProof));
+                if (secondAck is not { Status: "busy", Error: "conversation_turn_busy",
+                    Outcome.Kind: RuntimeCommandOutcomeKind.Deferred }) break;
+                Assert.Null(fixture.ReadReceipt(secondCommand.MessageId));
+                Assert.DoesNotContain(fixture.ReadEvents(), item => item.Envelope.Causation is CommandCausation cause
+                    && cause.CommandId.ToString() == secondCommand.MessageId);
+                if (DateTimeOffset.UtcNow >= admissionDeadline)
+                    throw new TimeoutException("The prior native choice continuation did not release admission for the second permission.");
+                await Task.Delay(25, TestContext.Current.CancellationToken);
+            }
             Assert.Equal(RuntimeCommandOutcomeKind.Accepted, secondAck.Outcome?.Kind);
             var duplicateAck = Ack(RawExchange(fixture.Host!, secondProof));
             Assert.Equal(secondAck.FirstSeq, duplicateAck.FirstSeq);
