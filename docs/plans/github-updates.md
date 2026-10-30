@@ -3,11 +3,13 @@
 Solicitud del usuario del 2026-10-12, incorporada al plan el 2026-10-13.
 **Estado 2026-10-30:** consulta, aplicación y rollback Windows x64 implementados
 para instalación npm global, con verificación de publicador mediante GitHub CLI
-fijada por SHA256 y attestations de paquete/manifest. Empaquetado real, aplicación,
-arranque y rollback probados en un prefijo npm temporal. La preview firmada rc.1
-ya se publicó y pasó check/apply/rollback desde un bootstrap corregido. La siguiente
-preview debe incluir la corrección de redirects CDN y el cierre Core; requiere su
-propia CI/tag y aceptación del paquete antes de actualizar la instalación personal.
+fijada por SHA256 y attestations de paquete/manifest. La rc.2 de `2c9fd13a`
+incorpora la corrección de redirects CDN y el cierre Core: CI candidata y Main
+5/5, paquete firmado, roundtrip público apply/rollback, full real 20/20 e
+instalación personal comprobada. [Acta de entrega](../validation/m10-installed-preview-20261030.md).
+La ampliación de comprobación/descarga al iniciar con decisión inmediata o diferida
+está implementada y probada en una rama local posterior, sin publicación ni nueva
+instalación personal. [Plan y límites](m10-startup-updates-20261030.md).
 Complementa
 [arquitectura §24](../architecture/arquitectura.md) y el
 [plan M8–M10](m8-m10-user-localization.md). La instalación npm desde Git ya

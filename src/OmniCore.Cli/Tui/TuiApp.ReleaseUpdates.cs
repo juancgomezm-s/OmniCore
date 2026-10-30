@@ -23,9 +23,11 @@ public sealed partial class TuiApp
         frame.Id = "release-updates"; frame.Width = Dim.Percent(94); frame.Height = Dim.Fill(2);
         var channel = new ListView { Id = "release-update-channel", X = 2, Y = 2, Width = Dim.Fill(4), Height = 3, ShowMarks = false };
         channel.SetSource(new ObservableCollection<string>([UpdateText("stable"), UpdateText("preview")]));
-        channel.SelectedItem = 0;
+        var startup = StartupUpdates();
+        var preferences = ReadStartupPreferences(startup);
+        channel.SelectedItem = preferences.Channel == ReleaseUpdateChannel.Preview ? 1 : 0;
         var status = new Label { Id = "release-update-status", X = 2, Y = 6, Width = Dim.Fill(4), Height = 2,
-            Text = UpdateText("ready") };
+            Text = UpdateText(startup is not null && preferences.AutomaticDownload ? "startup.background" : "ready") };
 #pragma warning disable CS0618 // Pinned Terminal.Gui text inspection, matching other read-only detail panes.
         var details = new TextView { Id = "release-update-details", X = 2, Y = 8, Width = Dim.Fill(4), Height = Dim.Fill(5),
             ReadOnly = true, WordWrap = true, ViewportSettings = ViewportSettingsFlags.HasVerticalScrollBar,
@@ -33,32 +35,75 @@ public sealed partial class TuiApp
 #pragma warning restore CS0618
         var check = new Button { Id = "release-update-check", X = 2, Y = Pos.AnchorEnd(2), Text = UpdateText("check") };
         var close = new Button { Id = "release-update-close", X = Pos.AnchorEnd(16), Y = Pos.AnchorEnd(2), Text = UpdateText("close") };
-        int? selectedChannel = 0;
+        var auto = new CheckBox { Id = "release-update-automatic", X = 2, Y = 5, Width = Dim.Fill(4),
+            Text = UpdateText("startup.automatic"), Visible = startup is not null,
+            Value = preferences.AutomaticDownload ? CheckState.Checked : CheckState.UnChecked };
+        var install = new Button { Id = "release-update-install-now", X = 2, Y = Pos.AnchorEnd(4),
+            Text = UpdateText("startup.install_now"), Visible = false };
+        var later = new Button { Id = "release-update-next-launch", X = Pos.Right(install) + 2, Y = Pos.AnchorEnd(4),
+            Text = UpdateText("startup.next_launch"), Visible = false };
+        details.Height = Dim.Fill(7);
+        string? readyRevision = null;
+        string? renderedReadyState = null;
+        void RefreshReady()
+        {
+            var ready = ReadStartupSnapshot(startup);
+            var selected = channel.SelectedItem == 1 ? ReleaseUpdateChannel.Preview : ReleaseUpdateChannel.Stable;
+            var visible = ready is { Phase: "Ready", Release: not null } && ready.Channel == selected;
+            install.Visible = later.Visible = visible;
+            if (!visible) { readyRevision = null; renderedReadyState = null; return; }
+            readyRevision = ready!.Revision;
+            var renderKey = ready.Revision + ":" + ready.Decision;
+            if (renderedReadyState == renderKey) return;
+            renderedReadyState = renderKey;
+            status.Text = UpdateText(ready.Decision == "NextLaunch" ? "startup.deferred" : "startup.verified")
+                + " " + SafeDisplay(ready.Release!.AvailableVersion ?? "");
+            details.Text = UpdateText("startup.explanation");
+        }
+        _refreshStartupUpdateView = () => { if (ReferenceEquals(_overlay, frame)) RefreshReady(); };
+        void SaveSettings()
+        {
+            if (startup is null) return;
+            try { startup.SavePreferences(new(Channel: channel.SelectedItem == 1 ? ReleaseUpdateChannel.Preview
+                : ReleaseUpdateChannel.Stable, AutomaticDownload: auto.Value == CheckState.Checked)); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException
+                or InvalidOperationException or TimeoutException) { status.Text = UpdateText("startup.settings_failed"); }
+        }
+        auto.ValueChanged += (_, _) => SaveSettings();
+        install.Accepted += (_, args) => { args.Handled = true;
+            if (readyRevision is not null) ChooseStartupUpdate(readyRevision, restart: true, status); };
+        later.Accepted += (_, args) => { args.Handled = true;
+            if (readyRevision is not null) ChooseStartupUpdate(readyRevision, restart: false, status); RefreshReady(); };
+        int? selectedChannel = channel.SelectedItem;
         channel.ValueChanged += (_, _) =>
         {
             if (selectedChannel == channel.SelectedItem) return;
             selectedChannel = channel.SelectedItem;
             CancelReleaseUpdateCheck();
-            status.Text = UpdateText("ready"); details.Text = UpdateText("metadata_pending"); check.Enabled = true;
+            SaveSettings();
+            status.Text = UpdateText(startup is not null && auto.Value == CheckState.Checked ? "startup.background" : "ready"); details.Text = UpdateText("metadata_pending"); check.Enabled = true; RefreshReady();
         };
         channel.Accepted += (_, args) => { args.Handled = true; };
         channel.KeyDown += (_, key) => { if (key.KeyCode.ToString() == "Enter") key.Handled = true; };
         check.Accepted += (_, args) =>
         {
             args.Handled = true;
+            if (startup is not null && auto.Value == CheckState.Checked)
+            { StartStartupPreparation(startup, status, check); return; }
             StartReleaseUpdateCheck(channel.SelectedItem == 1 ? ReleaseUpdateChannel.Preview : ReleaseUpdateChannel.Stable,
                 frame, status, details, check);
         };
         close.Accepted += (_, args) => { args.Handled = true; CloseReleaseUpdates(); };
         frame.Add(new Label { X = 2, Y = 1, Width = Dim.Fill(4), Height = 1, Text = UpdateText("channel") }, channel,
-            status, details, check, close);
-        ApplyTheme(frame); _overlay = frame; _window.Add(frame); channel.SetFocus();
+            auto, status, details, install, later, check, close);
+        ApplyTheme(frame); _overlay = frame; _window.Add(frame); channel.SetFocus(); RefreshReady();
     }
 
     private void CloseReleaseUpdates()
     {
         var returnToPreferences = _releaseUpdateReturnToPreferences;
         _releaseUpdateReturnToPreferences = false;
+        _refreshStartupUpdateView = null;
         CloseOverlay();
         if (returnToPreferences && _activeInteraction is null) ShowPreferences("general", categoryPage: true);
     }

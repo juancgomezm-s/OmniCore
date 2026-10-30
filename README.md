@@ -331,6 +331,14 @@ del paquete: permite restaurar el respaldo verificado sin red si `omni` deja de
 arrancar. Guarda ese comando; requiere confirmación explícita y rechaza procesos activos. Alcance y evidencia
 en [M10](docs/plans/github-updates.md).
 
+**Ampliación local del 30-10-2026, todavía fuera de rc.2:** el arranque npm de una
+release Windows x64 puede comprobar y descargar en segundo plano. En
+**Ajustes → General → Actualizaciones** se elige canal y descarga automática.
+Cuando aparece **Actualización lista**, puedes **Instalar y reiniciar ahora**
+o aplicar **En el próximo inicio**. El reinicio conserva la conversación y
+se aplaza si hay trabajo o borradores pendientes. La terminal actual y el canal
+estable se conservan. [Alcance y pruebas](docs/plans/m10-startup-updates-20261030.md).
+
 M10 incorpora la paleta global (**Ctrl+P**), modo (**F1**, `/modo`), permisos
 (**Ctrl+F1**, `/permiso`) y `/undo` con revisión previa y confirmación humana.
 `omni model qualify <modelo> --suite full` ejecuta llamadas reales y fixtures de

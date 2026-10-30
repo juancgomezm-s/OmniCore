@@ -20,7 +20,18 @@ if (args.Length >= 2 && args[0] == "host" && args[1] == "--stdio" && trustedValu
     }
     catch (FormatException) { }
 }
-try { return await CliApp.RunAsync(args, trustedBootstrap); }
+try
+{
+    if (StartupUpdateCommands.Matches(args)) return await StartupUpdateCommands.RunAsync(args);
+    using var instance = ReleaseUpdateInstances.EnterInstalledRuntime(args, out var updateBarrier);
+    if (updateBarrier is not null)
+    {
+        Console.Error.WriteLine(new OmniCore.Client.Localization(Environment.GetEnvironmentVariable("OMNI_LOCALE") ?? "es")
+            .Resolve("updates.startup.launch_blocked"));
+        return ReleaseUpdateInstances.LaunchBlockedExitCode;
+    }
+    return await CliApp.RunAsync(args, trustedBootstrap);
+}
 finally
 {
     if (trustedBootstrap is not null)

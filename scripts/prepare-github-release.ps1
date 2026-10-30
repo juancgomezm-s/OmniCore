@@ -64,6 +64,7 @@ $requiredFiles = @(
     'bin/omni.js',
     'bin/update-helper.js',
     'tools/npm/launcher.js',
+    'tools/npm/startup-updates.js',
     'tools/npm/windows-terminal.js',
     'README.md',
     'LICENSE',
@@ -122,7 +123,7 @@ $package = [ordered]@{
     license = $sourcePackage.license
     engines = $sourcePackage.engines
     bin = $sourcePackage.bin
-    files = @('bin/', 'dist/npm/', 'tools/npm/launcher.js', 'tools/npm/windows-terminal.js', 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md')
+    files = @('bin/', 'dist/npm/', 'tools/npm/launcher.js', 'tools/npm/startup-updates.js', 'tools/npm/windows-terminal.js', 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.md')
 }
 $packageJson = Join-Path $staging 'package.json'
 $package | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $packageJson -Encoding utf8

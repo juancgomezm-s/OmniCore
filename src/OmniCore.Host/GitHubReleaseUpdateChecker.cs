@@ -390,7 +390,7 @@ public sealed class GitHubReleaseUpdateChecker : IDisposable
     private static bool DigestEquals(string digest, string sha256) => digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)
         && string.Equals(digest[7..], sha256, StringComparison.OrdinalIgnoreCase);
 
-    private static (ReleaseCompatibility Status, string Detail) CheckCompatibility(ReleaseRequirements requirements,
+    internal static (ReleaseCompatibility Status, string Detail) CheckCompatibility(ReleaseRequirements requirements,
         ReleaseUpdateEnvironment environment)
     {
         var known = false;

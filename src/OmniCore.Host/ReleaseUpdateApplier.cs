@@ -15,10 +15,11 @@ public sealed class ReleaseUpdateApplier
     private readonly IReleaseUpdateHelperLauncher _launcher;
     private readonly TimeSpan _lockTimeout;
     private readonly IReleasePublisherVerifier _publisherVerifier;
+    private readonly Func<bool>? _activationPrecondition;
 
     public ReleaseUpdateApplier(ReleaseUpdateStateStore store, IReleaseInstallationInspector inspector,
         IReleaseUpdateDownloader downloader, IReleaseUpdateHelperLauncher launcher, TimeSpan? lockTimeout = null,
-        IReleasePublisherVerifier? publisherVerifier = null)
+        IReleasePublisherVerifier? publisherVerifier = null, Func<bool>? activationPrecondition = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _inspector = inspector ?? throw new ArgumentNullException(nameof(inspector));
@@ -26,6 +27,7 @@ public sealed class ReleaseUpdateApplier
         _launcher = launcher ?? throw new ArgumentNullException(nameof(launcher));
         _lockTimeout = lockTimeout ?? TimeSpan.FromSeconds(5);
         _publisherVerifier = publisherVerifier ?? new GitHubReleasePublisherVerifier();
+        _activationPrecondition = activationPrecondition;
     }
 
     public async Task<ReleaseUpdateApplyResult> ApplyAsync(ReleaseUpdateCheckResult check, bool confirmed,
@@ -52,6 +54,13 @@ public sealed class ReleaseUpdateApplier
         catch (TimeoutException) { return new(false, "update_operation_in_progress"); }
         using (lease)
         {
+            var instances = new ReleaseUpdateInstances(_store, npmPrefix);
+            using var instanceGate = instances.TryAcquireGate();
+            if (instanceGate is null) return new(false, "update_instance_gate_unavailable");
+            if (instances.ReadBarrier() is { } barrier) return new(false, barrier);
+            if (instances.HasOtherInstances(Environment.ProcessId))
+                return new(false, "update_other_instances_active");
+            if (_activationPrecondition?.Invoke() == false) return new(false, "update_decision_stale");
             if (!_store.TryRead(out var existing, out var diagnostic))
                 return new(false, diagnostic ?? "update_state_invalid");
             if (existing is { Status: ReleaseUpdateOperationStatus.Pending or ReleaseUpdateOperationStatus.Running })
@@ -72,6 +81,7 @@ public sealed class ReleaseUpdateApplier
             var publisher = await _publisherVerifier.VerifyAsync(download.Path, check, cancellationToken).ConfigureAwait(false);
             if (!publisher.Verified) return new(false, publisher.DiagnosticCode);
 
+            if (_activationPrecondition?.Invoke() == false) return new(false, "update_decision_stale");
             var operationId = Guid.NewGuid().ToString("N");
             var backup = _store.BackupDirectory(installation.InstalledVersion ?? "unknown", operationId);
             string backupHash;
@@ -92,6 +102,13 @@ public sealed class ReleaseUpdateApplier
                 operationId, asset.Sha256.ToLowerInvariant(), asset.Size, npmPrefix, backupHash,
                 RecoveryCommand: RecoveryCommand(operationId, npm, node, npmPrefix, packageDirectory));
             _store.Write(pending);
+            try { instances.PublishBarrier(); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException)
+            {
+                _store.Write(pending with { Status = ReleaseUpdateOperationStatus.Failed,
+                    Detail = "update_instance_gate_unavailable" });
+                return new(false, "update_instance_gate_unavailable");
+            }
             var helperPid = Launch(helper, "apply", download.Path, null, npm, node, pending, packageDirectory);
             if (helperPid <= 0)
             {
@@ -122,6 +139,12 @@ public sealed class ReleaseUpdateApplier
         catch (TimeoutException) { return new(false, "update_operation_in_progress"); }
         using (lease)
         {
+            var instances = new ReleaseUpdateInstances(_store, npmPrefix);
+            using var instanceGate = instances.TryAcquireGate();
+            if (instanceGate is null) return new(false, "update_instance_gate_unavailable");
+            if (instances.ReadBarrier() is { } barrier) return new(false, barrier);
+            if (instances.HasOtherInstances(Environment.ProcessId))
+                return new(false, "update_other_instances_active");
             if (!_store.TryRead(out var state, out var diagnostic))
                 return new(false, diagnostic ?? "update_state_invalid");
             if (state is { Status: ReleaseUpdateOperationStatus.Pending or ReleaseUpdateOperationStatus.Running })
@@ -160,6 +183,13 @@ public sealed class ReleaseUpdateApplier
                 RecoveryCommand = RecoveryCommand(operationId, npm, node, npmPrefix, packageDirectory),
             };
             _store.Write(pending);
+            try { instances.PublishBarrier(); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException)
+            {
+                _store.Write(pending with { Status = ReleaseUpdateOperationStatus.Failed,
+                    Detail = "update_instance_gate_unavailable" });
+                return new(false, "update_instance_gate_unavailable");
+            }
             var helperPid = Launch(helper, "rollback", null, backup, npm, node, pending, installation.PackageDirectory!);
             if (helperPid <= 0)
             {

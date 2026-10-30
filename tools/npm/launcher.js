@@ -52,6 +52,16 @@ function run(args = process.argv.slice(2), options = {}) {
     }
   }
 
+  const startup = require('./startup-updates');
+  if (parentProcess.env && (parentProcess === process || options.startupUpdates === true || options.startupOptions)
+      && startup.eligible(args) && options.startupUpdates !== false) {
+    const completion = startup.runManaged(dllPath, args, {
+      spawn: spawnProcess, process: parentProcess, stderr, ...options.startupOptions
+    });
+    completion.then(code => { parentProcess.exitCode = code; }, () => { parentProcess.exitCode = 1; });
+    return completion;
+  }
+
   const child = spawnProcess('dotnet', [dllPath, ...args], {
     stdio: 'inherit',
     windowsHide: true

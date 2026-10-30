@@ -230,6 +230,7 @@ public sealed partial class TuiApp
         if (application.Driver?.ColorCapabilities?.Capability == ColorCapabilityLevel.Colors256)
             application.Driver.Force16Colors = true;
         var window = BuildMainWindow();
+        RestoreUpdateConversation();
         application.AddTimeout(TimeSpan.FromMilliseconds(500), PollOnce);
         application.AddTimeout(TimeSpan.FromMilliseconds(100), AnimateActivity);
         application.Keyboard.KeyDown += OnApplicationKeyDown;
@@ -262,6 +263,7 @@ public sealed partial class TuiApp
             application.LayoutAndDrawComplete -= AfterDraw;
             CancelExtensionViewRefresh();
             CancelReleaseUpdateCheck();
+            CancelStartupPreparation();
             try { _loginCancellation?.Cancel(); } catch (ObjectDisposedException) { }
             try { _catalogCancellation?.Cancel(); } catch (ObjectDisposedException) { }
             ClearProviderApiKey();
@@ -306,7 +308,7 @@ public sealed partial class TuiApp
             DisposeRetiredOverlays();
             if (_ownsPolicies) _policies.Dispose();
         }
-        return 0;
+        return _updateRestartRequested ? ReleaseUpdateInstances.RestartRequestedExitCode : 0;
     }
 
     /// <summary>Poll de eventos del cliente; devuelve true para repetir como AddTimeout.</summary>
@@ -319,6 +321,7 @@ public sealed partial class TuiApp
         _refreshExtensionView?.Invoke(false);
         PollExtensionNotifications();
         PollCompanionHub();
+        PollStartupUpdates();
         return true;
     }
 
@@ -541,6 +544,7 @@ public sealed partial class TuiApp
         composerFrame.Add(_composer);
         _status = new Label { X = 0, Y = Pos.AnchorEnd(1), Width = Dim.Fill(), Height = 1, Text = StatusText() };
         _window.Add(_header, conversationFrame, composerFrame, _status);
+        BuildStartupUpdateNotice();
         _window.Add(_completion);
         _help = new Label { Id = "omni-help", X = 2, Y = Pos.AnchorEnd(2), Width = Dim.Fill(2), Height = 1,
             Text = HelpText() };
@@ -3238,7 +3242,8 @@ public sealed partial class TuiApp
             _companionPanel = null; _companionBody = null; _companionInput = null; _companionList = null; _companionInfo = null; }
         _petDetail = null;
         if (_overlay is null || _window is null) return;
-        if (_overlay.Id == "release-updates") { CancelReleaseUpdateCheck(); _releaseUpdateReturnToPreferences = false; }
+        if (_overlay.Id == "release-updates")
+        { CancelReleaseUpdateCheck(); _releaseUpdateReturnToPreferences = false; _refreshStartupUpdateView = null; }
         InvalidateAutocompleteCache();
         CancelExtensionViewRefresh();
         if (_themeBeforePreview is { } originalTheme) { _theme = originalTheme; _themeBeforePreview = null; }

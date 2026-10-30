@@ -53,7 +53,7 @@ public sealed class ReleaseUpdateDownloader : IDisposable, IReleaseUpdateDownloa
         }
 
         var finalPath = Path.Combine(destinationDirectory, asset.Name);
-        var temporaryPath = finalPath + ".part";
+        var temporaryPath = finalPath + "." + Guid.NewGuid().ToString("N") + ".part";
         try
         {
             var current = new Uri(ApiRoot, $"repos/{GitHubReleaseUpdateChecker.Repository}/releases/assets/{asset.Id}");
