@@ -19,6 +19,7 @@ public static class ClientActionIds
     public const string CommandsInspect = "commands.inspect";
     public const string SkillsInspect = "skills.inspect";
     public const string MemorySession = "memory.session";
+    public const string WorkspaceUndo = "workspace.undo";
     public const string PermissionsList = "permissions.list";
     public const string RunInterrupt = "run.interrupt";
     public const string RunCancel = "run.cancel";
@@ -78,6 +79,7 @@ public sealed class ClientCommandRegistry
             new("commands", ClientActionIds.CommandsInspect, "client.command.commands"),
             new("skills", ClientActionIds.SkillsInspect, "client.command.skills"),
             new("memory", ClientActionIds.MemorySession, "client.command.memory"),
+            new("undo", ClientActionIds.WorkspaceUndo, "undo.title"),
             new("permissions", ClientActionIds.PermissionsList, "client.command.permissions"),
             new("interrupt", ClientActionIds.RunInterrupt, "client.command.interrupt"),
             new("cancel", ClientActionIds.RunCancel, "client.command.cancel"),
@@ -140,6 +142,7 @@ public sealed partial class ClientActionHandler : IClientActionHandler
             ClientActionIds.CommandsInspect => Query(context, "commands"),
             ClientActionIds.SkillsInspect => Skills(invocation, context),
             ClientActionIds.MemorySession => Memory(invocation, context),
+            ClientActionIds.WorkspaceUndo => Undo(invocation, context, cancellationToken),
             ClientActionIds.ViewTasks => Tasks(context, cancellationToken),
             ClientActionIds.ViewEvents => Events(context),
             ClientActionIds.PermissionsList => new ClientActionResult(context.Permissions?.Invoke()

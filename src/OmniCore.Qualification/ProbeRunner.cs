@@ -94,6 +94,8 @@ public sealed class ProbeRunner
     public async Task<ProbeResult> RunProbeAsync(ProbeRequest request, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (request.Probe.Kind == ProbeKind.CodeFixture && request.FixtureValidator is null)
+            throw new InvalidOperationException("Code qualification requires a real fixture validator.");
         request.Selection.Route?.ReasoningCapability.ValidateRequest(request.Selection.Reasoning);
         // Admission exceptions are not provider failures and must stop the suite.
         if (_observer is not null)
@@ -144,6 +146,34 @@ public sealed class ProbeRunner
         sw.Stop();
 
         var result = ScoreResult(request, response, failureMessage, sw.Elapsed);
+        if (result.Status == ProbeStatus.Passed && request.Probe.Kind == ProbeKind.CodeFixture)
+        {
+            sw.Start();
+            try
+            {
+                var validation = await request.FixtureValidator!.ValidateAsync(request.Probe, result.Output!, timeoutCts.Token);
+                if (!validation.Passed)
+                    result = new(result.Id, ProbeStatus.Failed, 0, result.Output, validation.Error,
+                        sw.Elapsed, result.CostUsd, result.Usage, result.ReportedUsageFields);
+            }
+            catch (OperationCanceledException exception)
+            {
+                interruption = ExceptionDispatchInfo.Capture(cancellationToken.IsCancellationRequested ? exception
+                    : new ProbeTimeoutException(request.Probe.Id.ToString()));
+                termination = cancellationToken.IsCancellationRequested ? ProbeExecutionTermination.Cancelled : ProbeExecutionTermination.TimedOut;
+                result = new(result.Id, ProbeStatus.Error, 0, result.Output, "code fixture interrupted",
+                    sw.Elapsed, result.CostUsd, result.Usage, result.ReportedUsageFields);
+            }
+            catch (Exception exception) when (exception is IOException or InvalidOperationException or UnauthorizedAccessException
+                or System.ComponentModel.Win32Exception)
+            {
+                result = new(result.Id, ProbeStatus.Error, 0, result.Output, "code fixture failed: " + exception.GetType().Name,
+                    sw.Elapsed, result.CostUsd, result.Usage, result.ReportedUsageFields);
+            }
+            finally { sw.Stop(); }
+            result = new(result.Id, result.Status, result.Score, result.Output, result.Error,
+                sw.Elapsed, result.CostUsd, result.Usage, result.ReportedUsageFields);
+        }
         if (termination == ProbeExecutionTermination.Completed && result.Status == ProbeStatus.Error)
             termination = ProbeExecutionTermination.Failed;
         // Outside the provider catch: storage/admission failures must propagate unchanged.

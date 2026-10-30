@@ -345,7 +345,8 @@ public sealed class OmniHost
     public static HostTools CreateHostTools() => HostTools.Default();
 
     public static HostTools CreateExplorerTools(ArtifactReadTool? artifactReadTool = null,
-        MediaReadTool? mediaReadTool = null) => HostTools.Explorer(artifactReadTool, mediaReadTool);
+        MediaReadTool? mediaReadTool = null,
+        PersistentProcessSessionManager? processSessionManager = null) => HostTools.Explorer(artifactReadTool, mediaReadTool, processSessionManager);
 
     /// <summary>
     /// Executor del pipeline real de tools + permisos para la simulación: catálogo completo y

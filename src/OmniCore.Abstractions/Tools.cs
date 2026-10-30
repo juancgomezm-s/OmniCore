@@ -46,6 +46,15 @@ public interface ITrustedBatchPublicationTool : IRequiresReconciliationTool
         ToolExecutionContext context, ReconciliationSpec reconciliation);
 }
 
+/// <summary>Core filesystem batch whose exact authorized target set and multi-file
+/// pre/post manifest are validated before its effect-start barrier. This is separate
+/// from extension publication: it never grants automatic execution or private staging.</summary>
+public interface ITrustedFilesystemBatchTool : IRequiresReconciliationTool
+{
+    bool ValidateFilesystemBatchEnvelope(ToolIntent intent, IReadOnlyList<ToolIntent> effectiveIntents,
+        ToolExecutionContext context, ReconciliationSpec reconciliation);
+}
+
 /// <summary>Core-owned native lane disposition with a mandatory protected, exact-snapshot receipt.</summary>
 public interface ITrustedWorktreeDispositionTool : IRequiresReconciliationTool
 {

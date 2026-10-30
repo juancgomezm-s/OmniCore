@@ -149,6 +149,8 @@ public sealed class UserSettingsYaml
     public WorkspaceGatesYaml? Gates { get; set; }
     public Dictionary<string, string>? CommandAliases { get; set; }
     public Dictionary<string, string>? ToolPreferences { get; set; }
+    /// <summary>Trusted, user-owned LSP commands. Never merged from Project or Workspace scope.</summary>
+    public Dictionary<string, LanguageServerSettingsYaml>? LanguageServers { get; set; }
 
     /// <summary>Claves fijadas en User: Project y Workspace no las cambian (ADR-0039 §5).</summary>
     public List<string>? Locked { get; set; }
@@ -223,6 +225,7 @@ public sealed class TrustEntryYaml
 [YamlSerializable(typeof(WidgetSettingsYaml))]
 [YamlSerializable(typeof(BudgetSettingsYaml))]
 [YamlSerializable(typeof(WorkspaceGatesYaml))]
+[YamlSerializable(typeof(LanguageServerSettingsYaml))]
 [YamlSerializable(typeof(TrustFileYaml))]
 [YamlSerializable(typeof(TrustEntryYaml))]
 [YamlSerializable(typeof(KeyBindingsFileYaml))]

@@ -7,9 +7,129 @@ using OmniCore.Host;
 using OmniCore.Infrastructure;
 using OmniCore.Security;
 using OmniCore.Tools;
+using OmniCore.Client;
+using OmniCore.Protocol;
 
-public sealed class WorkspaceUndoTests
+public sealed partial class WorkspaceUndoTests
 {
+    [Theory]
+    [InlineData("es")]
+    [InlineData("en")]
+    [InlineData("fr")]
+    [InlineData("it")]
+    public async System.Threading.Tasks.Task Human_undo_binds_preview_session_and_effect_without_overwriting_foreign_edits(string locale)
+    {
+        using var fixture = new Fixture();
+        var before = System.Text.Encoding.UTF8.GetBytes("before\n");
+        var after = System.Text.Encoding.UTF8.GetBytes("after\n");
+        var path = Path.Combine(fixture.Root, "target.txt");
+        File.WriteAllBytes(path, after);
+        var effect = fixture.AddSingleEffect("target.txt", before, after);
+        var pointer = Path.Combine(fixture.Root, "lastsession.txt");
+        File.WriteAllText(pointer, fixture.Session + "\n" + fixture.Run.RunId);
+        using var history = new SqliteWorkspaceMutationHistoryStore(Path.Combine(fixture.Root, "cas"));
+        var server = new OmniServer(fixture.Store, fixture.Codecs, new InMemoryAuditSink(), pointer, fixture.Artifacts,
+            platformPathsFactory: () => new UndoTestPaths(fixture.Root), mutationHistory: history);
+        server.ConfigureWorkspaceRoot(fixture.Root);
+        var review = UndoProtocol.Decode(server.Query(UndoProtocol.QueryFor(effect.ToString()), TestContext.Current.CancellationToken)!.Json)!;
+        Assert.Null(review.Error);
+        Assert.Equal("Ready", Assert.Single(review.Files).State);
+        Assert.Equal("after\n", review.Files[0].Diff?.Before);
+        Assert.Equal("before\n", review.Files[0].Diff?.After);
+        var payload = "{" + JsonObj.Field("cmd", UndoProtocol.Apply) + "," + JsonObj.Field("sessionId", review.SessionId!)
+            + "," + JsonObj.Field("effectId", effect.ToString()) + "," + JsonObj.Field("revision", review.Revision)
+            + "," + JsonObj.Field("confirmed", "true") + "}";
+        Assert.Equal("error", server.Send(WireEnvelope.Command(Ids.NewV7(), payload), TestContext.Current.CancellationToken).Status);
+        Assert.Equal(after, File.ReadAllBytes(path));
+        File.WriteAllText(path, "foreign edit\n");
+        var stale = server.SendUserAction(WireEnvelope.Command(Ids.NewV7(), payload), TestContext.Current.CancellationToken);
+        Assert.Equal("undo.stale", stale.Error);
+        Assert.Equal("foreign edit\n", File.ReadAllText(path));
+        File.WriteAllBytes(path, after);
+        var text = new Localization(locale);
+        var handler = new ClientActionHandler();
+        var refreshed = UndoProtocol.Decode(server.Query(UndoProtocol.QueryFor(effect.ToString()), TestContext.Current.CancellationToken)!.Json)!;
+        var result = await handler.ExecuteAsync(new(ClientActionIds.WorkspaceUndo,
+                ["apply", effect.ToString(), refreshed.Revision, "--confirm"], "Typed"), new(server, text), TestContext.Current.CancellationToken);
+        Assert.Equal(text.Resolve("undo.done"), result.Text);
+        Assert.Equal(before, File.ReadAllBytes(path));
+        foreach (var key in UndoResources.Keys) Assert.False(text.ResolveDetailed(key).UsedFallback);
+    }
+
+    private sealed class UndoTestPaths(string root) : IPlatformPaths
+    {
+        public string DataDirectory => Path.Combine(root, "data");
+        public string UserDatabasePath => Path.Combine(DataDirectory, "user.db");
+        public string ConfigDirectory => Path.Combine(root, "config");
+        public string WorkspaceDirectory(string workspaceId) => Path.Combine(DataDirectory, "workspaces", workspaceId);
+    }
+
+    [Fact]
+    public async System.Threading.Tasks.Task Human_recovery_closes_pending_undo_as_Unknown_without_overwriting_conflicts()
+    {
+        using var fixture = new Fixture();
+        var before = System.Text.Encoding.UTF8.GetBytes("before\n");
+        var after = System.Text.Encoding.UTF8.GetBytes("after\n");
+        var path = Path.Combine(fixture.Root, "target.txt");
+        File.WriteAllBytes(path, after);
+        var effect = fixture.AddSingleEffect("target.txt", before, after);
+        fixture.AppendPendingUndo(effect, before, after);
+        File.WriteAllText(path, "foreign edit\n");
+        var pointer = Path.Combine(fixture.Root, "lastsession.txt");
+        File.WriteAllText(pointer, fixture.Session + "\n" + fixture.Run.RunId);
+        using var history = new SqliteWorkspaceMutationHistoryStore(Path.Combine(fixture.Root, "cas"));
+        var server = new OmniServer(fixture.Store, fixture.Codecs, new InMemoryAuditSink(), pointer, fixture.Artifacts,
+            platformPathsFactory: () => new UndoTestPaths(fixture.Root), mutationHistory: history);
+        server.ConfigureWorkspaceRoot(fixture.Root);
+        var review = UndoProtocol.Decode(server.Query(UndoProtocol.QueryFor(effect.ToString()), TestContext.Current.CancellationToken)!.Json)!;
+        Assert.True(review.RecoveryRequired);
+        var result = await new ClientActionHandler().ExecuteAsync(new(ClientActionIds.WorkspaceUndo,
+            ["apply", effect.ToString(), review.Revision, "--confirm"], "User"), new(server, Localization.Spanish()), TestContext.Current.CancellationToken);
+        Assert.Contains("incierta", result.Text);
+        Assert.Equal("foreign edit\n", File.ReadAllText(path));
+        var completion = Assert.Single(fixture.Store.ReadFrom(fixture.Session, 1).Select(fixture.Codecs.Decode).OfType<UndoCompleted>());
+        Assert.Equal(UndoOutcome.Unknown, completion.Outcome);
+        var next = UndoProtocol.Decode(server.Query(UndoProtocol.QueryFor(effect.ToString()), TestContext.Current.CancellationToken)!.Json)!;
+        Assert.False(next.RecoveryRequired);
+    }
+
+    [Fact]
+    public void Preview_is_read_only_and_identifies_foreign_edits()
+    {
+        using var fixture = new Fixture();
+        var before = System.Text.Encoding.UTF8.GetBytes("before\n");
+        var after = System.Text.Encoding.UTF8.GetBytes("after\n");
+        File.WriteAllBytes(Path.Combine(fixture.Root, "target.txt"), after);
+        var effect = fixture.AddSingleEffect("target.txt", before, after);
+        var service = fixture.Service(PermissionDecision.Allow);
+        var count = fixture.Store.ReadFrom(fixture.Session, 1).Count;
+        Assert.Equal("Ready", Assert.Single(service.Preview(fixture.Session, effect).Entries).State);
+        Assert.Equal(count, fixture.Store.ReadFrom(fixture.Session, 1).Count);
+        Assert.Equal(after, File.ReadAllBytes(Path.Combine(fixture.Root, "target.txt")));
+        File.WriteAllText(Path.Combine(fixture.Root, "target.txt"), "someone else's edit");
+        Assert.Equal("Conflict", Assert.Single(service.Preview(fixture.Session, effect).Entries).State);
+        Assert.Equal(count, fixture.Store.ReadFrom(fixture.Session, 1).Count);
+    }
+
+    [Theory]
+    [InlineData(PermissionDecision.Ask, true)]
+    [InlineData(PermissionDecision.Deny, false)]
+    public void Explicit_human_confirmation_lifts_Ask_once_but_never_Deny(PermissionDecision decision, bool succeeds)
+    {
+        using var fixture = new Fixture();
+        var before = System.Text.Encoding.UTF8.GetBytes("before\n");
+        var after = System.Text.Encoding.UTF8.GetBytes("after\n");
+        File.WriteAllBytes(Path.Combine(fixture.Root, "target.txt"), after);
+        var effect = fixture.AddSingleEffect("target.txt", before, after);
+        var command = CommandId.New();
+        var result = fixture.Service(decision).Undo(fixture.Session, effect, TestContext.Current.CancellationToken,
+            confirmedByUser: true, commandIdOverride: command);
+        Assert.Equal(succeeds ? UndoOutcome.Applied : UndoOutcome.Unsupported, result.Outcome);
+        Assert.Equal(succeeds ? before : after, File.ReadAllBytes(Path.Combine(fixture.Root, "target.txt")));
+        if (succeeds)
+            Assert.Equal(command, Assert.Single(fixture.Store.ReadFrom(fixture.Session, 1).Select(fixture.Codecs.Decode).OfType<UndoStarted>()).CommandId);
+    }
+
     [Fact]
     public void Undo_restores_exact_attributed_preimage_and_is_idempotent()
     {

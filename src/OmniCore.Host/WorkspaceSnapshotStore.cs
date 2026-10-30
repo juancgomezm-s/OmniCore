@@ -140,6 +140,17 @@ public sealed partial class WorkspaceSnapshotStore
                 AddBatchRows(rows, sessionId, pair.Key, envelope, start, batchState.Event, attribution);
                 continue;
             }
+            if (start.Attribution?.ToolId == FilesystemApplyPatchTool.Id)
+            {
+                var hasSuccess = success.TryGetValue(pair.Key, out var patchSuccess)
+                    && SameScope(envelope, patchSuccess.Envelope)
+                    && patchSuccess.Event.AfterStateRef == start.BeforeStateRef;
+                var hasRecoveredCompletion = reconciled.TryGetValue(pair.Key, out var patchRecovered)
+                    && SameScope(envelope, patchRecovered);
+                if (hasSuccess || hasRecoveredCompletion)
+                    AddApplyPatchRows(rows, pair.Key, envelope, start, attribution);
+                continue;
+            }
             if (!success.TryGetValue(pair.Key, out var succeeded)
                 || !SameScope(envelope, succeeded.Envelope)) continue;
             if (start.Reversibility is not (Reversibility.Reversible or Reversibility.Compensatable)) continue;
@@ -199,6 +210,50 @@ public sealed partial class WorkspaceSnapshotStore
                 attribution, null));
         }
         catch (Exception ex) when (IsDataFailure(ex)) { }
+    }
+
+    private void AddApplyPatchRows(List<UndoPlanEntry> rows, ToolCallId id, DomainEvent envelope,
+        ToolCallStarted start, UndoAttribution attribution)
+    {
+        if (start.Reversibility != Reversibility.Reversible || start.BeforeStateRef is not { } manifestRef
+            || manifestRef.Redacted || manifestRef.MediaType != FilesystemApplyPatchTool.ManifestMediaType
+            || manifestRef.Kind != ArtifactKind.Patch || manifestRef.Sensitivity != Sensitivity.Sensitive
+            || manifestRef.Size > MaxSerializedArtifactBytes || string.IsNullOrWhiteSpace(start.ReconciliationJson)) return;
+        try
+        {
+            if (!_artifacts.Verify(manifestRef.Hash, manifestRef.Size)) return;
+            var manifestJson = _artifacts.GetText(manifestRef.Hash);
+            if (manifestJson is null || Encoding.UTF8.GetByteCount(manifestJson) != manifestRef.Size
+                || !string.Equals(manifestJson, start.ReconciliationJson, StringComparison.Ordinal)) return;
+            using (var document = JsonDocument.Parse(manifestJson)) EnsureNoDuplicates(document.RootElement);
+            if (!ApplyPatchMetadata.TryParse(manifestJson, out var manifest)
+                || manifest.ToolCallId != id.ToString() || !PathEquals(manifest.WorkspaceRoot, _workspaceRoot)
+                || manifest.Files.Count is < 1 or > MaxFiles) return;
+
+            var paths = new HashSet<string>(OperatingSystem.IsWindows()
+                ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+            var verified = new List<(ApplyPatchMetadata.FileEntry File, byte[] Before, byte[] After)>(manifest.Files.Count);
+            long total = 0;
+            foreach (var file in manifest.Files)
+            {
+                if (!FilesystemReconciliationMetadata.IsSaneRelativePath(file.Path)
+                    || !paths.Add(file.Path)) return;
+                _ = ResolvePath(file.Path);
+                var before = FilesystemPreimage.Read(_artifacts, file.Preimage);
+                var after = FilesystemPreimage.Read(_artifacts, file.Postimage);
+                if (before is null || after is null || before.Length > MaxImageBytes || after.Length > MaxImageBytes
+                    || FileVersion.VersionToken(before) != file.BeforeHash
+                    || FileVersion.VersionToken(after) != file.AfterHash) return;
+                total = checked(total + before.LongLength + after.LongLength);
+                if (total > MaxBatchBytes) return;
+                verified.Add((file, before, after));
+            }
+
+            rows.AddRange(verified.Select(item => new UndoPlanEntry(id, item.File.Path, "Ready", item.File.AfterHash,
+                item.Before, item.File.BeforeHash, envelope.Sequence, item.File.Preimage, item.File.Postimage,
+                ScopeId(envelope), item.After, attribution, null)));
+        }
+        catch (Exception ex) when (IsDataFailure(ex) || ex is InvalidOperationException or ArgumentException) { /* Missing or corrupt batch evidence is never an Undo candidate. */ }
     }
 
     private void AddBatchRows(List<UndoPlanEntry> rows, SessionId session, ToolCallId id,

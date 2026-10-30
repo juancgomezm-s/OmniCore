@@ -194,9 +194,10 @@ public sealed class ReleaseUpdateDownloader : IDisposable, IReleaseUpdateDownloa
 
     private static bool AllowedAssetRedirect(Uri uri, string tag) => uri.Scheme == Uri.UriSchemeHttps
         && string.IsNullOrEmpty(uri.UserInfo) && uri.Port == 443
-        && string.IsNullOrEmpty(uri.Query) && string.IsNullOrEmpty(uri.Fragment)
+        && string.IsNullOrEmpty(uri.Fragment)
         && (AssetRedirectHosts.Contains(uri.Host) && !uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
             || uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
+                && string.IsNullOrEmpty(uri.Query)
                 && uri.AbsolutePath.StartsWith("/" + GitHubReleaseUpdateChecker.Repository + "/releases/download/"
                     + Uri.EscapeDataString(tag) + "/", StringComparison.Ordinal));
 

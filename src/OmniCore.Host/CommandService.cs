@@ -12,7 +12,7 @@ public sealed class CommandRegistry
     private static readonly HashSet<string> ReservedNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "plan", "tasks", "mode", "cancel", "interrupt", "resume", "permissions", "context",
-        "help", "exit", "commands", "tools", "extensions", "hooks", "mcp", "skills", "memory", "agents", "delegate", "join", "events", "pet",
+        "help", "exit", "commands", "tools", "extensions", "hooks", "mcp", "skills", "memory", "undo", "agents", "delegate", "join", "events", "pet",
     };
 
     /// <summary>¿Es un nombre reservado de Core? Los ClientCommands del cliente lo están todos (ADR-0024 §4).</summary>

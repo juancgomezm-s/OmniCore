@@ -23,7 +23,7 @@ public static class ProbeScorer
         {
             ProbeKind.Reading => ScoreExactText(output, expected),
             ProbeKind.Reasoning => ScoreExactText(output, expected),
-            ProbeKind.StructuredOutput => ScoreExactJson(output, expected),
+            ProbeKind.StructuredOutput or ProbeKind.CodeFixture => ScoreExactJson(output, expected),
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "tipo de probe sin regla de puntuación exacta"),
         };
     }

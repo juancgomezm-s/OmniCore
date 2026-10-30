@@ -49,7 +49,12 @@ public sealed class HostTools
         IWorktreeDispositionCoordinator? worktreeDispositionCoordinator = null,
         IWorktreeRetentionCoordinator? worktreeRetentionCoordinator = null,
         ISandboxProcessLauncher? processLauncherOverride = null, bool humanShellAction = false,
-        Action<string>? humanShellOutput = null)
+        Action<string>? humanShellOutput = null,
+        IReadOnlyList<LanguageServerDefinition>? languageServerDefinitionsOverride = null,
+        Func<string, bool>? languageServerWorkspaceTrustOverride = null,
+        Func<bool>? languageServerConfigurationCurrentOverride = null,
+        Action? languageServerAfterServerStartForTests = null,
+        Action? languageServerBeforeSourceRecheckForTests = null)
     {
         _planPropose = new PlanProposeTool(planService);
         _extensionBatchCoordinator = worktreeIntegrationCoordinator as WorktreeIntegrationHostCoordinator;
@@ -61,6 +66,7 @@ public sealed class HostTools
         if (includeMutationTools)
         {
             catalog = catalog.Add(new FilesystemPatchTool(boundary));
+            catalog = catalog.Add(new FilesystemApplyPatchTool(boundary));
             // EPIC-021 (ADR-0044 §5): escritura completa create-only/reemplazo según el modo de
             // mutación; la frontera de capacidad decide la exposición por categoría.
             catalog = catalog.Add(new FilesystemWriteTool(boundary));
@@ -70,10 +76,11 @@ public sealed class HostTools
                 if (worktreeIntegrationCoordinator is IExtensionBatchPublicationCoordinator extensionBatchCoordinator)
                     catalog = catalog.Add(new ExtensionBatchApplyTool(extensionBatchCoordinator));
             }        }
+        ISandboxProcessLauncher? processLauncher = processLauncherOverride;
+        if (includeProcessTools || processSessionManager is not null)
+            processLauncher ??= OmniHost.CreateProcessSandboxLauncher(processRuntime ?? SystemProcessRuntime.Instance());
         if (includeProcessTools)
         {
-            var processLauncher = processLauncherOverride
-                ?? OmniHost.CreateProcessSandboxLauncher(processRuntime ?? SystemProcessRuntime.Instance());
             var gitActivity = new OmniCore.Infrastructure.GitWorktreeStore(SystemProcessRuntime.Instance());
             if (processSessionManager is not null)
             {
@@ -95,14 +102,14 @@ public sealed class HostTools
                 var executableResolver = new SystemExecutableResolver(allowWorkspaceRelativePaths: true);
                 var canPublish = includeMutationTools && _extensionBatchCoordinator is not null;
                 catalog = catalog.Add(new ProcessExecBatchTool("process.exec", processSessionManager,
-                    processLauncher, boundary, executableResolver, canPublish));
+                    processLauncher!, boundary, executableResolver, canPublish));
                 if (includeShellTool)
                     catalog = humanShellAction
-                        ? catalog.Add(new HumanShellProcessTool(processSessionManager, processLauncher,
+                        ? catalog.Add(new HumanShellProcessTool(processSessionManager, processLauncher!,
                             processSandboxStrength, boundary, humanShellOutput))
                         : catalog.Add(new ProcessExecBatchTool("shell.exec", processSessionManager,
-                            processLauncher, boundary, executableResolver, canPublish));
-                catalog = catalog.Add(new ProcessStartTool(processSessionManager, processLauncher, processSandboxStrength,
+                            processLauncher!, boundary, executableResolver, canPublish));
+                catalog = catalog.Add(new ProcessStartTool(processSessionManager, processLauncher!, processSandboxStrength,
                         boundary, new SystemExecutableResolver(allowWorkspaceRelativePaths: true)))
                     .Add(new ProcessReadTool(processSessionManager))
                     .Add(new ProcessSendInputTool(processSessionManager))
@@ -111,8 +118,41 @@ public sealed class HostTools
             else
             {
                 // Legacy non-Host harnesses without a persistent manager retain the bounded one-shot tools.
-                catalog = catalog.Add(new ProcessExecTool(processLauncher, boundary, processSandboxStrength, gitActivity));
-                if (includeShellTool) catalog = catalog.Add(new ShellExecTool(processLauncher, boundary, processSandboxStrength, gitActivity));
+                catalog = catalog.Add(new ProcessExecTool(processLauncher!, boundary, processSandboxStrength, gitActivity));
+                if (includeShellTool) catalog = catalog.Add(new ShellExecTool(processLauncher!, boundary, processSandboxStrength, gitActivity));
+            }
+        }
+        if (processSessionManager is not null)
+        {
+            var platformPaths = OmniHost.CreatePlatformPaths();
+            var configured = languageServerDefinitionsOverride
+                ?? LanguageServerDefinition.FromSettings(OmniHost.LoadUserConfiguration(platformPaths).Settings);
+            if (configured.Count > 0)
+            {
+                var trust = new WorkspaceTrustStore(platformPaths);
+                var executableResolver = new SystemExecutableResolver(allowWorkspaceRelativePaths: false);
+                bool IsCurrent()
+                {
+                    if (languageServerConfigurationCurrentOverride is not null)
+                        return languageServerConfigurationCurrentOverride();
+                    try
+                    {
+                        var latest = LanguageServerDefinition.FromSettings(OmniHost.LoadUserConfiguration(platformPaths).Settings);
+                        return latest.Count == configured.Count
+                            && configured.All(expected => latest.Any(candidate => expected.Matches(candidate)));
+                    }
+                    catch (Exception failure) when (failure is IOException
+                        or ConfigValidationException or UnauthorizedAccessException or ArgumentException)
+                    { return false; }
+                }
+                catalog = catalog.Add(new LanguageServerTool(configured, diagnostics: false,
+                    processSessionManager, processLauncher!, boundary, executableResolver,
+                    languageServerWorkspaceTrustOverride ?? trust.IsTrusted, IsCurrent,
+                    languageServerAfterServerStartForTests, languageServerBeforeSourceRecheckForTests));
+                catalog = catalog.Add(new LanguageServerTool(configured, diagnostics: true,
+                    processSessionManager, processLauncher!, boundary, executableResolver,
+                    languageServerWorkspaceTrustOverride ?? trust.IsTrusted, IsCurrent,
+                    languageServerAfterServerStartForTests, languageServerBeforeSourceRecheckForTests));
             }
         }
         if (worktreeDispositionCoordinator is not null)
@@ -214,10 +254,29 @@ public sealed class HostTools
             includeControlTools: false, includeMailboxReceive: true, includeShellTool: false,
             processRuntime: processRuntime, processLauncherOverride: processLauncherOverride);
 
-    public static HostTools Explorer(ArtifactReadTool? artifactReadTool = null, MediaReadTool? mediaReadTool = null) =>
+    public static HostTools Explorer(ArtifactReadTool? artifactReadTool = null, MediaReadTool? mediaReadTool = null,
+        PersistentProcessSessionManager? processSessionManager = null) =>
         new HostTools(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
             includeMutationTools: false, includeProcessTools: false, artifactReadTool: artifactReadTool,
-            mediaReadTool: mediaReadTool);
+            mediaReadTool: mediaReadTool, processSessionManager: processSessionManager);
+
+    internal static HostTools ExplorerWithLanguageServersForTests(
+        PersistentProcessSessionManager processSessionManager,
+        IReadOnlyList<LanguageServerDefinition> languageServers,
+        ISandboxProcessLauncher processLauncher,
+        Func<string, bool> isWorkspaceTrusted,
+        Func<bool> isConfigurationCurrent,
+        Action? afterServerStartForTests = null,
+        Action? beforeSourceRecheckForTests = null) =>
+        new(new PathBoundaryValidator(), new PlanService(), includeSimulationTools: false,
+            includeMutationTools: false, includeProcessTools: false, processSandboxStrength: SandboxStrength.Strong,
+            artifactReadTool: null, includeControlTools: false, includeMailboxReceive: false,
+            includeShellTool: false, processRuntime: null, processSessionManager: processSessionManager,
+            processLauncherOverride: processLauncher, languageServerDefinitionsOverride: languageServers,
+            languageServerWorkspaceTrustOverride: isWorkspaceTrusted,
+            languageServerConfigurationCurrentOverride: isConfigurationCurrent,
+            languageServerAfterServerStartForTests: afterServerStartForTests,
+            languageServerBeforeSourceRecheckForTests: beforeSourceRecheckForTests);
 
     public FakeCatalog Catalog() => _catalog;
 

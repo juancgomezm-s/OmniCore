@@ -3952,7 +3952,7 @@ public sealed class ExplorerTurn
                 if (isCurrentTurn) ledger.MarkTurnBudgetUnknown();
                 continue;
             }
-            var governedMutation = toolName is "filesystem.write" or "filesystem.patch" or "worktree.integrate"
+            var governedMutation = toolName is "filesystem.write" or "filesystem.patch" or "filesystem.apply_patch" or "worktree.integrate"
                 or "worktree.cleanup" or "worktree.discard"
                 || integrationCalls.Contains(toolCallId);
             if (!governedMutation)
@@ -5231,7 +5231,7 @@ public sealed class ExplorerTurn
                     .Concat(discoveredToolIds.Except(discoveredToolOrder, StringComparer.Ordinal).Order(StringComparer.Ordinal))
                 : discoveredToolIds.Order(StringComparer.Ordinal);
             var recentCandidate = ordered.FirstOrDefault();
-            var needsRead = recentCandidate is "filesystem.patch" or "filesystem.write"
+            var needsRead = recentCandidate is "filesystem.patch" or "filesystem.apply_patch" or "filesystem.write"
                 or "filesystem.delete" or "filesystem.move";
             var visibleLimit = _boundary?.MaxVisibleTools() ?? _harness?.MaxVisibleTools ?? Int32.MaxValue;
             if (needsRead && visibleLimit < 2)

@@ -10,8 +10,8 @@ using OmniCore.Memory;
 using OmniCore.Protocol;
 
 /// <summary>
-/// Human-only lifecycle for Project, Workspace, and User memory. A scoped candidate is always
-/// asked; a journal-prepared mutation is the durable authority consumed by reconciliation.
+/// Human-originated lifecycle for shared memory. Project/Workspace can promote three matching
+/// human Session observations; User and conflicts always ask. Prepared intent precedes mutation.
 /// </summary>
 public sealed class ScopedMemoryPolicy
 {
@@ -24,17 +24,20 @@ public sealed class ScopedMemoryPolicy
     private readonly Func<IReadOnlyList<DomainEventPayload>> _journal;
     private readonly Action<DomainEventPayload> _emit;
     private readonly Func<MemoryScope, bool> _scopeAllowed;
+    private readonly Func<SessionId, IReadOnlyList<DomainEventPayload>>? _evidenceJournal;
     private readonly PiiRedactor _redactor = new();
 
     public ScopedMemoryPolicy(SessionId session, ScopedMemoryStore store,
         Func<IReadOnlyList<DomainEventPayload>> journal, Action<DomainEventPayload> emit,
-        Func<MemoryScope, bool> scopeAllowed)
+        Func<MemoryScope, bool> scopeAllowed,
+        Func<SessionId, IReadOnlyList<DomainEventPayload>>? evidenceJournal = null)
     {
         _session = session;
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
         _emit = emit ?? throw new ArgumentNullException(nameof(emit));
         _scopeAllowed = scopeAllowed ?? throw new ArgumentNullException(nameof(scopeAllowed));
+        _evidenceJournal = evidenceJournal;
     }
 
     /// <summary>Creates or resumes a user-originated proposal. Model tools must not call this API.</summary>
@@ -75,6 +78,17 @@ public sealed class ScopedMemoryPolicy
                 return priorView ?? ToView(priorProposal, "ask", null);
             if (ask is null)
             {
+                if (priorProposal.Decision == "promote-evidence")
+                {
+                    // A crash before Prepared never invents fresh automatic authority. Re-review
+                    // current conflicts/revision through a normal human Ask.
+                    var current = _store.Snapshot(scope, cancellationToken);
+                    priorProposal = priorProposal with { Decision = "ask", EvidenceRefs = ["session:" + _session], Occurrences = 1,
+                        ConflictMemoryId = FindConflict(current.Records, priorProposal.Content, priorProposal.Kind)?.Id };
+                    _emit(priorProposal);
+                    EnsurePromotionInteraction(priorProposal, current.Revision, cancellationToken);
+                    return ToView(priorProposal, "ask", null);
+                }
                 EnsurePromotionInteraction(priorProposal,
                     _store.Revision(scope, cancellationToken), cancellationToken);
                 return ToView(priorProposal, "ask", null);
@@ -102,6 +116,14 @@ public sealed class ScopedMemoryPolicy
         cancellationToken.ThrowIfCancellationRequested();
         _emit(proposal);
         EnsureScopeAllowed(scope);
+        var evidence = _store.ObserveUserEvidence(scope, kind, safeContent, _session, cancellationToken);
+        string[] references = evidence.Forgotten ? [] : evidence.SessionRefs.Where(reference => HasSourceEvidence(reference, proposal)).Take(3).ToArray();
+        if (references.Length == 3 && conflict is null && scope.Level is ScopeLevel.Project or ScopeLevel.Workspace)
+        {
+            proposal = proposal with { Decision = "promote-evidence", EvidenceRefs = references, Occurrences = references.Length };
+            _emit(proposal);
+            return PromoteByEvidence(proposal, expectedRevision, cancellationToken);
+        }
         EnsurePromotionInteraction(proposal, expectedRevision, cancellationToken);
         return ToView(proposal, "ask", null);
     }
@@ -241,19 +263,21 @@ public sealed class ScopedMemoryPolicy
             if (mutation.Operation == "promote")
             {
                 var proposal = FindProposal(journal, mutation.CandidateId);
-                if (proposal.ProposedScope != mutation.Scope || proposal.Decision != "ask"
+                var evidence = proposal.Decision == "promote-evidence";
+                if (proposal.ProposedScope != mutation.Scope || proposal.Decision is not ("ask" or "promote-evidence")
                     || mutation.Record is null || mutation.Record.Content != proposal.Content
                     || mutation.Record.Kind != proposal.Kind
                     || mutation.Record.Supersedes != proposal.ConflictMemoryId
-                    || mutation.ExpectedRevision != FindScopedInteraction(journal, proposal)?.ExpectedRevision)
+                    || (evidence ? !ValidEvidencePromotion(proposal, mutation.Record)
+                        : mutation.ExpectedRevision != FindScopedInteraction(journal, proposal)?.ExpectedRevision))
                     throw new InvalidDataException("The prepared scoped promotion does not match its candidate.");
                 var interaction = FindScopedInteraction(journal, proposal);
-                if (interaction?.Resolution is not { OptionId: "promote", Cause: InteractionCause.User })
+                if (!evidence && interaction?.Resolution is not { OptionId: "promote", Cause: InteractionCause.User })
                     throw new InvalidDataException("The prepared scoped promotion has no matching user approval.");
             }
 
             ScopedMemoryMutationResult result;
-            try { result = _store.ApplyPrepared(mutation, cancellationToken); }
+            try { result = ApplyWithCurrentEvidence(mutation, cancellationToken); }
             catch (InvalidOperationException exception) when (IsTerminalPrecondition(exception))
             {
                 EmitMutationRejected(mutation, exception.Message);
@@ -268,6 +292,64 @@ public sealed class ScopedMemoryPolicy
             journal = _journal();
         }
         return results;
+    }
+
+    private MemoryCandidateView PromoteByEvidence(MemoryCandidateProposed proposal, string expectedRevision,
+        CancellationToken token)
+    {
+        EnsureScopeAllowed(proposal.ProposedScope);
+        var record = new MemoryRecord("mem-" + proposal.CandidateId, proposal.ProposedScope, proposal.Kind, proposal.Content,
+            .75, 1, MemorySource.UserStated, proposal.ProposedAt, null, MemoryExpirationKind.WithScope,
+            ["scoped", "user", "cross-session-evidence"], proposal.EvidenceRefs, null);
+        if (!ValidEvidencePromotion(proposal, record))
+            throw new InvalidDataException("Invalid cross-session promotion authority.");
+        // A conflict or changed revision is rejected under the store transaction; no overwrite/retry.
+        var prepared = new ScopedMemoryMutationPrepared(PromotionOperationId(proposal.CandidateId),
+            proposal.ProposedScope, "promote", proposal.CandidateId, record.Id, record, expectedRevision, DateTimeOffset.UtcNow);
+        token.ThrowIfCancellationRequested(); _emit(prepared);
+        var result = ApplyPreparedForAction(prepared, token);
+        PublishPromotionReceipts(prepared, proposal, result);
+        return ToView(proposal, "promoted", "evidence.cross_session");
+    }
+
+    private bool ValidEvidencePromotion(MemoryCandidateProposed proposal, MemoryRecord record) =>
+        proposal.Origin == MemoryCandidateOrigin.User && proposal.ProposedScope.Level is ScopeLevel.Project or ScopeLevel.Workspace
+        && proposal.ConflictMemoryId is null && proposal.Occurrences >= 3 && proposal.EvidenceRefs.Count == 3
+        && proposal.EvidenceRefs.Distinct(StringComparer.Ordinal).Count() == 3
+        && proposal.EvidenceRefs.Contains("user-session:" + _session)
+        && record.Tags.Contains("cross-session-evidence") && record.Source == MemorySource.UserStated
+        && record.EvidenceRefs.SequenceEqual(proposal.EvidenceRefs);
+
+    private bool HasSourceEvidence(string reference, MemoryCandidateProposed candidate)
+    {
+        const string prefix = "user-session:";
+        if (!reference.StartsWith(prefix, StringComparison.Ordinal)
+            || !Guid.TryParseExact(reference[prefix.Length..], "D", out var id)) return false;
+        var session = new SessionId(id);
+        // Evidence is scoped to the Host's actual current workspace journal. A model-supplied
+        // reference, another clone's inaccessible Session, or an unavailable journal never counts.
+        var source = session == _session ? _journal() : _evidenceJournal?.Invoke(session) ?? [];
+        return source.OfType<MemoryCandidateProposed>().GroupBy(item => item.CandidateId).Select(group => group.Last())
+            .Any(item => item.Origin == MemoryCandidateOrigin.User && item.Decision is "ask" or "promote-evidence"
+                && item.ProposedScope == candidate.ProposedScope
+                && item.Kind == candidate.Kind && Normalize(item.Content) == Normalize(candidate.Content)
+                && !source.OfType<MemoryRejected>().Any(rejected => rejected.CandidateId == item.CandidateId)
+                && !source.OfType<MemoryForgotten>().Any(forgotten => forgotten.CandidateId == item.CandidateId)
+                && FindScopedInteraction(source, item)?.Resolution is not { OptionId: "reject", Cause: InteractionCause.User });
+    }
+
+    private ScopedMemoryMutationResult ApplyWithCurrentEvidence(ScopedMemoryMutationPrepared prepared, CancellationToken token)
+    {
+        var prior = _store.ReadPreparedResult(prepared, token);
+        if (prior is not null) return prior;
+        if (prepared.Record?.Tags.Contains("cross-session-evidence") == true)
+        {
+            var proposal = FindProposal(_journal(), prepared.CandidateId);
+            if (!ValidEvidencePromotion(proposal, prepared.Record)
+                || !proposal.EvidenceRefs.All(reference => HasSourceEvidence(reference, proposal)))
+                throw new InvalidOperationException("sessionPreferences.error.memory_changed");
+        }
+        return _store.ApplyPrepared(prepared, token);
     }
 
     public static IReadOnlyList<MemoryCandidateView> ProjectForPresentation(
@@ -362,7 +444,7 @@ public sealed class ScopedMemoryPolicy
         CancellationToken cancellationToken)
     {
         EnsureScopeAllowed(prepared.Scope);
-        try { return _store.ApplyPrepared(prepared, cancellationToken); }
+        try { return ApplyWithCurrentEvidence(prepared, cancellationToken); }
         catch (InvalidOperationException exception) when (IsTerminalPrecondition(exception))
         {
             EmitMutationRejected(prepared, exception.Message);
@@ -389,10 +471,13 @@ public sealed class ScopedMemoryPolicy
         if (journal.OfType<MemoryForgotten>().Any(item => item.CandidateId == latest.CandidateId)
             || journal.OfType<MemoryRejected>().Any(item => item.CandidateId == latest.CandidateId))
             return NextGeneration(baseId, family);
+        if (journal.OfType<ScopedMemoryMutationRejected>().Any(item => item.OperationId == PromotionOperationId(latest.CandidateId)))
+            return NextGeneration(baseId, family);
         if (journal.OfType<MemoryPromoted>().LastOrDefault(item => item.CandidateId == latest.CandidateId) is { } promoted)
             return _store.Read(latest.ProposedScope, cancellationToken).Any(item => item.Id == promoted.MemoryId)
                 ? latest.CandidateId : NextGeneration(baseId, family);
         if (HasPrepared(journal, latest.CandidateId)) return latest.CandidateId;
+        if (latest.Decision == "promote-evidence") return latest.CandidateId;
         var interaction = FindScopedInteraction(journal, latest);
         if (interaction is { Resolution: null, Expired: false }) return latest.CandidateId;
         if (interaction is null) return NextGeneration(baseId, family);

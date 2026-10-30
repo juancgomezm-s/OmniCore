@@ -140,6 +140,18 @@ public sealed class ModelPolicyCommands
                 return Policy(args);
             case "qualify":
                 return Qualify(args);
+            case "calibration":
+                if (args.Length != 3) { _output.WriteLine(_loc.Resolve("cli.model.calibration.usage")); return 1; }
+                try
+                {
+                    var snapshot = _qualification.Calibration(args[2], _cancellationToken);
+                    _output.WriteLine(_loc.Resolve("cli.model.calibration.header", "key", snapshot.KeyHash));
+                    foreach (var (counter, value) in snapshot.Counters.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+                        _output.WriteLine(_loc.Resolve("cli.model.calibration." + counter) + ": " + (value?.ToString(CultureInfo.InvariantCulture) ?? _loc.Resolve("cli.model.calibration.unknown")));
+                    _output.WriteLine(_loc.Resolve("cli.model.calibration.note"));
+                    return 0;
+                }
+                catch (ArgumentException) { _output.WriteLine(_loc.Resolve("cli.model.calibration.model_missing")); return 1; }
             default:
                 Usage();
                 return 1;
@@ -567,6 +579,7 @@ public sealed class ModelPolicyCommands
             return 2;
         }
 
+        if (suite == "full") _output.WriteLine(_loc.Resolve("cli.model.qualify.full.info"));
         // Consentimiento explícito (ADR-0007 §7): la suite gasta dinero real y nunca corre sola.
         // Sin TTY no hay forma de preguntar: sin --yes se rechaza (nada se ejecuta).
         if (!consentGiven)
@@ -795,5 +808,6 @@ public sealed class ModelPolicyCommands
         _output.WriteLine(_loc.Resolve("cli.model.help.external"));
         _output.WriteLine(_loc.Resolve("cli.model.help.delete"));
         _output.WriteLine(_loc.Resolve("cli.model.help.qualify"));
+        _output.WriteLine(_loc.Resolve("cli.model.calibration.usage"));
     }
 }

@@ -31,6 +31,7 @@ public static class HumanCommandAliases
         new Entry("skills", "habilidades", "compétences", "competenze"),
         new Entry("memory", "memoria", "mémoire", "memoria"),
         new Entry("extensions", "extensiones", "extensions", "estensioni"),
+        new Entry("undo", "deshacer", "rétablir", "ripristina"),
         new Entry("hooks", "ganchos", "hooks", "hooks"),
         new Entry("mcp", "mcp", "mcp", "mcp"),
         new Entry("openrouter", "openrouter", "openrouter", "openrouter"),

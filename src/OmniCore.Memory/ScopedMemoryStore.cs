@@ -12,7 +12,7 @@ using OmniCore.Domain;
 /// authorization, trust checks, promotion policy, and context selection remain Host duties.
 /// Each mutation uses a SQLite immediate transaction so independent processes serialize writes.
 /// </summary>
-public sealed class ScopedMemoryStore : IMemoryStore
+public sealed partial class ScopedMemoryStore : IMemoryStore
 {
     private const int MaximumRecordsPerPartition = 500;
     private const long MaximumPayloadBytesPerPartition = 4 * 1024 * 1024;
@@ -101,9 +101,17 @@ public sealed class ScopedMemoryStore : IMemoryStore
         }
 
         var operationsCount = CountOperations(connection, transaction, prepared.Scope);
-        if (operationsCount >= MaximumOperationsPerPartition)
-            throw new InvalidOperationException("client.memory.capacity_reached");
+        // Reserve room to forget all live records. Legacy full ledgers get at most 500
+        // additional forget receipts; they never prevent a user from erasing live memory.
         var records = ReadPartition(connection, transaction, prepared.Scope, cancellationToken);
+        if (prepared.Operation == "promote"
+            ? operationsCount + records.Count + 2 > MaximumOperationsPerPartition
+            : operationsCount >= MaximumOperationsPerPartition + MaximumRecordsPerPartition)
+            throw new InvalidOperationException("client.memory.capacity_reached");
+        if (prepared.Operation == "promote" && prepared.Record!.Tags.Contains("cross-session-evidence")
+            && !ReadEvidence(connection, transaction, prepared.Scope, prepared.Record.Kind, prepared.Record.Content)
+                .Matches(prepared.Record.EvidenceRefs))
+            throw new InvalidOperationException("sessionPreferences.error.memory_changed");
         if (!string.Equals(RevisionOf(records), prepared.ExpectedRevision, StringComparison.Ordinal))
             throw new InvalidOperationException("sessionPreferences.error.memory_changed");
 
@@ -130,6 +138,21 @@ public sealed class ScopedMemoryStore : IMemoryStore
         cancellationToken.ThrowIfCancellationRequested();
         transaction.Commit();
         return result;
+    }
+
+    /// <summary>Read-only durable result lookup. Recovery can acknowledge an applied promotion
+    /// even when its source evidence was subsequently forgotten, without applying it again.</summary>
+    public ScopedMemoryMutationResult? ReadPreparedResult(ScopedMemoryMutationPrepared prepared, CancellationToken token)
+    {
+        ValidatePrepared(prepared); token.ThrowIfCancellationRequested(); var path = PathFor(prepared.Scope);
+        if (!File.Exists(path)) return null;
+        using var connection = Open(path, create: false);
+        if (!HasTable(connection, OperationsTable)) return null;
+        using var transaction = connection.BeginTransaction(deferred: true);
+        var prior = ReadOperation(connection, transaction, prepared.Scope, prepared.OperationId);
+        if (prior is null) { transaction.Commit(); return null; }
+        if (prior.Value.RequestHash != RequestHash(prepared)) throw new InvalidDataException("Memory receipt payload mismatch.");
+        transaction.Commit(); return new(prior.Value.MemoryId, prior.Value.Removed);
     }
 
     public bool Remove(MemoryScope scope, string memoryId, CancellationToken cancellationToken)
@@ -308,6 +331,7 @@ public sealed class ScopedMemoryStore : IMemoryStore
         command.ExecuteNonQuery();
         if (!HasTable(connection, Table) || !HasTable(connection, OperationsTable))
             throw new InvalidDataException("Could not initialize the scoped memory tables.");
+        EnsureEvidenceTables(connection);
     }
 
     private static MemoryRecord AddWithinTransaction(SqliteConnection connection,
@@ -348,6 +372,7 @@ public sealed class ScopedMemoryStore : IMemoryStore
     {
         var target = records.FirstOrDefault(item => string.Equals(item.Id, memoryId, StringComparison.Ordinal));
         if (target is null) return new ScopedMemoryMutationResult(memoryId, false);
+        TombstoneEvidence(connection, transaction, scope, target.Kind, target.Content);
         RemoveWithinTransaction(connection, transaction, scope, target, records);
         return new ScopedMemoryMutationResult(memoryId, true);
     }

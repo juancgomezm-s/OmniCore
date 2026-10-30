@@ -1348,6 +1348,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             lock (_modeAuthorityMutationGate)
                 return ChangeSessionMemory(command, commandName, fields, trustedUserAction, cancellationToken);
         }
+        if (commandName == UndoProtocol.Apply)
+        {
+            lock (_modeAuthorityMutationGate)
+                return ApplyUndo(command, fields, trustedUserAction, cancellationToken);
+        }
         if (commandName is "memory.scoped.propose" or "memory.scoped.forget"
             or "memory.scoped.promote" or "memory.scoped.reject")
         {
@@ -2480,7 +2485,7 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     /// Acepta <c>objective</c> (la instrucción) y opcionalmente <c>workspace</c> (raíz; por defecto el cwd).
     /// Emite <c>SessionCreated</c> + <c>WorkspaceRootEstablished</c> con identidad durable + el run Act
     /// completo (RunCreated/RunStarted/Task/Lane/Plan). El plan llama al Turn de Explorer con las tools
-    /// filesystem.read/filesystem.patch bajo la política efectiva; NO es un sustituto del sim y no
+    /// filesystem.read/filesystem.patch/filesystem.apply_patch bajo la política efectiva; NO es un sustituto del sim y no
     /// autoaprueba Ask (sin cliente interactivo, Ask → Deny, ADR-0003).
     /// </summary>
     private CommandAck StartActRun(WireEnvelope command, Dictionary<string, string> fields)
@@ -3376,6 +3381,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         if (name == CompanionPetProtocol.Query || name.StartsWith("companion.pet:", StringComparison.Ordinal)
             || name.StartsWith("companion.pet.events:", StringComparison.Ordinal)) return QueryCompanion(name);
         if (name == "keybindings.extensions") return QueryExtensionKeyBindings(name);
+        if (name == UndoProtocol.Query || name.StartsWith(UndoProtocol.Query + ":", StringComparison.Ordinal))
+            return QueryUndo(name, cancellationToken);
         if (name is "extensions.packages" or "extensions.views" or "extensions.context" or "extensions.context.catalog" || name.StartsWith("extensions.view:", StringComparison.Ordinal)
             || name.StartsWith("extensions.configuration:", StringComparison.Ordinal) || name.StartsWith("extensions.notifications:", StringComparison.Ordinal))
             return QueryExtensionPlatform(name, cancellationToken);

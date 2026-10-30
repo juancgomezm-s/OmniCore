@@ -10,6 +10,8 @@ public enum ProbeKind
     Reading,
     Reasoning,
     StructuredOutput,
+    /// <summary>A version-bound code-edit proposal, followed by a real disposable-fixture oracle.</summary>
+    CodeFixture,
 }
 
 /// <summary>

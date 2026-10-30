@@ -28,8 +28,8 @@ public sealed partial class ModelQualificationHost
             writer.WriteBoolean("probeSetOverride", options.Probes is not null);
             writer.WriteBoolean("suiteComplete", suiteComplete);
             writer.WritePropertyName("benchmarkIdentity"); writer.WriteStartObject();
-            writer.WriteString("suiteId", QuickProbeSuite.SuiteId);
-            writer.WriteString("suiteVersion", QuickProbeSuite.SuiteVersion);
+            writer.WriteString("suiteId", options.Suite == "full" ? FullProbeSuite.SuiteId : QuickProbeSuite.SuiteId);
+            writer.WriteString("suiteVersion", options.Suite == "full" ? FullProbeSuite.SuiteVersion : QuickProbeSuite.SuiteVersion);
             writer.WriteString("taskSetHash", ProbeScorer.TaskSetHash(probes));
             writer.WriteNull("seed"); writer.WriteNull("temperature");
             writer.WriteBoolean("samplingParametersSent", false);

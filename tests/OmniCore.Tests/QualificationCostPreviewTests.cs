@@ -41,8 +41,9 @@ public sealed class QualificationCostPreviewTests
             // Ten probes, three configured generation sends each (initial + two retries).
             Assert.Equal(0.983040m, preview.Usd);
             Assert.Equal("max-declared-and-configured-descriptor-token-estimate", preview.Source);
+            Assert.Equal(2 * preview.Usd, host.PreviewSuiteCost("preview-model", "full").Usd);
             Assert.Throws<ModelQualificationUnsupportedSuiteException>(() =>
-                host.PreviewSuiteCost("preview-model", "full"));
+                host.PreviewSuiteCost("preview-model", "unsupported"));
         });
     }
 

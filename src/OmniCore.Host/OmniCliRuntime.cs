@@ -406,7 +406,7 @@ public sealed partial class OmniCliRuntime : IDisposable
         + " Answer in the conversation. For examples, demonstrations, or rendering tests, include the requested code, Markdown tables, and explanation directly in your final response."
         + " For Markdown demonstrations, present the formatted examples directly rather than wrapping the whole example in a Markdown code fence. If the user asks for literal Markdown source, use a text code fence to keep its syntax literal."
         + " Do not create or modify workspace files unless the user explicitly requests file changes. Do not replace a requested inline answer with links to generated files."
-        + " Preserve existing file identity and unrelated content: read and prefer localized filesystem.patch edits. Existing-file writes require the effective policy, a prior read and the current version token. Delete, move and recreate operations retain their own permissions; never use another tool or process to bypass those permissions or mutation budgets."
+        + " Preserve existing file identity and unrelated content: read and prefer localized filesystem.patch edits. For coordinated edits across files, first call filesystem.apply_patch with mode=preview, then submit the same version-bound file/hunk set with mode=apply; never split an atomic-intent batch to bypass per-turn mutation budgets. Existing-file writes require the effective policy, a prior read and the current version token. Delete, move and recreate operations retain their own permissions; never use another tool or process to bypass those permissions or mutation budgets."
         + " A conversational example does not require filesystem tools or a new plan. Preserve explicit user requests to edit files and all approval and completion requirements.";
 
     /// <summary>Ejecuta un turno Explorer real, componiendo provider, políticas y persistencia.</summary>
@@ -3667,6 +3667,7 @@ public sealed partial class OmniCliRuntime : IDisposable
             var qualificationData = nativeToolOnly || act ? null : Environment.GetEnvironmentVariable("OMNICORE_DATA_DIR");
             var qualification = nativeToolOnly ? null : EmpiricalQualification(modelDefinition, providerDescription,
                 qualificationData, cancellationToken, route.Endpoint);
+            using var runtimeCalibration = new RuntimeCalibrationObserver(server, qualification, qualificationData, sessionId, runId, laneId, route.Id);
             var effectiveProfile = new ModelProfileResolver().Resolve(
                 runtimeModel,
                 providerDescription,
@@ -3746,7 +3747,7 @@ public sealed partial class OmniCliRuntime : IDisposable
                 : (Func<ToolCallId, CancellationToken, Task<string?>>)((toolCallId, token) =>
                     server.ReceiveMailboxMessageAsync(sessionId, runId, route,
                         providerDescription?.BillingMode ?? BillingMode.Unknown, toolCallId, token));
-            var processSessionManager = delegation is null && executingAct
+            var processSessionManager = delegation is null
                 ? server.ProcessSessions(sessionId, workspaceRoot) : null;
             if (processSessionManager is not null)
                 await processSessionManager.PrepareScopeAsync(runId.ToString(), laneId.ToString()).ConfigureAwait(false);
@@ -3781,7 +3782,7 @@ public sealed partial class OmniCliRuntime : IDisposable
                         : HostTools.DelegatedReaderWithMailbox(artifactReadTool)
                 : executingAct
                 ? CreateActHostTools()
-                : OmniHost.CreateExplorerTools(artifactReadTool, mediaReadTool);
+                : OmniHost.CreateExplorerTools(artifactReadTool, mediaReadTool, processSessionManager);
             var extensionBoundaries = new List<IToolIntentBoundary>();
             WebResearchController? webResearch = null;
             try

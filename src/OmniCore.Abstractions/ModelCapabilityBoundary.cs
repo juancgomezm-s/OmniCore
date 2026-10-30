@@ -52,6 +52,8 @@ public sealed class ModelCapabilityBoundary : INativeUserActionIntentBoundary
         new Dictionary<string, ModelToolCapability>
         {
             { "filesystem.read", ModelToolCapability.WorkspaceRead },
+            { "code.navigate", ModelToolCapability.WorkspaceRead },
+            { "code.diagnostics", ModelToolCapability.WorkspaceRead },
             { "media.read", ModelToolCapability.WorkspaceRead },
             { "filesystem.list", ModelToolCapability.WorkspaceRead },
             { "artifact.read", ModelToolCapability.WorkspaceRead },
@@ -72,6 +74,7 @@ public sealed class ModelCapabilityBoundary : INativeUserActionIntentBoundary
             // it grants neither filesystem/process capabilities nor permission grants.
             { "skill.load", ModelToolCapability.PlanProposal },
             { "filesystem.patch", ModelToolCapability.PatchExisting },
+            { "filesystem.apply_patch", ModelToolCapability.PatchExisting },
             { "filesystem.write", ModelToolCapability.CreateFile },
             { "filesystem.delete", ModelToolCapability.DeleteFile },
             { "filesystem.move", ModelToolCapability.MoveOrRename },
@@ -214,7 +217,7 @@ public sealed class ModelCapabilityBoundary : INativeUserActionIntentBoundary
         // filesystem.write intent after checking target metadata. The policy ceiling follows
         // the effective operation (create, localized edit, or full replacement), not payload
         // shape. Namespaced extension tools cannot claim this core identity.
-        if (toolName is "filesystem.write" or "filesystem.patch" or "extension.batch.apply"
+        if (toolName is "filesystem.write" or "filesystem.patch" or "filesystem.apply_patch" or "extension.batch.apply"
             && intent.EffectiveMutationOperation is { } effectiveOperation)
             capability = effectiveOperation;
 
@@ -365,7 +368,7 @@ public sealed class ModelCapabilityBoundary : INativeUserActionIntentBoundary
 
         if (!_toolCapabilities.TryGetValue(toolName, out var capability))
             return ModelCapabilityDecision.Reject("tool has no Session security classification: " + toolName, null);
-        if (toolName is "filesystem.write" or "filesystem.patch" or "extension.batch.apply"
+        if (toolName is "filesystem.write" or "filesystem.patch" or "filesystem.apply_patch" or "extension.batch.apply"
             && intent.EffectiveMutationOperation is { } effectiveOperation)
             capability = effectiveOperation;
         if (toolName == "worktree.integrate")

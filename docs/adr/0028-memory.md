@@ -156,3 +156,18 @@ informarse sin invalidar posteriores consultas o reconciliaciones ya completadas
 No hay transacción distribuida entre journal y memoria; las intenciones y el ledger
 permiten reconciliar esa separación. La aceptación de cada corte debe distinguir
 fallos inyectados de una caída real del proceso.
+
+### M10: evidencia entre Sessions (2026-10-30)
+
+El incremento siguiente admite tres propuestas User durables coincidentes de tres
+Sessions del workspace actual para Project/Workspace. El índice SQLite contiene
+hashes e identidades; nunca reemplaza la verificación de los journals de origen.
+Rechazos, olvido, falta de journal y refs autodeclaradas no acreditan evidencia.
+Global y conflictos conservan Ask. La recuperación consulta primero el recibo de
+una operación aplicada; sin Prepared, una decisión automática incompleta vuelve
+a confirmación humana. El tombstone de olvido impide re-promoción automática.
+
+Las promociones reservan espacio para posteriores olvidos. Un ledger antiguo lleno
+admite hasta 500 recibos adicionales exclusivamente de olvido para no impedir la
+eliminación de sus registros vivos. No se borran recibos idempotentes sin coordinar
+journals. [Contrato, evidencia y límites](../validation/m10-evaluation-and-memory-20261030.md).

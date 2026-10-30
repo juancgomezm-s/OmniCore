@@ -11,6 +11,27 @@ using OmniCore.Protocol;
 
 public sealed class ReleaseUpdateDownloaderTests
 {
+    [Theory]
+    [InlineData("release-assets.githubusercontent.com")]
+    [InlineData("objects.githubusercontent.com")]
+    public async Task Github_signed_CDN_query_is_preserved_without_forwarding_credentials(string host)
+    {
+        var bytes = Package(); var requests = 0;
+        using var directory = new TempDirectory();
+        using var downloader = new ReleaseUpdateDownloader(new Handler(request =>
+        {
+            Assert.Null(request.Headers.Authorization);
+            if (++requests == 1) return new HttpResponseMessage(HttpStatusCode.Redirect)
+            { Headers = { Location = new Uri("https://" + host + "/fixture?sv=2018&sig=public-download-signature") } };
+            Assert.Equal(host, request.RequestUri!.Host);
+            Assert.Contains("sig=public-download-signature", request.RequestUri.Query);
+            return Bytes(bytes);
+        }));
+        var result = await downloader.DownloadAsync(Asset(bytes), "v0.2.0", directory.Path, "0.2.0", TestContext.Current.CancellationToken);
+        Assert.Equal(ReleaseUpdateDownloadStatus.Downloaded, result.Status);
+        Assert.Equal(2, requests);
+    }
+
     [Fact]
     public async Task Verified_download_writes_the_asset_and_reports_its_digest()
     {

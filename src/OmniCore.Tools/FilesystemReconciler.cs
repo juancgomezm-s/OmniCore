@@ -243,6 +243,17 @@ public sealed class FilesystemReconciler : IFilesystemReconciler
     public FilesystemReconciliation Reconcile(string workspaceRoot, string reconciliationJson,
         CancellationToken cancellationToken)
     {
+        try
+        {
+            using var batchDocument = JsonDocument.Parse(reconciliationJson);
+            if (batchDocument.RootElement.ValueKind == JsonValueKind.Object
+                && batchDocument.RootElement.TryGetProperty("kind", out var batchKind)
+                && batchKind.ValueKind == JsonValueKind.String
+                && batchKind.GetString() == FilesystemApplyPatchTool.MetadataKind)
+                return FilesystemApplyPatchTool.Reconcile(workspaceRoot, reconciliationJson, _boundary, cancellationToken);
+        }
+        catch (JsonException) { }
+
         // 1. Fallo cerrado: sin metadatos canónicos no hay forma segura de concluir nada.
         var meta = FilesystemReconciliationMetadata.Parse(reconciliationJson);
         if (meta is null)

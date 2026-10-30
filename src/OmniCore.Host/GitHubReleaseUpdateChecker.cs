@@ -248,9 +248,10 @@ public sealed class GitHubReleaseUpdateChecker : IDisposable
     }
 
     private static bool AllowedAssetRedirect(Uri uri, string tag) => uri.Scheme == Uri.UriSchemeHttps && string.IsNullOrEmpty(uri.UserInfo)
-        && uri.Port == 443 && string.IsNullOrEmpty(uri.Query) && string.IsNullOrEmpty(uri.Fragment)
+        && uri.Port == 443 && string.IsNullOrEmpty(uri.Fragment)
         && (AssetRedirectHosts.Contains(uri.Host) && !uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
             || uri.Host.Equals("github.com", StringComparison.OrdinalIgnoreCase)
+                && string.IsNullOrEmpty(uri.Query)
                 && uri.AbsolutePath.StartsWith("/" + Repository + "/releases/download/" + Uri.EscapeDataString(tag) + "/", StringComparison.Ordinal));
 
     private static async Task<byte[]> ReadBoundedAsync(HttpContent content, int maximum, CancellationToken token)

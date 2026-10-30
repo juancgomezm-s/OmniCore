@@ -310,7 +310,9 @@ public sealed partial class ModelQualificationHost : IDisposable
         // ocurre antes de construir el provider o el runner. Una suite incompleta
         // no publica perfil; los recibos canónicos de consumo no se descartan.
         var selection = Selection(model, provider);
-        var requests = probes.Select(probe => new ProbeRequest(probe, selection)).ToArray();
+        using var fixtures = options.Suite == "full" ? new FullQualificationFixtures() : null;
+        var requests = probes.Select(probe => new ProbeRequest(probe, selection)
+        { FixtureValidator = probe.Kind == ProbeKind.CodeFixture ? fixtures : null }).ToArray();
         var pricing = _configuration?.Pricing(model.Id);
         var estimateSource = "declared-probe-maxima";
         var generationAttempts = GenerationAttempts(provider, options.Provider);
@@ -407,7 +409,8 @@ public sealed partial class ModelQualificationHost : IDisposable
                 estimatedCost, estimateSource, generationAttempts), "application/vnd.omnicore.model-qualification+json",
             ArtifactKind.Other, Sensitivity.Sensitive);
         var profile = _store.UpsertWithTraitsAndEvidence(key, expectedRevision, newState,
-            QuickProbeSuite.SuiteId, QuickProbeSuite.SuiteVersion,
+            options.Suite == "full" ? FullProbeSuite.SuiteId : QuickProbeSuite.SuiteId,
+            options.Suite == "full" ? FullProbeSuite.SuiteVersion : QuickProbeSuite.SuiteVersion,
             traits.Select(trait => new ModelTraitRecord(key.QualificationKeyHash(), nextRevision,
                 trait.Trait, trait.Value, trait.Confidence, trait.Samples, trait.Source)).ToArray(),
             evidence, cancellationToken);
@@ -546,6 +549,7 @@ public sealed partial class ModelQualificationHost : IDisposable
     private static IReadOnlyList<Probe> Suite(string suite) => suite switch
     {
         "quick" => QuickProbeSuite.Probes(),
+        "full" => FullProbeSuite.Probes(),
         _ => throw new ModelQualificationUnsupportedSuiteException(suite),
     };
 
@@ -621,6 +625,7 @@ public sealed partial class ModelQualificationHost : IDisposable
     {
         var instruction = new List<double>();
         var structured = new List<double>();
+        var code = new List<double>();
         var byId = new Dictionary<string, ProbeKind>();
         // El mapeo probe→trait es por tipo, no por nombre: la suite es la única fuente.
         foreach (var probe in probes)
@@ -643,10 +648,16 @@ public sealed partial class ModelQualificationHost : IDisposable
                 case ProbeKind.StructuredOutput:
                     structured.Add(result.Score);
                     break;
+                case ProbeKind.CodeFixture:
+                    code.Add(result.Score);
+                    break;
             }
         }
 
         var traits = new List<QualificationTraitValue>();
+        if (code.Count > 0)
+            traits.Add(new QualificationTraitValue("CodeFixtureEditReliability", code.Average(),
+                Confidence(code.Count), code.Count, "empirical:disposable-code-fixture"));
         if (instruction.Count > 0)
         {
             traits.Add(new QualificationTraitValue("InstructionFollowing",

@@ -131,7 +131,9 @@ public sealed class ConfigLoader
             }
 
             CheckKeys(root, "settings.yaml", "$", ["ui", "budget", "sidebar", "widgets", "locked", "defaultModel", "gates",
-                    "commandAliases", "toolPreferences", "conversation"],
+                    "commandAliases", "toolPreferences", "conversation", "languageServers"],
+                diagnostics);
+            ValidateLanguageServers(root,
                 diagnostics);
             if (root.Children.TryGetValue(new YamlScalarNode("conversation"), out var conversationNode))
             {
@@ -204,6 +206,83 @@ public sealed class ConfigLoader
             Add(diagnostics, "settings.yaml", "$", "config.yamlSyntax", checked((int)ex.Start.Line),
                 checked((int)ex.Start.Column));
             return null;
+        }
+    }
+
+    private static void ValidateLanguageServers(YamlMappingNode root, List<ConfigDiagnostic> diagnostics)
+    {
+        if (!root.Children.TryGetValue(new YamlScalarNode("languageServers"), out var node)) return;
+        if (node is not YamlMappingNode servers || servers.Children.Count > 32)
+        {
+            AddAtNode(diagnostics, "settings.yaml", "languageServers", "config.wrongType", node);
+            return;
+        }
+        var extensionOwners = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in servers.Children)
+        {
+            var name = key is YamlScalarNode { Value: { } scalar } ? scalar : "?";
+            if (!IsYamlString(key) || name.Length is < 1 or > 64
+                || name.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not ('.' or '_' or '-')))
+            {
+                AddAtNode(diagnostics, "settings.yaml", "languageServers", "config.invalidValue", key);
+                continue;
+            }
+            var path = "languageServers." + name;
+            if (value is not YamlMappingNode server)
+            {
+                AddAtNode(diagnostics, "settings.yaml", path, "config.wrongType", value);
+                continue;
+            }
+            CheckKeys(server, "settings.yaml", path, ["command", "args", "languageId", "extensions"], diagnostics);
+            foreach (var property in new[] { "command", "languageId" })
+                if (!server.Children.TryGetValue(new YamlScalarNode(property), out var scalarNode)
+                    || !IsYamlString(scalarNode) || ((YamlScalarNode)scalarNode).Value is not { Length: > 0 and <= 1024 })
+                    AddAtNode(diagnostics, "settings.yaml", path + "." + property, "config.wrongType", server);
+            ValidateStringList(server, "args", path, 64, 1024, required: false, diagnostics);
+            ValidateStringList(server, "extensions", path, 32, 16, required: true, diagnostics);
+            if (server.Children.TryGetValue(new YamlScalarNode("extensions"), out var extensionsNode)
+                && extensionsNode is YamlSequenceNode extensions)
+            {
+                foreach (var extensionNode in extensions.Children.OfType<YamlScalarNode>())
+                {
+                    var extension = extensionNode.Value;
+                    if (string.IsNullOrWhiteSpace(extension)) continue;
+                    if (extensionOwners.TryGetValue(extension, out var previous))
+                        AddAtNode(diagnostics, "settings.yaml", path + ".extensions",
+                            "config.invalidValue", extensionNode);
+                    else extensionOwners.Add(extension, name);
+                }
+            }
+        }
+    }
+
+    private static void ValidateStringList(YamlMappingNode mapping, string property, string path,
+        int maximumItems, int maximumLength, bool required, List<ConfigDiagnostic> diagnostics)
+    {
+        if (!mapping.Children.TryGetValue(new YamlScalarNode(property), out var node))
+        {
+            if (required) AddAtNode(diagnostics, "settings.yaml", path + "." + property, "config.wrongType", mapping);
+            return;
+        }
+        if (node is not YamlSequenceNode sequence || sequence.Children.Count > maximumItems
+            || sequence.Children.Count == 0 && required)
+        {
+            AddAtNode(diagnostics, "settings.yaml", path + "." + property, "config.wrongType", node);
+            return;
+        }
+        foreach (var item in sequence.Children)
+        {
+            if (!IsYamlString(item))
+            {
+                AddAtNode(diagnostics, "settings.yaml", path + "." + property, "config.invalidValue", item);
+                continue;
+            }
+            var text = ((YamlScalarNode)item).Value;
+            if (string.IsNullOrEmpty(text) || text.Length > maximumLength || text.IndexOfAny(['\0', '\r', '\n']) >= 0
+                || property == "args" && LanguageServerDefinition.ContainsCredentialArgument(text)
+                || property == "extensions" && (text[0] != '.' || text.Length < 2
+                    || text.Skip(1).Any(character => !char.IsAsciiLetterOrDigit(character))))
+                AddAtNode(diagnostics, "settings.yaml", path + "." + property, "config.invalidValue", item);
         }
     }
 

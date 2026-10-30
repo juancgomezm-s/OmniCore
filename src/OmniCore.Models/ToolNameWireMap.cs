@@ -19,6 +19,7 @@ internal sealed class ToolNameWireMap
             ["filesystem.list"] = "list_dir",
             ["filesystem.search"] = "grep_files",
             ["filesystem.patch"] = "apply_patch",
+            ["filesystem.apply_patch"] = "apply_patch_batch",
             ["filesystem.write"] = "write_file",
             ["media.read"] = "view_image",
             ["shell.exec"] = "exec_command",

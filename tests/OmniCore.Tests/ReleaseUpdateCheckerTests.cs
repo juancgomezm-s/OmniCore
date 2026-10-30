@@ -9,6 +9,30 @@ namespace OmniCore.Tests;
 
 public sealed class ReleaseUpdateCheckerTests
 {
+    [Fact]
+    public async Task Manifest_follows_Github_signed_CDN_URL_with_query()
+    {
+        var fixture = Fixture("v1.2.3", false, 1);
+        var normal = CatalogHandler([fixture]);
+        // Send through a second handler so the production redirect loop must preserve the query.
+        using var invoker = new HttpMessageInvoker(normal);
+        using var checker = new GitHubReleaseUpdateChecker(new Handler(async (request, token) =>
+        {
+            if (request.RequestUri!.Host == "release-assets.githubusercontent.com")
+            {
+                Assert.Null(request.Headers.Authorization);
+                Assert.Equal("?sv=2018&sig=public-download-signature", request.RequestUri.Query);
+                return new(HttpStatusCode.OK) { Content = new ByteArrayContent(fixture.Manifest) };
+            }
+            if (request.RequestUri.AbsolutePath.EndsWith("/releases/assets/" + fixture.ManifestId, StringComparison.Ordinal))
+                return new(HttpStatusCode.Redirect) { Headers = { Location = new Uri("https://release-assets.githubusercontent.com/fixture?sv=2018&sig=public-download-signature") } };
+            return await invoker.SendAsync(request, token);
+        }));
+        var result = await checker.CheckAsync(Request(), TestContext.Current.CancellationToken);
+        Assert.Equal(ReleaseUpdateStatus.CompatibilityUnknown, result.Status);
+        Assert.Null(result.DiagnosticCode);
+    }
+
     private static ReleaseUpdateCheckRequest Request(ReleaseUpdateChannel channel = ReleaseUpdateChannel.Stable,
         string installed = "1.0.0", bool development = false, ReleaseUpdateEnvironment? environment = null) =>
         new(channel, installed, development, environment ?? new("win-x64", "10.0.1"));

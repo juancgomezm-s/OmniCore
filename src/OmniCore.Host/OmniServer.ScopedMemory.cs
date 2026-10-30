@@ -53,7 +53,8 @@ public sealed partial class OmniServer
         return new ScopedMemoryPolicy(session, new ScopedMemoryStore(_platformPathsFactory().DataDirectory),
             () => _store.ReadFrom(session, 1).Select(_codecs.Decode).ToArray(),
             payload => new EventStream(_store, _codecs, session).Append(payload, DurabilityClass.Barrier),
-            scope => ScopedMemoryAccess.Allowed(_platformPathsFactory(), root).Contains(scope));
+            scope => ScopedMemoryAccess.Allowed(_platformPathsFactory(), root).Contains(scope),
+            sourceSession => _store.ReadFrom(sourceSession, 1).Select(_codecs.Decode).ToArray());
     }
 
     internal void ReconcileScopedMemory(SessionId session, CancellationToken cancellationToken)

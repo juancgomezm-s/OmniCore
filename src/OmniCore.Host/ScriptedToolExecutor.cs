@@ -543,7 +543,7 @@ public sealed class ScriptedToolExecutor : IToolExecutor
             {
                 // Filesystem patch/write and the host-owned integration tool publish files
                 // through the mutation ledger; process write claims are not file-edit debt.
-                if (stream is null || intent.ToolId.ToString() is not ("filesystem.patch" or "filesystem.write" or "worktree.integrate")
+                if (stream is null || intent.ToolId.ToString() is not ("filesystem.patch" or "filesystem.apply_patch" or "filesystem.write" or "worktree.integrate")
                     || intent.Claims.Writes.Count == 0 || intent.Effect == EffectClass.None
                     || _boundary?.ReadRegistry().Ledger.MutationPolicy?.RequirePostEditValidation != true)
                     return;

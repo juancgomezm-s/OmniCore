@@ -105,7 +105,7 @@ public sealed class M5QualificationQuickCoverageTests
         using var fixture = new Fixture();
         var probes = QuickProbeSuite.Probes().Take(2).ToArray();
         var provider = new Provider(probes);
-        var options = new QualificationOptions { Suite = "full", ConsentGiven = true, Provider = provider, Probes = probes };
+        var options = new QualificationOptions { Suite = "unsupported", ConsentGiven = true, Provider = provider, Probes = probes };
         await Assert.ThrowsAsync<ModelQualificationUnsupportedSuiteException>(() => fixture.Host.QualifyAsync("fixture-model", options, CancellationToken.None));
         Assert.Equal(0, provider.Calls);
         using var store = fixture.Store();

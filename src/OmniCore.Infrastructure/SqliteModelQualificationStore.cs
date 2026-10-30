@@ -277,8 +277,14 @@ public sealed partial class SqliteModelQualificationStore : IModelQualificationS
 
     public IReadOnlyList<ModelTraitRecord> Traits(ModelQualificationKey key, long profileRevision,
         CancellationToken cancellationToken)
+        => ReadTraitsCore(key, profileRevision, cancellationToken, null);
+
+    private IReadOnlyList<ModelTraitRecord> ReadTraitsCore(ModelQualificationKey key, long profileRevision,
+        CancellationToken cancellationToken, DbTransaction? transaction)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         using var cmd = _conn.CreateCommand();
+        cmd.Transaction = transaction;
         cmd.CommandText = """
             SELECT key_hash, profile_revision, trait, value, confidence, samples, source
             FROM model_traits WHERE key_hash = :h AND profile_revision = :rev ORDER BY trait

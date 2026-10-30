@@ -108,6 +108,8 @@ public static class StdioProtocol
         "query.processSessions",
         "query.worktreePreview",
         "query.worktreeRetention",
+        "query.workspaceUndo",
+        "command.workspace.undo.apply.user",
     ];
 
     public static IReadOnlyList<NativeQueryDescriptor> NativeQueries { get; } =
@@ -121,6 +123,7 @@ public static class StdioProtocol
         new("process.output", "query.processSessions", "Passive, bounded output already retained for an exact owned process handle", "trusted-session", "session-read", false),
         new("worktree.preview", "query.worktreePreview", "Passive 3-way Git integration proposal for one exact Lane ID in the current Session and Run; returns its apply ownership token", "trusted-session", "session-read", false),
         new("worktree.retention", "query.worktreeRetention", "Passive exact-ref preview for expired snapshots owned by one terminal Run in this Session", "trusted-session", "session-read", false),
+        new("workspace.undo", "query.workspaceUndo", "Read-only compensation review for this Session, including exact files, conflicts and revision", "trusted-session", "session-read", false),
         new("state", "query.state", "Current runtime state", "session", "session-read", true),
         new("sessionIdentity", "query.sessionIdentity", "Current Session and Run identity", "session", "session-read", true),
         new("sessionSecurity", "query.sessionSecurity", "Durable Session security ceiling and revision", "session", "session-read", true),
@@ -174,7 +177,8 @@ public static class StdioProtocol
             || name.StartsWith("process.sessions:", StringComparison.Ordinal)
             || name.StartsWith("process.output:", StringComparison.Ordinal)
             || name.StartsWith("worktree.preview:", StringComparison.Ordinal)
-            || name.StartsWith("worktree.retention:", StringComparison.Ordinal);
+            || name.StartsWith("worktree.retention:", StringComparison.Ordinal)
+            || name.StartsWith("workspace.undo:", StringComparison.Ordinal);
 
     public static bool TryGetQuery(string name, out NativeQueryDescriptor descriptor)
     {
@@ -187,7 +191,8 @@ public static class StdioProtocol
             || query.Name == "process.sessions" && name.StartsWith("process.sessions:", StringComparison.Ordinal)
             || query.Name == "process.output" && name.StartsWith("process.output:", StringComparison.Ordinal)
             || query.Name == "worktree.preview" && name.StartsWith("worktree.preview:", StringComparison.Ordinal)
-            || query.Name == "worktree.retention" && name.StartsWith("worktree.retention:", StringComparison.Ordinal))!;
+            || query.Name == "worktree.retention" && name.StartsWith("worktree.retention:", StringComparison.Ordinal)
+            || query.Name == "workspace.undo" && name.StartsWith("workspace.undo:", StringComparison.Ordinal))!;
         return descriptor is not null;
     }
 
@@ -230,6 +235,7 @@ public static class StdioProtocol
         or "session.security.set" or "session.security.default.set" or "session.model.select" or "session.model.route.respond"
         or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
         or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
+        or "workspace.undo.apply"
         or "run.interrupt" or "run.cancel" or "run.mode.select"
         or "delegation.cancel" or "delegation.disposition" or "delegation.mailbox.send"
         or "attachment.upload.begin" or "attachment.upload.chunk" or "attachment.upload.finish"
@@ -238,6 +244,7 @@ public static class StdioProtocol
 
     public static IReadOnlyList<NativeCommandDescriptor> NativeCommands { get; } =
     [
+        new("workspace.undo.apply", "command.workspace.undo.apply.user", "native-confirmation+hmac+current-session-run+exact-effect-review+current-permissions+receipt", "command.result.lookup", "Compensate one reviewed effect without overwriting subsequent foreign edits"),
         new("extensions.package", "command.extensions.package.user", "native-confirmation+hmac+scope+package-hashes", "command.result.lookup", "Manage local extensions with explicit user consent; install never executes code"),
         new("sim", "command.sim", "generic", "command.result.lookup", "Submit a deterministic simulation scenario"),
         new("sim.resume", "command.sim.resume", "generic", "command.result.lookup", "Resume a deterministic simulation"),
@@ -307,7 +314,8 @@ public sealed record NativeQueryDescriptor(string Name, string Capability, strin
         || Name == "process.sessions" && requestedName.StartsWith("process.sessions:", StringComparison.Ordinal)
         || Name == "process.output" && requestedName.StartsWith("process.output:", StringComparison.Ordinal)
         || Name == "worktree.preview" && requestedName.StartsWith("worktree.preview:", StringComparison.Ordinal)
-        || Name == "worktree.retention" && requestedName.StartsWith("worktree.retention:", StringComparison.Ordinal))
+        || Name == "worktree.retention" && requestedName.StartsWith("worktree.retention:", StringComparison.Ordinal)
+        || Name == "workspace.undo" && requestedName.StartsWith("workspace.undo:", StringComparison.Ordinal))
         ? requestedName : WireName;
 }
 

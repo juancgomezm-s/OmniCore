@@ -295,7 +295,8 @@ public sealed class ToolRuntime
             {
                 additionalEffectiveIntents = batchResolver.ResolveEffectiveAuthorizationIntents(intent,
                     prepContext, execContext, cancellationToken);
-                ValidateEffectiveBatchIntents(intent, additionalEffectiveIntents, execContext.WorkspaceRoot);
+                if (additionalEffectiveIntents.Count > 0)
+                    ValidateEffectiveBatchIntents(intent, additionalEffectiveIntents, execContext.WorkspaceRoot);
             }
             catch (ToolPreflightException ex)
             {
@@ -908,7 +909,8 @@ public sealed class ToolRuntime
             if (execContext.MutationHistory is not null && intent.Effect != EffectClass.None
                 && (intent.Claims.Writes.Count > 0
                     || additionalEffectiveIntents.Any(effective => effective.Claims.Writes.Count > 0))
-                && toolName is ("filesystem.write" or "filesystem.patch" or "worktree.integrate" or "extension.batch.apply"))
+                && toolName is ("filesystem.write" or "filesystem.patch" or "filesystem.apply_patch"
+                    or "worktree.integrate" or "extension.batch.apply"))
             {
                 durableWorkspaceFence = execContext.MutationHistory.AcquireFence(execContext.WorkspaceRoot,
                     cancellationToken);
@@ -992,7 +994,7 @@ public sealed class ToolRuntime
 
         var trustedIntegration = IsTrustedIntegrationTool(tool);
 
-        if (tool is IRequiresReconciliationTool && (reconciliation is null
+        if (tool is IRequiresReconciliationTool && intent.Effect != EffectClass.None && (reconciliation is null
             || execContext.Artifacts is null || reconciliation.BeforeStateRef is null
             || string.IsNullOrWhiteSpace(reconciliation.DurableMetadataJson)))
         {
@@ -1002,17 +1004,20 @@ public sealed class ToolRuntime
         }
 
         var trustedBatchPublication = IsTrustedBatchPublicationTool(tool);
+        var trustedFilesystemBatch = IsTrustedFilesystemBatchTool(tool);
         var trustedDisposition = IsTrustedWorktreeDispositionTool(tool);
         var trustedRetention = IsTrustedWorktreeRetentionTool(tool);
         var validRequiredEnvelope = reconciliation is not null && (IsTrustedIntegrationTool(tool)
             ? ValidateIntegrationEnvelope(intent, execContext, reconciliation)
             : trustedBatchPublication && ((ITrustedBatchPublicationTool)tool)
                 .ValidatePublicationEnvelope(intent, effectiveIntents, execContext, reconciliation)
+            || trustedFilesystemBatch && ((ITrustedFilesystemBatchTool)tool)
+                .ValidateFilesystemBatchEnvelope(intent, additionalEffectiveIntents, execContext, reconciliation)
             || trustedDisposition && ((ITrustedWorktreeDispositionTool)tool)
                 .ValidateWorktreeDispositionEnvelope(intent, execContext, reconciliation)
             || trustedRetention && ((ITrustedWorktreeRetentionTool)tool)
                 .ValidateWorktreeRetentionEnvelope(intent, execContext, reconciliation));
-        if (tool is IRequiresReconciliationTool && !validRequiredEnvelope)
+        if (tool is IRequiresReconciliationTool && intent.Effect != EffectClass.None && !validRequiredEnvelope)
         {
             const string cause = "Required batch metadata did not match its authorized targets.";
             _emit(new ToolCallFailed(call.ToolCallId, cause, EffectOutcome.None, ToolErrorCode.ToolFailure));
@@ -1020,6 +1025,7 @@ public sealed class ToolRuntime
         }
 
         if (reconciliation?.DurableMetadataJson is not null && !trustedIntegration && !trustedBatchPublication
+            && !trustedFilesystemBatch
             && !trustedDisposition && !trustedRetention)
         {
             const string cause = "Custom reconciliation metadata is restricted to the registered integration tool.";
@@ -1115,7 +1121,17 @@ public sealed class ToolRuntime
                         EffectOutcome.None);
                 }
             }
-            execContext.BeforeEffect?.Invoke(intent);
+            var beforeEffectIntent = intent;
+            if (intent.ToolId.ToString() == FilesystemApplyPatchTool.Id && additionalEffectiveIntents.Count > 0)
+                beforeEffectIntent = new ToolIntent(intent.ToolCallId, intent.ToolId, intent.NormalizedArgumentsJson,
+                    intent.Effect, new ResourceClaims(intent.Claims.Reads,
+                        additionalEffectiveIntents.SelectMany(item => item.Claims.Writes).ToArray(),
+                        intent.Claims.Network, intent.Claims.Process, intent.Claims.Secrets,
+                        intent.Claims.WorktreeDisposition, intent.Claims.WorktreeRetention), intent.Risk,
+                    intent.Reconciliation, intent.EffectiveMutationOperation,
+                    intent.RequiresPhysicalCreateCapability, intent.EffectiveMutationHistoryRevision,
+                    intent.EffectiveMutationProposal);
+            execContext.BeforeEffect?.Invoke(beforeEffectIntent);
             if (reconciliation?.StartedEntityEvent is { } entityEvent) _emit(entityEvent);
             _emit(new ToolCallStarted(call.ToolCallId, intent.Effect, durableReconciliation)
             {
@@ -1233,7 +1249,8 @@ public sealed class ToolRuntime
         _emit(new ToolCallSucceeded(call.ToolCallId, "{\"summary\":\"" + Esc(result.Summary) + "\""
             + (processReadThrough is { } delivered ? ",\"displayOutputThrough\":"
                 + delivered.ToString(System.Globalization.CultureInfo.InvariantCulture) : "") + "}")
-        { AfterStateRef = tool is FilesystemWriteTool or FilesystemPatchTool && result.AfterStateBytes is { } bytes
+        { AfterStateRef = tool is FilesystemApplyPatchTool ? result.Artifact
+            : tool is FilesystemWriteTool or FilesystemPatchTool && result.AfterStateBytes is { } bytes
             && reconciliation?.ExpectedPostHash == FileVersion.VersionToken(bytes)
                 ? FilesystemPreimage.CaptureAfter(execContext.Artifacts, bytes) : null,
             ResultArtifact = result.Artifact, ActivityEvidence = result.ActivityEvidence,
@@ -1503,6 +1520,13 @@ public sealed class ToolRuntime
     private static bool IsTrustedBatchPublicationTool(ITool tool) =>
         tool is ITrustedBatchPublicationTool
         && tool.Descriptor.Id.ToString() == "extension.batch.apply"
+        && tool.Descriptor.Source.Kind == SourceKind.BuiltIn
+        && tool.Descriptor.Source.Trust == TrustLevel.Core
+        && tool.Descriptor.Protection == ToolProtection.Protected;
+
+    private static bool IsTrustedFilesystemBatchTool(ITool tool) =>
+        tool is ITrustedFilesystemBatchTool
+        && tool.Descriptor.Id.ToString() == FilesystemApplyPatchTool.Id
         && tool.Descriptor.Source.Kind == SourceKind.BuiltIn
         && tool.Descriptor.Source.Trust == TrustLevel.Core
         && tool.Descriptor.Protection == ToolProtection.Protected;

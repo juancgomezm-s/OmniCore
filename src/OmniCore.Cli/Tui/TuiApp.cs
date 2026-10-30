@@ -3372,6 +3372,9 @@ public sealed partial class TuiApp
     private bool OpenClientView(ClientActionInvocation action)
     {
         var bare = action.Arguments.Count == 0;
+        if (action.ActionId == ClientActionIds.WorkspaceUndo && (bare
+            || action.Arguments.Count == 1 && Guid.TryParseExact(action.Arguments[0], "D", out _)))
+        { ShowUndo(bare ? null : action.Arguments[0]); return true; }
         string? sessionQuery = action.ActionId switch
         {
             ClientActionIds.ContextInspect when bare => "context",

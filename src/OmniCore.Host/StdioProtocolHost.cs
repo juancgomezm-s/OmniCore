@@ -227,7 +227,8 @@ public static class StdioProtocolHost
                     or "session.model.select" or "session.model.route.respond"
                     or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
                     or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
-                    or "external.memory.consent" or "interaction.respond" or "interaction.continue"
+                    or "workspace.undo.apply"
+                        or "external.memory.consent" or "interaction.respond" or "interaction.continue"
                     or "command.invoke.user" or "command.continue" or "workflow.continue"
                     or "process.control"
                     or "delegation.cancel" or "delegation.disposition" or "delegation.mailbox.send"
@@ -308,7 +309,8 @@ public static class StdioProtocolHost
                     or "session.model.select" or "session.model.route.respond"
                     or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
                     or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
-                    or "run.interrupt" or "run.cancel" or "run.mode.select" or "external.memory.consent" or "interaction.respond" or "interaction.continue"
+                        or "workspace.undo.apply"
+                        or "run.interrupt" or "run.cancel" or "run.mode.select" or "external.memory.consent" or "interaction.respond" or "interaction.continue"
                     or "command.invoke.user" or "command.continue" or "workflow.continue" or "attachment.upload.begin"
                     or "process.control"
                     or "attachment.upload.chunk" or "attachment.upload.finish" or "extensions.package"
@@ -601,6 +603,7 @@ public static class StdioProtocolHost
             or "session.model.select" or "session.model.route.respond"
             or "skills.activate" or "skills.release" or "memory.session.add" or "memory.session.propose"
             or "memory.session.forget" or "memory.session.promote" or "memory.session.reject"
+                    or "workspace.undo.apply"
             or "external.memory.consent" or "interaction.respond" or "interaction.continue"
             or "command.invoke.user" or "command.continue" or "workflow.continue"
             or "process.control"
@@ -1095,6 +1098,25 @@ public static class StdioProtocolHost
                 || interactionId.GetString() != parsedInteraction.ToString("D")
                 || !payload.RootElement.TryGetProperty("optionId", out var optionId)
                 || optionId.ValueKind != JsonValueKind.String || optionId.GetString() is not ("allow_route" or "deny")) return false;
+            scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
+                CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
+            return true;
+        }
+        else if (commandName == "workspace.undo.apply")
+        {
+            if (expectedSession.Value is null || properties.Length != 6
+                || properties.Except(["cmd", "sessionId", "effectId", "revision", "confirmed", "expectedRunId"], StringComparer.Ordinal).Any()
+                || !payload.RootElement.TryGetProperty("sessionId", out var session) || session.ValueKind != JsonValueKind.String
+                || session.GetString() != expectedSession.Value
+                || !payload.RootElement.TryGetProperty("expectedRunId", out var run)
+                || (expectedRun.Value is null ? run.ValueKind != JsonValueKind.Null
+                    : run.ValueKind != JsonValueKind.String || run.GetString() != expectedRun.Value)
+                || !payload.RootElement.TryGetProperty("effectId", out var effect) || effect.ValueKind != JsonValueKind.String
+                || !Guid.TryParseExact(effect.GetString(), "D", out var effectId) || effect.GetString() != effectId.ToString("D")
+                || !payload.RootElement.TryGetProperty("revision", out var revision) || revision.ValueKind != JsonValueKind.String
+                || revision.GetString() is not { Length: 64 } hash || hash.Any(c => c is not (>= '0' and <= '9' or >= 'a' and <= 'f'))
+                || !payload.RootElement.TryGetProperty("confirmed", out var confirmed) || confirmed.ValueKind != JsonValueKind.String
+                || confirmed.GetString() != "true") return false;
             scope = new(expectedSession.Value, expectedRun.Value, workspaceHash, null,
                 CheckRevision: false, RequirePlanRun: false, RequestedMode: null);
             return true;

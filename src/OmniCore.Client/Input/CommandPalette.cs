@@ -18,9 +18,10 @@ public static class CommandPalette
         foreach (var command in ClientCommandRegistry.Default.Commands)
         {
             var enabled = command.ActionId is not (ClientActionIds.RunCancel or ClientActionIds.RunInterrupt) || context["runActive"];
+            if (command.ActionId == ClientActionIds.WorkspaceUndo && modelWorkActive) enabled = false;
             entries.Add(new("action:" + command.ActionId, "/" + HumanCommandAliases.DisplayName(command.Name, text.Locale),
                 text.Resolve(command.DescriptionKey), "Core", new(KeyBindingTargetKind.Action, command.ActionId), enabled,
-                enabled ? null : text.Resolve("palette.no_run")));
+                enabled ? null : text.Resolve(command.ActionId == ClientActionIds.WorkspaceUndo ? "palette.busy" : "palette.no_run")));
         }
         foreach (var id in new[] { "sidebar.toggle", "model.select", "preferences.open", "keybindings.open", "updates.open", "session.search", "agent.inspect", "mode.open", "permissions.open", "reasoning.open", "think.open" })
             entries.Add(new("action:" + id, text.Resolve("palette.action." + id), "", "Core", new(KeyBindingTargetKind.Action, id), true));

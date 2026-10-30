@@ -43,7 +43,37 @@ public sealed class UndoService : IDisposable
 
     public UndoPlan Plan(SessionId sessionId, ToolCallId? effectId = null) => _snapshots.BuildPlan(sessionId, effectId);
 
-    public UndoResult Undo(SessionId sessionId, ToolCallId? effectId, CancellationToken cancellationToken)
+    internal ToolCallId? PendingEffect(SessionId sessionId) => FindUnfinishedUndo(_events.ReadFrom(sessionId, 1))?.OriginalEffect;
+
+    internal string? LastOutcome(SessionId sessionId, ToolCallId effectId) => _events.ReadFrom(sessionId, 1)
+        .Select(_codecs.Decode).OfType<UndoCompleted>().LastOrDefault(item => item.OriginalEffect == effectId)?.Outcome.ToString();
+
+    /// <summary>Read-only review of attributed effects against the current workspace. Never recovers or writes.</summary>
+    public UndoPlan Preview(SessionId sessionId, ToolCallId? effectId = null)
+    {
+        var plan = Plan(sessionId, effectId);
+        return plan with
+        {
+            Entries = plan.Entries.Select(entry =>
+        {
+            if (entry.State != "Ready") return entry;
+            try
+            {
+                var current = Hash(ReadCurrent(entry.RelativePath));
+                return entry with
+                {
+                    State = current == entry.ExpectedCurrentHash ? "Ready"
+                    : current == entry.ResultingHash ? "AlreadyRestored" : "Conflict"
+                };
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException)
+            { return entry with { State = "Conflict" }; }
+        }).ToArray()
+        };
+    }
+
+    public UndoResult Undo(SessionId sessionId, ToolCallId? effectId, CancellationToken cancellationToken,
+        bool confirmedByUser = false, CommandId? commandIdOverride = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var lease = _leases.Acquire(_root, cancellationToken);
@@ -88,7 +118,7 @@ public sealed class UndoService : IDisposable
         var intent = new ToolIntent(ToolCallId.New(), new ToolId("workspace.undo"), "{}", EffectClass.NonIdempotent,
             claims, ToolRisk.High, null);
         AuthorizedToolIntent authorized;
-        try { authorized = _permissions.Authorize(intent); }
+        try { authorized = confirmedByUser ? _permissions.AuthorizeApproved(intent, null) : _permissions.Authorize(intent); }
         catch (PermissionDeniedException) { return new(UndoOutcome.Unsupported, entries[0].OriginalEffect, [], "WorkspaceWrite authorization is required."); }
         if (authorized.Decision.Final != PermissionDecision.Allow)
             return new(UndoOutcome.Unsupported, entries[0].OriginalEffect, [], "WorkspaceWrite authorization is required.");
@@ -127,7 +157,7 @@ public sealed class UndoService : IDisposable
         var undoReceipts = PrepareUndoReceipts(entries, pendingEntries, cancellationToken);
 
         var undoId = Guid.NewGuid().ToString("N");
-        var commandId = CommandId.New();
+        var commandId = commandIdOverride ?? CommandId.New();
         var sourceAttribution = entries[0].Attribution!;
         var undoAttribution = sourceAttribution with { UndoExecutionId = sourceAttribution.UndoExecutionId };
         try
