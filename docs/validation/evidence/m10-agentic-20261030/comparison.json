@@ -1,0 +1,55 @@
+{
+  "schema": "omnicore.regression-comparison.v1",
+  "benchmarkIdentity": {
+    "suiteId": "omnicore-agentic-11",
+    "suiteVersion": "1.1.0",
+    "taskSetHash": "eab7dd4725194c68f1da939d0a1dd609f62bef652345e589e3263f69baec9739",
+    "seed": null,
+    "temperature": null,
+    "samplingParametersSent": false,
+    "reasoningEffort": "medium"
+  },
+  "measurementPolicy": {
+    "version": 1,
+    "time": "harness-before-launch-to-exit-including-recovery",
+    "turns": "accepted-user-prompt-cycles-including-children",
+    "tools": "requested-calls-including-rejected-and-owned-children",
+    "tokens": "reported-total-input-including-cache-plus-output-main-and-meta",
+    "context": "peak-reported-request-input-minus-initial-reported-request-input",
+    "frontier": "completed-escalations-under-pinned-single-model-policy",
+    "cost": "observed-subscription-charge-only-not-public-api-list-price",
+    "success": "independent-behavior-preservation-and-scenario-control-oracles"
+  },
+  "declaredModelIdentityMatches": true,
+  "bothDeclaredLive": true,
+  "comparableByDeclaredIdentity": true,
+  "provenanceVerified": false,
+  "results": [
+    {
+      "runtime": "omnicore-cli",
+      "measurementSource": "live",
+      "tasks": 11,
+      "successRate": 1.0,
+      "timeSeconds": 511.38999999995576,
+      "turns": 15,
+      "toolCalls": 58,
+      "tokens": null,
+      "contextGrowthTokens": null,
+      "frontierEscalations": 0,
+      "costUsd": null
+    },
+    {
+      "runtime": "omnicoder-pi",
+      "measurementSource": "live",
+      "tasks": 11,
+      "successRate": 0.9090909090909091,
+      "timeSeconds": 106.93700000003446,
+      "turns": 13,
+      "toolCalls": 44,
+      "tokens": null,
+      "contextGrowthTokens": null,
+      "frontierEscalations": 0,
+      "costUsd": null
+    }
+  ]
+}

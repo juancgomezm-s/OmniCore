@@ -1,0 +1,15 @@
+{
+  "schema": "omnicore.agentic-acceptance.v1",
+  "suiteId": "omnicore-agentic-11",
+  "suiteVersion": "1.1.0",
+  "taskSetHash": "eab7dd4725194c68f1da939d0a1dd609f62bef652345e589e3263f69baec9739",
+  "caseCount": 11,
+  "sameBaselineBytes": true,
+  "corePassed": 11,
+  "piPassed": 10,
+  "allControlsExercised": true,
+  "consumerUiAcceptance": false,
+  "singleSamplePerScenario": true,
+  "newCiAcceptance": false,
+  "coreBatteryAccepted": true
+}

@@ -1,15 +1,17 @@
 # OmniCore
 
-**M10 Core candidato de cierre (2026-10-30):** teclado/paleta/búsqueda, memoria
-multiscoped con evidencia, `/undo` TUI y nativo, batch patch, LSP Strong,
-evaluación full y calibración implementados. [Matriz y evidencia](docs/plans/m10-closure-20261030.md).
-Main `49bf57e6`, CI 5/5, rc.3 preview e instalación personal con actualización
-automática aceptadas; [acta vigente](docs/validation/m10-startup-installed-20261030.md).
-Mascota, panel compacto, Consolas 16 px/ClearType y terminal actual conservados.
-Full live pasó 20/20 con ChatGPT; no sustituye la batería agentic de once categorías.
-El [incremento local de métricas y pendientes](docs/validation/m10-regression-measurements-20261030.md)
-distingue esa batería, comparación OmniCoder/Pi y aceptación del consumidor. M9 Core
-aceptado no se reabre y OmniCoder sigue en solo lectura.
+**M10 Core: aceptación funcional completada (2026-10-30).** Teclado/paleta/búsqueda,
+memoria multiscoped, undo TUI/nativo, batch patch, LSP Strong, calibración y updater
+cuentan con actas. [Batería agentic real](docs/validation/m10-agentic-20261030.md):
+Core **11/11**, Pi **10/11** (fallo deliberado 503), mismas entradas/baselines,
+suscripción ChatGPT, métricas y evidencia durable; informes es/en/fr/it.
+Se corrigen previewToken y preview sin escrituras en el runtime. Regresión focal
+48/48 C#, 47/47 Python. La integración se acredita con CI del PR; el benchmark
+no declara por sí solo una CI nueva. [Matriz](docs/plans/m10-closure-20261030.md).
+Main anterior `49bf57e6`/rc.3 e instalación ya aceptadas; mascota, panel compacto,
+Consolas 16 px/ClearType y terminal actual conservados. M9 `2f79a411` integrado;
+no se reabre su trabajo. OmniCoder permanece en solo lectura y su aceptación
+propia no se certifica desde Core.
 
 **Directiva vigente M9/M10 (2026-10-23):** leer primero
 [M9-M10-UI-OWNERSHIP](docs/plans/m8-m10-user-localization.md#directiva-m9-m10-ui-ownership--un-producto-interfaz-preservada-2026-10-23).

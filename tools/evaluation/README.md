@@ -3,8 +3,8 @@
 `measure.py` extracts the Core arm of a regression receipt from explicitly supplied,
 closed SQLite journal snapshots. It never opens a runtime Session, recovers Runs,
 calls a provider, executes a task or modifies the journal. Python 3.11+ and the
-standard library suffice. This tooling does not itself implement the fixed
-agentic suite of spec §84 or prove the comparison required by §97.
+standard library suffice. The exporter alone does not execute the agentic battery. The opt-in drivers below
+implement the fixed eleven-category suite of spec §84 and produce the §97 comparison.
 
 Create a consistent SQLite backup **after the test process has closed**, including
 committed WAL data in the backup. Do not copy only the main file of a live database.
@@ -94,3 +94,92 @@ The operator must independently retain and review their underlying evidence.
 Do not relabel simulator/qualification fixtures as the agentic battery, or change
 another harness's runtime name to manufacture a Pi comparison. Missing external
 measurements remain missing.
+
+
+## Opt-in live agentic battery
+
+`agentic_suite.py` pins eleven dependency-free JavaScript repositories, original
+file hashes, identical objectives for both arms, immutable public test gates and
+an independent behavior/preservation oracle stored outside the workspace.
+`run_agentic.py` drives the production Core CLI/Host and the existing consumer's
+`PiRpcClient` plus the installed Pi executable. It never edits the consumer.
+`finalize_agentic.py` rechecks settled receipts without calling a model.
+The [2026-10-30 acceptance](../../docs/validation/m10-agentic-20261030.md)
+records actual results, controls, image hashes and measurement limits.
+
+Prerequisites: Python 3.11+, Node 24, .NET 10, Git and (for Core's Windows console
+permissions) `pywinpty` in an explicitly supplied private dependency directory.
+This is not part of automatic qualification or CI model traffic. CI builds the
+Host driver and runs offline oracle/receipt tests only. No OS or global package
+installation is performed by these scripts.
+
+Prepare an explicitly marked disposable evaluation root with
+`evaluation-root.json`; its contents are operator-owned. Supply settings with:
+
+- `evaluationRoot`, `coreConfig`, `coreData`, `piAgent`, `output`, `coreCli`,
+  `coreDriver`: absolute paths inside that root. The two executable DLLs must be
+  adjacent in **one** CLI image. Rebuilding and mixing Host/Engine/Models assemblies
+  between interruption and resume correctly invalidates runtime fingerprints.
+- `node`, `piCli`, `piClient`: explicit existing Node, Pi CLI and consumer RPC
+  module paths; the latter two are read-only. `pythonDependencies` is optional.
+- `billingMode: "IncludedQuota"`, `profile: "codex"`, and optional
+  `taskTimeoutSeconds` (180 by default). The pinned model is `gpt-6.1-sol`, medium
+  reasoning, without sending seed or temperature.
+
+Provision only the subscription access needed for the private profiles, without
+logging secrets or copying a personal configuration tree. This harness never
+provisions paid API credentials. Keep private `auth.json`/`credentials.ini`
+outside reports and source control; remove evaluation access copies after use.
+Use an autonomous private permissions profile and versioned FullAgent conversation
+security; the denial scenario installs its own explicit refusal. Never point the
+drivers at a personal journal, workspace, installation or authentication store.
+
+Build the CLI and driver into an isolated artifacts directory. Copy only
+`CoreDriver.dll`, `CoreDriver.deps.json` and `CoreDriver.runtimeconfig.json` from
+its output next to `omni.dll`; retain the CLI's existing Core assemblies.
+Before the runs, invoke that driver with a JSON request containing `mode: "prepare"`,
+`workspace` and `evaluationRoot`, with the same private `OMNICORE_CONFIG_DIR` and
+`OMNICORE_DATA_DIR`; this records explicit medium reasoning through the public
+production preference store. Every scenario gets a fresh fixture/config clone.
+
+```powershell
+python tools/evaluation/run_agentic.py settings.json --arm core
+python tools/evaluation/run_agentic.py settings.json --arm pi
+python tools/evaluation/finalize_agentic.py settings.json
+```
+
+Output directories are exclusive; failed attempts are retained, never silently
+replaced. `--ids` selects diagnostic cases. For incremental finalization,
+`sourceRoot` identifies the original complete run and `caseSources` explicitly
+maps replacement receipts by arm/id. Every selected objective must equal the
+current pinned objective, and Core/Pi baselines must match byte for byte.
+Retain the original per-version inputs and image manifests; receipt composition
+must be disclosed, not presented as one fresh batch.
+
+Controls are real: an explicit write refusal, a single HTTP 503 from a loopback
+relay to a fixed HTTPS subscription origin, a supplied context above 12,000
+reported input tokens, a process restart after the first write, and bounded live
+child work. The relay neither logs nor persists request headers/bodies. Core uses
+its native Explore/Implement/Verify workflow and accepted owned implementation
+worktree, with a Node verifier bound to the precise argv. The independent oracle
+checks that tree, its native repository/owner binding and accepted results;
+publication into the parent is a separate action and is not claimed. Pi uses an
+explicit test extension with bounded file tools and one live child through the
+same RPC client. These are different orchestration designs under the same task.
+Node's preserve-symlinks flags let the fixed verifier run inside Windows Strong
+without resolving a forbidden parent directory. No sandbox policy is widened.
+
+The harness measures wall time through process exit, including recovery and
+Core's native validation; the independent oracle runs afterwards. Turns and tools
+are native admitted turns/requested calls, including children and denials; resume
+can preserve a Core Turn whereas Pi admits another user message. Reported total
+input (including cache) plus output is counted once. Incomplete retry usage and
+unobserved subscription charges remain `null`; Pi's nominal API price is not a
+subscription bill. Context growth is reported input growth, not an exact shared
+tokenizer/context snapshot. Compaction is an observed event count; externalized
+artifact counts remain unknown when not exposed. Finalization may report complete
+invocation usage through a closed benchmark checkpoint even when a parent workflow
+Run remains open for a later publication; the strict terminal-Run exporter is
+unchanged. Model identity is declared, not cryptographically authenticated.
+One sample per case supports functional acceptance, not statistical performance
+ranking or consumer UI acceptance.

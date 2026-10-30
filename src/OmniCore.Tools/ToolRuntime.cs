@@ -760,7 +760,14 @@ public sealed class ToolRuntime
             {
                 refreshed = batchResolver.ResolveEffectiveAuthorizationIntents(intent,
                     new ToolPreparationContext(execContext.WorkspaceRoot, DateTimeOffset.UtcNow), execContext, cancellationToken);
-                ValidateEffectiveBatchIntents(intent, refreshed, execContext.WorkspaceRoot);
+                // The concrete batch patch tool has a read-only preview operation.
+                // It intentionally resolves no write intents; every publication and
+                // every other batch resolver still requires a nonempty exact batch.
+                if (refreshed.Count > 0)
+                    ValidateEffectiveBatchIntents(intent, refreshed, execContext.WorkspaceRoot);
+                else if (additionalEffectiveIntents.Count != 0 || tool is not FilesystemApplyPatchTool
+                    || intent.Effect != EffectClass.None || intent.Claims.Writes.Count != 0)
+                    throw new InvalidDataException("Effective batch intent count is outside its safe bound.");
                 if (PreflightEffectiveMutationBatch(refreshed, execContext) is { } refusal)
                     throw new ToolPreflightException(refusal.Code, refusal.Message);
             }

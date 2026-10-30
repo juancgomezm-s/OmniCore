@@ -1,0 +1,457 @@
+{
+  "schema": "omnicore.regression-measurements.v1",
+  "runtime": "omnicoder-pi",
+  "measurementSource": "live",
+  "benchmarkIdentity": {
+    "suiteId": "omnicore-agentic-11",
+    "suiteVersion": "1.1.0",
+    "taskSetHash": "eab7dd4725194c68f1da939d0a1dd609f62bef652345e589e3263f69baec9739",
+    "seed": null,
+    "temperature": null,
+    "samplingParametersSent": false,
+    "reasoningEffort": "medium"
+  },
+  "modelIdentity": {
+    "providerId": "chatgpt-subscription",
+    "modelId": "gpt-6.1-sol",
+    "modelRevision": null,
+    "adapterProfile": "codex",
+    "endpoint": "https://chatgpt.com/backend-api",
+    "protocol": "OpenAIResponses"
+  },
+  "measurementPolicy": {
+    "version": 1,
+    "time": "harness-before-launch-to-exit-including-recovery",
+    "turns": "accepted-user-prompt-cycles-including-children",
+    "tools": "requested-calls-including-rejected-and-owned-children",
+    "tokens": "reported-total-input-including-cache-plus-output-main-and-meta",
+    "context": "peak-reported-request-input-minus-initial-reported-request-input",
+    "frontier": "completed-escalations-under-pinned-single-model-policy",
+    "cost": "observed-subscription-charge-only-not-public-api-list-price",
+    "success": "independent-behavior-preservation-and-scenario-control-oracles"
+  },
+  "provenanceVerified": false,
+  "tasks": [
+    {
+      "id": "repository-exploration",
+      "timeSeconds": 11.375,
+      "turns": 1,
+      "toolCalls": 7,
+      "tokens": 10758,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 346,
+      "observations": {
+        "inputTokensObserved": 10525,
+        "outputTokensObserved": 233,
+        "peakRequestInputTokensObserved": 1963,
+        "contextGrowthObserved": 346,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-by-this-pi-rpc-client",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "sourceResultSha256": "42156b0bb3100bde9df6f34c3ee8373da734907462e754e989b034da49ec0a42",
+        "messagesObserved": 15
+      },
+      "control": {
+        "required": "normal",
+        "satisfied": true
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "f648d6bab9b8d5aca944f7634239e6e4229ebe50f4ddb8b2ac6a87e85a0fe4cf",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "df52ac6cefcc6008ad970a51450fdbffe6812b29dd341159be39043b44bc6d5e"
+    },
+    {
+      "id": "simple-bug",
+      "timeSeconds": 6.453000000008615,
+      "turns": 1,
+      "toolCalls": 2,
+      "tokens": 5081,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 114,
+      "observations": {
+        "inputTokensObserved": 4985,
+        "outputTokensObserved": 96,
+        "peakRequestInputTokensObserved": 1721,
+        "contextGrowthObserved": 114,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-by-this-pi-rpc-client",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "sourceResultSha256": "1265dcc2c6bf65ba2031b00947b348ff48959625761bd79244e90e22fa5861c1",
+        "messagesObserved": 7
+      },
+      "control": {
+        "required": "normal",
+        "satisfied": true
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "b40cddb19fd4872079989b59a8db861e39b08b55659ae66506d808b40c85799d",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "18f6a6892d19ec12fd2a42161c4a2690904a46879dc476d9b1542659a38ac9b8"
+    },
+    {
+      "id": "multi-file-bug",
+      "timeSeconds": 16.75,
+      "turns": 1,
+      "toolCalls": 7,
+      "tokens": 10857,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 388,
+      "observations": {
+        "inputTokensObserved": 10574,
+        "outputTokensObserved": 283,
+        "peakRequestInputTokensObserved": 2012,
+        "contextGrowthObserved": 388,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-by-this-pi-rpc-client",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "sourceResultSha256": "5ceeb2d4f16b53d4eb35ce28dcaf58d9d35c05f7b972913b60837f116bdafc0e",
+        "messagesObserved": 15
+      },
+      "control": {
+        "required": "normal",
+        "satisfied": true
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "fdced8e388b413fa1b7951ab98d2de8df973c7ddd4cf6fb0581e8066eedbf000",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "a9a22a2adf9a3df1c37b18d71c8d61bbd0621410ddd88624ff67adf83e85e3ce"
+    },
+    {
+      "id": "build-failure",
+      "timeSeconds": 8.25,
+      "turns": 1,
+      "toolCalls": 3,
+      "tokens": 7010,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 184,
+      "observations": {
+        "inputTokensObserved": 6840,
+        "outputTokensObserved": 170,
+        "peakRequestInputTokensObserved": 1802,
+        "contextGrowthObserved": 184,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-by-this-pi-rpc-client",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "sourceResultSha256": "baff7de3a39e89807e83a38c6cb1fc6bc8cf0fcfe34ef2d3a8d26b8c0e33d8bf",
+        "messagesObserved": 9
+      },
+      "control": {
+        "required": "normal",
+        "satisfied": true
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "eb803b989f58403f62840884ce74cf7401cc1681797d327e7aa4013a78eca309",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "98a49ab505b88c145f4f3ddb7a3bfbb4cf4f333bd6ff51e6e977d79b8d29b502"
+    },
+    {
+      "id": "test-failure",
+      "timeSeconds": 8.672000000020489,
+      "turns": 1,
+      "toolCalls": 4,
+      "tokens": 7425,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 314,
+      "observations": {
+        "inputTokensObserved": 7191,
+        "outputTokensObserved": 234,
+        "peakRequestInputTokensObserved": 1933,
+        "contextGrowthObserved": 314,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-by-this-pi-rpc-client",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "sourceResultSha256": "e42772d5c14a81551b2dd3b240abf9a3ad00f7a506c02462589af8e10f1a61c1",
+        "messagesObserved": 10
+      },
+      "control": {
+        "required": "normal",
+        "satisfied": true
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "28b61ca7cf8152f1d6f77f9bcbda39109223b0251817719541611af08b1c1178",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "64064051a85fd91f8f5b0637feee6e84811b244490b9fde873e5b9b38ffd8ae8"
+    },
+    {
+      "id": "refactor",
+      "timeSeconds": 11.96899999998277,
+      "turns": 1,
+      "toolCalls": 8,
+      "tokens": 12989,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 492,
+      "observations": {
+        "inputTokensObserved": 12600,
+        "outputTokensObserved": 389,
+        "peakRequestInputTokensObserved": 2120,
+        "contextGrowthObserved": 492,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-by-this-pi-rpc-client",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "sourceResultSha256": "0f6183075f09c58bdfc64234d1987ed433a72aa0499448fd4618a487ea5e4a5a",
+        "messagesObserved": 17
+      },
+      "control": {
+        "required": "normal",
+        "satisfied": true
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "e76b38cff9157117ec007f192ce5534660c2f84dd979039a09a3367599b5513e",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "a3c905cd65032015a07ad763ab2e26a81a9be56ce40c5859131e59ec04db984a"
+    },
+    {
+      "id": "context-heavy",
+      "timeSeconds": 12.109000000025844,
+      "turns": 1,
+      "toolCalls": 4,
+      "tokens": 114190,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 282,
+      "observations": {
+        "inputTokensObserved": 113960,
+        "outputTokensObserved": 230,
+        "peakRequestInputTokensObserved": 22940,
+        "contextGrowthObserved": 282,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-by-this-pi-rpc-client",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "sourceResultSha256": "a98f928186ac2e534f495c25dba75efdc82a01f53a7f91d236a77fd19a6ac712",
+        "messagesObserved": 11
+      },
+      "control": {
+        "required": "context-pressure",
+        "satisfied": true,
+        "minimumReportedInputTokens": 12000,
+        "observedPeak": 22940
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "7ea54ab22d360288fe79dce67396e30c0d4d3c9b5dc6655a0a10eaabba923796",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "d21baab0f6748233ae9751565334835d90158f5196beb3e681b1e06e5d19e0e4"
+    },
+    {
+      "id": "delegated-task",
+      "timeSeconds": 14.812000000005355,
+      "turns": 2,
+      "toolCalls": 4,
+      "tokens": 11073,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 236,
+      "observations": {
+        "inputTokensObserved": 10780,
+        "outputTokensObserved": 293,
+        "peakRequestInputTokensObserved": 1964,
+        "contextGrowthObserved": 236,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-by-this-pi-rpc-client",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "sourceResultSha256": "021d8c81e8ee861040d16a80ca6725d828504f24af3e8c0398857278e7a0e1c1",
+        "messagesObserved": 9
+      },
+      "control": {
+        "required": "delegation",
+        "satisfied": true
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "fa4efc29c88a10d80e3bb11ba7cb91dda7e476e1216e1450548d955030df5f25",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "d8988bc8a9fa323b26f185985d59c9adf3b1f40611e36cff20e088405170e3d6"
+    },
+    {
+      "id": "permission-denial",
+      "timeSeconds": 4.85999999998603,
+      "turns": 1,
+      "toolCalls": 1,
+      "tokens": 3326,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 45,
+      "observations": {
+        "inputTokensObserved": 3277,
+        "outputTokensObserved": 49,
+        "peakRequestInputTokensObserved": 1661,
+        "contextGrowthObserved": 45,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-by-this-pi-rpc-client",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "sourceResultSha256": "987048b41bb55f0236d29d9f53bb0c0bcb03e4a462ff7c2e49c3caaca7980056",
+        "messagesObserved": 5
+      },
+      "control": {
+        "required": "deny-write",
+        "satisfied": true
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "df2b03d815bd724054aa04403fbd34b0478204e1ab11e3b6c97b652289c87010",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "2be49ecfc9ac0cb429ee32a56cc610071c0af6b5d22b65fec24718b6b821f7c7"
+    },
+    {
+      "id": "model-failure",
+      "timeSeconds": 1.0,
+      "turns": 1,
+      "toolCalls": 0,
+      "tokens": null,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": false,
+      "contextGrowthTokens": null,
+      "observations": {
+        "inputTokensObserved": null,
+        "outputTokensObserved": null,
+        "peakRequestInputTokensObserved": null,
+        "contextGrowthObserved": null,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-by-this-pi-rpc-client",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "sourceResultSha256": "b80af8391042fabcf2ec96cbe156e31f5e906c30ad2e48e52092e28c309edf50",
+        "messagesObserved": 3
+      },
+      "control": {
+        "required": "one-provider-503",
+        "satisfied": true,
+        "faults": {
+          "injected503": 1,
+          "forwardedResponses": 0,
+          "upstream": "https://chatgpt.com/backend-api/codex/responses"
+        },
+        "providerRecovered": false
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "5c88ac5bfb451d62c29487b0b6dd35bae2977e11e62a6ac5716d74564f4a593f",
+      "oracleEvidenceSha256": "467c5351c9ca9d64611085381f70e8574827935048b8d0c41f6ecdfd7db0b7a3",
+      "inputEvidenceSha256": "3cd2489db218d1e5dc87d181a4427e48ddc0ec5a2d6226883f683b7a3e127b54"
+    },
+    {
+      "id": "resume-interruption",
+      "timeSeconds": 10.687000000005355,
+      "turns": 2,
+      "toolCalls": 4,
+      "tokens": 9185,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 316,
+      "observations": {
+        "inputTokensObserved": 9005,
+        "outputTokensObserved": 180,
+        "peakRequestInputTokensObserved": 1955,
+        "contextGrowthObserved": 316,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-by-this-pi-rpc-client",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "sourceResultSha256": "0d4a964e3745bf9ceb4d29aec44ee44221630e801f7e71495f22de176e7be213",
+        "messagesObserved": 13
+      },
+      "control": {
+        "required": "interrupt-after-first-write",
+        "satisfied": true,
+        "recovery": {
+          "sameSession": true,
+          "firstFilePreserved": true,
+          "processRestarted": true
+        }
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "7df8f8dec07b66f72f7f590bf95194aa5ffa3e27a67149b8ac96611551fb81da",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "f7e6c9a22c194960d23a41347dbd612fbb1086933709756ff71574ae34a129a5"
+    }
+  ],
+  "caseReceiptReuse": "Each selected receipt must match the exact pinned input and baseline; raw prior versions remain unchanged."
+}

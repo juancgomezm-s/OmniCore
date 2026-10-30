@@ -1248,7 +1248,7 @@ durable al pipeline antes de anunciarlo como comando nativo funcional.
 
 ## M10: v1, memoria completa y evaluación
 
-**Estado vigente:** entrega rc.3 instalada y CI aprobada; [matriz actual de pendientes](../validation/m10-regression-measurements-20261030.md). El exportador offline de métricas está probado localmente. La batería agentic fija de once categorías sigue siendo trabajo de Core; comparación Pi y aceptación del consumidor requieren sus evidencias separadas. Las bases/exigencias de la tabla no certifican por sí solas su ejecución.
+**Estado vigente:** aceptación funcional de M10 Core completada: [batería agentic Core 11/11 y Pi 10/11](../validation/m10-agentic-20261030.md), métricas y comparación bajo entradas/baselines idénticos. Updater rc.3 e instalación anterior aceptados. Integración condicionada a CI del PR; consumidor OmniCoder conserva su aceptación separada. No se reabre M9 ni se modifica su interfaz.
 
 | Bloque restante | Construcción y base reutilizable | Presentación y aceptación |
 |---|---|---|

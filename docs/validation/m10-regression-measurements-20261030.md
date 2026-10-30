@@ -41,7 +41,9 @@ SHA-256 de la medición:
 El snapshot contiene datos sintéticos y se conserva fuera del repositorio;
 el recibo no autentica procedencia (`provenanceVerified:false`).
 
-## Lo que falta para cerrar M10
+## Seguimiento del pendiente original
+
+**Actualización posterior:** [batería agentic y comparación completadas](m10-agentic-20261030.md): Core 11/11, Pi 10/11. Esta tabla conserva el estado anterior a esa ejecución; ya no enumera trabajo pendiente de Core. La aceptación de OmniCoder sigue en su coordinación.
 
 | Pendiente | Estado y siguiente paso |
 |---|---|

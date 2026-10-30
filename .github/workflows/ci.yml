@@ -61,6 +61,8 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           npm test
       - run: dotnet build OmniCore.slnx --no-restore
+      - name: Build the opt-in agentic evaluation Host driver without model requests
+        run: dotnet build tools/evaluation/CoreDriver/CoreDriver.csproj
       - name: Probe the real Windows ConPTY prerequisite before broad regression
         if: runner.os == 'Windows'
         run: ./scripts/probe-windows-conpty-ci.ps1 -Action Probe
