@@ -228,8 +228,9 @@ como prueba de cierre.
 
 El tratamiento de `conversation_turn_busy` no admitido se centraliza ahora para
 las dos fixtures y los casos de grants. Todas las respuestas de permiso/plan que
-requieren admisión usan el mismo helper acotado; los negativos de firma/Session/
-revisión y los duplicados admitidos continúan enviándose directamente. El helper
+requieren admisión usan el mismo helper acotado; los casos de revisión obsoleta
+también esperan sólo el busy previo a su rechazo exacto. Los negativos de firma/
+Session y los duplicados admitidos continúan enviándose directamente. El helper
 no cambia el ID ni el proof y comprueba ausencia de receipt/eventos antes de
 reintentar exclusivamente ese busy; no convierte otros resultados en éxito.
 

@@ -262,8 +262,8 @@ public sealed partial class StdioTransportTests
             // A stale policy revision is rejected without consuming the pending choice.
             var stale = fixture.ChoiceCommand(pending.Request.InteractionId, pending.RunId,
                 pending.PolicyRevision + 1, optionId, Ids.NewV7());
-            var staleAck = Ack(RawExchange(fixture.Host!, TrustedActionEnvelope(stale,
-                fixture.Key, fixture.Nonce!, fixture.Workspace, fixture.CurrentSessionId, pending.RunId)));
+            var staleAck = await fixture.ExchangeWhenAdmissibleAsync(stale, TrustedActionEnvelope(stale,
+                fixture.Key, fixture.Nonce!, fixture.Workspace, fixture.CurrentSessionId, pending.RunId));
             Assert.Equal(RuntimeCommandOutcomeKind.Rejected, staleAck.Outcome?.Kind);
             Assert.False(File.Exists(fixture.MarkerPath));
 
@@ -536,8 +536,8 @@ public sealed partial class StdioTransportTests
 
             var stale = fixture.ChoiceCommand(pending.Request.InteractionId, pending.RunId,
                 pending.PolicyRevision + 1, optionId, Ids.NewV7());
-            var staleAck = Ack(RawExchange(fixture.Host!, TrustedActionEnvelope(stale,
-                fixture.Key, fixture.Nonce!, fixture.Workspace, fixture.CurrentSessionId, pending.RunId)));
+            var staleAck = await fixture.ExchangeWhenAdmissibleAsync(stale, TrustedActionEnvelope(stale,
+                fixture.Key, fixture.Nonce!, fixture.Workspace, fixture.CurrentSessionId, pending.RunId));
             Assert.Equal(RuntimeCommandOutcomeKind.Rejected, staleAck.Outcome?.Kind);
             Assert.False(File.Exists(fixture.MarkerPath));
 
