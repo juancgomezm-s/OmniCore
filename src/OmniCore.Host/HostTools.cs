@@ -75,7 +75,8 @@ public sealed class HostTools
                 catalog = catalog.Add(new WorktreeIntegrationApplyTool(boundary, worktreeIntegrationCoordinator));
                 if (worktreeIntegrationCoordinator is IExtensionBatchPublicationCoordinator extensionBatchCoordinator)
                     catalog = catalog.Add(new ExtensionBatchApplyTool(extensionBatchCoordinator));
-            }        }
+            }
+        }
         ISandboxProcessLauncher? processLauncher = processLauncherOverride;
         if (includeProcessTools || processSessionManager is not null)
             processLauncher ??= OmniHost.CreateProcessSandboxLauncher(processRuntime ?? SystemProcessRuntime.Instance());

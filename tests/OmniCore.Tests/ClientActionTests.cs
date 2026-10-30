@@ -59,6 +59,7 @@ public sealed class ClientActionTests
             ["commands"] = ClientActionIds.CommandsInspect,
             ["skills"] = ClientActionIds.SkillsInspect,
             ["memory"] = ClientActionIds.MemorySession,
+            ["undo"] = ClientActionIds.WorkspaceUndo,
             ["permissions"] = ClientActionIds.PermissionsList, ["interrupt"] = ClientActionIds.RunInterrupt,
             ["cancel"] = ClientActionIds.RunCancel,
         };

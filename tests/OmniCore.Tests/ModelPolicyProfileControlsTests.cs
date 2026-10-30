@@ -16,7 +16,8 @@ public sealed class ModelPolicyProfileControlsTests
         var definitions = new[]
         {
             "filesystem.read", "filesystem.list", "filesystem.search", "reference.resolve",
-            "filesystem.write", "filesystem.patch", "dyn.core.verify_integration", "process.exec",
+            "filesystem.write", "filesystem.patch", "filesystem.apply_patch", "code.navigate",
+            "code.diagnostics", "dyn.core.verify_integration", "process.exec",
         }.Select(name => new ToolDefinition(name, name, "{}" )).ToArray();
         var capabilities = ModelCapabilityBoundary.CoreTools.ToDictionary(
             pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
@@ -35,6 +36,8 @@ public sealed class ModelPolicyProfileControlsTests
         Assert.Equal(6, implementVisible.Length);
         Assert.Contains("filesystem.read", implementVisible);
         Assert.All(implement.RequiredSuccessfulToolIds, required => Assert.Contains(required, implementVisible));
+        Assert.Contains("filesystem.patch", implementVisible);
+        Assert.Contains("filesystem.write", implementVisible);
         Assert.Equal(6, fullBoundary.MaxVisibleTools());
 
         var verify = CompiledWorkflowCatalog.Stage(WorkflowStage.Verify);
@@ -128,8 +131,12 @@ public sealed class ModelPolicyProfileControlsTests
         var tools = OmniHost.CreateActTools(mediaReadTool: includeMedia
             ? new MediaReadTool(_ => false, _ => null, new PathBoundaryValidator()) : null).Catalog();
         // ExplorerTurn excludes tool.search in Direct mode: hidden tools cannot be discovered.
+        // User-configured semantic services remain optional even when present in the catalog.
         var visible = new ModelCapabilityBoundary(effective).VisibleTools(
-            tools.Definitions().Where(tool => tool.Name != "tool.search")).Select(tool => tool.Name).ToArray();
+            tools.Definitions().Concat([
+                new ToolDefinition("code.navigate", "semantic navigation", "{}"),
+                new ToolDefinition("code.diagnostics", "semantic diagnostics", "{}")])
+                .Where(tool => tool.Name != "tool.search")).Select(tool => tool.Name).ToArray();
         var basicTools = new[] { "user.ask", "filesystem.list", "filesystem.read", "filesystem.search",
             "filesystem.patch", "filesystem.write" };
         if (category == ModelPolicyCategory.FullAgent)

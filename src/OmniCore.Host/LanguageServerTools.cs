@@ -245,7 +245,9 @@ internal sealed class LanguageServerTool : ITool
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         { return ToolResult.Error(ToolErrorCode.ToolFailure, "code.request.cancelled"); }
         catch (TimeoutException) { return ToolResult.Error(ToolErrorCode.ToolFailure, "code.server.timeout"); }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or JsonException or DecoderFallbackException
+        catch (IOException failure)
+        { return ToolResult.Error(ToolErrorCode.ToolFailure, "code.server.io:" + SafeIoDiagnostic(failure.Message)); }
+        catch (Exception ex) when (ex is InvalidOperationException or JsonException or DecoderFallbackException
             or UnauthorizedAccessException or ArgumentException or KeyNotFoundException
             or StrongSandboxUnavailableBeforeLaunchException)
         { return ToolResult.Error(ToolErrorCode.ToolFailure, "code.server." + ex.GetType().Name); }
@@ -270,6 +272,24 @@ internal sealed class LanguageServerTool : ITool
             64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
         return Convert.ToHexString(await SHA256.HashDataAsync(stream, token).ConfigureAwait(false));
     }
+
+    internal static string SafeIoDiagnostic(string message) => message switch
+    {
+        "language_server_exited" => "process_exited",
+        "language_server_output_gap" => "output_gap",
+        "language_server_rpc_error" => "rpc_error",
+        "language_server_requested_disallowed_method" => "disallowed_server_request",
+        "language_server_invalid_header" => "invalid_header",
+        "language_server_invalid_length" => "invalid_length",
+        "language_server_invalid_utf8_length" => "invalid_utf8_length",
+        "language_server_invalid_json_rpc" => "invalid_json_rpc",
+        "language_server_notification_limit" => "notification_limit",
+        "language_server_output_limit" => "output_limit",
+        "language_server_header_limit" => "header_limit",
+        "language_server_request_limit" => "request_limit",
+        "language_server_invalid_utf16" => "invalid_utf16",
+        _ => "io_failure",
+    };
 
     private static async global::System.Threading.Tasks.Task<byte[]> ReadWorkspaceDocumentAsync(string path, string workspaceRoot, CancellationToken token)
     {

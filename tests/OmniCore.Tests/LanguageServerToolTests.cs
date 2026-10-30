@@ -82,6 +82,13 @@ public sealed class LanguageServerToolTests
     }
 
     [Fact]
+    public void Lsp_io_diagnostics_are_bounded_and_do_not_echo_exception_text()
+    {
+        Assert.Equal("process_exited", LanguageServerTool.SafeIoDiagnostic("language_server_exited"));
+        Assert.Equal("io_failure", LanguageServerTool.SafeIoDiagnostic("/private/path/server.dll: permission denied"));
+    }
+
+    [Fact]
     public void LanguageServerConfigurationIsUserTypedAndRejectsSecretArguments()
     {
         var loaded = new ConfigLoader().Load(null, null,
@@ -133,13 +140,19 @@ public sealed class LanguageServerToolTests
             RunGit(workspace, "add", "source.cs", "outside.txt");
             var fixture = Path.Combine(AppContext.BaseDirectory, "lsp-fixture", "OmniCore.LanguageServerFixture.dll");
             Assert.True(File.Exists(fixture));
+            var fixtureRuntimeConfig = Path.ChangeExtension(fixture, ".runtimeconfig.json");
+            var fixtureDeps = Path.ChangeExtension(fixture, ".deps.json");
+            Assert.True(File.Exists(fixtureRuntimeConfig));
+            Assert.True(File.Exists(fixtureDeps));
             var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
             var definitions = LanguageServerDefinition.FromSettings(new UserSettingsYaml
             {
                 LanguageServers = new Dictionary<string, LanguageServerSettingsYaml>(StringComparer.Ordinal)
                 {
-                    ["csharp"] = new() { Command = dotnet, Args = [fixture, "normal"], LanguageId = "csharp", Extensions = [".cs"] },
-                    ["outside"] = new() { Command = dotnet, Args = [fixture, "outside"], LanguageId = "plaintext", Extensions = [".txt"] },
+                    ["csharp"] = new() { Command = dotnet, Args = ["exec", "--runtimeconfig", fixtureRuntimeConfig,
+                        "--depsfile", fixtureDeps, fixture, "normal"], LanguageId = "csharp", Extensions = [".cs"] },
+                    ["outside"] = new() { Command = dotnet, Args = ["exec", "--runtimeconfig", fixtureRuntimeConfig,
+                        "--depsfile", fixtureDeps, fixture, "outside"], LanguageId = "plaintext", Extensions = [".txt"] },
                 }
             });
             var session = SessionId.New();

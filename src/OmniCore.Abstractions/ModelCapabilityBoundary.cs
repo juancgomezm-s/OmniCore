@@ -630,6 +630,9 @@ public sealed class ModelCapabilityBoundary : INativeUserActionIntentBoundary
     private int DisclosurePriority(string toolName)
     {
         if (!_toolCapabilities.TryGetValue(toolName, out var capability)) return 100;
+        // Optional batch/semantic services must not evict basic reads, creation or patch
+        // from the established six-tool Direct harness. Full/discovered catalogs retain them.
+        if (toolName is "filesystem.apply_patch" or "code.navigate" or "code.diagnostics") return 3;
         // filesystem.write is conditional: an existing target may be a localized edit even
         // when creation is outside the profile. Keep it alongside the other authorized edits;
         // Evaluate classifies the concrete target and rejects any forbidden create/replace.

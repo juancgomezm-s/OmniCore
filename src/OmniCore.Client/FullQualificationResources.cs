@@ -4,6 +4,7 @@ public static class FullQualificationResources
 {
     private static readonly IReadOnlyDictionary<string, string[]> Values = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
+        ["cli.model.help.qualify"] = ["  omni model qualify <m> --suite quick|full [--yes] [--max-cost USD] [--probe-timeout s]  ejecuta la suite y recomienda", "  omni model qualify <m> --suite quick|full [--yes] [--max-cost USD] [--probe-timeout s]  runs the suite and recommends", "  omni model qualify <m> --suite quick|full [--yes] [--max-cost USD] [--probe-timeout s]  exécute la suite et recommande", "  omni model qualify <m> --suite quick|full [--yes] [--max-cost USD] [--probe-timeout s]  esegue la suite e formula una raccomandazione"],
         ["cli.model.calibration.usage"] = ["uso: omni model calibration <modelo>", "usage: omni model calibration <model>", "utilisation : omni model calibration <modèle>", "uso: omni model calibration <modello>"],
         ["cli.model.calibration.header"] = ["Calibración observada · clave {key}", "Observed calibration · key {key}", "Étalonnage observé · clé {key}", "Calibrazione osservata · chiave {key}"],
         ["cli.model.calibration.unknown"] = ["sin evidencia", "no evidence", "sans preuve", "nessuna prova"],
