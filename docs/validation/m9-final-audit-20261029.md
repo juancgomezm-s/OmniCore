@@ -215,3 +215,30 @@ La candidata incorpora además main `d0dd08f1`, cuya
 [CI propia](https://github.com/juancgomezm-s/OmniCore/actions/runs/40978522527)
 aprobó los cinco jobs. Su corrección independiente de marcadores AppContainer se
 conserva; ese verde acredita la base, no sustituye la CI de la combinación M9.
+
+## Preparación común de las fixtures nativas
+
+La [CI de `6ac05927`](https://github.com/juancgomezm-s/OmniCore/actions/runs/40984636755)
+aprobó Ubuntu (5.912 pass, 65 skip), Linux/AOT y npm en ambos OS. El caso
+secuencial corregido aprobó también en Windows. El único fallo Windows entre
+5.977 casos fue `Accepted_permission_choice_recovers_from_new_runtime_and_store_after_orderly_cancellation`:
+la fixture in-process respondía al observar el evento, antes de acabar el runner
+inicial. Hubo 5.948 aprobados, 28 omitidos y un fallo; no se conserva ese rojo
+como prueba de cierre.
+
+El tratamiento de `conversation_turn_busy` no admitido se centraliza ahora para
+las dos fixtures y los casos de grants. Todas las respuestas de permiso/plan que
+requieren admisión usan el mismo helper acotado; los negativos de firma/Session/
+revisión y los duplicados admitidos continúan enviándose directamente. El helper
+no cambia el ID ni el proof y comprueba ausencia de receipt/eventos antes de
+reintentar exclusivamente ese busy; no convierte otros resultados en éxito.
+
+La recuperación de permiso retiene determinísticamente el runner inicial tras
+persistir la interacción, comprueba el busy real y la ausencia de admisión,
+libera esa barrera y presenta el mismo proof. Conserva la cancelación ordenada,
+la reapertura con runtime/store nuevos, el único permiso/efecto y los tres
+requests del proveedor fixture. No depende de que CI alcance una ventana temporal.
+
+Los cambios de M10 aparecidos en el checkout principal se conservan aparte.
+La validación nueva usa el worktree M9 existente y el commit exacto de candidata;
+no crea clones ni incluye cambios locales ajenos en la publicación de M9.

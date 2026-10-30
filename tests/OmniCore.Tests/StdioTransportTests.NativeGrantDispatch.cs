@@ -65,8 +65,8 @@ public sealed partial class StdioTransportTests
 
             var a1Response = fixture.ChoiceCommand(a1.Request.InteractionId, a1.RunId,
                 a1.PolicyRevision, "allow_run", Ids.NewV7());
-            var a1Ack = Ack(RawExchange(fixture.Host!, TrustedActionEnvelope(a1Response, fixture.Key,
-                fixture.Nonce!, fixture.Workspace, sessionA, a1.RunId)));
+            var a1Ack = await fixture.ExchangeWhenAdmissibleAsync(a1Response, TrustedActionEnvelope(a1Response, fixture.Key,
+                fixture.Nonce!, fixture.Workspace, sessionA, a1.RunId));
             Assert.Equal(RuntimeCommandOutcomeKind.Accepted, a1Ack.Outcome?.Kind);
             await fixture.Provider.WaitForRequestAsync(3, TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
@@ -138,8 +138,8 @@ public sealed partial class StdioTransportTests
             // A Workspace approval in B is durable for the same workspace and exact claims.
             var b1Response = fixture.ChoiceCommand(b1.Request.InteractionId, b1.RunId,
                 b1.PolicyRevision, "allow_workspace", Ids.NewV7());
-            var b1Ack = Ack(RawExchange(fixture.Host!, TrustedActionEnvelope(b1Response, fixture.Key,
-                fixture.Nonce!, fixture.Workspace, sessionB, b1.RunId)));
+            var b1Ack = await fixture.ExchangeWhenAdmissibleAsync(b1Response, TrustedActionEnvelope(b1Response, fixture.Key,
+                fixture.Nonce!, fixture.Workspace, sessionB, b1.RunId));
             Assert.Equal(RuntimeCommandOutcomeKind.Accepted, b1Ack.Outcome?.Kind);
             try
             {
