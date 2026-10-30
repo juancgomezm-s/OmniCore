@@ -1,5 +1,13 @@
 # OmniCore
 
+**M10 Core candidato de cierre (2026-10-30):** teclado/paleta/búsqueda, memoria
+multiscoped con evidencia, `/undo` TUI y nativo, batch patch, LSP Strong,
+evaluación full y calibración implementados. [Matriz y evidencia](docs/plans/m10-closure-20261030.md).
+La regresión local y el roundtrip público firmado de updater/rollback pasaron;
+CI de la candidata e instalación final se registran al completarse. La evaluación
+live y la comparación OmniCoder/Pi de spec §97 no se suponen aprobadas. M9 Core
+aceptado no se reabre y OmniCoder sigue en solo lectura.
+
 **Directiva vigente M9/M10 (2026-10-23):** leer primero
 [M9-M10-UI-OWNERSHIP](docs/plans/m8-m10-user-localization.md#directiva-m9-m10-ui-ownership--un-producto-interfaz-preservada-2026-10-23).
 OmniCore es el núcleo del mismo producto, no una integración administrada por el usuario.
