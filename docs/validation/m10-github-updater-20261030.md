@@ -106,15 +106,40 @@ El refuerzo tiene compilación, pruebas de Host/CLI y aceptación directa del he
 sobre la CLI .NET rota. La release se reconstruirá desde su tag/SHA exactos;
 no se reutilizará el archivo anterior como si contuviera estos cambios posteriores.
 
-## Límite pendiente
+## Aceptación pública posterior
 
-No existe todavía una release pública de OmniCore que permita comprobar la cadena
-completa de Actions/OIDC, descarga por `omni update` y verificación positiva de su
-attestation. Los tests del JSON del certificado sólo validan la política posterior
-a GitHub CLI; no prueban una firma real. Faltan la publicación autorizada de la
-preview y esa aceptación, y una CI nueva de la combinación local. El canal público
-no se declara cerrado. No se actualizaron shims, perfil, preferencias ni instalación
-del usuario; mascota, Consolas 14/ClearType y panel compacto permanecen intactos.
+La base `04d226b9f386ed94e898d5f0ff8f325402977bba` aprobó los cinco jobs de
+[CI 41054565261](https://github.com/juancgomezm-s/OmniCore/actions/runs/41054565261).
+[Actions 41054838618](https://github.com/juancgomezm-s/OmniCore/actions/runs/41054838618)
+construyó/atestó paquete y manifest para `v0.1.1-rc.1`. La release se publicó como
+preview. El gh fijado verificó firmas reales sin credenciales, contra repositorio,
+workflow, tag y commit exactos; el certificado identifica el repositorio permanente
+`1386758159`. No se atribuye esa prueba a un certificado simulado.
+
+La descarga real detectó un defecto: checker/downloader rechazaban los parámetros
+firmados del CDN de GitHub. Se corrigió para aceptar queries sólo en los CDN de la
+allowlist, manteniendo HTTPS, puerto, ausencia de userinfo/fragmento y validación
+posterior de hash/publicador. Se añadieron negativos/positivos. La preview rc.1
+precede a esa corrección; el ensayo siguiente parte de un bootstrap local corregido.
+
+Un paquete local 0.1.0 construido desde `79cee0739fc9a413f5455e74141df0226e816eed`,
+nunca ofrecido como release, se instaló en un prefijo npm temporal. SHA-256:
+`393d86d4f0dacf42474f2407f6e4484178b8f2a17800a06f49698ed3764144e8`.
+Desde su CLI productiva se ejecutaron check preview, apply 0.1.1-rc.1 y rollback:
+
+- `Apply/Succeeded`, `update_applied`; CLI .NET real inicia con `--help`.
+- `Rollback/Succeeded`, `rollback_applied`; versión instalada de vuelta en 0.1.0.
+- Paquete público verificado: 57.085.575 bytes, SHA-256
+  `7559cb66308b4df2fad84cf145c4122cea34e084ca2d5aa559308f1348eda57e`.
+- Journal, CAS, configuración y archivo de workspace de control conservaron bytes.
+  Los datos y la instalación personal del usuario no se tocaron.
+
+Recibo: `artifacts/github-updater-20261029/public-roundtrip-receipt.json`;
+directorio temporal y logs check/apply/rollback/help quedan referenciados ahí.
+Esto acredita el recorrido público desde el bootstrap corregido hacia la preview
+firmada y su reversión. La release final que incluye la corrección CDN y el corte
+M10 requiere su propia CI/tag; su publicación e instalación se registran aparte.
+No se declara estable Main ni se acredita actualización del usuario con este ensayo.
 
 Fuentes primarias del verificador: [GitHub CLI verify](https://cli.github.com/manual/gh_attestation_verify)
 y [GitHub artifact attestations](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations).

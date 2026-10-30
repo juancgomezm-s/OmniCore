@@ -20,6 +20,9 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/OmniCore.ArchitectureTests/OmniCore.ArchitectureTests.csproj" />
+    <Project Path="tests/OmniCore.LanguageServerFixture/OmniCore.LanguageServerFixture.csproj" />
+    <Project Path="tests/OmniCore.MemoryCrashTestProcess/OmniCore.MemoryCrashTestProcess.csproj" />
+    <Project Path="tests/OmniCore.SandboxTestProcess/OmniCore.SandboxTestProcess.csproj" />
     <Project Path="tests/OmniCore.Tests/OmniCore.Tests.csproj" />
   </Folder>
 </Solution>
