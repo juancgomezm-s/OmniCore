@@ -34,7 +34,7 @@ public sealed class ExtensionIsolationTests
     public async Task Unsupported_backend_or_network_policy_has_no_unisolated_fallback()
     {
         var launch = new SandboxLaunchSpec(SandboxStrength.Strong, "node", ["-e", "throw new Error('must-not-run')"], null,
-            new Dictionary<string, string>(), [], new(SandboxNetworkMode.AllowAll, [])) { Duplex = true };
+            new Dictionary<string, string>(), [], new(SandboxNetworkMode.AllowList, ["example.test"])) { Duplex = true };
         await Assert.ThrowsAnyAsync<NotSupportedException>(() => new LinuxBubblewrapProcessLauncher()
             .StartAsync(launch, TestContext.Current.CancellationToken).AsTask());
     }

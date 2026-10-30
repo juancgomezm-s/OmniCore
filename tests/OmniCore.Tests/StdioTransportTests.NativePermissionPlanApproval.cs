@@ -54,8 +54,8 @@ public sealed partial class StdioTransportTests
             var choice = fixture.ChoiceCommand(pending.Request.InteractionId, pending.RunId,
                 pending.PolicyRevision, optionId, Ids.NewV7());
             Assert.Contains(optionId, ParseOptionIds(pending.Request.OptionsJson));
-            var ack = Ack(fixture.Exchange(TrustedActionEnvelope(choice, fixture.Key,
-                fixture.Nonce!, fixture.Workspace, fixture.CurrentSessionId, pending.RunId)));
+            var ack = await fixture.ExchangeWhenAdmissibleAsync(choice, TrustedActionEnvelope(choice, fixture.Key,
+                fixture.Nonce!, fixture.Workspace, fixture.CurrentSessionId, pending.RunId));
             Assert.Equal(RuntimeCommandOutcomeKind.Accepted, ack.Outcome?.Kind);
             await fixture.Provider.WaitForRequestAsync(4, TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
@@ -262,8 +262,8 @@ public sealed partial class StdioTransportTests
             // A stale policy revision is rejected without consuming the pending choice.
             var stale = fixture.ChoiceCommand(pending.Request.InteractionId, pending.RunId,
                 pending.PolicyRevision + 1, optionId, Ids.NewV7());
-            var staleAck = Ack(RawExchange(fixture.Host!, TrustedActionEnvelope(stale,
-                fixture.Key, fixture.Nonce!, fixture.Workspace, fixture.CurrentSessionId, pending.RunId)));
+            var staleAck = await fixture.ExchangeWhenAdmissibleAsync(stale, TrustedActionEnvelope(stale,
+                fixture.Key, fixture.Nonce!, fixture.Workspace, fixture.CurrentSessionId, pending.RunId));
             Assert.Equal(RuntimeCommandOutcomeKind.Rejected, staleAck.Outcome?.Kind);
             Assert.False(File.Exists(fixture.MarkerPath));
 
@@ -272,7 +272,7 @@ public sealed partial class StdioTransportTests
             var proof = TrustedActionEnvelope(response, fixture.Key, fixture.Nonce!, fixture.Workspace,
                 fixture.CurrentSessionId, pending.RunId);
             Assert.NotEqual(response.MessageId, proof.MessageId);
-            var ack = Ack(RawExchange(fixture.Host!, proof));
+            var ack = await fixture.ExchangeWhenAdmissibleAsync(response, proof);
             Assert.Equal(RuntimeCommandOutcomeKind.Accepted, ack.Outcome?.Kind);
             var duplicate = Ack(RawExchange(fixture.Host!, proof));
             Assert.Equal(ack.Status, duplicate.Status);
@@ -362,7 +362,7 @@ public sealed partial class StdioTransportTests
                 pending.PolicyRevision, "allow_once", Ids.NewV7());
             var proof = TrustedActionEnvelope(response, fixture.Key, fixture.Nonce!, fixture.Workspace,
                 fixture.CurrentSessionId, pending.RunId);
-            var ack = Ack(RawExchange(fixture.Host!, proof));
+            var ack = await fixture.ExchangeWhenAdmissibleAsync(response, proof);
             if (ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted)
             {
                 var startReceipt = fixture.ReadReceipt(fixture.LastStartCommandId!);
@@ -400,8 +400,8 @@ public sealed partial class StdioTransportTests
             var first = await fixture.StartAndWaitForInteractionAsync(InteractionKind.Permission);
             var firstCommand = fixture.ChoiceCommand(first.Request.InteractionId, first.RunId,
                 first.PolicyRevision, "allow_once", Ids.NewV7());
-            var firstAck = Ack(RawExchange(fixture.Host!, TrustedActionEnvelope(firstCommand, fixture.Key,
-                fixture.Nonce!, fixture.Workspace, fixture.CurrentSessionId, first.RunId)));
+            var firstAck = await fixture.ExchangeWhenAdmissibleAsync(firstCommand, TrustedActionEnvelope(firstCommand, fixture.Key,
+                fixture.Nonce!, fixture.Workspace, fixture.CurrentSessionId, first.RunId));
             Assert.Equal(RuntimeCommandOutcomeKind.Accepted, firstAck.Outcome?.Kind);
 
             await fixture.Provider.WaitForRequestAsync(3, TestContext.Current.CancellationToken)
@@ -430,7 +430,7 @@ public sealed partial class StdioTransportTests
                 first.PolicyRevision, "allow_once", Ids.NewV7());
             var secondProof = TrustedActionEnvelope(secondCommand, fixture.Key, fixture.Nonce!, fixture.Workspace,
                 fixture.CurrentSessionId, first.RunId);
-            var secondAck = Ack(RawExchange(fixture.Host!, secondProof));
+            var secondAck = await fixture.ExchangeWhenAdmissibleAsync(secondCommand, secondProof);
             Assert.Equal(RuntimeCommandOutcomeKind.Accepted, secondAck.Outcome?.Kind);
             var duplicateAck = Ack(RawExchange(fixture.Host!, secondProof));
             Assert.Equal(secondAck.FirstSeq, duplicateAck.FirstSeq);
@@ -479,8 +479,8 @@ public sealed partial class StdioTransportTests
 
             var response = fixture.ChoiceCommand(pending.Request.InteractionId, pending.RunId,
                 pending.PolicyRevision, "allow_once", Ids.NewV7());
-            var ack = Ack(RawExchange(fixture.Host!, TrustedActionEnvelope(response, fixture.Key,
-                fixture.Nonce!, fixture.Workspace, fixture.CurrentSessionId, pending.RunId)));
+            var ack = await fixture.ExchangeWhenAdmissibleAsync(response, TrustedActionEnvelope(response, fixture.Key,
+                fixture.Nonce!, fixture.Workspace, fixture.CurrentSessionId, pending.RunId));
             Assert.Equal(RuntimeCommandOutcomeKind.Accepted, ack.Outcome?.Kind);
             Assert.Equal("Accepted", ack.Outcome?.Kind.ToString());
 
@@ -536,8 +536,8 @@ public sealed partial class StdioTransportTests
 
             var stale = fixture.ChoiceCommand(pending.Request.InteractionId, pending.RunId,
                 pending.PolicyRevision + 1, optionId, Ids.NewV7());
-            var staleAck = Ack(RawExchange(fixture.Host!, TrustedActionEnvelope(stale,
-                fixture.Key, fixture.Nonce!, fixture.Workspace, fixture.CurrentSessionId, pending.RunId)));
+            var staleAck = await fixture.ExchangeWhenAdmissibleAsync(stale, TrustedActionEnvelope(stale,
+                fixture.Key, fixture.Nonce!, fixture.Workspace, fixture.CurrentSessionId, pending.RunId));
             Assert.Equal(RuntimeCommandOutcomeKind.Rejected, staleAck.Outcome?.Kind);
             Assert.False(File.Exists(fixture.MarkerPath));
 
@@ -545,7 +545,7 @@ public sealed partial class StdioTransportTests
                 pending.PolicyRevision, optionId, Ids.NewV7());
             var proof = TrustedActionEnvelope(response, fixture.Key, fixture.Nonce!, fixture.Workspace,
                 fixture.CurrentSessionId, pending.RunId);
-            var ack = Ack(RawExchange(fixture.Host!, proof));
+            var ack = await fixture.ExchangeWhenAdmissibleAsync(response, proof);
             Assert.Equal(RuntimeCommandOutcomeKind.Accepted, ack.Outcome?.Kind);
             var duplicate = Ack(RawExchange(fixture.Host!, proof));
             Assert.Equal(ack.FirstSeq, duplicate.FirstSeq);
@@ -615,6 +615,27 @@ public sealed partial class StdioTransportTests
             .Select(item => item.GetProperty("id").GetString()!).ToArray();
     }
 
+    // The event can precede release of the runner. Only an exact pre-admission busy
+    // response is repeatable; accepted/unknown/reserved results are never hidden.
+    private static async Task<CommandAck> ExchangeAfterUnadmittedBusyAsync(WireEnvelope proof, string commandId,
+        Func<WireEnvelope, WireEnvelope> exchange, Func<string, CommandReceipt?> readReceipt,
+        Func<IReadOnlyList<(DomainEvent Envelope, DomainEventPayload Payload)>> readEvents)
+    {
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
+        while (true)
+        {
+            var ack = Ack(exchange(proof));
+            if (ack is not { Status: "busy", Error: "conversation_turn_busy",
+                Outcome.Kind: RuntimeCommandOutcomeKind.Deferred }) return ack;
+            Assert.Null(readReceipt(commandId));
+            Assert.DoesNotContain(readEvents(), item => item.Envelope.Causation is CommandCausation cause
+                && cause.CommandId.ToString() == commandId);
+            if (DateTimeOffset.UtcNow >= deadline)
+                throw new TimeoutException("The prior native continuation did not release command admission.");
+            await Task.Delay(25, TestContext.Current.CancellationToken);
+        }
+    }
+
     private sealed class NativeChoiceFixture : IAsyncDisposable
     {
         private readonly string _root;
@@ -673,6 +694,9 @@ public sealed partial class StdioTransportTests
                 return text.Length > 2048 ? text[^2048..] : text;
             }
         }
+
+        public Task<CommandAck> ExchangeWhenAdmissibleAsync(WireEnvelope command, WireEnvelope proof) =>
+            ExchangeAfterUnadmittedBusyAsync(proof, command.MessageId, Exchange, ReadReceipt, ReadEvents);
 
         public WireEnvelope Exchange(WireEnvelope request)
         {
@@ -1072,8 +1096,8 @@ public sealed partial class StdioTransportTests
             if (CurrentSessionId is { } priorSession)
             {
                 var create = WireEnvelope.Command(Ids.NewV7(), "{\"cmd\":\"conversation.new\"}");
-                var createAck = Ack(Exchange(TrustedActionEnvelope(create, Key, Nonce!, Workspace,
-                    priorSession, null)));
+                var createAck = await ExchangeWhenAdmissibleAsync(create, TrustedActionEnvelope(create, Key, Nonce!, Workspace,
+                    priorSession, null));
                 Assert.Equal(RuntimeCommandOutcomeKind.Accepted, createAck.Outcome?.Kind);
                 var createdSession = ReadCurrentSessionId(Host!);
                 Assert.NotEqual(priorSession, createdSession);
@@ -1089,8 +1113,8 @@ public sealed partial class StdioTransportTests
                 + ",\"expectedDefaultRevision\":"
                 + (currentPolicyRevision is null ? JsonSerializer.Serialize(defaultRevision) : "null") + "}");
             LastStartCommandId = start.MessageId;
-            var ack = Ack(Exchange(TrustedActionEnvelope(start, Key, Nonce!, Workspace,
-                CurrentSessionId, null)));
+            var ack = await ExchangeWhenAdmissibleAsync(start, TrustedActionEnvelope(start, Key, Nonce!, Workspace,
+                CurrentSessionId, null));
             Assert.True(ack.Outcome?.Kind == RuntimeCommandOutcomeKind.Accepted,
                 "conversation.start rejected: " + ack.Error);
             await Provider.WaitForRequestAsync(providerRequestsBeforeStart + 1, TestContext.Current.CancellationToken)
@@ -1469,6 +1493,9 @@ public sealed partial class StdioTransportTests
         private readonly string _oldDirectory;
         private readonly TaskCompletionSource _continuationGateEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _neverReleaseContinuation = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _initialCompletionEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _releaseInitialCompletion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private bool _holdInitialCompletion;
         private readonly string _mode;
         private OmniCliRuntime? _runtime;
         private OmniServer? _server;
@@ -1501,8 +1528,10 @@ public sealed partial class StdioTransportTests
         public string? CurrentSessionId { get; private set; }
         public string? LastStartCommandId { get; private set; }
         public TaskCompletionSource ContinuationGateEntered => _continuationGateEntered;
+        public Task InitialCompletionEntered => _initialCompletionEntered.Task;
+        public void ReleaseInitialCompletion() => _releaseInitialCompletion.TrySetResult();
 
-        public static async Task<NativeChoiceRecoveryFixture> StartAsync(string mode = "permission")
+        public static async Task<NativeChoiceRecoveryFixture> StartAsync(string mode = "permission", bool holdInitialCompletion = false)
         {
             var root = Path.Combine(Path.GetTempPath(), "omni-native-choice-recovery-" + Guid.NewGuid().ToString("N"));
             var workspace = Path.Combine(root, "workspace");
@@ -1538,7 +1567,8 @@ public sealed partial class StdioTransportTests
 
             var fixture = new NativeChoiceRecoveryFixture(root, workspace, data,
                 Path.Combine(OmniHost.WorkspaceDataDirectory(new ChoicePlatformPaths(root), workspace), "journal.db"),
-                oldData, oldConfig, oldDirectory, key, provider, mode);
+                oldData, oldConfig, oldDirectory, key, provider, mode)
+            { _holdInitialCompletion = holdInitialCompletion };
             try
             {
                 File.WriteAllText(Path.Combine(config, "providers.yaml"), $$"""
@@ -1591,8 +1621,11 @@ public sealed partial class StdioTransportTests
                 + ",\"expectedRunId\":" + JsonSerializer.Serialize(runId) + ",\"expectedPolicyRevision\":"
                 + policyRevision.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
-        public CommandAck SendTrusted(WireEnvelope command, string? sessionId, string? runId) =>
-            Ack(Exchange(TrustedActionEnvelope(command, Key, Nonce!, Workspace, sessionId, runId)));
+        public Task<CommandAck> SendTrustedAsync(WireEnvelope command, string? sessionId, string? runId) =>
+            ExchangeWhenAdmissibleAsync(command, TrustedActionEnvelope(command, Key, Nonce!, Workspace, sessionId, runId));
+
+        public Task<CommandAck> ExchangeWhenAdmissibleAsync(WireEnvelope command, WireEnvelope proof) =>
+            ExchangeAfterUnadmittedBusyAsync(proof, command.MessageId, Exchange, ReadReceipt, ReadEvents);
 
         public WireEnvelope Exchange(WireEnvelope request)
         {
@@ -1652,7 +1685,7 @@ public sealed partial class StdioTransportTests
                 + "\"expectedRevision\":null,\"expectedPolicyRevision\":null,\"expectedDefaultRevision\":"
                 + JsonSerializer.Serialize(DefaultRevision));
             LastStartCommandId = start.MessageId;
-            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, SendTrusted(start, null, null).Outcome?.Kind);
+            Assert.Equal(RuntimeCommandOutcomeKind.Accepted, (await SendTrustedAsync(start, null, null)).Outcome?.Kind);
             await Provider.WaitForRequestAsync(3, TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
             var (sessionId, runId) = ReadScope();
@@ -1790,7 +1823,13 @@ public sealed partial class StdioTransportTests
                         _continuationGateEntered.TrySetResult();
                         await _neverReleaseContinuation.Task.WaitAsync(token);
                     }
-                    return await runtime.ExecutePersistedConversationAsync(admitted, _ => { }, token);
+                    var result = await runtime.ExecutePersistedConversationAsync(admitted, _ => { }, token);
+                    if (gateChoiceContinuation && _holdInitialCompletion && admitted.ContinuationInteractionId is null)
+                    {
+                        _initialCompletionEntered.TrySetResult();
+                        await _releaseInitialCompletion.Task.WaitAsync(token);
+                    }
+                    return result;
                 }));
         }
 
@@ -1885,11 +1924,11 @@ public sealed partial class StdioTransportTests
     [Fact]
     public async Task Accepted_permission_choice_recovers_from_new_runtime_and_store_after_orderly_cancellation()
     {
-        await using var fixture = await NativeChoiceRecoveryFixture.StartAsync();
+        await using var fixture = await NativeChoiceRecoveryFixture.StartAsync(holdInitialCompletion: true);
         var start = fixture.Command("conversation.start", "\"text\":\"Write one approved marker\",\"mode\":\"act\","
             + "\"expectedRevision\":null,\"expectedPolicyRevision\":null,\"expectedDefaultRevision\":"
             + JsonSerializer.Serialize(fixture.DefaultRevision));
-        var startAck = fixture.SendTrusted(start, null, null);
+        var startAck = await fixture.SendTrustedAsync(start, null, null);
         Assert.Equal(RuntimeCommandOutcomeKind.Accepted, startAck.Outcome?.Kind);
 
         await fixture.Provider.WaitForRequestAsync(2, TestContext.Current.CancellationToken)
@@ -1904,7 +1943,15 @@ public sealed partial class StdioTransportTests
             fixture.ReadSessionPolicyRevision(), "allow_once");
         var responseProof = TrustedActionEnvelope(response, fixture.Key, fixture.Nonce!, fixture.Workspace,
             scope.SessionId, scope.RunId);
-        var responseAck = Ack(fixture.Exchange(responseProof));
+        await fixture.InitialCompletionEntered.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        var busy = Ack(fixture.Exchange(responseProof));
+        Assert.Equal("conversation_turn_busy", busy.Error);
+        Assert.Equal(RuntimeCommandOutcomeKind.Deferred, busy.Outcome?.Kind);
+        Assert.Null(fixture.ReadReceipt(response.MessageId));
+        Assert.DoesNotContain(fixture.ReadEvents(), item => item.Envelope.Causation is CommandCausation cause
+            && cause.CommandId.ToString() == response.MessageId);
+        fixture.ReleaseInitialCompletion();
+        var responseAck = await fixture.ExchangeWhenAdmissibleAsync(response, responseProof);
         Assert.Equal(RuntimeCommandOutcomeKind.Accepted, responseAck.Outcome?.Kind);
         await fixture.ContinuationGateEntered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
         Assert.False(File.Exists(fixture.MarkerPath));
@@ -1933,7 +1980,7 @@ public sealed partial class StdioTransportTests
 
         var continueCommand = fixture.ContinueCommand(interaction.InteractionId.ToString(), scope.RunId,
             candidate.GetProperty("policyRevision").GetInt64());
-        var continueAck = fixture.SendTrusted(continueCommand, scope.SessionId, scope.RunId);
+        var continueAck = await fixture.SendTrustedAsync(continueCommand, scope.SessionId, scope.RunId);
         Assert.Equal(RuntimeCommandOutcomeKind.Accepted, continueAck.Outcome?.Kind);
         await fixture.Provider.WaitForRequestAsync(3, TestContext.Current.CancellationToken)
             .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
@@ -1967,7 +2014,7 @@ public sealed partial class StdioTransportTests
             policyRevision, "continue_planning");
         var proof = TrustedActionEnvelope(response, fixture.Key, fixture.Nonce!, fixture.Workspace,
             sessionId, runId);
-        var ack = Ack(fixture.Exchange(proof));
+        var ack = await fixture.ExchangeWhenAdmissibleAsync(response, proof);
         if (ack.Outcome?.Kind != RuntimeCommandOutcomeKind.Accepted)
         {
             var startReceipt = fixture.ReadReceipt(fixture.LastStartCommandId!);
@@ -1996,7 +2043,7 @@ public sealed partial class StdioTransportTests
 
         var continueCommand = fixture.ContinueCommand(interaction.InteractionId.ToString(), runId,
             candidate.GetProperty("policyRevision").GetInt64());
-        var continueAck = fixture.SendTrusted(continueCommand, sessionId, runId);
+        var continueAck = await fixture.SendTrustedAsync(continueCommand, sessionId, runId);
         Assert.Equal(RuntimeCommandOutcomeKind.Accepted, continueAck.Outcome?.Kind);
         await fixture.Provider.WaitForRequestAsync(4, TestContext.Current.CancellationToken)
             .WaitAsync(TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);

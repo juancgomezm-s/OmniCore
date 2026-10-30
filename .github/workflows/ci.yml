@@ -39,7 +39,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y bubblewrap apparmor
+          sudo apt-get install -y bubblewrap apparmor build-essential libsecret-1-0 gnome-keyring libsecret-tools dbus
           # Ephemeral CI runner only: permit user namespaces for bwrap, not globally.
           # Product launch still fails closed when the host does not permit isolation.
           if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ] && [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = '1' ]; then
@@ -68,10 +68,15 @@ jobs:
       - name: Windows crash recovery, Git, isolation and managed-server regression checks
         if: runner.os == 'Windows'
         shell: bash
-        run: dotnet test --project tests/OmniCore.Tests/OmniCore.Tests.csproj --no-build --no-restore --parallel none --output Detailed --no-progress --filter 'FullyQualifiedName~WindowsWalRecoveryTests|FullyQualifiedName~Unread_ack_reconnect_lookup_and_unknown_reservation|FullyQualifiedName~Crash_receipt_recovery_stress|FullyQualifiedName~Configured_test_gate_reworks_in_act_loop_when_skill_validator_activation_is_unavailable|FullyQualifiedName~Strong_process_reads_allowed_workspace_but_not_outside_file|FullyQualifiedName~Managed_fixture_accepts_authenticated_readiness|FullyQualifiedName~Managed_local_server_is_launched|FullyQualifiedName~Native_stdio_orq_workflow_publishes_real_owned_implementation_worktree_and_passive_queries_resolve_it' < /dev/null
+        run: dotnet test --project tests/OmniCore.Tests/OmniCore.Tests.csproj --no-build --no-restore --parallel none --output Detailed --no-progress --filter 'FullyQualifiedName~WindowsWalRecoveryTests|FullyQualifiedName~Unread_ack_reconnect_lookup_and_unknown_reservation|FullyQualifiedName~Crash_receipt_recovery_stress|FullyQualifiedName~Configured_test_gate_reworks_in_act_loop_when_skill_validator_activation_is_unavailable|FullyQualifiedName~Strong_process_reads_allowed_workspace_but_not_outside_file|FullyQualifiedName~Managed_fixture_accepts_authenticated_readiness|FullyQualifiedName~Managed_local_server_is_launched|FullyQualifiedName~Native_stdio_orq_workflow_publishes_real_owned_implementation_worktree_and_passive_queries_resolve_it|FullyQualifiedName~Two_successive_permission_choices_resume_the_same_run_and_turn_once_each|FullyQualifiedName~Accepted_permission_choice_recovers_from_new_runtime_and_store_after_orderly_cancellation|FullyQualifiedName~Accepted_plan_approval_choice_recovers_from_new_runtime_and_store' < /dev/null
       - name: All tests, including architecture and process recovery
         shell: bash
-        run: dotnet test --solution OmniCore.slnx --no-build --no-restore --max-parallel-test-modules 1 --parallel none --output Detailed --no-progress < /dev/null
+        run: |
+          if [ "$RUNNER_OS" = 'Linux' ]; then
+            sh scripts/with-linux-secret-service.sh dotnet test --solution OmniCore.slnx --no-build --no-restore --max-parallel-test-modules 1 --parallel none --output Detailed --no-progress < /dev/null
+          else
+            dotnet test --solution OmniCore.slnx --no-build --no-restore --max-parallel-test-modules 1 --parallel none --output Detailed --no-progress < /dev/null
+          fi
       - name: Restore Windows NUL permissions and temp settings
         if: always() && runner.os == 'Windows' && env.OMNICORE_CI_NUL_PREPARED == 'true'
         run: ./scripts/prepare-windows-ci.ps1 -Action Restore

@@ -22,25 +22,27 @@ public sealed partial class StdioTransportTests
 
     private async Task RunNativeProcessControlsAsync(SandboxStrength strength)
     {
-        if (!OperatingSystem.IsWindows())
+        if (!OperatingSystem.IsWindows() && (!OperatingSystem.IsLinux() || strength == SandboxStrength.Weak))
         {
-            Assert.Skip("The real Windows persistent process-control integration test requires Windows.");
+            Assert.Skip("Persistent Strong integration supports Windows/Linux; the Weak job backend requires Windows.");
             return;
         }
 
+        var executable = OperatingSystem.IsWindows() ? "./OmniCore.SandboxTestProcess.exe" : "/bin/sh";
         var processArgs = new Func<string, string, string>((executable, workspace) => JsonSerializer.Serialize(new
         {
             executable,
-            argv = new[] { "persistent-process-control" },
+            argv = OperatingSystem.IsWindows() ? new[] { "persistent-process-control" }
+                : new[] { "-c", "printf 'READY-ñ\\n'; while IFS= read -r line; do printf 'ACK:%s\\n' \"$line\"; done; printf 'EOF-FINAL-ñ\\n'; exit 35" },
             cwd = workspace,
             timeoutSeconds = 90,
             terminal = false,
-            readPaths = new[]
+            readPaths = OperatingSystem.IsWindows() ? new[]
             {
                 "OmniCore.SandboxTestProcess.exe", "OmniCore.SandboxTestProcess.dll",
                 "OmniCore.SandboxTestProcess.deps.json", "OmniCore.SandboxTestProcess.runtimeconfig.json",
                 "OmniCore.Infrastructure.dll", "OmniCore.Abstractions.dll", "OmniCore.Domain.dll",
-            },
+            } : Array.Empty<string>(),
             writePaths = Array.Empty<string>(),
         }));
         var releaseSecondRequest = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -48,14 +50,14 @@ public sealed partial class StdioTransportTests
             providerResponseAsync: (index, _) => index switch
             {
                 0 => Task.FromResult(CliEndToEndTests.ResponsesToolCallResponse("persistent-a", "process.start",
-                    processArgs("./OmniCore.SandboxTestProcess.exe", Environment.CurrentDirectory))),
+                    processArgs(executable, Environment.CurrentDirectory))),
                 1 => releaseSecondRequest.Task,
                 2 => Task.FromResult(CliEndToEndTests.ResponsesTextResponse("Both process sessions were handled.")),
                 _ => Task.FromResult(CliEndToEndTests.ResponsesTextResponse("Unexpected extra provider request.")),
             },
             permissionsYaml: "profile: autonomous\nrules:\n  tool.search: allow\n  process.start: allow\n  process.read: allow\n  process.send_input: allow\n  process.stop: allow\n",
             processSandboxStrength: strength);
-        CopyProcessHelperInto(fixture.Workspace);
+        if (OperatingSystem.IsWindows()) CopyProcessHelperInto(fixture.Workspace);
         InitializeProcessWorkspace(fixture.Workspace);
 
         var sessionId = fixture.CreateEmptySession();
@@ -116,7 +118,7 @@ public sealed partial class StdioTransportTests
         var firstRead = await Control("process.read", new { handle = firstHandle, afterSequence = 0, maxChunks = 16, waitMs = 5_000 });
         Assert.Contains("READY-ñ", firstRead.DisplayOutput, StringComparison.Ordinal);
         releaseSecondRequest.TrySetResult(CliEndToEndTests.ResponsesToolCallResponse("persistent-b", "process.start",
-            processArgs("./OmniCore.SandboxTestProcess.exe", fixture.Workspace)));
+            processArgs(executable, fixture.Workspace)));
         await fixture.Provider.WaitForRequestAsync(3, TestContext.Current.CancellationToken)
             .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
         await WaitForTurnTerminalAsync(fixture, sessionId, runId);
@@ -194,10 +196,11 @@ public sealed partial class StdioTransportTests
         RunGit(workspace, "init", "--quiet");
         RunGit(workspace, "config", "user.name", "OmniCore process fixture");
         RunGit(workspace, "config", "user.email", "process-fixture@localhost");
-        RunGit(workspace, "add", "OmniCore.SandboxTestProcess.exe", "OmniCore.SandboxTestProcess.dll",
-            "OmniCore.SandboxTestProcess.deps.json", "OmniCore.SandboxTestProcess.runtimeconfig.json",
-            "OmniCore.Infrastructure.dll", "OmniCore.Abstractions.dll", "OmniCore.Domain.dll");
-        RunGit(workspace, "commit", "--quiet", "-m", "process fixture baseline");
+        if (OperatingSystem.IsWindows())
+            RunGit(workspace, "add", "OmniCore.SandboxTestProcess.exe", "OmniCore.SandboxTestProcess.dll",
+                "OmniCore.SandboxTestProcess.deps.json", "OmniCore.SandboxTestProcess.runtimeconfig.json",
+                "OmniCore.Infrastructure.dll", "OmniCore.Abstractions.dll", "OmniCore.Domain.dll");
+        RunGit(workspace, "commit", "--quiet", "--allow-empty", "-m", "process fixture baseline");
     }
 
     private static void RunGit(string workspace, params string[] arguments)

@@ -56,6 +56,8 @@ public sealed class OpenRouterImageGenerationProvider : IModelProvider, IModelRe
             Model = request.Model.Model.ToString(), Prompt = prompt,
         }, OpenRouterImageJsonContext.Default.OpenRouterImageRequest), Encoding.UTF8, "application/json");
 
+        cancellationToken.ThrowIfCancellationRequested();
+        GenerationRequestAttemptScope.RecordGenerationSend();
         using var response = await http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {

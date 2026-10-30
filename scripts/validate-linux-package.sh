@@ -22,12 +22,14 @@ for kind in self-contained aot; do
     log="$evidence/$kind-publish.log"
     dotnet publish src/OmniCore.Cli/OmniCore.Cli.csproj -c Release -r linux-x64 \
         --self-contained true "${options[@]}" -p:ILLinkTreatWarningsAsErrors=true \
+        -p:ArtifactsPath="$evidence/build" \
         -o "$evidence/$kind" > "$log" 2>&1
     # A successful linker is insufficient: the published executable must load its native
     # SQLite dependency, parse YAML, persist/replay and verify the real journal.
     log="$evidence/$kind-smoke.log"
     python3 scripts/smoke-distribution.py "$evidence/$kind/omni" "$evidence/$kind-smoke" > "$log" 2>&1
     test -s "$evidence/$kind/libonigwrap.so"
+    test -x "$evidence/$kind/omnicore-linux-sandbox"
     log="$evidence/$kind-terminal.log"
     python3 scripts/smoke-linux-tui.py "$evidence/$kind/omni" "$evidence/$kind-terminal" \
         > "$log" 2>&1
