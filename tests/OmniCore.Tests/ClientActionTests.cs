@@ -250,7 +250,7 @@ public sealed class ClientActionTests
         using var forget = JsonDocument.Parse(client.Sent[1]);
         Assert.Equal("memory.session.forget", forget.RootElement.GetProperty("cmd").GetString());
         Assert.Equal("abc123", forget.RootElement.GetProperty("memoryId").GetString());
-        Assert.Equal(Context(client).Text.Resolve("client.memory.usage"), Run("memory", Context(client), "workspace").Text);
+        Assert.Equal(Context(client).Text.Resolve("client.memory.usage"), Run("memory", Context(client), "unsupported-scope").Text);
     }
 
     [Fact]

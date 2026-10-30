@@ -1,6 +1,7 @@
 namespace OmniCore.Memory;
 
 using System.Text;
+using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using OmniCore.Abstractions;
@@ -16,6 +17,8 @@ public sealed class ScopedMemoryStore : IMemoryStore
     private const int MaximumRecordsPerPartition = 500;
     private const long MaximumPayloadBytesPerPartition = 4 * 1024 * 1024;
     private const string Table = "scoped_memory_records";
+    private const string OperationsTable = "scoped_memory_operations";
+    private const int MaximumOperationsPerPartition = 10_000;
     private readonly string _dataDirectory;
 
     public ScopedMemoryStore(string dataDirectory)
@@ -47,44 +50,86 @@ public sealed class ScopedMemoryStore : IMemoryStore
         EnsureTable(connection);
         using var transaction = connection.BeginTransaction(deferred: false);
         var records = ReadPartition(connection, transaction, record.Scope, cancellationToken);
-        var sameId = records.FirstOrDefault(item => string.Equals(item.Id, record.Id, StringComparison.Ordinal));
-        if (sameId is not null)
-        {
-            if (Normalize(sameId.Content) == Normalize(record.Content))
-            {
-                transaction.Commit();
-                return sameId;
-            }
-            throw new InvalidDataException("A scoped memory record already uses that id.");
-        }
-
-        ValidateReplacement(records, record);
-        var normalized = Normalize(record.Content);
-        var duplicate = records.FirstOrDefault(item => Normalize(item.Content) == normalized);
-        if (duplicate is not null)
-        {
-            transaction.Commit();
-            return duplicate;
-        }
-        if (records.Count >= MaximumRecordsPerPartition)
-            throw new InvalidDataException("The scoped memory record limit has been reached.");
-
-        var payload = JsonSerializer.SerializeToUtf8Bytes(record, MemoryJsonContext.Default.MemoryRecord);
-        if (records.Sum(item => (long)Serialize(item).Length) + payload.Length > MaximumPayloadBytesPerPartition)
-            throw new InvalidDataException("The scoped memory payload limit has been reached.");
-        cancellationToken.ThrowIfCancellationRequested();
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = $"INSERT INTO {Table} (scope_level, scope_id, record_id, normalized_content, supersedes_id, payload) VALUES ($level, $scope, $id, $normalized, $supersedes, $payload)";
-        AddScopeParameters(command, record.Scope);
-        command.Parameters.AddWithValue("$id", record.Id);
-        command.Parameters.AddWithValue("$normalized", normalized);
-        command.Parameters.AddWithValue("$supersedes", (object?)record.Supersedes ?? DBNull.Value);
-        command.Parameters.Add("$payload", SqliteType.Blob).Value = payload;
-        command.ExecuteNonQuery();
+        var added = AddWithinTransaction(connection, transaction, record.Scope, record, records, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         transaction.Commit();
-        return record;
+        return added;
+    }
+
+    /// <summary>Returns a stable hash of the partition, excluding LastUsedAt so a context read in
+    /// another turn does not invalidate an outstanding human promotion prompt.</summary>
+    public string Revision(MemoryScope scope, CancellationToken cancellationToken)
+        => Snapshot(scope, cancellationToken).Revision;
+
+    /// <summary>Reads a scope and computes its CAS revision from the same SQLite snapshot.</summary>
+    public (IReadOnlyList<MemoryRecord> Records, string Revision) Snapshot(MemoryScope scope,
+        CancellationToken cancellationToken)
+    {
+        var path = PathFor(scope);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!File.Exists(path)) return ([], RevisionOf([]));
+        using var connection = Open(path, create: false);
+        if (!HasTable(connection)) return ([], RevisionOf([]));
+        using var transaction = connection.BeginTransaction(deferred: true);
+        var records = ReadPartition(connection, transaction, scope, cancellationToken);
+        var revision = RevisionOf(records);
+        transaction.Commit();
+        return (records, revision);
+    }
+
+    /// <summary>Applies a journal-prepared scoped mutation exactly once. The operation ledger and
+    /// record mutation share one SQLite transaction; a retry with the same operation id cannot
+    /// resurrect a later-forgotten record.</summary>
+    public ScopedMemoryMutationResult ApplyPrepared(ScopedMemoryMutationPrepared prepared,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(prepared);
+        ValidatePrepared(prepared);
+        var path = PathFor(prepared.Scope);
+        cancellationToken.ThrowIfCancellationRequested();
+        using var connection = Open(path, create: true);
+        EnsureTable(connection);
+        using var transaction = connection.BeginTransaction(deferred: false);
+        var requestHash = RequestHash(prepared);
+        var prior = ReadOperation(connection, transaction, prepared.Scope, prepared.OperationId);
+        if (prior is not null)
+        {
+            if (!string.Equals(prior.Value.RequestHash, requestHash, StringComparison.Ordinal))
+                throw new InvalidDataException("A scoped memory operation id was reused with different content.");
+            transaction.Commit();
+            return new ScopedMemoryMutationResult(prior.Value.MemoryId, prior.Value.Removed);
+        }
+
+        var operationsCount = CountOperations(connection, transaction, prepared.Scope);
+        if (operationsCount >= MaximumOperationsPerPartition)
+            throw new InvalidOperationException("client.memory.capacity_reached");
+        var records = ReadPartition(connection, transaction, prepared.Scope, cancellationToken);
+        if (!string.Equals(RevisionOf(records), prepared.ExpectedRevision, StringComparison.Ordinal))
+            throw new InvalidOperationException("sessionPreferences.error.memory_changed");
+
+        ScopedMemoryMutationResult result;
+        try
+        {
+            result = prepared.Operation switch
+            {
+                "promote" => new ScopedMemoryMutationResult(
+                    AddWithinTransaction(connection, transaction, prepared.Scope, prepared.Record!, records,
+                        cancellationToken).Id, false),
+                "forget" => ApplyForget(connection, transaction, prepared.Scope, prepared.MemoryId, records),
+                _ => throw new InvalidDataException("The scoped memory operation is unsupported."),
+            };
+        }
+        catch (InvalidDataException exception) when (IsCapacityFailure(exception))
+        {
+            throw new InvalidOperationException("client.memory.capacity_reached", exception);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        WriteOperation(connection, transaction, prepared.Scope, prepared.OperationId,
+            requestHash, result);
+        cancellationToken.ThrowIfCancellationRequested();
+        transaction.Commit();
+        return result;
     }
 
     public bool Remove(MemoryScope scope, string memoryId, CancellationToken cancellationToken)
@@ -242,10 +287,13 @@ public sealed class ScopedMemoryStore : IMemoryStore
     }
 
     private static bool HasTable(SqliteConnection connection)
+        => HasTable(connection, Table);
+
+    private static bool HasTable(SqliteConnection connection, string name)
     {
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT type FROM sqlite_master WHERE name = $name";
-        command.Parameters.AddWithValue("$name", Table);
+        command.Parameters.AddWithValue("$name", name);
         var type = command.ExecuteScalar() as string;
         if (type is null) return false;
         if (!string.Equals(type, "table", StringComparison.Ordinal))
@@ -256,9 +304,143 @@ public sealed class ScopedMemoryStore : IMemoryStore
     private static void EnsureTable(SqliteConnection connection)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = $"CREATE TABLE IF NOT EXISTS {Table} (scope_level TEXT NOT NULL, scope_id TEXT NOT NULL, record_id TEXT NOT NULL, normalized_content TEXT NOT NULL, supersedes_id TEXT NULL, payload BLOB NOT NULL, PRIMARY KEY (scope_level, scope_id, record_id), UNIQUE (scope_level, scope_id, normalized_content), UNIQUE (scope_level, scope_id, supersedes_id))";
+        command.CommandText = $"CREATE TABLE IF NOT EXISTS {Table} (scope_level TEXT NOT NULL, scope_id TEXT NOT NULL, record_id TEXT NOT NULL, normalized_content TEXT NOT NULL, supersedes_id TEXT NULL, payload BLOB NOT NULL, PRIMARY KEY (scope_level, scope_id, record_id), UNIQUE (scope_level, scope_id, normalized_content), UNIQUE (scope_level, scope_id, supersedes_id)); CREATE TABLE IF NOT EXISTS {OperationsTable} (scope_level TEXT NOT NULL, scope_id TEXT NOT NULL, operation_id TEXT NOT NULL, request_hash TEXT NOT NULL, memory_id TEXT NOT NULL, removed INTEGER NOT NULL, PRIMARY KEY (scope_level, scope_id, operation_id))";
         command.ExecuteNonQuery();
-        if (!HasTable(connection)) throw new InvalidDataException("Could not initialize the scoped memory table.");
+        if (!HasTable(connection, Table) || !HasTable(connection, OperationsTable))
+            throw new InvalidDataException("Could not initialize the scoped memory tables.");
+    }
+
+    private static MemoryRecord AddWithinTransaction(SqliteConnection connection,
+        SqliteTransaction transaction, MemoryScope scope, MemoryRecord record,
+        IReadOnlyList<MemoryRecord> records, CancellationToken cancellationToken)
+    {
+        var sameId = records.FirstOrDefault(item => string.Equals(item.Id, record.Id, StringComparison.Ordinal));
+        if (sameId is not null)
+        {
+            if (Normalize(sameId.Content) == Normalize(record.Content)) return sameId;
+            throw new InvalidDataException("A scoped memory record already uses that id.");
+        }
+        ValidateReplacement(records, record);
+        var normalized = Normalize(record.Content);
+        var duplicate = records.FirstOrDefault(item => Normalize(item.Content) == normalized);
+        if (duplicate is not null) return duplicate;
+        if (records.Count >= MaximumRecordsPerPartition)
+            throw new InvalidDataException("The scoped memory record limit has been reached.");
+        var payload = Serialize(record);
+        if (records.Sum(item => (long)Serialize(item).Length) + payload.Length > MaximumPayloadBytesPerPartition)
+            throw new InvalidDataException("The scoped memory payload limit has been reached.");
+        cancellationToken.ThrowIfCancellationRequested();
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = $"INSERT INTO {Table} (scope_level, scope_id, record_id, normalized_content, supersedes_id, payload) VALUES ($level, $scope, $id, $normalized, $supersedes, $payload)";
+        AddScopeParameters(command, scope);
+        command.Parameters.AddWithValue("$id", record.Id);
+        command.Parameters.AddWithValue("$normalized", normalized);
+        command.Parameters.AddWithValue("$supersedes", (object?)record.Supersedes ?? DBNull.Value);
+        command.Parameters.Add("$payload", SqliteType.Blob).Value = payload;
+        command.ExecuteNonQuery();
+        return record;
+    }
+
+    private static ScopedMemoryMutationResult ApplyForget(SqliteConnection connection,
+        SqliteTransaction transaction, MemoryScope scope, string memoryId,
+        IReadOnlyList<MemoryRecord> records)
+    {
+        var target = records.FirstOrDefault(item => string.Equals(item.Id, memoryId, StringComparison.Ordinal));
+        if (target is null) return new ScopedMemoryMutationResult(memoryId, false);
+        RemoveWithinTransaction(connection, transaction, scope, target, records);
+        return new ScopedMemoryMutationResult(memoryId, true);
+    }
+
+    private static (string RequestHash, string MemoryId, bool Removed)? ReadOperation(
+        SqliteConnection connection, SqliteTransaction transaction, MemoryScope scope, string operationId)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = $"SELECT request_hash, memory_id, removed FROM {OperationsTable} WHERE scope_level = $level AND scope_id = $scope AND operation_id = $id";
+        AddScopeParameters(command, scope);
+        command.Parameters.AddWithValue("$id", operationId);
+        using var reader = command.ExecuteReader();
+        if (!reader.Read()) return null;
+        return (reader.GetString(0), reader.GetString(1), reader.GetInt64(2) != 0);
+    }
+
+    private static int CountOperations(SqliteConnection connection, SqliteTransaction transaction, MemoryScope scope)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = $"SELECT COUNT(*) FROM {OperationsTable} WHERE scope_level = $level AND scope_id = $scope";
+        AddScopeParameters(command, scope);
+        return Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static void WriteOperation(SqliteConnection connection, SqliteTransaction transaction,
+        MemoryScope scope, string operationId, string requestHash, ScopedMemoryMutationResult result)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = $"INSERT INTO {OperationsTable} (scope_level, scope_id, operation_id, request_hash, memory_id, removed) VALUES ($level, $scope, $operation, $hash, $memory, $removed)";
+        AddScopeParameters(command, scope);
+        command.Parameters.AddWithValue("$operation", operationId);
+        command.Parameters.AddWithValue("$hash", requestHash);
+        command.Parameters.AddWithValue("$memory", result.MemoryId);
+        command.Parameters.AddWithValue("$removed", result.Removed ? 1 : 0);
+        command.ExecuteNonQuery();
+    }
+
+    private static void ValidatePrepared(ScopedMemoryMutationPrepared prepared)
+    {
+        ArgumentNullException.ThrowIfNull(prepared.Scope);
+        ArgumentNullException.ThrowIfNull(prepared.OperationId);
+        ArgumentNullException.ThrowIfNull(prepared.Operation);
+        ArgumentNullException.ThrowIfNull(prepared.CandidateId);
+        ArgumentNullException.ThrowIfNull(prepared.MemoryId);
+        ArgumentNullException.ThrowIfNull(prepared.ExpectedRevision);
+        prepared.Scope.Validate();
+        if (prepared.Scope.Level is not (ScopeLevel.Project or ScopeLevel.Workspace or ScopeLevel.User)
+            || string.IsNullOrWhiteSpace(prepared.OperationId) || prepared.OperationId.Length > 128
+            || prepared.OperationId.Any(char.IsControl)
+            || prepared.ExpectedRevision.Length != 64
+            || prepared.ExpectedRevision.Any(character => character is not (>= '0' and <= '9' or >= 'a' and <= 'f')))
+            throw new ArgumentException("The prepared scoped memory mutation is invalid.", nameof(prepared));
+        if (prepared.Operation == "promote")
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(prepared.CandidateId);
+            ArgumentException.ThrowIfNullOrWhiteSpace(prepared.MemoryId);
+            ArgumentNullException.ThrowIfNull(prepared.Record);
+            prepared.Record.Validate();
+            if (prepared.CandidateId.Length > 128 || prepared.MemoryId.Length > 128
+                || prepared.Record.Scope != prepared.Scope || prepared.Record.Id != prepared.MemoryId)
+                throw new ArgumentException("The prepared promotion record does not match its scope or identity.", nameof(prepared));
+        }
+        else if (prepared.Operation == "forget")
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(prepared.MemoryId);
+            if (prepared.CandidateId.Length > 128 || prepared.MemoryId.Length > 128 || prepared.Record is not null)
+                throw new ArgumentException("The prepared forget mutation is invalid.", nameof(prepared));
+        }
+        else throw new ArgumentException("The scoped memory operation is unsupported.", nameof(prepared));
+    }
+
+    private static string RequestHash(ScopedMemoryMutationPrepared prepared)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(prepared,
+            MemoryJsonContext.Default.ScopedMemoryMutationPrepared);
+        return Convert.ToHexStringLower(SHA256.HashData(bytes));
+    }
+
+    private static string RevisionOf(IReadOnlyList<MemoryRecord> records)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        Span<byte> length = stackalloc byte[sizeof(int)];
+        foreach (var record in records.OrderBy(item => item.Id, StringComparer.Ordinal))
+        {
+            var bytes = Serialize(record with { LastUsedAt = null });
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(length, bytes.Length);
+            hash.AppendData(length);
+            hash.AppendData(bytes);
+        }
+        return Convert.ToHexStringLower(hash.GetHashAndReset());
     }
 
     private static List<MemoryRecord> ReadPartition(SqliteConnection connection,
@@ -412,4 +594,8 @@ public sealed class ScopedMemoryStore : IMemoryStore
 
     private static string Normalize(string content) => string.Join(' ', content.Normalize(NormalizationForm.FormKC)
         .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)).ToUpperInvariant();
+
+    private static bool IsCapacityFailure(InvalidDataException exception) => exception.Message is
+        "The scoped memory record limit has been reached."
+        or "The scoped memory payload limit has been reached.";
 }

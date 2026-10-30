@@ -5,9 +5,23 @@ public static class MemoryInspectionPresentation
 {
     public static string Format(string json, Localization text)
     {
+        string? scope = null;
+        try
+        {
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object) return text.Resolve("client.memory.empty");
+            if (root.TryGetProperty("available", out var available) && available.ValueKind == System.Text.Json.JsonValueKind.False)
+                return root.TryGetProperty("error", out var error) ? text.ResolveWire(error.GetString() ?? "client.no_data") : text.Resolve("client.no_data");
+            if (root.TryGetProperty("scope", out var level) && level.ValueKind == System.Text.Json.JsonValueKind.String)
+                scope = level.GetString();
+        }
+        catch (System.Text.Json.JsonException) { return text.Resolve("client.no_data"); }
         var data = SessionPreferencesPresentation.Decode("memory.session", json);
         if (!data.Available) return text.Resolve("client.memory.empty");
-        var output = new List<string> { text.Resolve("client.memory.heading") };
+        var output = new List<string> { scope is "project" or "workspace" or "global"
+            ? text.Resolve("client.memory.scoped_heading") + " · " + text.Resolve("client.memory.scope." + scope)
+            : text.Resolve("client.memory.heading") };
         foreach (var memory in data.Memory.Take(50))
         {
             output.Add(text.Resolve("client.memory.record") + " " + SessionPreferencesPresentation.SafeText(memory.Id, 96)

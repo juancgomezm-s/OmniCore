@@ -277,6 +277,10 @@ public sealed class SessionMemoryStore : IMemoryStore
 [JsonSerializable(typeof(MemoryRecord[]))]
 [JsonSerializable(typeof(MemoryRecord))]
 [JsonSerializable(typeof(MemoryScope))]
+[JsonSerializable(typeof(ScopedMemoryMutationPrepared))]
+[JsonSerializable(typeof(ScopedMemoryMutationCompleted))]
+[JsonSerializable(typeof(ScopedMemoryMutationRejected))]
+[JsonSerializable(typeof(ScopedMemoryMutationResult))]
 internal sealed partial class MemoryJsonContext : JsonSerializerContext
 {
 }

@@ -185,6 +185,9 @@ public sealed class EventCodecs : IEventCodecRegistry
             .Plus(Typed.MemoryRejected())
             .Plus(Typed.MemoryForgotten())
             .Plus(Typed.MemoryUsed())
+            .Plus(Typed.ScopedMemoryMutationPrepared())
+            .Plus(Typed.ScopedMemoryMutationCompleted())
+            .Plus(Typed.ScopedMemoryMutationRejected())
             // v1 → v2 añadieron un campo opcional: upcaster trivial (ADR-0013, tabla de cambios).
             .WithUpcaster(new IdentityUpcaster(EventType.Of("user_input.received"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("user_input.received"), 2))
@@ -594,6 +597,9 @@ public sealed class UnsupportedEventVersionException : InvalidOperationException
 [JsonSerializable(typeof(MemoryRejected))]
 [JsonSerializable(typeof(MemoryForgotten))]
 [JsonSerializable(typeof(MemoryUsed))]
+[JsonSerializable(typeof(ScopedMemoryMutationPrepared))]
+[JsonSerializable(typeof(ScopedMemoryMutationCompleted))]
+[JsonSerializable(typeof(ScopedMemoryMutationRejected))]
 internal sealed partial class EventJsonContext : JsonSerializerContext
 {
 }
@@ -1101,4 +1107,10 @@ public sealed class Typed
         Of(EventType.Of("memory.forgotten"), EventJsonContext.Default.MemoryForgotten);
     public static CodecPair MemoryUsed() =>
         Of(EventType.Of("memory.used"), EventJsonContext.Default.MemoryUsed);
+    public static CodecPair ScopedMemoryMutationPrepared() =>
+        Of(EventType.Of("memory.scoped_mutation_prepared"), EventJsonContext.Default.ScopedMemoryMutationPrepared);
+    public static CodecPair ScopedMemoryMutationCompleted() =>
+        Of(EventType.Of("memory.scoped_mutation_completed"), EventJsonContext.Default.ScopedMemoryMutationCompleted);
+    public static CodecPair ScopedMemoryMutationRejected() =>
+        Of(EventType.Of("memory.scoped_mutation_rejected"), EventJsonContext.Default.ScopedMemoryMutationRejected);
 }

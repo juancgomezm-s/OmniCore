@@ -453,6 +453,24 @@ public sealed class ClientProjection
                     + _text.Resolve("shell.route.billing." + (route.GetValueOrDefault("billingMode") switch
                     { "Local" => "local", "IncludedQuota" => "subscription", "CreditBalance" => "credits", "MeteredCurrency" => "metered", _ => "unknown" }));
         }
+        if (kind == "MemoryPromotion")
+        {
+            try
+            {
+                var memory = JsonObj.Parse(Get(f, "subject"));
+                var scoped = memory.GetValueOrDefault("operation") == "memory.scoped.promotion";
+                var scope = memory.GetValueOrDefault("scopeLevel") switch
+                    { "Project" => "project", "Workspace" => "workspace", "User" => "global", _ => "session" };
+                if (scoped) title = _text.Resolve("interaction.memory_promotion.scoped_title");
+                subject = _text.Resolve("client.memory.scope." + scope) + "\n"
+                    + SessionPreferencesPresentation.SafeText(memory.GetValueOrDefault("content") ?? "", 4096);
+                if (memory.GetValueOrDefault("conflictMemoryId") is { Length: > 0 } conflict)
+                    subject += "\n" + _text.Resolve("interaction.memory_promotion.conflict") + ": " + conflict;
+                else labels = ids.Select(id => id == "promote" ? _text.Resolve("interaction.memory_promotion.save")
+                    : Label(prefix + id, id)).ToArray();
+            }
+            catch (System.Text.Json.JsonException) { subject = _text.Resolve("client.no_data"); }
+        }
         return new InteractionOverlayModel(Get(f, "interactionId"), kind, title,
             subject, labels, ids, questionnaire, Get(f, "defaultOption"), Get(f, "runId"),
             Get(f, "taskId"), Get(f, "laneId"), Get(f, "executionId"));

@@ -120,3 +120,39 @@ aceptación autenticada OpenRouter. [Evidencia](../validation/m8-extensibility-2
 | `ContextItemKind.Memory` y `Knowledge`, slot `Memory` en `ContextBudget`, procedencia en `ContextItem` (ADR-0029) | **Necesario desde M1** (solo tipos; el Context Engine llega en M2) |
 | `MemoryRecord`, `MemoryCandidate`, `MemoryPolicy`, `IMemoryStore`, `MemoryContextContributor`, `memory.propose` | **Contract now / implementation later**: Session Memory en M8; Project, Workspace y Global después |
 | Búsqueda vectorial, dedupe semántico, consolidación automática | **Fully deferable** |
+
+## M10 — escritura humana y recuperación entre ámbitos (2026-10-29)
+
+El primer flujo conectado para Project, Workspace y User/Global usa confirmación humana
+en todos esos ámbitos. La promoción por evidencia entre Sessions queda pendiente; no
+se amplía la tool del modelo `memory.propose`, que conserva Session.
+
+- Host deriva las identidades del workspace físico actual. Project requiere confianza
+  vigente para consultar, proponer, aprobar y recuperar operaciones pendientes. Ni un
+  argumento del cliente ni ProjectId conceden autoridad.
+- La interacción muestra ámbito, contenido y reemplazo concreto. Su respuesta exacta
+  `InteractionResolved` con `Cause=User` se hace durable antes de preparar la promoción.
+- `ScopedMemoryMutationPrepared` registra la intención autorizada antes de modificar la
+  base del ámbito. El cambio y su recibo de idempotencia se confirman en una transacción
+  SQLite; después se publican `MemoryPromoted`/`MemoryForgotten` y
+  `ScopedMemoryMutationCompleted` en el journal de la Session.
+- La operación de olvido se identifica también por Session para que dos autores no
+  colisionen. Repetir una operación preparada consulta su recibo antes de comprobar la
+  revisión y nunca vuelve a insertar un recuerdo olvidado posteriormente.
+- La revisión CAS congela contenido y metadata de la partición, excluyendo LastUsedAt.
+  Una revisión obsoleta o un límite de capacidad cierran la intención mediante
+  `ScopedMemoryMutationRejected`; no se reintentan indefinidamente al iniciar Turn.
+- La recuperación aplica únicamente intenciones preparadas y vuelve a comprobar el
+  ámbito permitido. Las consultas pasivas no ejecutan recuperación ni crean recuerdos.
+- El contributor materializa únicamente registros activos y no vencidos como datos de
+  referencia con procedencia; marca uso después de una respuesta del proveedor y sólo
+  para elementos efectivamente incluidos. Los hijos delegados mantienen su TaskPacket
+  aceptado y no reciben un acceso directo nuevo a estas bases.
+
+El ledger del ámbito conserva hasta 10.000 operaciones por partición. No se eliminan
+recibos automáticamente: su mantenimiento requiere coordinar la retención de los
+journals antes de retirar la garantía contra resurrección. La capacidad agotada debe
+informarse sin invalidar posteriores consultas o reconciliaciones ya completadas.
+No hay transacción distribuida entre journal y memoria; las intenciones y el ledger
+permiten reconciliar esa separación. La aceptación de cada corte debe distinguir
+fallos inyectados de una caída real del proceso.

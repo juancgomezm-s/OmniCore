@@ -117,7 +117,7 @@ public sealed class ClientCommandRegistry
 /// <c>WireCommand</c>, la misma ruta que cualquier otra superficie (ADR-0025 §1). La TUI intercepta
 /// <c>run.cancel</c> y <c>run.interrupt</c> antes para cancelar también el Turn que ella lleva en curso.
 /// </summary>
-public sealed class ClientActionHandler : IClientActionHandler
+public sealed partial class ClientActionHandler : IClientActionHandler
 {
     private const int MaxMessageLength = 1800;
     private const int RecentEvents = 20;
@@ -266,7 +266,8 @@ public sealed class ClientActionHandler : IClientActionHandler
         if (json is null) return new ClientActionResult(context.Text.Resolve("client.no_data"));
         if (name == "skills") return new ClientActionResult(SkillsInspectionPresentation.Format(json, context.Text));
         if (name == "agent.sources") return new ClientActionResult(ExternalAgentSourcesPresentation.Format(json, context.Text));
-        if (name == "memory.session") return new ClientActionResult(MemoryInspectionPresentation.Format(json, context.Text));
+        if (name is "memory.session" or "memory.project" or "memory.workspace" or "memory.global")
+            return new ClientActionResult(MemoryInspectionPresentation.Format(json, context.Text));
         return new ClientActionResult(json.Length <= MaxMessageLength ? json : json[..MaxMessageLength] + "…");
     }
 
@@ -291,6 +292,8 @@ public sealed class ClientActionHandler : IClientActionHandler
 
     private static ClientActionResult Memory(ClientActionInvocation invocation, ClientContext context)
     {
+        if (invocation.Arguments.Count > 0 && invocation.Arguments[0] is "project" or "workspace" or "global")
+            return ScopedMemory(invocation, context);
         if ((invocation.Arguments.Count is 2 or 3)
             && invocation.Arguments[0] == "external"
             && (invocation.Arguments[1] is "allow" or "revoke")

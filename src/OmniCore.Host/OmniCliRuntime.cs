@@ -3961,6 +3961,7 @@ public sealed partial class OmniCliRuntime : IDisposable
             IReadOnlyList<ActiveSkillFingerprint> activeSkillFingerprints = [];
             ContextMaterializer? materializer = null;
             var skillStore = new SessionSkillActivationStore(OmniHost.WorkspaceDataDirectory(paths, workspaceRoot));
+            if (delegation is null) server.ReconcileScopedMemory(sessionId, cancellationToken);
             var skillComposition = new SkillTurnComposition(sessionId, skillStore,
                 DiscoverSkills, skillLimits, tokenCounter, workspaceData, harness.GuidanceLevel != GuidanceLevel.Off,
                 includeWorkingState: !executingAct, workingState, extensionContributors,
@@ -3976,7 +3977,10 @@ public sealed partial class OmniCliRuntime : IDisposable
                             ExternalAgentSourceKind.Memory)).ToArray()
                     : [],
                 emitLifecycle: payload => new EventStream(server.AcquireStore(), server.AcquireCodecs(), sessionId)
-                    .Append(payload, DurabilityClass.Barrier));
+                    .Append(payload, DurabilityClass.Barrier),
+                scopedMemoryContributorFactory: () => delegation is null
+                    ? [new ScopedMemoryContextContributor(new ScopedMemoryStore(paths.DataDirectory),
+                        () => ScopedMemoryAccess.Allowed(paths, workspaceRoot))] : []);
             void RefreshSkillComposition()
             {
                 if (delegation is not null)

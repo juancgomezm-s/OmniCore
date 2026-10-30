@@ -15,6 +15,8 @@ public sealed class SessionMemoryContextContributor(IMemoryStore store) : IConte
     {
         ArgumentNullException.ThrowIfNull(items);
         var ids = items.Where(item => item.Kind == ContextItemKind.Memory
+                && item.Provenance.ContributorId == "memory.session"
+                && item.Provenance.Scope == ScopeLevel.Session
                 && item.Id.StartsWith("memory.", StringComparison.Ordinal))
             .Select(item => item.Id["memory.".Length..])
             .Distinct(StringComparer.Ordinal)

@@ -4522,6 +4522,8 @@ public sealed class ExplorerTurn
         stream.Append(new MemoryUsed(turnId, modelStepIndex, memoryIds, usedAt), DurabilityClass.Barrier);
         foreach (var contributor in _materializer.Contributors().OfType<SessionMemoryContextContributor>())
             contributor.RecordUsed(sessionId, includedMemories, usedAt, CancellationToken.None);
+        foreach (var contributor in _materializer.Contributors().OfType<ScopedMemoryContextContributor>())
+            contributor.RecordUsed(sessionId, includedMemories, usedAt, CancellationToken.None);
     }
 
     internal static ModelMessage ProjectConversationMessage(ModelMessage original, ContextItem item,

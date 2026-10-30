@@ -294,7 +294,9 @@ public sealed class SessionMemoryPolicy
 
     public static IReadOnlyList<MemoryCandidateView> ProjectForPresentation(IReadOnlyList<DomainEventPayload> events)
     {
-        var proposals = events.OfType<MemoryCandidateProposed>().GroupBy(item => item.CandidateId, StringComparer.Ordinal)
+        var proposals = events.OfType<MemoryCandidateProposed>()
+            .Where(item => item.ProposedScope.Level == ScopeLevel.Session)
+            .GroupBy(item => item.CandidateId, StringComparer.Ordinal)
             .Select(group => group.Last()).OrderByDescending(item => item.ProposedAt).Take(50).ToArray();
         var promoted = events.OfType<MemoryPromoted>().Select(item => item.CandidateId).ToHashSet(StringComparer.Ordinal);
         var rejected = events.OfType<MemoryRejected>().GroupBy(item => item.CandidateId, StringComparer.Ordinal)

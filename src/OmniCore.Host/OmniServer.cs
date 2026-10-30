@@ -1348,6 +1348,12 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
             lock (_modeAuthorityMutationGate)
                 return ChangeSessionMemory(command, commandName, fields, trustedUserAction, cancellationToken);
         }
+        if (commandName is "memory.scoped.propose" or "memory.scoped.forget"
+            or "memory.scoped.promote" or "memory.scoped.reject")
+        {
+            lock (_modeAuthorityMutationGate)
+                return ChangeScopedMemory(command, commandName, fields, trustedUserAction, cancellationToken);
+        }
         if (commandName == "external.memory.consent")
         {
             if (!trustedUserAction)
@@ -2943,12 +2949,14 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         {
             using var document = System.Text.Json.JsonDocument.Parse(subjectJson);
             var root = document.RootElement;
-            if (!root.TryGetProperty("operation", out var operation) || operation.GetString() != "memory.promotion"
+            if (!root.TryGetProperty("operation", out var operation)
+                || operation.GetString() is not ("memory.promotion" or "memory.scoped.promotion")
                 || !root.TryGetProperty("candidateId", out var candidate) || candidate.ValueKind != System.Text.Json.JsonValueKind.String
                 || !root.TryGetProperty("conflictMemoryId", out var conflict) || conflict.ValueKind != System.Text.Json.JsonValueKind.String)
                 throw new InvalidDataException("sessionPreferences.error.memory_approval_invalid");
             var candidateId = candidate.GetString(); var conflictId = conflict.GetString();
-            if (string.IsNullOrWhiteSpace(candidateId) || string.IsNullOrWhiteSpace(conflictId))
+            if (string.IsNullOrWhiteSpace(candidateId) || conflictId is null
+                || operation.GetString() == "memory.promotion" && string.IsNullOrWhiteSpace(conflictId))
                 throw new InvalidDataException("sessionPreferences.error.memory_approval_invalid");
             return (candidateId, conflictId);
         }
@@ -2963,6 +2971,11 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
     {
         if (request.Kind != InteractionKind.MemoryPromotion)
             throw new InvalidDataException("sessionPreferences.error.memory_approval_invalid");
+        if (IsScopedMemoryPromotion(request))
+        {
+            ApplyScopedMemoryPromotionDecision(session, request, optionId, commandId, control, resolveInteraction);
+            return;
+        }
         var identity = ReadMemoryPromotionIdentity(request.SubjectJson);
         var optionIds = new HashSet<string>(StringComparer.Ordinal);
         using (var options = System.Text.Json.JsonDocument.Parse(request.OptionsJson))
@@ -3759,6 +3772,8 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
                 + ",\"externalProjectMemoryAllowed\":" + (projectMemoryAllowed ? "true" : "false")
                 + ",\"sources\":[" + string.Join(",", entries) + "]}");
         }
+        if (name is "memory.project" or "memory.workspace" or "memory.global")
+            return QueryScopedMemory(name, cancellationToken);
         if (name is "memory" or "memory.session")
         {
             if (_workspaceRoot is null || _lastSessionId is not { } session)

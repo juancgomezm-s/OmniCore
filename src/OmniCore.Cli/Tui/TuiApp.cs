@@ -2055,10 +2055,18 @@ public sealed partial class TuiApp
 
     private void ShowChoiceInteraction(InteractionOverlayModel interaction)
     {
-        var bodyHeight = interaction.Kind == "ModelRouteConsent" ? 4 : 2;
+        var bodyHeight = interaction.Kind == "MemoryPromotion" ? 8 : interaction.Kind == "ModelRouteConsent" ? 4 : 2;
         var overlay = OverlayFrame(interaction.Title, 5 + bodyHeight + interaction.Options.Count);
         _activeInteraction = interaction;
-        overlay.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Height = bodyHeight,
+        if (interaction.Kind == "MemoryPromotion")
+        {
+            // Selectable, read-only consent text uses the same pinned control as account details.
+#pragma warning disable CS0618
+            overlay.Add(new TextView { Id = "memory-promotion-content", X = 2, Y = 2, Width = Dim.Fill(2), Height = bodyHeight,
+                ReadOnly = true, WordWrap = true, ScrollBars = true, Text = interaction.Subject });
+#pragma warning restore CS0618
+        }
+        else overlay.Add(new Label { X = 2, Y = 2, Width = Dim.Fill(2), Height = bodyHeight,
             Text = interaction.Subject.Length == 0 ? interaction.Kind : interaction.Subject });
         Button? defaultButton = null;
         for (var index = 0; index < interaction.Options.Count; index++)

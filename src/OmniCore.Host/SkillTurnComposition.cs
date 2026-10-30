@@ -22,6 +22,7 @@ public sealed class SkillTurnComposition
     private readonly Func<IReadOnlyList<IContextContributor>>? _extensionContributorFactory;
     private readonly Func<IReadOnlyList<ExtensionCompletionValidator>>? _extensionValidatorFactory;
     private readonly Action<SkillActivationChanged>? _emitLifecycle;
+    private readonly Func<IReadOnlyList<IContextContributor>>? _scopedMemoryContributorFactory;
 
     public SkillTurnComposition(SessionId session, SessionSkillActivationStore store,
         Func<IReadOnlyList<DiscoveredSkill>> discover, SkillSelectionLimits limits,
@@ -30,7 +31,8 @@ public sealed class SkillTurnComposition
         IReadOnlyList<IContextContributor>? extensionContributors = null,
         Func<IReadOnlyList<ExtensionCompletionValidator>>? extensionValidatorFactory = null,
         Func<IReadOnlyList<IContextContributor>>? extensionContributorFactory = null,
-        Action<SkillActivationChanged>? emitLifecycle = null)
+        Action<SkillActivationChanged>? emitLifecycle = null,
+        Func<IReadOnlyList<IContextContributor>>? scopedMemoryContributorFactory = null)
     {
         _session = session;
         _store = store ?? throw new ArgumentNullException(nameof(store));
@@ -45,6 +47,7 @@ public sealed class SkillTurnComposition
         _extensionValidatorFactory = extensionValidatorFactory;
         _extensionContributorFactory = extensionContributorFactory;
         _emitLifecycle = emitLifecycle;
+        _scopedMemoryContributorFactory = scopedMemoryContributorFactory;
     }
 
     public SkillTurnCompositionSnapshot Refresh()
@@ -118,6 +121,7 @@ public sealed class SkillTurnComposition
         var contributors = loaded.Select(skill => (IContextContributor)new SkillContextContributor(_session, skill))
             .Append(new SkillIndexContributor(_session, candidates, _guidanceEnabled, _limits.ContextTokenBudget))
             .Append(new SessionMemoryContextContributor(new SessionMemoryStore(_workspaceData)))
+            .Concat(_scopedMemoryContributorFactory?.Invoke() ?? [])
             .Concat(_extensionContributorFactory?.Invoke() ?? _extensionContributors).ToArray();
         if (_includeWorkingState)
             contributors = new IContextContributor[] { new WorkingStateContributor(_workingState) }
