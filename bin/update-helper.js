@@ -85,6 +85,18 @@ function writeState(statePath, operation, operationId, expectedStatus, patch) {
   return next;
 }
 
+function replaceState(statePath, next) {
+  const temporary = statePath + '.' + process.pid + '.' + crypto.randomBytes(8).toString('hex') + '.tmp';
+  const descriptor = fs.openSync(temporary, 'wx', 0o600);
+  try {
+    fs.writeFileSync(descriptor, JSON.stringify(next, null, 2), 'utf8');
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  fs.renameSync(temporary, statePath);
+}
+
 function verifyArchive(filePath, expectedSha256, expectedSize) {
   if (!path.isAbsolute(filePath) || !/^[a-f0-9]{64}$/.test(expectedSha256)
       || !Number.isSafeInteger(expectedSize) || expectedSize < 1) throw new Error('invalid_archive_expectation');
@@ -264,6 +276,225 @@ function acquireLock(lockPath, statePath, operation, operationId) {
   }
 }
 
+function acquireStateMutationLock(statePath) {
+  const lockPath = path.join(path.dirname(path.resolve(statePath)), 'state.lock');
+  const systemRoot = process.env.SystemRoot || process.env.WINDIR;
+  if (!systemRoot || !path.isAbsolute(systemRoot)) throw new Error('update_operation_in_progress');
+  const controllerPath = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  if (!regularFile(controllerPath)) throw new Error('update_operation_in_progress');
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    '$stream = $null',
+    'try {',
+    '  $lockPath = $env:OMNICORE_UPDATE_STATE_LOCK',
+    "  if ([string]::IsNullOrWhiteSpace($lockPath)) { exit 2 }",
+    '  $stream = [System.IO.File]::Open($lockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)',
+    "  [Console]::Out.WriteLine('OMNICORE_STATE_LOCKED')",
+    '  [Console]::Out.Flush()',
+    '  [Console]::In.ReadToEnd() | Out-Null',
+    '} finally { if ($null -ne $stream) { $stream.Dispose() } }',
+  ].join('\n');
+  const encodedScript = Buffer.from(script, 'utf16le').toString('base64');
+  const env = {};
+  for (const name of ['SystemRoot', 'WINDIR', 'TEMP', 'TMP'])
+    if (process.env[name]) env[name] = process.env[name];
+  env.OMNICORE_UPDATE_STATE_LOCK = lockPath;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(controllerPath, ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodedScript], {
+      cwd: path.dirname(statePath),
+      env,
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const lock = { child, lost: false, released: false, closed: false, handshakeTimer: null, expiryTimer: null };
+    let output = '';
+    let settled = false;
+    const fail = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(lock.handshakeTimer);
+      try { child.stdin.end(); } catch { }
+      try { child.kill(); } catch { }
+      reject(new Error('update_operation_in_progress'));
+    };
+    lock.handshakeTimer = setTimeout(fail, 5_000);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
+      output = (output + chunk).slice(-1024);
+      if (!output.includes('OMNICORE_STATE_LOCKED') || settled) return;
+      settled = true;
+      clearTimeout(lock.handshakeTimer);
+      lock.expiryTimer = setTimeout(() => {
+        if (!lock.released) {
+          lock.lost = true;
+          try { child.stdin.end(); } catch { try { child.kill(); } catch { } }
+        }
+      }, 900_000);
+      resolve(lock);
+    });
+    child.stderr.on('data', () => { });
+    child.once('error', fail);
+    child.once('close', () => {
+      lock.closed = true;
+      if (!lock.released && settled) lock.lost = true;
+      if (!settled) fail();
+    });
+  });
+}
+
+function assertStateMutationLock(lock) {
+  if (!lock || lock.lost || lock.closed || lock.child.exitCode !== null)
+    throw new Error('update_operation_in_progress');
+}
+
+async function releaseStateMutationLock(lock) {
+  if (!lock || lock.released) return;
+  lock.released = true;
+  clearTimeout(lock.expiryTimer);
+  if (lock.closed) return;
+  await new Promise(resolve => {
+    const cleanupTimer = setTimeout(() => {
+      try { lock.child.kill(); } catch { }
+    }, 2_000);
+    lock.child.once('close', () => { clearTimeout(cleanupTimer); resolve(); });
+    try { lock.child.stdin.end(); }
+    catch { try { lock.child.kill(); } catch { } }
+  });
+}
+
+function archiveRecoveryHelperLock(lockPath, statePath, state) {
+  try {
+    const stat = fs.lstatSync(lockPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('lock_owner_invalid');
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return;
+    throw error;
+  }
+  const lock = readLock(lockPath);
+  if (!lock.owner) throw new Error('lock_owner_invalid');
+  const owner = lock.owner;
+  if (owner.operation !== state.operation || owner.operationId !== state.operationId
+      || !samePath(owner.statePath, statePath) || owner.pid !== state.helperPid
+      || pidStatus(owner.pid) !== 'dead') throw new Error('operation_in_progress');
+  const archive = lockPath + '.abandoned-recovery-' + state.operationId + '-' + crypto.randomBytes(4).toString('hex');
+  fs.renameSync(lockPath, archive);
+}
+
+function absentOrDead(pid) {
+  return pid === null || pid === undefined || pidStatus(pid) === 'dead';
+}
+
+async function launchRecoveryHelper(args) {
+  const statePath = args.state;
+  const npmPath = args.npm;
+  const nodePath = args.node;
+  const npmPrefix = args['npm-prefix'];
+  const packageDirectory = args['package-directory'];
+  const timeoutSeconds = Number(args.timeout || DEFAULT_TIMEOUT_SECONDS);
+  if (args.yes !== 'true') throw new Error('update_recovery_confirmation_required');
+  if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('update_recovery_windows_x64_only');
+  if (!statePath || !path.isAbsolute(statePath) || !regularFile(statePath)) throw new Error('missing_state');
+  if (!npmPath || !fs.existsSync(npmPath) || !npmCliPath(npmPath)) throw new Error('missing_npm');
+  if (!nodePath || !fs.existsSync(nodePath)) throw new Error('missing_node');
+  if (!npmPrefix || !path.isAbsolute(npmPrefix)) throw new Error('invalid_npm_prefix');
+  if (!packageDirectory || !path.isAbsolute(packageDirectory)) throw new Error('invalid_package_directory');
+  if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 3600)
+    throw new Error('invalid_timeout');
+
+  const stateLock = await acquireStateMutationLock(statePath);
+  try {
+    assertStateMutationLock(stateLock);
+    const state = readState(statePath);
+    const applyRecovery = state.operation === 'Apply'
+      && ['Running', 'Unknown'].includes(state.status);
+    const resumeRecovery = state.operation === 'Rollback'
+      && (['Running', 'Unknown', 'Failed'].includes(state.status)
+        || state.status === 'Pending' && state.detail === 'manual_recovery_waiting_for_parent_exit');
+    if (!applyRecovery && !resumeRecovery) throw new Error('update_recovery_state_not_recoverable');
+    if (!/^[a-f0-9]{32}$/.test(state.operationId || '')) throw new Error('update_state_invalid');
+    if (!absentOrDead(state.parentPid) || !absentOrDead(state.helperPid) || !absentOrDead(state.npmPid))
+      throw new Error('operation_in_progress');
+
+    const expectedVersion = state.fromVersion;
+    if (!expectedVersion || !semverPattern.test(expectedVersion)) throw new Error('update_recovery_version_invalid');
+    if (!state.npmPrefix || !samePath(state.npmPrefix, npmPrefix)) throw new Error('npm_prefix_mismatch');
+    const expectedPackageDirectory = path.join(npmPrefix, 'node_modules', 'omnicore-cli');
+    if (!samePath(packageDirectory, expectedPackageDirectory)) throw new Error('package_directory_mismatch');
+    if (!state.backupPath || !path.isAbsolute(state.backupPath)
+        || !state.backupSha256 || !/^[a-f0-9]{64}$/.test(state.backupSha256))
+      throw new Error('update_backup_unverified');
+    ensureNoReparsePoint(state.backupPath, 'directory');
+    if (fingerprintDirectory(state.backupPath) !== state.backupSha256)
+      throw new Error('update_backup_unverified');
+    verifyInstalledPackage(state.backupPath, 'omnicore-cli', expectedVersion);
+    archiveRecoveryHelperLock(statePath + '.helper.lock', statePath, state);
+
+    assertStateMutationLock(stateLock);
+    const operationId = resumeRecovery ? state.operationId : crypto.randomBytes(16).toString('hex');
+    const rollback = {
+      ...state,
+      operation: 'Rollback',
+      status: 'Pending',
+      assetPath: null,
+      fromVersion: expectedVersion,
+      parentPid: process.pid,
+      helperPid: null,
+      npmPid: null,
+      detail: 'manual_recovery_waiting_for_parent_exit',
+      operationId,
+      expectedSha256: null,
+      expectedSize: null,
+      npmPrefix,
+      backupSha256: state.backupSha256,
+      updatedAtUtc: new Date().toISOString(),
+    };
+    replaceState(statePath, rollback);
+
+    const childArgs = [
+      __filename,
+      '--mode', 'rollback',
+      '--parent-pid', String(process.pid),
+      '--state', statePath,
+      '--backup-path', state.backupPath,
+      '--backup-sha256', state.backupSha256,
+      '--npm', npmPath,
+      '--node', nodePath,
+      '--package', 'omnicore-cli',
+      '--expected-version', expectedVersion,
+      '--package-directory', packageDirectory,
+      '--timeout', String(timeoutSeconds),
+      '--operation-id', operationId,
+      '--npm-prefix', npmPrefix,
+      '--require-helper-registration', 'true',
+      '--recovery-offline', 'true',
+    ];
+    const child = spawn(nodePath, childArgs, {
+      cwd: path.dirname(statePath),
+      detached: true,
+      windowsHide: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    try {
+      const helperPid = await new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('spawn', () => resolve(child.pid));
+      });
+      assertStateMutationLock(stateLock);
+      writeState(statePath, 'Rollback', operationId, 'Pending', { helperPid });
+    } catch (error) {
+      try { child.kill(); } catch { }
+      throw error;
+    }
+    process.stdout.write('update_recovery_rollback_prepared\n');
+    return 0;
+  } finally {
+    await releaseStateMutationLock(stateLock);
+  }
+}
+
 function npmCliPath(npmPath) {
   if (path.extname(npmPath).toLowerCase() === '.js') return npmPath;
   const candidate = path.join(path.dirname(npmPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
@@ -308,6 +539,30 @@ async function npmChildMain(serialized) {
     // The owner did not durably register this PID. In particular, never start
     // npm when the parent helper exits before sending its authorization byte.
     process.exitCode = 78;
+    return;
+  }
+
+  if (process.platform === 'win32') {
+    const cli = npmCliPath(request.npmPath);
+    if (!cli) {
+      process.stderr.write('npm_cli_unavailable\n');
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      process.chdir(request.cwd);
+      process.argv = [request.nodePath, cli, ...request.args];
+      const timeout = setTimeout(() => process.exit(124), request.timeoutMs);
+      timeout.unref();
+      process.once('exit', () => clearTimeout(timeout));
+      // Requiring npm's official CLI in this wrapper keeps npm itself inside
+      // the PID durably recorded in state, rather than leaving an untracked
+      // grandchild running if the supervising helper is killed.
+      require(cli);
+    } catch (error) {
+      process.stderr.write(String(error && error.stack || error) + '\n');
+      process.exitCode = 1;
+    }
     return;
   }
 
@@ -488,6 +743,7 @@ async function main() {
   }
   const args = parseArgs(process.argv.slice(2));
   const mode = args.mode;
+  if (mode === 'recover') return launchRecoveryHelper(args);
   const operation = operationName(mode);
   const parentPid = Number(args['parent-pid']);
   const statePath = args.state;
@@ -539,6 +795,12 @@ async function main() {
       return 1;
     }
     const pending = assertOperation(statePath, operation, operationId, 'Pending');
+    if (args['require-helper-registration'] === 'true' && pending.helperPid !== process.pid) {
+      writeState(statePath, operation, operationId, 'Pending', {
+        status: 'Failed', detail: 'helper_registration_mismatch',
+      });
+      return 1;
+    }
     if (!samePath(pending.npmPrefix, npmPrefix)) throw new Error('npm_prefix_mismatch');
     if (mode === 'apply' && (!samePath(pending.assetPath, target)
         || pending.expectedSha256 !== args.sha256 || pending.expectedSize !== Number(args.size)))
@@ -593,8 +855,11 @@ async function main() {
 
     // Durable intent precedes the first npm side effect. A crash from here on
     // is ambiguous until package identity and the CLI smoke both pass.
+    const installArgs = ['install', '-g', '--prefix', npmPrefix, '--ignore-scripts', '--no-audit', '--no-fund'];
+    if (args['recovery-offline'] === 'true') installArgs.push('--offline');
+    installArgs.push(packagePath);
     const installed = await runNpm(npmExecutable,
-      ['install', '-g', '--prefix', npmPrefix, '--ignore-scripts', '--no-audit', '--no-fund', packagePath],
+      installArgs,
       path.dirname(statePath), timeoutMs, nodePath, statePath, operation, operationId, 'Pending', {
         status: 'Running',
         helperPid: process.pid,

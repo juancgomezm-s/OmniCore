@@ -318,8 +318,18 @@ Sin la opción de GitHub, los scripts instalan el contenido del checkout actual.
 Ninguna modalidad modifica cuentas, preferencias, sesiones o workspaces. `main` es el canal de
 desarrollo. Para fijar una revisión, usa `git checkout <SHA>` antes de instalar;
 no se presenta como una release estable. El servicio de actualización desde
-GitHub Releases y los comandos `omni update ...` siguen previstos en
-[M10](docs/plans/github-updates.md).
+GitHub Releases está cableado para Windows x64: `omni update check`,
+`omni update apply --yes`, `omni update status` y `omni update rollback --yes`.
+Aplicar o revertir reemplaza el paquete mediante npm después de salir la CLI;
+cierra otras instancias de OmniCore antes de hacerlo. La consulta no instala nada.
+El canal `stable` es el predeterminado; `--channel preview` permite prereleases.
+La descarga y su manifest deben superar SHA256 y attestations del repositorio,
+workflow y commit autorizado. Todavía falta publicar y aceptar la primera release;
+sin ella, la consulta informa que no hay versiones publicadas. Antes del reemplazo
+se muestra un comando de recuperación PowerShell que conserva el helper fuera
+del paquete: permite restaurar el respaldo verificado sin red si `omni` deja de
+arrancar. Guarda ese comando; requiere confirmación explícita y rechaza procesos activos. Alcance y evidencia
+en [M10](docs/plans/github-updates.md).
 
 Ejecuta `omni` desde la carpeta del proyecto para abrir la interfaz integrada
 con categorías laterales de preferencias. También está disponible `omni tui`.

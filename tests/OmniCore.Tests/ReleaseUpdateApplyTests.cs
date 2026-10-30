@@ -263,6 +263,13 @@ public sealed class ReleaseUpdateApplierTests
         Assert.Equal(Check().Asset!.Size, persisted.ExpectedSize);
         Assert.Equal(directory.Path, persisted.NpmPrefix);
         Assert.Equal(persisted.NpmPrefix, launcher.Request!.NpmPrefix);
+        Assert.Equal(store.RecoveryHelperPath(persisted.OperationId!), launcher.Request.HelperPath);
+        Assert.Equal(result.State.RecoveryCommand, persisted.RecoveryCommand);
+        Assert.Contains("--mode recover", persisted.RecoveryCommand);
+        Assert.Contains("--yes true", persisted.RecoveryCommand);
+        Directory.Delete(package, recursive: true);
+        Assert.True(File.Exists(launcher.Request.HelperPath));
+        Assert.True(File.Exists(System.IO.Path.Combine(persisted.BackupPath!, "package.json")));
     }
 
     [Fact]

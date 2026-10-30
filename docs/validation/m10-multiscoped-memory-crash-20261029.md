@@ -3,6 +3,12 @@
 Fecha local: 2026-10-29, America/Mexico_City. Base de producción: `b01306d0`.
 Alcance Core/CLI/TUI de OmniCore; no publicación, merge ni actualización de instalación.
 
+Actualización posterior 2026-10-30: el incremento quedó integrado localmente en
+Main junto a M9 y al updater mediante `e775b13b`. La regresión posterior pasó con
+97 casos y cuatro omisiones de symlinks; incluye las 18 caídas reales. Ver
+[integración](m9-m10-main-integration-20261030.md). Las declaraciones de ausencia
+de integración inferiores describen el checkpoint original del 29, no el estado actual.
+
 ## Estado de construcción
 
 La composición de Host, comandos, contexto, confianza de Workspace para Project y

@@ -1,12 +1,16 @@
 # Canal de actualizaciones por GitHub
 
 Solicitud del usuario del 2026-10-12, incorporada al plan el 2026-10-13.
-**Estado 2026-10-27:** consulta, preparación de aplicación y rollback implementados
-para instalación npm global; aceptación real y verificación de publicador pendientes.
+**Estado 2026-10-30:** consulta, aplicación y rollback Windows x64 implementados
+para instalación npm global, con verificación de publicador mediante GitHub CLI
+fijada por SHA256 y attestations de paquete/manifest. Empaquetado real, aplicación,
+arranque y rollback probados en un prefijo npm temporal. La primera release y su
+aceptación completa desde GitHub siguen pendientes; el canal público aún no está cerrado.
 Complementa
 [arquitectura §24](../architecture/arquitectura.md) y el
 [plan M8–M10](m8-m10-user-localization.md). La instalación npm desde Git ya
-existe; todavía no existe un servicio de actualizaciones de OmniCore.
+existe; los contratos del actualizador ya están cableados y falta activar el canal
+publicado. [Evidencia del incremento](../validation/m10-github-updater-20261030.md).
 
 **Instalación manual actualizada (2026-10-15):** `scripts/install.ps1` y
 `scripts/install.sh` compilan el checkout actual, verifican el arranque y entregan
@@ -103,12 +107,14 @@ la construcción del updater permanece en M10.
 - Estados, confirmaciones, errores, ayuda y accesibilidad es/en/fr/it mediante
   los contratos existentes. IDs, versiones, URLs y hashes permanecen invariantes.
 
-**Estado de aceptación (2026-10-27):** los fixtures cubren consulta stable/preview,
-digest y tamaño alterados, redirección rechazada, identidad de paquete, backup,
-estado durable, confirmación y rollback. La aplicación real sobre una instalación
-npm, DLL ocupada, crash antes/después de activación, recuperación idempotente y la
-verificación de identidad del publicador siguen pendientes. Windows x64 es la
-primera plataforma de aceptación.
+**Estado de aceptación (2026-10-30):** los fixtures cubren consulta stable/preview,
+digest/tamaño/identidad, restricciones de redirección, backup verificado, estado
+durable, confirmación, rechazo con DLL ocupada, identidad del verificador y
+exclusión con PID npm activo. Se aplicó y revirtió la CLI .NET real mediante npm
+en un prefijo temporal y se conservó la instalación activa. La verificación de
+una attestation real del pipeline de OmniCore y la aceptación de descarga desde
+una release publicada siguen pendientes. Los fixtures de certificado no sustituyen
+esa prueba criptográfica. Ver el acta para los cortes de proceso y sus límites.
 
 Fuente primaria del mecanismo de publicación:
 [GitHub Releases API](https://docs.github.com/en/rest/releases/releases) y

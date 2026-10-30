@@ -25,6 +25,12 @@ public sealed class ReleaseUpdateStateStore
 
     public string StatePath => _statePath;
 
+    public string RecoveryHelperPath(string operationId)
+    {
+        if (!Guid.TryParseExact(operationId, "N", out _)) throw new ArgumentException("Invalid update operation ID.", nameof(operationId));
+        return Path.Combine(UpdatesDirectory, "recovery", operationId, "update-helper.js");
+    }
+
     public string StagingDirectory(string version) =>
         Path.Combine(UpdatesDirectory, "staging", SafeSegment(version));
 
@@ -61,7 +67,8 @@ public sealed class ReleaseUpdateStateStore
                 Optional(root, "fromVersion"), Optional(root, "toVersion"), Optional(root, "assetPath"),
                 Optional(root, "backupPath"), OptionalInt(root, "parentPid"), OptionalInt(root, "helperPid"),
                 updatedAt, Optional(root, "detail"), Optional(root, "operationId"), Optional(root, "expectedSha256"),
-                OptionalLong(root, "expectedSize"), Optional(root, "npmPrefix"), Optional(root, "backupSha256"), OptionalInt(root, "npmPid"));
+                OptionalLong(root, "expectedSize"), Optional(root, "npmPrefix"), Optional(root, "backupSha256"), OptionalInt(root, "npmPid"),
+                Optional(root, "recoveryCommand"));
             return true;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
@@ -99,6 +106,7 @@ public sealed class ReleaseUpdateStateStore
                 WriteOptional(writer, "npmPrefix", state.NpmPrefix);
                 WriteOptional(writer, "backupSha256", state.BackupSha256);
                 if (state.NpmPid is { } npmPid) writer.WriteNumber("npmPid", npmPid);
+                WriteOptional(writer, "recoveryCommand", state.RecoveryCommand);
                 writer.WriteEndObject();
                 writer.Flush();
                 stream.Flush(flushToDisk: true);

@@ -78,6 +78,7 @@ public sealed partial class CliApp
         var result = await applier.ApplyAsync(check, confirmed: true).ConfigureAwait(false);
         if (!result.Prepared) return ReportFailure(result.DiagnosticCode);
         Console.WriteLine(text.Resolve("updates.apply.prepared", "version", available));
+        PrintRecoveryCommand(result.State);
         return 0;
     }
 
@@ -100,6 +101,7 @@ public sealed partial class CliApp
         if (!result.Prepared) return ReportFailure(result.DiagnosticCode);
         Console.WriteLine(text.Resolve("updates.rollback.prepared",
             "version", result.State?.FromVersion ?? text.Resolve("updates.unknown")));
+        PrintRecoveryCommand(result.State);
         return 0;
     }
 
@@ -121,7 +123,15 @@ public sealed partial class CliApp
         if (state.ToVersion is not null) Console.WriteLine(text.Resolve("updates.status.to") + ": " + state.ToVersion);
         Console.WriteLine(text.Resolve("updates.status.updated") + ": " + state.UpdatedAtUtc.ToLocalTime().ToString("O", CultureInfo.InvariantCulture));
         if (state.Detail is { Length: > 0 } detail) Console.WriteLine(text.Resolve("updates.status.detail") + ": " + detail);
+        PrintRecoveryCommand(state);
         return 0;
+    }
+
+    private static void PrintRecoveryCommand(ReleaseUpdateState? state)
+    {
+        if (state?.RecoveryCommand is not { Length: > 0 } command) return;
+        Console.WriteLine(Loc().Resolve("updates.recovery.command"));
+        Console.WriteLine(command);
     }
 
     private static ReleaseUpdateApplier CreateApplier(IReleaseUpdateDownloader downloader) =>

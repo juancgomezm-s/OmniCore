@@ -80,7 +80,7 @@ public sealed record ReleaseUpdateState(int SchemaVersion, ReleaseUpdateOperatio
     ReleaseUpdateOperationStatus Status, string? FromVersion, string? ToVersion, string? AssetPath,
     string? BackupPath, int? ParentPid, int? HelperPid, DateTimeOffset UpdatedAtUtc, string? Detail,
     string? OperationId = null, string? ExpectedSha256 = null, long? ExpectedSize = null, string? NpmPrefix = null,
-    string? BackupSha256 = null, int? NpmPid = null);
+    string? BackupSha256 = null, int? NpmPid = null, string? RecoveryCommand = null);
 
 public sealed record ReleaseUpdateApplyResult(bool Prepared, string? DiagnosticCode = null,
     ReleaseUpdateState? State = null);

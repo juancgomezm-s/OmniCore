@@ -100,6 +100,33 @@ function invokeHelper({ directory, statePath, archive, npmPath, packageDirectory
   return spawnSync(process.execPath, args, { encoding: 'utf8', timeout, windowsHide: true, env });
 }
 
+function invokeRecovery({ statePath, npmPath, packageDirectory, prefix, env, timeout = 15_000 }) {
+  const args = [helper, '--mode', 'recover', '--state', statePath, '--npm', npmPath, '--node', process.execPath,
+    '--package-directory', packageDirectory, '--npm-prefix', prefix, '--yes', 'true', '--timeout', '120'];
+  return spawnSync(process.execPath, args, { encoding: 'utf8', timeout, windowsHide: true, env });
+}
+
+async function waitForTerminalState(statePath, timeoutMs = 120_000) {
+  const terminal = new Set(['Succeeded', 'Failed', 'Unknown']);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    if (terminal.has(state.status)) return state;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error('timed out waiting for recovery helper to finish');
+}
+
+async function waitForState(statePath, predicate, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    if (predicate(state)) return state;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error('timed out waiting for expected update state');
+}
+
 function referenceFingerprint(directory) {
   const root = path.resolve(directory);
   const files = [];
@@ -575,6 +602,264 @@ test('real npm apply and rollback stay inside a temporary prefix and verify both
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('real npm recovery restores an absent active package from its verified backup',
+  { timeout: 180_000 }, async t => {
+    if (process.platform !== 'win32' || process.arch !== 'x64') {
+      t.skip('The manual recovery flow targets Windows x64 npm installations.');
+      return;
+    }
+
+    const directory = tempDirectory();
+    try {
+      const npmPath = findNpm();
+      const npmConfig = path.join(directory, 'npmrc');
+      const npmCache = path.join(directory, 'npm-cache');
+      const env = {
+        ...process.env,
+        NPM_CONFIG_USERCONFIG: npmConfig,
+        npm_config_userconfig: npmConfig,
+        NPM_CONFIG_CACHE: npmCache,
+        npm_config_cache: npmCache,
+        NPM_CONFIG_AUDIT: 'false',
+        npm_config_audit: 'false',
+        NPM_CONFIG_FUND: 'false',
+        npm_config_fund: 'false',
+      };
+      fs.writeFileSync(npmConfig, 'audit=false\nfund=false\nupdate-notifier=false\n');
+      fs.mkdirSync(npmCache, { recursive: true });
+
+      const prefix = path.join(directory, 'isolated recovery prefix');
+      const packageDirectory = path.join(prefix, 'node_modules', 'omnicore-cli');
+      const backup = path.join(directory, 'trusted-backup-0.1.0');
+      makeNpmPackage(backup, '0.1.0', 'Recovered OmniCore CLI 0.1.0');
+      const backupSha256 = fingerprintDirectory(backup);
+      const statePath = path.join(directory, 'updates', 'state.json');
+      fs.mkdirSync(path.dirname(statePath), { recursive: true });
+      const oldOperationId = 'aabbccddaabbccddaabbccddaabbccdd';
+      fs.writeFileSync(statePath, JSON.stringify({
+        schemaVersion: 1,
+        operation: 'Apply',
+        status: 'Running',
+        fromVersion: '0.1.0',
+        toVersion: '0.2.0',
+        assetPath: path.join(directory, 'staged-update.tgz'),
+        backupPath: backup,
+        parentPid: deadPid,
+        helperPid: deadPid,
+        npmPid: deadPid,
+        updatedAtUtc: new Date().toISOString(),
+        detail: 'npm_install_started',
+        operationId: oldOperationId,
+        npmPrefix: prefix,
+        backupSha256,
+      }));
+      const oldLockPath = statePath + '.helper.lock';
+      fs.writeFileSync(oldLockPath, JSON.stringify({
+        pid: deadPid, operation: 'Apply', operationId: oldOperationId, statePath,
+      }));
+
+      const prepared = invokeRecovery({ statePath, npmPath, packageDirectory, prefix, env });
+      assert.equal(prepared.status, 0, JSON.stringify({ stdout: prepared.stdout, stderr: prepared.stderr }));
+      assert.match(prepared.stdout, /update_recovery_rollback_prepared/);
+      assert.equal(fs.existsSync(packageDirectory), false, 'recovery starts with the interrupted package absent');
+
+      const finalState = await waitForTerminalState(statePath);
+      assert.equal(finalState.status, 'Succeeded', JSON.stringify(finalState));
+      assert.equal(finalState.operation, 'Rollback');
+      assert.equal(JSON.parse(fs.readFileSync(path.join(packageDirectory, 'package.json'), 'utf8')).version, '0.1.0');
+      assert.equal(finalState.npmPid, null);
+      assert.equal(fs.existsSync(oldLockPath), false);
+      assert.equal(fs.readdirSync(path.dirname(statePath)).some(name => name.startsWith('state.json.helper.lock.abandoned-recovery-')),
+        true, 'only the matching abandoned helper lock is archived');
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+test('manual recovery refuses while the interrupted npm PID is still alive', { skip: process.platform !== 'win32' }, () => {
+  const directory = tempDirectory();
+  try {
+    const prefix = path.join(directory, 'prefix');
+    const packageDirectory = path.join(prefix, 'node_modules', 'omnicore-cli');
+    const statePath = stateFile(directory, {
+      status: 'Running',
+      parentPid: deadPid,
+      helperPid: deadPid,
+      npmPid: process.pid,
+      npmPrefix: prefix,
+      fromVersion: '0.1.0',
+      toVersion: '0.2.0',
+      backupPath: path.join(directory, 'backup'),
+      backupSha256: 'a'.repeat(64),
+    });
+    const fake = fakeNpm(directory, { statePath });
+
+    const result = invokeRecovery({ statePath, npmPath: fake.npmPath, packageDirectory, prefix, env: process.env });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /operation_in_progress/);
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assert.equal(state.operation, 'Apply');
+    assert.equal(state.status, 'Running');
+    assert.equal(state.npmPid, process.pid);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('manual recovery respects the Host state.lock FileShare.None lock',
+  { skip: process.platform !== 'win32', timeout: 15_000 }, async () => {
+    const directory = tempDirectory();
+    let lockProcess;
+    try {
+      const prefix = path.join(directory, 'prefix');
+      const packageDirectory = path.join(prefix, 'node_modules', 'omnicore-cli');
+      const statePath = stateFile(directory, {
+        status: 'Running',
+        parentPid: deadPid,
+        helperPid: deadPid,
+        npmPid: deadPid,
+        npmPrefix: prefix,
+        fromVersion: '0.1.0',
+        toVersion: '0.2.0',
+        backupPath: path.join(directory, 'backup'),
+        backupSha256: 'a'.repeat(64),
+      });
+      const stateLockPath = path.join(path.dirname(statePath), 'state.lock');
+      fs.writeFileSync(stateLockPath, '');
+      const readyPath = path.join(directory, 'state-lock-ready');
+      const fake = fakeNpm(directory, { statePath });
+      const psQuote = value => `'${String(value).replace(/'/g, "''")}'`;
+      const script = `$stream = [System.IO.File]::Open(${psQuote(stateLockPath)}, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None); [System.IO.File]::WriteAllText(${psQuote(readyPath)}, 'ready'); Start-Sleep -Seconds 30; $stream.Dispose()`;
+      lockProcess = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+        { windowsHide: true, stdio: 'ignore' });
+      await waitForFile(readyPath);
+
+      const result = invokeRecovery({ statePath, npmPath: fake.npmPath, packageDirectory, prefix, env: process.env });
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /update_operation_in_progress/);
+      const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      assert.equal(state.operation, 'Apply');
+      assert.equal(state.status, 'Running');
+      assert.equal(fs.existsSync(statePath + '.helper.lock'), false);
+    } finally {
+      if (lockProcess && typeof lockProcess.kill === 'function') {
+        lockProcess.kill();
+        await Promise.race([
+          new Promise(resolve => lockProcess.once('close', resolve)),
+          new Promise(resolve => setTimeout(resolve, 2_000)),
+        ]);
+      }
+      fs.rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
+test('concurrent recovery cannot overwrite a rollback while its helper and npm are active',
+  { timeout: 60_000 }, async t => {
+    if (process.platform !== 'win32' || process.arch !== 'x64') {
+      t.skip('The recovery helper process fixture targets Windows x64.');
+      return;
+    }
+
+    const directory = tempDirectory();
+    try {
+      const prefix = path.join(directory, 'prefix');
+      const packageDirectory = path.join(prefix, 'node_modules', 'omnicore-cli');
+      const backup = path.join(directory, 'backup-0.1.0');
+      makeNpmPackage(backup, '0.1.0', 'single recovery operation');
+      const backupSha256 = fingerprintDirectory(backup);
+      const statePath = path.join(directory, 'updates', 'state.json');
+      fs.mkdirSync(path.dirname(statePath), { recursive: true });
+      const oldOperationId = 'bbccddeebbccddeebbccddeebbccddee';
+      fs.writeFileSync(statePath, JSON.stringify({
+        schemaVersion: 1, operation: 'Apply', status: 'Running',
+        fromVersion: '0.1.0', toVersion: '0.2.0', assetPath: 'interrupted.tgz', backupPath: backup,
+        parentPid: deadPid, helperPid: deadPid, npmPid: deadPid,
+        updatedAtUtc: new Date().toISOString(), detail: 'npm_install_started',
+        operationId: oldOperationId, npmPrefix: prefix, backupSha256,
+      }));
+      fs.writeFileSync(statePath + '.helper.lock', JSON.stringify({
+        pid: deadPid, operation: 'Apply', operationId: oldOperationId, statePath,
+      }));
+
+      const npmPath = path.join(directory, 'fixture-npm.cmd');
+      const cli = path.join(directory, 'node_modules', 'npm', 'bin', 'npm-cli.js');
+      const countPath = path.join(directory, 'install-count.txt');
+      fs.writeFileSync(npmPath, '@echo off\r\nexit /b 0\r\n');
+      fs.mkdirSync(path.dirname(cli), { recursive: true });
+      fs.writeFileSync(cli, `
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+if (args[0] === 'pack') {
+  const destination = args[args.indexOf('--pack-destination') + 1];
+  const name = 'omnicore-cli-0.1.0.tgz';
+  fs.writeFileSync(path.join(destination, name), 'fixture archive');
+  process.stdout.write(name + '\\n');
+} else if (args[0] === 'install') {
+  fs.mkdirSync(path.dirname(${JSON.stringify(packageDirectory)}), { recursive: true });
+  fs.cpSync(${JSON.stringify(backup)}, ${JSON.stringify(packageDirectory)}, { recursive: true });
+  fs.appendFileSync(${JSON.stringify(countPath)}, 'install\\n');
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3000);
+} else { process.exitCode = 2; }
+`);
+
+      const env = {
+        ...process.env,
+        NPM_CONFIG_USERCONFIG: path.join(directory, 'npmrc'),
+        NPM_CONFIG_CACHE: path.join(directory, 'npm-cache'),
+        NPM_CONFIG_AUDIT: 'false',
+        NPM_CONFIG_FUND: 'false',
+      };
+      const args = [helper, '--mode', 'recover', '--state', statePath, '--npm', npmPath,
+        '--node', process.execPath, '--package-directory', packageDirectory, '--npm-prefix', prefix,
+        '--yes', 'true'];
+      const startRecovery = () => {
+        const child = spawn(process.execPath, args, {
+          cwd: directory, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.setEncoding('utf8').on('data', chunk => { stdout += chunk; });
+        child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+        const result = new Promise((resolve, reject) => {
+          child.once('error', reject);
+          child.once('close', code => resolve({ code, stdout, stderr }));
+        });
+        return result;
+      };
+      const [first, second] = await Promise.all([startRecovery(), startRecovery()]);
+      const results = [first, second];
+      assert.equal(results.filter(result => result.code === 0).length, 1,
+        JSON.stringify(results.map(({ code, stdout, stderr }) => ({ code, stdout, stderr }))));
+      const prepared = results.find(result => result.code === 0);
+      assert.match(prepared.stdout, /update_recovery_rollback_prepared/);
+      assert.match(results.find(result => result.code !== 0).stderr, /operation_in_progress/);
+
+      const active = await waitForState(statePath,
+        state => state.operation === 'Rollback' && state.status === 'Running'
+          && Number.isSafeInteger(state.helperPid) && Number.isSafeInteger(state.npmPid));
+      const activeOperationId = active.operationId;
+      const duringActiveHelper = invokeRecovery({ statePath, npmPath, packageDirectory, prefix, env });
+      assert.notEqual(duringActiveHelper.status, 0);
+      assert.match(duringActiveHelper.stderr, /operation_in_progress/);
+      const afterSecond = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      assert.equal(afterSecond.operation, 'Rollback');
+      assert.equal(afterSecond.operationId, activeOperationId);
+      assert.equal(afterSecond.helperPid, active.helperPid);
+      assert.equal(afterSecond.npmPid, active.npmPid);
+
+      const finalState = await waitForTerminalState(statePath);
+      assert.equal(finalState.status, 'Succeeded', JSON.stringify(finalState));
+      assert.equal(fs.readFileSync(countPath, 'utf8').trim().split(/\r?\n/).length, 1,
+        'the installer must run exactly once');
+      assert.equal(JSON.parse(fs.readFileSync(path.join(packageDirectory, 'package.json'), 'utf8')).version, '0.1.0');
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
 
 test('helper reclaims an orphaned owner lock only for its matching Pending operation', () => {
   const directory = tempDirectory();

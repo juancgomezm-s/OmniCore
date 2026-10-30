@@ -11,6 +11,7 @@ public static class ReleaseUpdateResources
         ["error.publisher_failed"] = ["No se verificó la procedencia del publicador; la instalación sigue intacta.", "Publisher provenance could not be verified; the installation is unchanged.", "La provenance de l’éditeur n’a pas été vérifiée ; l’installation reste intacte.", "La provenienza dell’editore non è stata verificata; l’installazione resta invariata."],
         ["error.backup_unverified"] = ["El respaldo cambió o no tiene verificación de integridad; no se revertirá.", "The backup changed or lacks integrity verification; rollback is refused.", "La sauvegarde a changé ou son intégrité n’est pas vérifiée ; restauration refusée.", "Il backup è cambiato o non ha una verifica di integrità; ripristino rifiutato."],
         ["title"] = ["Actualizaciones", "Updates", "Mises à jour", "Aggiornamenti"],
+        ["recovery.command"] = ["Si omni no arranca, ejecuta este comando en PowerShell para restaurar el respaldo:", "If omni cannot start, run this command in PowerShell to restore the backup:", "Si omni ne démarre plus, exécutez cette commande dans PowerShell pour restaurer la sauvegarde :", "Se omni non si avvia, esegui questo comando in PowerShell per ripristinare il backup:"],
         ["check"] = ["Comprobar ahora", "Check now", "Vérifier maintenant", "Controlla ora"],
         ["channel"] = ["Canal", "Channel", "Canal", "Canale"],
         ["stable"] = ["Estable", "Stable", "Stable", "Stabile"],

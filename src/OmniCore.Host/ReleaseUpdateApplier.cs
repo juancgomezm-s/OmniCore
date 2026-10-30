@@ -89,7 +89,8 @@ public sealed class ReleaseUpdateApplier
             var pending = new ReleaseUpdateState(ReleaseUpdateStateStore.SchemaVersion, ReleaseUpdateOperation.Apply,
                 ReleaseUpdateOperationStatus.Pending, installation.InstalledVersion, version, download.Path, backup,
                 Environment.ProcessId, null, DateTimeOffset.UtcNow, "waiting_for_parent_exit",
-                operationId, asset.Sha256.ToLowerInvariant(), asset.Size, npmPrefix, backupHash);
+                operationId, asset.Sha256.ToLowerInvariant(), asset.Size, npmPrefix, backupHash,
+                RecoveryCommand: RecoveryCommand(operationId, npm, node, npmPrefix, packageDirectory));
             _store.Write(pending);
             var helperPid = Launch(helper, "apply", download.Path, null, npm, node, pending, packageDirectory);
             if (helperPid <= 0)
@@ -142,6 +143,7 @@ public sealed class ReleaseUpdateApplier
                 && IsAlive(state.HelperPid))
                 return new(false, "update_operation_in_progress", state);
 
+            var operationId = Guid.NewGuid().ToString("N");
             var pending = state with
             {
                 Operation = ReleaseUpdateOperation.Rollback,
@@ -150,11 +152,12 @@ public sealed class ReleaseUpdateApplier
                 HelperPid = null,
                 UpdatedAtUtc = DateTimeOffset.UtcNow,
                 Detail = "waiting_for_parent_exit",
-                OperationId = Guid.NewGuid().ToString("N"),
+                OperationId = operationId,
                 ExpectedSha256 = null,
                 ExpectedSize = null,
                 NpmPrefix = npmPrefix,
                 NpmPid = null,
+                RecoveryCommand = RecoveryCommand(operationId, npm, node, npmPrefix, packageDirectory),
             };
             _store.Write(pending);
             var helperPid = Launch(helper, "rollback", null, backup, npm, node, pending, installation.PackageDirectory!);
@@ -176,7 +179,14 @@ public sealed class ReleaseUpdateApplier
         Directory.CreateDirectory(_store.UpdatesDirectory);
         try
         {
-            return _launcher.Launch(new(helper, mode, Environment.ProcessId, _store.StatePath, packagePath,
+            // Recovery must survive an interrupted npm replacement of the active package.
+            var recoveryHelper = _store.RecoveryHelperPath(state.OperationId!);
+            for (var current = Path.GetDirectoryName(recoveryHelper); current is not null; current = Path.GetDirectoryName(current))
+                if (Directory.Exists(current) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                    throw new IOException("The update recovery path contains a link.");
+            Directory.CreateDirectory(Path.GetDirectoryName(recoveryHelper)!);
+            File.Copy(helper, recoveryHelper, overwrite: false);
+            return _launcher.Launch(new(recoveryHelper, mode, Environment.ProcessId, _store.StatePath, packagePath,
                 backupPath, npm, node, "omnicore-cli", _store.UpdatesDirectory, TimeSpan.FromMinutes(15),
                 state.OperationId ?? string.Empty, state.ExpectedSha256, state.ExpectedSize, state.NpmPrefix ?? string.Empty,
                 mode == "apply" ? state.ToVersion ?? "" : state.FromVersion ?? "",
@@ -187,6 +197,14 @@ public sealed class ReleaseUpdateApplier
             _store.Write(state with { Status = ReleaseUpdateOperationStatus.Failed, Detail = "update_helper_start_failed" });
             return 0;
         }
+    }
+
+    private string RecoveryCommand(string operationId, string npm, string node, string prefix, string packageDirectory)
+    {
+        static string Quote(string value) => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
+        return "& " + Quote(node) + " " + Quote(_store.RecoveryHelperPath(operationId))
+            + " --mode recover --state " + Quote(_store.StatePath) + " --npm " + Quote(npm) + " --node " + Quote(node)
+            + " --package-directory " + Quote(packageDirectory) + " --npm-prefix " + Quote(prefix) + " --yes true";
     }
 
     private static string? Refusal(ReleaseInstallation installation) => installation.Kind switch
