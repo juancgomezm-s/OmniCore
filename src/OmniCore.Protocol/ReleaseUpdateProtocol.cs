@@ -79,7 +79,8 @@ public enum ReleaseUpdateOperationStatus { Pending, Running, Succeeded, Failed, 
 public sealed record ReleaseUpdateState(int SchemaVersion, ReleaseUpdateOperation Operation,
     ReleaseUpdateOperationStatus Status, string? FromVersion, string? ToVersion, string? AssetPath,
     string? BackupPath, int? ParentPid, int? HelperPid, DateTimeOffset UpdatedAtUtc, string? Detail,
-    string? OperationId = null, string? ExpectedSha256 = null, long? ExpectedSize = null, string? NpmPrefix = null);
+    string? OperationId = null, string? ExpectedSha256 = null, long? ExpectedSize = null, string? NpmPrefix = null,
+    string? BackupSha256 = null, int? NpmPid = null);
 
 public sealed record ReleaseUpdateApplyResult(bool Prepared, string? DiagnosticCode = null,
     ReleaseUpdateState? State = null);

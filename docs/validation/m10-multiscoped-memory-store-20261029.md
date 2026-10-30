@@ -3,6 +3,12 @@
 Fecha local: 2026-10-29 (America/Mexico_City). Base: `d0dd08f1` de Main.
 Aceptación local de un corte de infraestructura; M10 no queda cerrado.
 
+**Seguimiento:** el cableado de Host, comandos, contexto y confirmación humana descrito
+como siguiente corte al final de esta acta ya quedó implementado en `b01306d0`.
+Ver [acta del cableado](m10-multiscoped-memory-wiring-20261029.md) y
+[aceptación de caída real de procesos](m10-multiscoped-memory-crash-20261029.md).
+Los pendientes inferiores describen el estado de este checkpoint, no el estado actual.
+
 ## Alcance entregado
 
 - Identidades de memoria validadas por ámbito: Session con SessionId, Project y Workspace con sus hashes de 16 caracteres hexadecimales, User/Global con identidad fija `user`.

@@ -61,7 +61,7 @@ public sealed class ReleaseUpdateStateStore
                 Optional(root, "fromVersion"), Optional(root, "toVersion"), Optional(root, "assetPath"),
                 Optional(root, "backupPath"), OptionalInt(root, "parentPid"), OptionalInt(root, "helperPid"),
                 updatedAt, Optional(root, "detail"), Optional(root, "operationId"), Optional(root, "expectedSha256"),
-                OptionalLong(root, "expectedSize"), Optional(root, "npmPrefix"));
+                OptionalLong(root, "expectedSize"), Optional(root, "npmPrefix"), Optional(root, "backupSha256"), OptionalInt(root, "npmPid"));
             return true;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
@@ -97,6 +97,8 @@ public sealed class ReleaseUpdateStateStore
                 WriteOptional(writer, "expectedSha256", state.ExpectedSha256);
                 if (state.ExpectedSize is { } expectedSize) writer.WriteNumber("expectedSize", expectedSize);
                 WriteOptional(writer, "npmPrefix", state.NpmPrefix);
+                WriteOptional(writer, "backupSha256", state.BackupSha256);
+                if (state.NpmPid is { } npmPid) writer.WriteNumber("npmPid", npmPid);
                 writer.WriteEndObject();
                 writer.Flush();
                 stream.Flush(flushToDisk: true);

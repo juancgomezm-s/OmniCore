@@ -14,15 +14,18 @@ public sealed class ReleaseUpdateApplier
     private readonly IReleaseUpdateDownloader _downloader;
     private readonly IReleaseUpdateHelperLauncher _launcher;
     private readonly TimeSpan _lockTimeout;
+    private readonly IReleasePublisherVerifier _publisherVerifier;
 
     public ReleaseUpdateApplier(ReleaseUpdateStateStore store, IReleaseInstallationInspector inspector,
-        IReleaseUpdateDownloader downloader, IReleaseUpdateHelperLauncher launcher, TimeSpan? lockTimeout = null)
+        IReleaseUpdateDownloader downloader, IReleaseUpdateHelperLauncher launcher, TimeSpan? lockTimeout = null,
+        IReleasePublisherVerifier? publisherVerifier = null)
     {
         _store = store ?? throw new ArgumentNullException(nameof(store));
         _inspector = inspector ?? throw new ArgumentNullException(nameof(inspector));
         _downloader = downloader ?? throw new ArgumentNullException(nameof(downloader));
         _launcher = launcher ?? throw new ArgumentNullException(nameof(launcher));
         _lockTimeout = lockTimeout ?? TimeSpan.FromSeconds(5);
+        _publisherVerifier = publisherVerifier ?? new GitHubReleasePublisherVerifier();
     }
 
     public async Task<ReleaseUpdateApplyResult> ApplyAsync(ReleaseUpdateCheckResult check, bool confirmed,
@@ -66,14 +69,19 @@ public sealed class ReleaseUpdateApplier
             if (download.Status != ReleaseUpdateDownloadStatus.Downloaded || download.Path is null)
                 return new(false, download.DiagnosticCode ?? "update_download_failed");
 
+            var publisher = await _publisherVerifier.VerifyAsync(download.Path, check, cancellationToken).ConfigureAwait(false);
+            if (!publisher.Verified) return new(false, publisher.DiagnosticCode);
+
             var operationId = Guid.NewGuid().ToString("N");
             var backup = _store.BackupDirectory(installation.InstalledVersion ?? "unknown", operationId);
+            string backupHash;
             try
             {
                 if (!Directory.Exists(backup)) CopyDirectory(packageDirectory, backup, cancellationToken);
+                backupHash = PackageFingerprint(backup);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException)
             {
                 return new(false, "update_backup_failed");
             }
@@ -81,9 +89,9 @@ public sealed class ReleaseUpdateApplier
             var pending = new ReleaseUpdateState(ReleaseUpdateStateStore.SchemaVersion, ReleaseUpdateOperation.Apply,
                 ReleaseUpdateOperationStatus.Pending, installation.InstalledVersion, version, download.Path, backup,
                 Environment.ProcessId, null, DateTimeOffset.UtcNow, "waiting_for_parent_exit",
-                operationId, asset.Sha256.ToLowerInvariant(), asset.Size, npmPrefix);
+                operationId, asset.Sha256.ToLowerInvariant(), asset.Size, npmPrefix, backupHash);
             _store.Write(pending);
-            var helperPid = Launch(helper, "apply", download.Path, null, npm, node, pending);
+            var helperPid = Launch(helper, "apply", download.Path, null, npm, node, pending, packageDirectory);
             if (helperPid <= 0)
             {
                 _store.Write(pending with
@@ -120,13 +128,16 @@ public sealed class ReleaseUpdateApplier
                 var pendingRefusal = RefuseOrMarkUnknown(state);
                 return new(false, pendingRefusal.DiagnosticCode, pendingRefusal.State ?? state);
             }
-            if (state is { Status: ReleaseUpdateOperationStatus.Unknown })
-                return new(false, "update_operation_unknown", state);
+            // An explicit rollback compensates an uncertain installation; it never retries it.
             if (state is null || state.BackupPath is not { } backup || !Directory.Exists(backup)
                 || state.FromVersion is null)
                 return new(false, "update_rollback_unavailable", state);
             if (state.NpmPrefix is null || !SamePath(state.NpmPrefix, npmPrefix))
                 return new(false, "update_prefix_mismatch", state);
+            if (!BackupMatches(backup, state.BackupSha256))
+                return new(false, "update_backup_unverified", state);
+            if (IsAlive(state.HelperPid) || IsAlive(state.NpmPid)) return new(false, "update_operation_in_progress", state);
+            if (!ArchiveAbandonedHelperLock(state)) return new(false, "update_operation_in_progress", state);
             if (state.Status is ReleaseUpdateOperationStatus.Pending or ReleaseUpdateOperationStatus.Running
                 && IsAlive(state.HelperPid))
                 return new(false, "update_operation_in_progress", state);
@@ -143,9 +154,10 @@ public sealed class ReleaseUpdateApplier
                 ExpectedSha256 = null,
                 ExpectedSize = null,
                 NpmPrefix = npmPrefix,
+                NpmPid = null,
             };
             _store.Write(pending);
-            var helperPid = Launch(helper, "rollback", null, backup, npm, node, pending);
+            var helperPid = Launch(helper, "rollback", null, backup, npm, node, pending, installation.PackageDirectory!);
             if (helperPid <= 0)
             {
                 _store.Write(pending with
@@ -159,14 +171,16 @@ public sealed class ReleaseUpdateApplier
     }
 
     private int Launch(string helper, string mode, string? packagePath, string? backupPath, string npm,
-        string node, ReleaseUpdateState state)
+        string node, ReleaseUpdateState state, string packageDirectory)
     {
         Directory.CreateDirectory(_store.UpdatesDirectory);
         try
         {
             return _launcher.Launch(new(helper, mode, Environment.ProcessId, _store.StatePath, packagePath,
                 backupPath, npm, node, "omnicore-cli", _store.UpdatesDirectory, TimeSpan.FromMinutes(15),
-                state.OperationId ?? string.Empty, state.ExpectedSha256, state.ExpectedSize, state.NpmPrefix ?? string.Empty));
+                state.OperationId ?? string.Empty, state.ExpectedSha256, state.ExpectedSize, state.NpmPrefix ?? string.Empty,
+                mode == "apply" ? state.ToVersion ?? "" : state.FromVersion ?? "",
+                packageDirectory, state.BackupSha256));
         }
         catch (Exception error) when (error is InvalidOperationException or IOException or UnauthorizedAccessException)
         {
@@ -183,9 +197,62 @@ public sealed class ReleaseUpdateApplier
         _ => "update_install_kind_unknown",
     };
 
+    internal static string PackageFingerprint(string directory)
+    {
+        using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+        var files = new List<string>(); var pending = new Stack<string>(); pending.Push(directory);
+        while (pending.TryPop(out var folder))
+        {
+            if ((File.GetAttributes(folder) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("Update backup contains a link.");
+            files.AddRange(Directory.EnumerateFiles(folder));
+            foreach (var child in Directory.EnumerateDirectories(folder)) pending.Push(child);
+        }
+        foreach (var file in files.Order(StringComparer.Ordinal))
+        {
+            if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("Update backup contains a link.");
+            var relative = Path.GetRelativePath(directory, file).Replace('\\', '/');
+            var name = System.Text.Encoding.UTF8.GetBytes(relative);
+            hash.AppendData(BitConverter.GetBytes(name.Length)); hash.AppendData(name);
+            using var stream = File.OpenRead(file);
+            hash.AppendData(System.Security.Cryptography.SHA256.HashData(stream));
+        }
+        return Convert.ToHexStringLower(hash.GetHashAndReset());
+    }
+
+    private static bool BackupMatches(string directory, string? expected)
+    {
+        if (expected is null) return false;
+        try { return PackageFingerprint(directory) == expected; }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+        { return false; }
+    }
+
+    private bool ArchiveAbandonedHelperLock(ReleaseUpdateState state)
+    {
+        var path = _store.StatePath + ".helper.lock";
+        if (!File.Exists(path)) return true;
+        try
+        {
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0 || new FileInfo(path).Length > 4096) return false;
+            using var document = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(path));
+            var owner = document.RootElement;
+            if (owner.GetProperty("operationId").GetString() != state.OperationId
+                || owner.GetProperty("operation").GetString() != state.Operation.ToString()
+                || !SamePath(owner.GetProperty("statePath").GetString() ?? "", _store.StatePath)
+                || !owner.GetProperty("pid").TryGetInt32(out var pid) || pid <= 0
+                || state.HelperPid != pid || IsAlive(pid)) return false;
+            File.Move(path, path + ".abandoned-" + state.OperationId, overwrite: false);
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException
+            or InvalidOperationException or KeyNotFoundException) { return false; }
+    }
+
     private ReleaseUpdateApplyResult RefuseOrMarkUnknown(ReleaseUpdateState state)
     {
-        if (IsAlive(state.HelperPid) || IsAlive(state.ParentPid))
+        if (IsAlive(state.HelperPid) || IsAlive(state.ParentPid) || IsAlive(state.NpmPid))
             return new(false, "update_operation_in_progress", state);
         var unknown = state with
         {

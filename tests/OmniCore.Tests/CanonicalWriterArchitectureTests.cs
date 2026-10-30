@@ -134,7 +134,8 @@ public sealed class CanonicalWriterArchitectureTests
         {
             var name = Path.GetFileNameWithoutExtension(path);
             if (name.EndsWith(".Tests", StringComparison.Ordinal)
-                || name.Equals("OmniCore.SandboxTestProcess", StringComparison.Ordinal))
+                || name.Equals("OmniCore.SandboxTestProcess", StringComparison.Ordinal)
+                || name.Equals("OmniCore.MemoryCrashTestProcess", StringComparison.Ordinal))
                 continue;
 
             var assembly = Assembly.LoadFrom(path);

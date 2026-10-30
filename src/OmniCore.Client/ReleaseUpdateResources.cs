@@ -7,6 +7,9 @@ public static class ReleaseUpdateResources
 {
     private static readonly IReadOnlyDictionary<string, string[]> Values = new Dictionary<string, string[]>(StringComparer.Ordinal)
     {
+        ["error.publisher_unavailable"] = ["Falta el verificador oficial incluido en el paquete; reinstala una release completa.", "The bundled official verifier is missing; reinstall a complete release.", "Le vérificateur officiel inclus est absent ; réinstallez une release complète.", "Manca il verificatore ufficiale incluso; reinstalla una release completa."],
+        ["error.publisher_failed"] = ["No se verificó la procedencia del publicador; la instalación sigue intacta.", "Publisher provenance could not be verified; the installation is unchanged.", "La provenance de l’éditeur n’a pas été vérifiée ; l’installation reste intacte.", "La provenienza dell’editore non è stata verificata; l’installazione resta invariata."],
+        ["error.backup_unverified"] = ["El respaldo cambió o no tiene verificación de integridad; no se revertirá.", "The backup changed or lacks integrity verification; rollback is refused.", "La sauvegarde a changé ou son intégrité n’est pas vérifiée ; restauration refusée.", "Il backup è cambiato o non ha una verifica di integrità; ripristino rifiutato."],
         ["title"] = ["Actualizaciones", "Updates", "Mises à jour", "Aggiornamenti"],
         ["check"] = ["Comprobar ahora", "Check now", "Vérifier maintenant", "Controlla ora"],
         ["channel"] = ["Canal", "Channel", "Canal", "Canale"],

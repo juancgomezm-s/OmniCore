@@ -1,0 +1,176 @@
+name: Windows x64 release draft
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag on Main (vMAJOR.MINOR.PATCH[-prerelease])
+        required: true
+        type: string
+      version:
+        description: Exact SemVer package version without a leading v
+        required: true
+        type: string
+      source_sha:
+        description: Full 40-character commit SHA targeted by the tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-draft-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  package-and-attest:
+    if: github.repository == 'juancgomezm-s/OmniCore' && startsWith(github.ref, 'refs/tags/')
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_SOURCE_SHA: ${{ inputs.source_sha }}
+    steps:
+      - name: Check out the tag-triggered workflow source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the selected tag and commit to be on Main
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+          $tag = $env:RELEASE_TAG
+          $version = $env:RELEASE_VERSION
+          $sha = $env:RELEASE_SOURCE_SHA.ToLowerInvariant()
+          $semver = '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$'
+          if ($version -cnotmatch $semver -or $tag -cnotin @("v$version", $version)) { throw 'Tag and SemVer inputs must match.' }
+          if ($sha -cnotmatch '^[0-9a-f]{40}$') { throw 'source_sha must be a full 40-character SHA.' }
+          if ($env:GITHUB_REF -cne "refs/tags/$tag") { throw 'Dispatch this workflow on the exact input tag ref.' }
+          if ($env:GITHUB_SHA.ToLowerInvariant() -cne $sha) { throw 'The tag-triggered workflow commit does not match source_sha.' }
+          & git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main' "+refs/tags/${tag}:refs/tags/${tag}"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch the official Main branch and selected tag.' }
+          $tagCommit = (& git rev-parse "refs/tags/$tag^{commit}").Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -cne $sha) { throw 'The selected tag does not resolve to source_sha.' }
+          & git merge-base --is-ancestor $sha refs/remotes/origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'The source commit is not contained in origin/main.' }
+          $head = (& git rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $head -cne $sha) { throw 'Checked out source differs from source_sha.' }
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Restore and run updater tests
+        shell: pwsh
+        run: |
+          npm test
+          if ($LASTEXITCODE -ne 0) { throw 'npm package helper tests failed.' }
+          dotnet restore OmniCore.slnx
+          if ($LASTEXITCODE -ne 0) { throw 'Solution restore failed.' }
+          dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw 'Release update test build failed.' }
+          dotnet tests/OmniCore.Tests/bin/Release/net10.0/OmniCore.Tests.dll -method 'OmniCore.Tests.ReleaseUpdate*' -method 'OmniCore.Tests.ReleasePublisherVerificationTests.*'
+          if ($LASTEXITCODE -ne 0) { throw 'Release update tests failed.' }
+
+      - name: Prepare the exact-version Windows x64 npm release package
+        shell: pwsh
+        run: ./scripts/prepare-github-release.ps1 -Version $env:RELEASE_VERSION -Tag $env:RELEASE_TAG -CommitSha $env:RELEASE_SOURCE_SHA -OutputDirectory "$env:RUNNER_TEMP/omnicore-release"
+
+      - name: Attest the Windows npm package
+        id: attest_package
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/omnicore-release/omnicore-cli-${{ inputs.version }}-win-x64.tgz
+
+      - name: Attest the release manifest
+        id: attest_manifest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/omnicore-release/omnicore-release-manifest.json
+
+      - name: Stage assets and the offline attestation bundles
+        shell: pwsh
+        env:
+          PACKAGE_BUNDLE: ${{ steps.attest_package.outputs.bundle-path }}
+          MANIFEST_BUNDLE: ${{ steps.attest_manifest.outputs.bundle-path }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Join-Path $env:RUNNER_TEMP 'omnicore-release'
+          $package = Join-Path $release "omnicore-cli-$env:RELEASE_VERSION-win-x64.tgz"
+          $manifest = Join-Path $release 'omnicore-release-manifest.json'
+          foreach ($path in @($package, $manifest, $env:PACKAGE_BUNDLE, $env:MANIFEST_BUNDLE)) {
+            if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw 'A release asset or provenance bundle is missing.'
+            }
+          }
+          Copy-Item -LiteralPath $env:PACKAGE_BUNDLE -Destination "$package.sigstore.jsonl"
+          Copy-Item -LiteralPath $env:MANIFEST_BUNDLE -Destination "$manifest.sigstore.jsonl"
+
+      - name: Preserve draft assets for the release job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-x64-release-assets
+          path: |
+            ${{ runner.temp }}/omnicore-release/omnicore-cli-${{ inputs.version }}-win-x64.tgz
+            ${{ runner.temp }}/omnicore-release/omnicore-release-manifest.json
+            ${{ runner.temp }}/omnicore-release/omnicore-cli-${{ inputs.version }}-win-x64.tgz.sigstore.jsonl
+            ${{ runner.temp }}/omnicore-release/omnicore-release-manifest.json.sigstore.jsonl
+          if-no-files-found: error
+          retention-days: 1
+
+  create-draft:
+    needs: package-and-attest
+    if: needs.package-and-attest.result == 'success'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: juancgomezm-s/OmniCore
+      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - name: Download assets from the signed build job
+        shell: pwsh
+        run: gh run download $env:GITHUB_RUN_ID --name windows-x64-release-assets --dir release-assets
+
+      - name: Include the Sigstore trusted root for offline verification
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = gh attestation trusted-root
+          if ($LASTEXITCODE -ne 0 -or $root.Count -eq 0) { throw 'Could not retrieve the Sigstore trusted root.' }
+          Set-Content -LiteralPath 'release-assets/trusted_root.jsonl' -Value $root -Encoding utf8NoBOM
+
+      - name: Create a draft release only
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $assets = @(Get-ChildItem -LiteralPath 'release-assets' -File | Select-Object -ExpandProperty FullName)
+          if ($assets.Count -ne 5) { throw "Expected package, manifest, two bundles, and trusted root; found $($assets.Count) files." }
+          & gh release create $env:RELEASE_TAG @assets --verify-tag --draft `
+            --title "OmniCore $env:RELEASE_VERSION" `
+            --notes "Windows x64 npm package for $env:RELEASE_VERSION. Verify the package and manifest attestations with GitHub CLI before use."
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create the GitHub draft release.' }

@@ -23,7 +23,8 @@ public interface IReleaseUpdateHelperLauncher
 public sealed record ReleaseUpdateHelperRequest(string HelperPath, string Mode, int ParentPid,
     string StatePath, string? PackagePath, string? BackupPath, string NpmPath, string NodePath,
     string PackageName, string WorkingDirectory, TimeSpan Timeout, string OperationId = "",
-    string? ExpectedSha256 = null, long? ExpectedSize = null, string NpmPrefix = "");
+    string? ExpectedSha256 = null, long? ExpectedSize = null, string NpmPrefix = "", string ExpectedVersion = "",
+    string PackageDirectory = "", string? BackupSha256 = null);
 
 /// <summary>Starts the detached Node helper that installs after this process releases its files.</summary>
 public sealed class NodeReleaseUpdateHelperLauncher : IReleaseUpdateHelperLauncher
@@ -67,6 +68,15 @@ public sealed class NodeReleaseUpdateHelperLauncher : IReleaseUpdateHelperLaunch
         start.ArgumentList.Add(request.OperationId);
         start.ArgumentList.Add("--npm-prefix");
         start.ArgumentList.Add(request.NpmPrefix);
+        start.ArgumentList.Add("--expected-version");
+        start.ArgumentList.Add(request.ExpectedVersion);
+        start.ArgumentList.Add("--package-directory");
+        start.ArgumentList.Add(request.PackageDirectory);
+        if (request.BackupSha256 is not null)
+        {
+            start.ArgumentList.Add("--backup-sha256");
+            start.ArgumentList.Add(request.BackupSha256);
+        }
         if (request.ExpectedSha256 is not null)
         {
             start.ArgumentList.Add("--sha256");

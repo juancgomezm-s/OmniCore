@@ -4,6 +4,10 @@ Fecha local: 2026-10-29 (America/Mexico_City). Base: `98091d06`.
 Este corte conecta la persistencia del [incremento anterior](m10-multiscoped-memory-store-20261029.md).
 M10 global permanece abierto.
 
+**Seguimiento:** la limitación de caída real indicada al final de esta acta quedó
+validada en Windows en el [corte de recuperación](m10-multiscoped-memory-crash-20261029.md).
+Linux y la retención coordinada del ledger mantienen su aceptación pendiente.
+
 ## Recorrido disponible
 
 Con una Session abierta, la TUI y el handler del cliente aceptan:

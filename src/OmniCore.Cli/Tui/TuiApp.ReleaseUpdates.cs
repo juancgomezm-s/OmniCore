@@ -163,6 +163,6 @@ public sealed partial class TuiApp
             ?? "0.0.0+development";
         var development = info.Contains('+', StringComparison.Ordinal);
         return new(channel, info, development,
-            new(RuntimeInformation.RuntimeIdentifier, Environment.Version.ToString(), ProtocolVersion: ProtocolVersions.V1));
+            ReleaseUpdateRuntimeFacts.Inspect());
     }
 }

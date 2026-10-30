@@ -42,6 +42,14 @@ SOFTWARE.
 
 > Pendiente: copiar aquí el texto completo de cada LICENSE upstream al portar el primer archivo de cada proyecto. Los paquetes npm de Pi no incluyen el archivo LICENSE; hay que tomarlo del repositorio.
 
+## GitHub CLI en paquetes de release Windows
+
+Los paquetes de release Windows incluyen GitHub CLI 2.103.3 para verificar
+attestations del publicador. Es software MIT, Copyright (c) 2019 GitHub Inc.;
+su licencia completa se distribuye en `dist/npm/verifier/LICENSE`, junto a
+`gh.exe`. Fuente: https://github.com/cli/cli/tree/v2.103.3.
+No se instala globalmente ni utiliza credenciales de los modelos.
+
 ## Referencias de diseño de extensiones (2026-10-21)
 
 Las extensiones piloto son implementaciones nuevas sobre servicios de OmniCore;

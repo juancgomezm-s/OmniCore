@@ -185,14 +185,15 @@ public sealed partial class CliApp
     private static void PrintCheckResult(ReleaseUpdateCheckResult result)
     {
         var text = Loc();
+        var environment = ReleaseUpdateRuntimeFacts.Inspect();
         Console.WriteLine(text.Resolve(ReleaseUpdateResources.StatusKey(result.Status)));
         Console.WriteLine(text.Resolve("updates.channel") + ": " + text.Resolve(result.Channel == ReleaseUpdateChannel.Preview ? "updates.preview" : "updates.stable"));
         Console.WriteLine(text.Resolve("updates.installed") + ": " + SafeOutput(result.InstalledVersion));
         Console.WriteLine(text.Resolve("updates.platform") + ": " + RuntimeInformation.RuntimeIdentifier);
         Console.WriteLine(text.Resolve("updates.runtime") + ": .NET " + Environment.Version);
-        Console.WriteLine(text.Resolve("updates.node") + ": " + text.Resolve("updates.unknown"));
+        Console.WriteLine(text.Resolve("updates.node") + ": " + (environment.NodeVersion ?? text.Resolve("updates.unknown")));
         Console.WriteLine(text.Resolve("updates.protocol") + ": " + ProtocolVersions.V1);
-        Console.WriteLine(text.Resolve("updates.configuration") + ": " + text.Resolve("updates.unknown"));
+        Console.WriteLine(text.Resolve("updates.configuration") + ": " + environment.ConfigurationVersion);
         if (result.AvailableVersion is not null) Console.WriteLine(text.Resolve("updates.available") + ": " + SafeOutput(result.AvailableVersion));
         if (result.Tag is not null) Console.WriteLine(text.Resolve("updates.tag") + ": " + SafeOutput(result.Tag));
         if (result.CommitSha is not null) Console.WriteLine(text.Resolve("updates.commit") + ": " + result.CommitSha);
@@ -236,6 +237,10 @@ public sealed partial class CliApp
         "update_operation_unknown" => "updates.error.operation_unknown",
         "update_prefix_mismatch" => "updates.error.prefix_mismatch",
         "update_backup_failed" => "updates.error.backup_failed",
+        "update_backup_unverified" => "updates.error.backup_unverified",
+        "update_publisher_verifier_unavailable" => "updates.error.publisher_unavailable",
+        "update_publisher_verifier_invalid" or "update_publisher_identity_invalid" or "update_publisher_verification_failed"
+            => "updates.error.publisher_failed",
         "update_helper_start_failed" => "updates.error.helper_start_failed",
         "update_helper_missing" => "updates.error.helper_missing",
         "update_state_invalid" or "update_state_unreadable" => "updates.error.state_invalid",
@@ -254,7 +259,7 @@ public sealed partial class CliApp
             ?? "0.0.0+development";
         var development = info.Contains('+', StringComparison.Ordinal);
         return new(channel, info, development,
-            new(RuntimeInformation.RuntimeIdentifier, Environment.Version.ToString(), ProtocolVersion: ProtocolVersions.V1),
+            ReleaseUpdateRuntimeFacts.Inspect(),
             targetVersion);
     }
 

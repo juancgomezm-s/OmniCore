@@ -136,7 +136,7 @@ public sealed class ReleaseUpdateStateStoreTests
         var state = new ReleaseUpdateState(ReleaseUpdateStateStore.SchemaVersion, ReleaseUpdateOperation.Apply,
             ReleaseUpdateOperationStatus.Pending, "0.1.0", "0.2.0", @"C:\staging\asset.tgz", @"C:\backup\0.1.0",
             1234, 5678, DateTimeOffset.UtcNow, "waiting_for_parent_exit", new string('b', 32),
-            new string('a', 64), 128, @"C:\prefix");
+            new string('a', 64), 128, @"C:\prefix", new string('c', 64), 9876);
         store.Write(state);
         Assert.True(store.TryRead(out var read, out var diagnostic));
         Assert.Null(diagnostic);
@@ -150,6 +150,9 @@ public sealed class ReleaseUpdateStateStoreTests
         Assert.Equal(new string('b', 32), read.OperationId);
         Assert.Equal(128, read.ExpectedSize);
         Assert.Equal(@"C:\prefix", read.NpmPrefix);
+        Assert.Equal(new string('c', 64), read.BackupSha256);
+        Assert.Equal(9876, read.NpmPid);
+        Assert.Contains("\"npmPid\": 9876", File.ReadAllText(store.StatePath));
     }
 
     [Fact]
@@ -245,7 +248,7 @@ public sealed class ReleaseUpdateApplierTests
         var store = new ReleaseUpdateStateStore(System.IO.Path.Combine(directory.Path, "data"));
         var launcher = new FakeLauncher();
         var applier = new ReleaseUpdateApplier(store, new FakeInspector(package, "0.1.0"),
-            new FakeDownloader(), launcher);
+            new FakeDownloader(), launcher, publisherVerifier: new FakePublisher());
         var result = await applier.ApplyAsync(Check(), confirmed: true, TestContext.Current.CancellationToken);
         Assert.True(result.Prepared, result.DiagnosticCode);
         Assert.NotNull(result.State);
@@ -272,7 +275,7 @@ public sealed class ReleaseUpdateApplierTests
         Directory.CreateDirectory(staleBackup);
         File.WriteAllText(System.IO.Path.Combine(staleBackup, "package.json"), "stale backup");
         var result = await new ReleaseUpdateApplier(store, new FakeInspector(package, "0.1.0"),
-            new FakeDownloader(), new FakeLauncher()).ApplyAsync(Check(), confirmed: true, TestContext.Current.CancellationToken);
+            new FakeDownloader(), new FakeLauncher(), publisherVerifier: new FakePublisher()).ApplyAsync(Check(), confirmed: true, TestContext.Current.CancellationToken);
         Assert.True(result.Prepared, result.DiagnosticCode);
         Assert.NotEqual(staleBackup, result.State!.BackupPath);
         Assert.Equal("""{"name":"omnicore-cli","version":"0.1.0"}""",
@@ -326,7 +329,7 @@ public sealed class ReleaseUpdateApplierTests
         var store = new ReleaseUpdateStateStore(System.IO.Path.Combine(directory.Path, "data"));
         var launcher = new FakeLauncher();
         var applier = new ReleaseUpdateApplier(store, new FakeInspector(package, "0.1.0"),
-            new FakeDownloader(), launcher);
+            new FakeDownloader(), launcher, publisherVerifier: new FakePublisher());
         Assert.True((await applier.ApplyAsync(Check(), confirmed: true,
             TestContext.Current.CancellationToken)).Prepared);
         Assert.True(store.TryRead(out var pending, out _));
@@ -387,7 +390,61 @@ public sealed class ReleaseUpdateApplierTests
     }
 
     [Fact]
-    public void Rollback_refuses_unknown_operation_even_when_backup_exists()
+    public async Task Apply_with_live_npm_pid_is_refused_without_marking_unknown_or_downloading()
+    {
+        using var directory = new TempDirectory();
+        var package = CreatePackage(directory.Path);
+        var store = new ReleaseUpdateStateStore(System.IO.Path.Combine(directory.Path, "data"));
+        var operationId = new string('f', 32);
+        store.Write(new(ReleaseUpdateStateStore.SchemaVersion, ReleaseUpdateOperation.Apply,
+            ReleaseUpdateOperationStatus.Pending, "0.1.0", "0.2.0", "asset.tgz", "backup",
+            null, null, DateTimeOffset.UtcNow, "waiting_for_parent_exit", operationId,
+            null, null, directory.Path, null, Environment.ProcessId));
+        var downloader = new CountingDownloader();
+
+        var result = await new ReleaseUpdateApplier(store, new FakeInspector(package, "0.1.0"),
+            downloader, new FakeLauncher()).ApplyAsync(Check(), confirmed: true, TestContext.Current.CancellationToken);
+
+        Assert.False(result.Prepared);
+        Assert.Equal("update_operation_in_progress", result.DiagnosticCode);
+        Assert.Equal(0, downloader.Calls);
+        Assert.True(store.TryRead(out var state, out _));
+        Assert.Equal(ReleaseUpdateOperationStatus.Pending, state!.Status);
+        Assert.Equal(Environment.ProcessId, state.NpmPid);
+    }
+
+    [Fact]
+    public void Rollback_with_live_npm_pid_is_refused_without_replacing_the_operation()
+    {
+        using var directory = new TempDirectory();
+        var package = CreatePackage(directory.Path);
+        var backup = System.IO.Path.Combine(directory.Path, "backup-live-npm");
+        Directory.CreateDirectory(backup);
+        File.WriteAllText(System.IO.Path.Combine(backup, "package.json"),
+            """{"name":"omnicore-cli","version":"0.1.0"}""");
+        var store = new ReleaseUpdateStateStore(System.IO.Path.Combine(directory.Path, "data"));
+        var operationId = new string('a', 32);
+        var backupHash = ReleaseUpdateApplier.PackageFingerprint(backup);
+        store.Write(new(ReleaseUpdateStateStore.SchemaVersion, ReleaseUpdateOperation.Apply,
+            ReleaseUpdateOperationStatus.Unknown, "0.1.0", "0.2.0", null, backup,
+            null, null, DateTimeOffset.UtcNow, "helper_outcome_unknown", operationId,
+            null, null, directory.Path, backupHash, Environment.ProcessId));
+        var launcher = new FakeLauncher();
+
+        var result = new ReleaseUpdateApplier(store, new FakeInspector(package, "0.2.0"),
+            new FakeDownloader(), launcher).Rollback(confirmed: true);
+
+        Assert.False(result.Prepared);
+        Assert.Equal("update_operation_in_progress", result.DiagnosticCode);
+        Assert.Null(launcher.Request);
+        Assert.True(store.TryRead(out var state, out _));
+        Assert.Equal(ReleaseUpdateOperationStatus.Unknown, state!.Status);
+        Assert.Equal(operationId, state.OperationId);
+        Assert.Equal(Environment.ProcessId, state.NpmPid);
+    }
+
+    [Fact]
+    public void Rollback_refuses_unverified_backup_after_unknown_operation()
     {
         using var directory = new TempDirectory();
         var package = CreatePackage(directory.Path);
@@ -401,7 +458,89 @@ public sealed class ReleaseUpdateApplierTests
         var result = new ReleaseUpdateApplier(store, new FakeInspector(package, "0.1.0"),
             new FakeDownloader(), new FakeLauncher()).Rollback(confirmed: true);
         Assert.False(result.Prepared);
-        Assert.Equal("update_operation_unknown", result.DiagnosticCode);
+        Assert.Equal("update_backup_unverified", result.DiagnosticCode);
+    }
+
+    [Fact]
+    public void Rollback_reports_a_backup_symlink_as_unverified_when_windows_allows_fixture_creation()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Skip("This fixture verifies Windows package-backup link handling.");
+            return;
+        }
+
+        using var directory = new TempDirectory();
+        var package = CreatePackage(directory.Path);
+        var backup = System.IO.Path.Combine(directory.Path, "backup-with-link");
+        Directory.CreateDirectory(backup);
+        File.WriteAllText(System.IO.Path.Combine(backup, "package.json"),
+            """{"name":"omnicore-cli","version":"0.1.0"}""");
+        var outside = System.IO.Path.Combine(directory.Path, "outside.txt");
+        File.WriteAllText(outside, "outside backup tree");
+        try
+        {
+            File.CreateSymbolicLink(System.IO.Path.Combine(backup, "outside-link.txt"), outside);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            Assert.Skip("The Windows environment does not permit symbolic-link fixture creation.");
+            return;
+        }
+
+        var store = new ReleaseUpdateStateStore(System.IO.Path.Combine(directory.Path, "data"));
+        store.Write(new(ReleaseUpdateStateStore.SchemaVersion, ReleaseUpdateOperation.Apply,
+            ReleaseUpdateOperationStatus.Unknown, "0.1.0", "0.2.0", null, backup,
+            null, null, DateTimeOffset.UtcNow, "helper_outcome_unknown", new string('b', 32),
+            null, null, directory.Path, new string('c', 64)));
+
+        var result = new ReleaseUpdateApplier(store, new FakeInspector(package, "0.2.0"),
+            new FakeDownloader(), new FakeLauncher()).Rollback(confirmed: true);
+
+        Assert.False(result.Prepared);
+        Assert.Equal("update_backup_unverified", result.DiagnosticCode);
+    }
+
+    [Fact]
+    public async Task Unverified_publisher_cannot_create_a_backup_or_launch_activation()
+    {
+        using var directory = new TempDirectory();
+        var package = CreatePackage(directory.Path);
+        var store = new ReleaseUpdateStateStore(System.IO.Path.Combine(directory.Path, "data"));
+        var launcher = new FakeLauncher();
+        var applier = new ReleaseUpdateApplier(store, new FakeInspector(package, "0.1.0"),
+            new FakeDownloader(), launcher, publisherVerifier: new FakePublisher(false));
+        var result = await applier.ApplyAsync(Check(), true, TestContext.Current.CancellationToken);
+        Assert.False(result.Prepared);
+        Assert.Equal("update_publisher_verification_failed", result.DiagnosticCode);
+        Assert.Null(launcher.Request);
+        Assert.False(Directory.Exists(System.IO.Path.Combine(store.UpdatesDirectory, "backup")));
+        Assert.False(File.Exists(store.StatePath));
+        Assert.Equal("""{"name":"omnicore-cli","version":"0.1.0"}""", File.ReadAllText(System.IO.Path.Combine(package, "package.json")));
+    }
+
+    [Fact]
+    public void Explicit_rollback_can_compensate_unknown_activation_only_with_verified_backup_and_dead_matching_lock()
+    {
+        using var directory = new TempDirectory();
+        var package = CreatePackage(directory.Path);
+        var backup = System.IO.Path.Combine(directory.Path, "backup"); Directory.CreateDirectory(backup);
+        File.WriteAllText(System.IO.Path.Combine(backup, "package.json"), """{"name":"omnicore-cli","version":"0.1.0"}""");
+        var store = new ReleaseUpdateStateStore(System.IO.Path.Combine(directory.Path, "data"));
+        var id = new string('e', 32);
+        store.Write(new(1, ReleaseUpdateOperation.Apply, ReleaseUpdateOperationStatus.Unknown,
+            "0.1.0", "0.2.0", null, backup, int.MaxValue, int.MaxValue, DateTimeOffset.UtcNow, "interrupted",
+            id, null, null, directory.Path, ReleaseUpdateApplier.PackageFingerprint(backup)));
+        File.WriteAllText(store.StatePath + ".helper.lock", System.Text.Json.JsonSerializer.Serialize(new
+            { pid = int.MaxValue, operation = "Apply", operationId = id, statePath = store.StatePath }));
+        var launcher = new FakeLauncher();
+        var result = new ReleaseUpdateApplier(store, new FakeInspector(package, "0.2.0"), new FakeDownloader(), launcher).Rollback(true);
+        Assert.True(result.Prepared, result.DiagnosticCode);
+        Assert.Equal("rollback", launcher.Request!.Mode);
+        Assert.Equal("0.1.0", launcher.Request.ExpectedVersion);
+        Assert.Equal(package, launcher.Request.PackageDirectory);
+        Assert.True(File.Exists(store.StatePath + ".helper.lock.abandoned-" + id));
+        Assert.False(File.Exists(store.StatePath + ".helper.lock"));
     }
 
     private static string CreatePackage(string root)
@@ -416,6 +555,7 @@ public sealed class ReleaseUpdateApplierTests
 
     private static ReleaseUpdateCheckResult Check() => new(ReleaseUpdateChannel.Stable,
         ReleaseUpdateStatus.UpdateAvailable, ReleaseCompatibility.Compatible, "0.1.0", "0.2.0", "v0.2.0",
+        CommitSha: new string('b', 40),
         Asset: new(42, "omnicore-cli-0.2.0.tgz", 128, new string('a', 64), "win-x64"));
 
     private sealed class FakeInspector(string packageDirectory, string version,
@@ -436,6 +576,13 @@ public sealed class ReleaseUpdateApplierTests
             return Task.FromResult(new ReleaseUpdateDownloadResult(ReleaseUpdateDownloadStatus.Downloaded,
                 "release_asset_downloaded", path, asset.Sha256, 3));
         }
+    }
+
+    private sealed class FakePublisher(bool verified = true) : IReleasePublisherVerifier
+    {
+        public Task<ReleasePublisherVerification> VerifyAsync(string archivePath, ReleaseUpdateCheckResult release,
+            CancellationToken cancellationToken) => Task.FromResult(new ReleasePublisherVerification(verified,
+                verified ? "update_publisher_verified" : "update_publisher_verification_failed"));
     }
 
     private sealed class CountingDownloader : IReleaseUpdateDownloader
