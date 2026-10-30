@@ -205,7 +205,9 @@ function createRealNpmArchive(npmPath, packageDirectory, outputDirectory, env) {
   return archive;
 }
 
-async function waitForFile(filePath, timeoutMs = 5_000) {
+// Cold Windows PowerShell startup can exceed five seconds on a busy hosted runner.
+// Still require the real lock acknowledgement before invoking the helper.
+async function waitForFile(filePath, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (fs.existsSync(filePath)) return;
@@ -399,7 +401,7 @@ test('npm failure after activation becomes Unknown and leaves the prior backup i
 });
 
 test('Windows preflight fails before npm when an installed DLL is held open by another process',
-  { skip: process.platform !== 'win32', timeout: 15_000 }, async () => {
+  { skip: process.platform !== 'win32', timeout: 60_000 }, async () => {
     const directory = tempDirectory();
     let lockProcess;
     try {
@@ -418,7 +420,7 @@ test('Windows preflight fails before npm when an installed DLL is held open by a
       });
       const fake = fakeNpm(directory, { statePath, packageDirectory });
       const psQuote = value => `'${String(value).replace(/'/g, "''")}'`;
-      const script = `$stream = [System.IO.File]::Open(${psQuote(dllPath)}, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::Read); [System.IO.File]::WriteAllText(${psQuote(readyPath)}, 'ready'); Start-Sleep -Seconds 30; $stream.Dispose()`;
+      const script = `$stream = [System.IO.File]::Open(${psQuote(dllPath)}, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::Read); [System.IO.File]::WriteAllText(${psQuote(readyPath)}, 'ready'); Start-Sleep -Seconds 90; $stream.Dispose()`;
       const child = spawn('powershell.exe',
         ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, stdio: 'ignore' });
       lockProcess = child;
@@ -709,7 +711,7 @@ test('manual recovery refuses while the interrupted npm PID is still alive', { s
 });
 
 test('manual recovery respects the Host state.lock FileShare.None lock',
-  { skip: process.platform !== 'win32', timeout: 15_000 }, async () => {
+  { skip: process.platform !== 'win32', timeout: 60_000 }, async () => {
     const directory = tempDirectory();
     let lockProcess;
     try {
@@ -731,7 +733,7 @@ test('manual recovery respects the Host state.lock FileShare.None lock',
       const readyPath = path.join(directory, 'state-lock-ready');
       const fake = fakeNpm(directory, { statePath });
       const psQuote = value => `'${String(value).replace(/'/g, "''")}'`;
-      const script = `$stream = [System.IO.File]::Open(${psQuote(stateLockPath)}, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None); [System.IO.File]::WriteAllText(${psQuote(readyPath)}, 'ready'); Start-Sleep -Seconds 30; $stream.Dispose()`;
+      const script = `$stream = [System.IO.File]::Open(${psQuote(stateLockPath)}, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None); [System.IO.File]::WriteAllText(${psQuote(readyPath)}, 'ready'); Start-Sleep -Seconds 90; $stream.Dispose()`;
       lockProcess = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
         { windowsHide: true, stdio: 'ignore' });
       await waitForFile(readyPath);
