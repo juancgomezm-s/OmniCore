@@ -1,5 +1,9 @@
 # M10 Core publicado e instalado: rc.2
 
+Checkpoint histórico. La [rc.3 posterior](m10-startup-installed-20261030.md)
+incorpora actualización automática y Consolas 16 px/ClearType; sustituye el estado
+de instalación vigente, sin atribuir a la rc.2 esas funciones.
+
 Fuente publicada: `2c9fd13a511050dfc6c2d8a417f7a628c7a81939`.
 La candidata aprobó sus cinco trabajos en
 [CI 41088077351](https://github.com/juancgomezm-s/OmniCore/actions/runs/41088077351).

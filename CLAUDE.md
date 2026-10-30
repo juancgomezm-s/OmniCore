@@ -3,10 +3,12 @@
 **M10 Core candidato de cierre (2026-10-30):** teclado/paleta/búsqueda, memoria
 multiscoped con evidencia, `/undo` TUI y nativo, batch patch, LSP Strong,
 evaluación full y calibración implementados. [Matriz y evidencia](docs/plans/m10-closure-20261030.md).
-La regresión local y el roundtrip público firmado de updater/rollback pasaron;
-CI de la candidata e instalación final se registran al completarse. La evaluación
-live de full pasó 20/20 con ChatGPT por suscripción (acta enlazada); la comparación
-OmniCoder/Pi de spec §97 no se supone aprobada. M9 Core
+Main `49bf57e6`, CI 5/5, rc.3 preview e instalación personal con actualización
+automática aceptadas; [acta vigente](docs/validation/m10-startup-installed-20261030.md).
+Mascota, panel compacto, Consolas 16 px/ClearType y terminal actual conservados.
+Full live pasó 20/20 con ChatGPT; no sustituye la batería agentic de once categorías.
+El [incremento local de métricas y pendientes](docs/validation/m10-regression-measurements-20261030.md)
+distingue esa batería, comparación OmniCoder/Pi y aceptación del consumidor. M9 Core
 aceptado no se reabre y OmniCoder sigue en solo lectura.
 
 **Directiva vigente M9/M10 (2026-10-23):** leer primero

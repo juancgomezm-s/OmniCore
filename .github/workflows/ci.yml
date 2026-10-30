@@ -66,8 +66,8 @@ jobs:
         run: ./scripts/probe-windows-conpty-ci.ps1 -Action Probe
       - name: Validate bundled visual report formatter
         run: python -m unittest discover -s tests -p test_visual_explainer_report.py
-      - name: Validate regression comparison receipts and unknown metrics
-        run: python -m unittest discover -s tests -p test_regression_comparison.py
+      - name: Validate regression measurement and comparison receipts
+        run: python -m unittest discover -s tests -p "test_regression_*.py"
       - name: Windows crash recovery, Git, isolation and managed-server regression checks
         if: runner.os == 'Windows'
         shell: bash
