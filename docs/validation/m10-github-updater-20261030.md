@@ -39,7 +39,7 @@ ni se acredita rollback a través de una migración irreversible futura.
 
 | Comprobación | Aprobados | Fallos | Omitidos |
 |---|---:|---:|---:|
-| Node: launcher, instalación, sincronización, helper, terminal | 51 | 0 | 1 |
+| Node: launcher, instalación, sincronización, helper, terminal | 55 | 0 | 1 |
 | C#: updater, downloader, manifest, CLI y política de publicador | 64 | 0 | 1 |
 | Regresión de memoria scoped/Session y frontera de EventStream | 97 | 0 | 4 |
 | Arquitectura | 62 | 0 | 0 |
@@ -67,6 +67,44 @@ sobre una DLL del paquete: rechazo antes de npm, sin cerrar procesos del usuario
 
 Evidencia local: `artifacts/github-updater-20261029/` contiene logs/XML de tests,
 `candidate.json`, `prepare-final.log`, `real-cli-receipt.json` y scripts de aceptación.
+
+## Caída real y recuperación fuera del paquete
+
+Se interrumpieron únicamente procesos del fixture. El corte anterior al gate
+conservó el paquete completo idéntico al backup aunque el estado ya decía Running.
+El corte durante npm dejó la CLI sin package.json: no podía arrancar para pedir
+rollback. Ese ensayo detectó una carencia de la entrega anterior.
+
+La corrección copia el helper a `updates/recovery/<OperationId>/`, fuera del
+prefijo npm, y conserva un comando PowerShell en el estado. Se muestra antes de
+aplicar/revertir y en `status`. `--mode recover --yes true` exige identidad,
+versión y huella exactas del backup, prefijo coincidente y PID parent/helper/npm
+ausentes o muertos. Sólo prepara una reversión explícita con npm offline.
+Nunca repite el apply incierto. Funciona con el paquete activo incompleto o ausente.
+
+La exclusión con Host y otras recuperaciones usa el mismo `state.lock` con
+`FileShare.None`, mantenido por un controller PowerShell oculto. El path se pasa
+por entorno sin interpolarlo en código; no instala software. Hay handshake con
+plazo y cierre por EOF. Los tests comprueban el lock del Host y dos recover
+simultáneos con una sola reversión y sin sobrescribir la operación activa.
+
+Se restauró la misma instalación temporal rota: Running → Rollback/Succeeded,
+versión 0.1.0 y `--help` de la CLI .NET real. Se repitió el corte durante npm
+con el helper y el mutex definitivos, con el mismo resultado. Los cuatro archivos
+de control conservaron sus bytes y sobrevivió el helper externo. Su SHA256 fue
+`c6e5f7cb0ee49ea1673ab045085eb1ba6acca904b0bb6a7bb06afe364c3890d4`.
+No se acredita pérdida de alimentación del sistema ni se cerraron instancias del usuario.
+
+Evidencia adicional: `gate-crash-receipt.json`, `crash-recovery-receipt.json`,
+`crash-recovery-final-receipt.json`, `npm-final-mutex.log` y
+`recovery-focal-final.xml` (68 aprobados y una omisión: incluye los 64 updater y
+cuatro controles IL que también están en la regresión de memoria de la tabla).
+La compilación correspondiente terminó sin errores ni advertencias.
+
+El paquete local de ensayo descrito arriba precede al refuerzo de recuperación.
+El refuerzo tiene compilación, pruebas de Host/CLI y aceptación directa del helper
+sobre la CLI .NET rota. La release se reconstruirá desde su tag/SHA exactos;
+no se reutilizará el archivo anterior como si contuviera estos cambios posteriores.
 
 ## Límite pendiente
 
