@@ -201,7 +201,8 @@ public interface IContextEventSink
     ValueTask AppendAsync(DomainEventPayload payload, CancellationToken cancellationToken);
 }
 
-/// <summary>Durable memory store port. M8 materializes Session scope; wider scopes remain disabled until M10.</summary>
+/// <summary>Durable memory storage port, not a promotion authority. Host policy authorizes each
+/// scope before storage; User/Global promotion always requires human confirmation (ADR-0028).</summary>
 public interface IMemoryStore
 {
     IReadOnlyList<MemoryRecord> Read(MemoryScope scope, CancellationToken cancellationToken);

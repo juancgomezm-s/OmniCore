@@ -144,8 +144,8 @@ public sealed class SessionMemoryStore : IMemoryStore
             throw new ArgumentException("Session memory usage ids are outside their supported bounds.", nameof(memoryIds));
         cancellationToken.ThrowIfCancellationRequested();
         var requested = memoryIds.ToHashSet(StringComparer.Ordinal);
-        if (requested.Count == 0) return 0;
         var path = PathFor(scope);
+        if (requested.Count == 0) return 0;
         lock (Gate(path))
         {
             var records = ReadFile(path, scope, cancellationToken).ToList();
@@ -164,7 +164,7 @@ public sealed class SessionMemoryStore : IMemoryStore
 
     private string PathFor(MemoryScope scope)
     {
-        if (!Guid.TryParse(scope.Id, out var sessionId))
+        if (scope.Level != ScopeLevel.Session || !Guid.TryParse(scope.Id, out var sessionId))
             throw new ArgumentException("Session memory requires a canonical SessionId.", nameof(scope));
         var path = Path.Combine(_root, sessionId.ToString("N") + ".json");
         RejectReparsePointAncestors(path);

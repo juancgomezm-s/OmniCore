@@ -4,12 +4,21 @@ namespace OmniCore.Domain;
 public sealed record MemoryScope(ScopeLevel Level, string Id)
 {
     public static MemoryScope ForSession(SessionId session) => new(ScopeLevel.Session, session.ToString());
+    public static MemoryScope ForProject(ProjectId project) => new(ScopeLevel.Project, project.ToString());
+    public static MemoryScope ForWorkspace(WorkspaceId workspace) => new(ScopeLevel.Workspace, workspace.ToString());
+    public static MemoryScope ForUser() => new(ScopeLevel.User, "user");
 
     public void Validate()
     {
-        if (Level != ScopeLevel.Session || string.IsNullOrWhiteSpace(Id) || Id.Length > 128
-            || Id.Any(char.IsControl))
-            throw new ArgumentException("Only a valid Session memory scope is currently supported.");
+        var valid = Level switch
+        {
+            ScopeLevel.Session => Guid.TryParseExact(Id, "D", out _),
+            ScopeLevel.Project or ScopeLevel.Workspace => Id is { Length: 16 }
+                && Id.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f'),
+            ScopeLevel.User => string.Equals(Id, "user", StringComparison.Ordinal),
+            _ => false,
+        };
+        if (!valid) throw new ArgumentException("The memory scope identity is invalid or unsupported.");
     }
 }
 
@@ -32,7 +41,8 @@ public sealed record MemoryRecord(string Id, MemoryScope Scope, MemoryKind Kind,
         ArgumentException.ThrowIfNullOrWhiteSpace(Content);
         ArgumentNullException.ThrowIfNull(Tags);
         ArgumentNullException.ThrowIfNull(EvidenceRefs);
-        if (Id.Length > 128 || Content.Length > 4096 || Importance is < 0 or > 1 || Confidence is < 0 or > 1
+        if (Id.Length > 128 || Content.Length > 4096 || !double.IsFinite(Importance) || !double.IsFinite(Confidence)
+            || Importance is < 0 or > 1 || Confidence is < 0 or > 1
             || Tags.Count > 32 || Tags.Any(tag => string.IsNullOrWhiteSpace(tag) || tag.Length > 64 || tag.Any(char.IsControl))
             || EvidenceRefs.Count > 32 || EvidenceRefs.Any(reference => string.IsNullOrWhiteSpace(reference) || reference.Length > 512)
             || Supersedes is { Length: > 128 }

@@ -141,6 +141,7 @@ public sealed class SessionMemoryPolicy
         var events = _journal();
         var candidate = events.OfType<MemoryCandidateProposed>().LastOrDefault(item => item.CandidateId == candidateId)
             ?? throw new InvalidOperationException("sessionPreferences.error.memory_not_found");
+        RequireSessionScope(candidate.ProposedScope);
         if (events.OfType<MemoryPromoted>().Any(item => item.CandidateId == candidateId))
         {
             var existing = events.OfType<MemoryPromoted>().Last(item => item.CandidateId == candidateId);
@@ -159,8 +160,9 @@ public sealed class SessionMemoryPolicy
     public void Reject(string candidateId)
     {
         var events = _journal();
-        if (!events.OfType<MemoryCandidateProposed>().Any(item => item.CandidateId == candidateId))
-            throw new InvalidOperationException("sessionPreferences.error.memory_not_found");
+        var candidate = events.OfType<MemoryCandidateProposed>().LastOrDefault(item => item.CandidateId == candidateId)
+            ?? throw new InvalidOperationException("sessionPreferences.error.memory_not_found");
+        RequireSessionScope(candidate.ProposedScope);
         if (events.OfType<MemoryPromoted>().Any(item => item.CandidateId == candidateId))
             throw new InvalidOperationException("sessionPreferences.error.memory_already_promoted");
         if (events.OfType<MemoryRejected>().Any(item => item.CandidateId == candidateId)) return;
@@ -214,6 +216,7 @@ public sealed class SessionMemoryPolicy
     private MemoryRecord PromoteRecord(MemoryCandidateProposed candidate, string? supersedes,
         Action<DomainEventPayload> publish)
     {
+        RequireSessionScope(candidate.ProposedScope);
         var source = candidate.Origin switch
         {
             MemoryCandidateOrigin.User => MemorySource.UserStated,
@@ -238,6 +241,12 @@ public sealed class SessionMemoryPolicy
             throw;
         }
         return added;
+    }
+
+    private void RequireSessionScope(MemoryScope scope)
+    {
+        if (scope != MemoryScope.ForSession(_session))
+            throw new InvalidOperationException("sessionPreferences.error.memory_not_found");
     }
 
     private MemoryRecord? FindConflict(string content, MemoryKind kind)
