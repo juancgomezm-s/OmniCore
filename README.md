@@ -331,7 +331,7 @@ del paquete: permite restaurar el respaldo verificado sin red si `omni` deja de
 arrancar. Guarda ese comando; requiere confirmación explícita y rechaza procesos activos. Alcance y evidencia
 en [M10](docs/plans/github-updates.md).
 
-**Ampliación local del 30-10-2026, todavía fuera de rc.2:** el arranque npm de una
+**Actualización al iniciar (Windows x64):** el arranque npm de una
 release Windows x64 puede comprobar y descargar en segundo plano. En
 **Ajustes → General → Actualizaciones** se elige canal y descarga automática.
 Cuando aparece **Actualización lista**, puedes **Instalar y reiniciar ahora**

@@ -89,7 +89,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Solution restore failed.' }
           dotnet build tests/OmniCore.Tests/OmniCore.Tests.csproj --configuration Release --no-restore
           if ($LASTEXITCODE -ne 0) { throw 'Release update test build failed.' }
-          dotnet tests/OmniCore.Tests/bin/Release/net10.0/OmniCore.Tests.dll -method 'OmniCore.Tests.ReleaseUpdate*' -method 'OmniCore.Tests.ReleasePublisherVerificationTests.*'
+          dotnet tests/OmniCore.Tests/bin/Release/net10.0/OmniCore.Tests.dll -method 'OmniCore.Tests.ReleaseUpdate*' -method 'OmniCore.Tests.ReleaseStartupUpdatesTests.*' -method 'OmniCore.Tests.ReleasePublisherVerificationTests.*'
           if ($LASTEXITCODE -ne 0) { throw 'Release update tests failed.' }
 
       - name: Prepare the exact-version Windows x64 npm release package

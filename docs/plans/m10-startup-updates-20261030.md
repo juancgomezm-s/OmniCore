@@ -86,3 +86,14 @@ registró 223 casos: 222 PASS, 0 FAIL y un SKIP explícito de symlink.
 requeridos. Es inspección de la lista de fuentes, no una distribución compilada ni
 una release: el script productivo de release publica la DLL y añade el módulo nuevo.
 No se modificaron Main, la instalación personal, permisos, credenciales ni OmniCoder.
+
+
+## Integración autorizada: 30-10-2026
+
+Juan autoriza integrar en Main, dejar CI en verde y actualizar su instalación,
+conservando mascota y panel compacto y cambiando Consolas a 16 px con ClearType
+(12 puntos de Windows Terminal). Se publica desde este worktree; la copia principal
+con trabajo concurrente queda intacta. La release incorpora el foco de
+`ReleaseStartupUpdatesTests` en su control previo. La instalación espera CI verde
+y paquete firmado del mismo commit; no se cambia el canal de usuario en silencio.
+El resultado y los recibos se conservan en `artifacts/m10-startup-publication-20261030`.
