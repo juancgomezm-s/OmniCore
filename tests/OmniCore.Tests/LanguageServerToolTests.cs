@@ -193,9 +193,13 @@ public sealed class LanguageServerToolTests
             var definition = Call("source.cs", "definition", testToken);
             if (!definition.Succeeded)
             {
-                Assert.Contains("StrongSandboxUnavailableBeforeLaunchException", definition.Summary, StringComparison.Ordinal);
-                return; // Strong is unavailable on this runner; the Host failed closed without Weak fallback.
+                if (OperatingSystem.IsWindows()
+                    && definition.Summary == "process.start.StrongSandboxUnavailableBeforeLaunchException")
+                    Assert.Skip("Strong sandbox was unavailable before process launch on this Windows runner.");
+                Assert.True(definition.Succeeded, definition.Summary);
             }
+            Assert.NotNull(definition.Preview);
+            Assert.Equal("Language server read result.", definition.Summary);
             using var definitionResult = JsonDocument.Parse(definition.Preview!);
             Assert.Contains("source.cs", definitionResult.RootElement.GetProperty("result")[0].GetProperty("uri").GetString());
 

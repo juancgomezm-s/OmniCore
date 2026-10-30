@@ -4,13 +4,15 @@ Solicitud del usuario del 2026-10-12, incorporada al plan el 2026-10-13.
 **Estado 2026-10-30:** consulta, aplicación y rollback Windows x64 implementados
 para instalación npm global, con verificación de publicador mediante GitHub CLI
 fijada por SHA256 y attestations de paquete/manifest. Empaquetado real, aplicación,
-arranque y rollback probados en un prefijo npm temporal. La primera release y su
-aceptación completa desde GitHub siguen pendientes; el canal público aún no está cerrado.
+arranque y rollback probados en un prefijo npm temporal. La preview firmada rc.1
+ya se publicó y pasó check/apply/rollback desde un bootstrap corregido. La siguiente
+preview debe incluir la corrección de redirects CDN y el cierre Core; requiere su
+propia CI/tag y aceptación del paquete antes de actualizar la instalación personal.
 Complementa
 [arquitectura §24](../architecture/arquitectura.md) y el
 [plan M8–M10](m8-m10-user-localization.md). La instalación npm desde Git ya
-existe; los contratos del actualizador ya están cableados y falta activar el canal
-publicado. [Evidencia del incremento](../validation/m10-github-updater-20261030.md).
+existe; los contratos del actualizador y el canal preview ya están activos. El canal
+stable sólo ofrece releases estables publicadas, no Main ni prereleases. [Evidencia del incremento](../validation/m10-github-updater-20261030.md).
 
 **Instalación manual actualizada (2026-10-15):** `scripts/install.ps1` y
 `scripts/install.sh` compilan el checkout actual, verifican el arranque y entregan

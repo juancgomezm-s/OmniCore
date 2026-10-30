@@ -1,5 +1,6 @@
 using System.Globalization;
 using OmniCore.Client;
+using OmniCore.Domain;
 using OmniCore.Host;
 using OmniCore.Protocol;
 
@@ -710,7 +711,8 @@ public sealed class ModelPolicyCommands
         }));
         foreach (var note in result.RecommendationNotes)
         {
-            _output.WriteLine(_loc.Resolve("cli.model.qualify.recommendation.note", "note", note));
+            var localizedNote = LocalizeQualificationRecommendationNote(_loc, note);
+            _output.WriteLine(_loc.Resolve("cli.model.qualify.recommendation.note", "note", localizedNote));
         }
 
         _output.WriteLine(_loc.Resolve("cli.model.qualify.recommendation.apply_hint",
@@ -782,13 +784,54 @@ public sealed class ModelPolicyCommands
                 or "ValidationProcess" or "GeneralProcess" or "Shell" or "Network" or "AgentMailboxWait",
             "qualificationState" => value is "Unknown" or "Declared" or "ProvisionallyClassified"
                 or "Qualified" or "Calibrated" or "Stale",
-            "probeKind" => value is "Reading" or "Reasoning" or "StructuredOutput",
+            "probeKind" => value is "Reading" or "Reasoning" or "StructuredOutput" or "CodeFixture",
             "probeStatus" => value is "Passed" or "Failed" or "Error" or "Timeout" or "NotRun",
             "trait" => value is "InstructionFollowing" or "StructuredOutputReliability",
             "traitSource" => value is "empirical",
+            "recommendationNote" => value is "NoGeneralMutationEvidence" or "FullAgentNeverRecommended"
+                or "ConservativePatchOnly" or "LowFileMutationReliability" or "HighFileMutationReliability",
             _ => false,
         };
         return known ? localization.Resolve($"cli.model.value.{kind}.{value}") : value;
+    }
+
+    internal static string LocalizeQualificationRecommendationNote(Localization localization, string note)
+    {
+        var key = note switch
+        {
+            var value when value == QualificationRecommender.FullAgentNeverRecommendedNote => "FullAgentNeverRecommended",
+            var value when value == QualificationRecommender.NoGeneralFileMutationEvidenceNote => "NoGeneralMutationEvidence",
+            var value when value == QualificationRecommender.ConservativePatchOnlyNote => "ConservativePatchOnly",
+            var value when value == QualificationRecommender.LowFileMutationReliabilityNote => "LowFileMutationReliability",
+            var value when value == QualificationRecommender.HighFileMutationReliabilityNote => "HighFileMutationReliability",
+            _ => null,
+        };
+        if (key is not null)
+        {
+            return LocalizeModelValue(localization, "recommendationNote", key);
+        }
+
+        const string prefix = QualificationRecommender.InsufficientFileMutationEvidencePrefix;
+        const string middle = QualificationRecommender.InsufficientFileMutationEvidenceMiddle;
+        const string suffix = QualificationRecommender.InsufficientFileMutationEvidenceSuffix;
+        if (note.StartsWith(prefix, StringComparison.Ordinal) && note.EndsWith(suffix, StringComparison.Ordinal))
+        {
+            var body = note[prefix.Length..^suffix.Length];
+            var separator = body.IndexOf(middle, StringComparison.Ordinal);
+            if (separator >= 0
+                && int.TryParse(body.AsSpan(0, separator), NumberStyles.Integer, CultureInfo.InvariantCulture, out var samples)
+                && int.TryParse(body.AsSpan(separator + middle.Length), NumberStyles.Integer, CultureInfo.InvariantCulture, out var minimum))
+            {
+                return localization.Resolve("cli.model.value.recommendationNote.InsufficientMutationEvidence",
+                    new Dictionary<string, string>
+                    {
+                        ["samples"] = samples.ToString(CultureInfo.InvariantCulture),
+                        ["minimum"] = minimum.ToString(CultureInfo.InvariantCulture),
+                    });
+            }
+        }
+
+        return note;
     }
 
     internal static string LocalizeChangeKind(Localization localization, string changeKind) => changeKind switch

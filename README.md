@@ -324,12 +324,18 @@ Aplicar o revertir reemplaza el paquete mediante npm después de salir la CLI;
 cierra otras instancias de OmniCore antes de hacerlo. La consulta no instala nada.
 El canal `stable` es el predeterminado; `--channel preview` permite prereleases.
 La descarga y su manifest deben superar SHA256 y attestations del repositorio,
-workflow y commit autorizado. Todavía falta publicar y aceptar la primera release;
-sin ella, la consulta informa que no hay versiones publicadas. Antes del reemplazo
+workflow y commit autorizado. El canal preview ya tiene una primera release
+firmada; stable sólo ofrece versiones estables publicadas y puede no tener ninguna. Antes del reemplazo
 se muestra un comando de recuperación PowerShell que conserva el helper fuera
 del paquete: permite restaurar el respaldo verificado sin red si `omni` deja de
 arrancar. Guarda ese comando; requiere confirmación explícita y rechaza procesos activos. Alcance y evidencia
 en [M10](docs/plans/github-updates.md).
+
+M10 incorpora la paleta global (**Ctrl+P**), modo (**F1**, `/modo`), permisos
+(**Ctrl+F1**, `/permiso`) y `/undo` con revisión previa y confirmación humana.
+`omni model qualify <modelo> --suite full` ejecuta llamadas reales y fixtures de
+código desechables; `omni model calibration <modelo>` consulta evidencia sin llamar
+al proveedor. [Alcance y aceptación de M10 Core](docs/plans/m10-closure-20261030.md).
 
 Ejecuta `omni` desde la carpeta del proyecto para abrir la interfaz integrada
 con categorías laterales de preferencias. También está disponible `omni tui`.

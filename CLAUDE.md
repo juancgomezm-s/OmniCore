@@ -5,7 +5,8 @@ multiscoped con evidencia, `/undo` TUI y nativo, batch patch, LSP Strong,
 evaluación full y calibración implementados. [Matriz y evidencia](docs/plans/m10-closure-20261030.md).
 La regresión local y el roundtrip público firmado de updater/rollback pasaron;
 CI de la candidata e instalación final se registran al completarse. La evaluación
-live y la comparación OmniCoder/Pi de spec §97 no se suponen aprobadas. M9 Core
+live de full pasó 20/20 con ChatGPT por suscripción (acta enlazada); la comparación
+OmniCoder/Pi de spec §97 no se supone aprobada. M9 Core
 aceptado no se reabre y OmniCoder sigue en solo lectura.
 
 **Directiva vigente M9/M10 (2026-10-23):** leer primero

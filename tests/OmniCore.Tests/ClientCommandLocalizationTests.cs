@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using OmniCore.Client;
 using OmniCore.Protocol;
+using QualificationRecommender = OmniCore.Domain.QualificationRecommender;
 
 namespace OmniCore.Tests;
 
@@ -31,6 +32,51 @@ public sealed class ClientCommandLocalizationTests
             Assert.Contains(command.DescriptionKey, ClientCommandResources.Keys);
         foreach (var action in ClientCommandRegistry.Default.Actions)
             Assert.Contains(action.TitleKey, ClientCommandResources.Keys);
+    }
+
+    [Theory]
+    [InlineData("es", "Fixture de código", "Sin evidencia de FileMutationReliability: las fixtures de cualificación no miden la fiabilidad general de las mutaciones de archivos.")]
+    [InlineData("en", "Code fixture", "No FileMutationReliability evidence: qualification fixtures do not measure general file mutation reliability.")]
+    [InlineData("fr", "Fixture de code", "Aucune preuve de FileMutationReliability : les fixtures de qualification ne mesurent pas la fiabilité générale des modifications de fichiers.")]
+    [InlineData("it", "Fixture di codice", "Nessuna evidenza di FileMutationReliability: le fixture di qualificazione non misurano l’affidabilità generale delle modifiche ai file.")]
+    public void Full_qualification_kind_and_general_mutation_note_are_localized(
+        string locale, string codeFixture, string mutationEvidenceNote)
+    {
+        var text = new Localization(locale);
+        Assert.Equal(codeFixture, OmniCore.Cli.ModelPolicyCommands.LocalizeModelValue(text, "probeKind", "CodeFixture"));
+        Assert.Equal(mutationEvidenceNote, OmniCore.Cli.ModelPolicyCommands.LocalizeModelValue(
+            text, "recommendationNote", "NoGeneralMutationEvidence"));
+    }
+
+    [Theory]
+    [InlineData("es")]
+    [InlineData("en")]
+    [InlineData("fr")]
+    [InlineData("it")]
+    public void All_known_qualification_recommendation_notes_are_localized_without_changing_dynamic_values(string locale)
+    {
+        var text = new Localization(locale);
+        var knownNotes = new[]
+        {
+            (QualificationRecommender.FullAgentNeverRecommendedNote, "FullAgentNeverRecommended"),
+            (QualificationRecommender.NoGeneralFileMutationEvidenceNote, "NoGeneralMutationEvidence"),
+            (QualificationRecommender.ConservativePatchOnlyNote, "ConservativePatchOnly"),
+            (QualificationRecommender.LowFileMutationReliabilityNote, "LowFileMutationReliability"),
+            (QualificationRecommender.HighFileMutationReliabilityNote, "HighFileMutationReliability"),
+        };
+        foreach (var (note, resource) in knownNotes)
+        {
+            Assert.Equal(text.Resolve("cli.model.value.recommendationNote." + resource),
+                OmniCore.Cli.ModelPolicyCommands.LocalizeQualificationRecommendationNote(text, note));
+        }
+
+        var dynamicNote = QualificationRecommender.InsufficientFileMutationEvidencePrefix + "2"
+            + QualificationRecommender.InsufficientFileMutationEvidenceMiddle + "5"
+            + QualificationRecommender.InsufficientFileMutationEvidenceSuffix;
+        Assert.Equal(text.Resolve("cli.model.value.recommendationNote.InsufficientMutationEvidence",
+                new Dictionary<string, string> { ["samples"] = "2", ["minimum"] = "5" }),
+            OmniCore.Cli.ModelPolicyCommands.LocalizeQualificationRecommendationNote(text, dynamicNote));
+        Assert.Equal("unknown note", OmniCore.Cli.ModelPolicyCommands.LocalizeQualificationRecommendationNote(text, "unknown note"));
     }
 
     [Theory]

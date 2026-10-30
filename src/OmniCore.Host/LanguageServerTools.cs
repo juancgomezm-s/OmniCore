@@ -239,8 +239,9 @@ internal sealed class LanguageServerTool : ITool
             var jsonNode = JsonNode.Parse(result.GetRawText());
             RemapUris(jsonNode, stagedRoot, context.WorkspaceRoot);
             var json = new JsonObject { ["documentVersion"] = preHash.ToLowerInvariant(), ["result"] = jsonNode }.ToJsonString();
-            if (Encoding.UTF8.GetByteCount(json) > MaxOutputBytes) return ToolResult.Error(ToolErrorCode.LimitExceeded, "code.result_too_large");
-            return new ToolResult(json, null, null, 0, false, EffectOutcome.None);
+            var outputBytes = Encoding.UTF8.GetByteCount(json);
+            if (outputBytes > MaxOutputBytes) return ToolResult.Error(ToolErrorCode.LimitExceeded, "code.result_too_large");
+            return ToolResult.Ok("Language server read result.", json, outputBytes, false, EffectOutcome.None);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         { return ToolResult.Error(ToolErrorCode.ToolFailure, "code.request.cancelled"); }

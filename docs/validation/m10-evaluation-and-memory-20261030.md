@@ -86,3 +86,42 @@ Los resultados definitivos se registran en `m10-closure-20261030.md` y XML de ar
 Los casos de caída de este incremento son fallos inyectados; las caídas OS de memoria
 y updater de la base mantienen sus actas separadas. No se atribuye aquí aceptación
 lingüística de modelos, servidores LSP reales del usuario ni consumidor OmniCoder.
+
+## Aceptación live de full con ChatGPT
+
+El usuario eligió expresamente la suscripción ChatGPT ya configurada. El 30 de
+Octubre, entre 15:54:26 y 15:55:58 UTC, la CLI Release ejecutó `model qualify
+gpt-6.1-sol --suite full --yes --max-cost 1.00 --probe-timeout 120` en un workspace
+temporal, por `chatgpt`/Responses perfil `codex`, `IncludedQuota`. No se copió una
+credencial ni se usó API key, GPU local o un proveedor scripted. El store de usuario
+registró la evidencia de esta cualificación; no cambió la política del modelo.
+
+Resultado: **20/20 Passed**, incluidos diez fixtures de parche/compilación/aserción;
+`Declared → Qualified`, revisión 1, clave
+`cfeae25e2803cd24e5cd810457f7994d513f56fbb2de078853ff20bfd6e625b0`.
+CodeFixtureEditReliability=1.00 (10 muestras), InstructionFollowing=1.00 (7) y
+StructuredOutputReliability=1.00 (3). Las duraciones registradas de los probes
+suman 77.9144147 s; el tiempo de pared del proceso fue aproximadamente 91.5 s,
+incluyendo inicialización y admisión. Los veinte probes conservan usage reportado;
+2.111 tokens de entrada y 810 de salida reportados (cache/razonamiento son subconjuntos,
+no se suman otra vez). El costo monetario quedó desconocido, no se lo convierte
+en cero por ser suscripción.
+
+Artifact canónico SHA-256
+`878a5aa8b3dd3e15febd0b6a38381f9e04443a8be1f8916638d75875aea9b4d4`,
+20.512 bytes, verificado contra el blob User y exportado en
+`artifacts/m10-live-chatgpt/qualification-evidence.json`. Log, clave exacta y recibos
+están en ese directorio. Imagen CLI SHA-256
+`ae7576ba2af8868719e4790bd876d554a4680fc806b427f0c053f578195906ad`;
+candidata fuente `d262b4caf7de3c95897b753fb9ea5c96b19c6003`. La build de desarrollo
+no es la release final: su identidad exacta no se transfiere artificialmente al
+paquete publicado. La aceptación del paquete y su instalación se registran aparte.
+
+Esto acredita llamadas reales y estas tareas acotadas; no generaliza a capacidad
+de programación ni acredita la comparación OmniCoder/Pi. La búsqueda de reportes
+en la documentación de OmniCoder encontró sólo benchmark de septiembre y mapa
+de capacidades, no una tanda equivalente a `omnicore-full` 1.0.0 de este corte.
+El recibo neutral Core exportado (`artifacts/m10-live-chatgpt/omnicore-regression-live-receipt.json`)
+conserva identidad y métricas conocidas; deja turns/toolCalls/context growth/escalations
+en null porque ese arnés no las observó. No se fabricó un segundo brazo ni se
+ejecutó el comparador sin el recibo de OmniCoder/Pi.

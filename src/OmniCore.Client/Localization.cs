@@ -55,7 +55,15 @@ public sealed class Localization
     public static IReadOnlyCollection<string> RuntimeResourceKeys => LocaleRuntimeResources.Keys;
 
     /// <summary>True si la clave existe en los dos recursos.</summary>
-    public static bool HasInBoth(string key) => _es.ContainsKey(key) && _en.ContainsKey(key);
+    public static bool HasInBoth(string key)
+    {
+        // Use the composed catalogs, including command/tool resources; unknown keys
+        // and fallback text must not count as a translation in either language.
+        var es = Spanish().ResolveDetailed(key);
+        var en = English().ResolveDetailed(key);
+        return es.ResourceLocale == "es" && !es.UsedFallback
+            && en.ResourceLocale == "en" && !en.UsedFallback;
+    }
 
     public static Localization English() => new("en");
 

@@ -25,6 +25,20 @@ public sealed record QualificationRecommendation(
 /// </summary>
 public static class QualificationRecommender
 {
+    public const string FullAgentNeverRecommendedNote =
+        "FullAgent nunca se recomienda automáticamente: es un techo que solo el usuario fija de forma explícita";
+    public const string NoGeneralFileMutationEvidenceNote =
+        "sin evidencia de FileMutationReliability: las fixtures de cualificación no miden la fiabilidad general de las mutaciones de archivos.";
+    public const string ConservativePatchOnlyNote =
+        "recomendación conservadora: la evidencia de la suite no alcanza el umbral de PatchOnly";
+    public const string LowFileMutationReliabilityNote =
+        "FileMutationReliability por debajo del umbral: se recomienda ObserveOnly";
+    public const string HighFileMutationReliabilityNote =
+        "FileMutationReliability alta: se habilita recomendar ScopedCoder";
+    public const string InsufficientFileMutationEvidencePrefix = "FileMutationReliability con ";
+    public const string InsufficientFileMutationEvidenceMiddle = " muestras (mínimo ";
+    public const string InsufficientFileMutationEvidenceSuffix = "): evidencia insuficiente, no se usa";
+
     /// <summary>Quick suite: cada probe es todo-o-nada; la recomendación exige pasar todo.</summary>
     public const double QuickPassThreshold = 0.9;
 
@@ -48,7 +62,7 @@ public static class QualificationRecommender
 
         var notes = new List<string>
         {
-            "FullAgent nunca se recomienda automáticamente: es un techo que solo el usuario fija de forma explícita",
+            FullAgentNeverRecommendedNote,
         };
 
         var instruction = Trait(traits, "InstructionFollowing");
@@ -57,12 +71,13 @@ public static class QualificationRecommender
 
         if (!hasFileMutation)
         {
-            notes.Add("sin evidencia de FileMutationReliability: la suite quick no mide mutaciones de archivos");
+            notes.Add(NoGeneralFileMutationEvidenceNote);
         }
         else if (fileMutationSamples < MinimumFileMutationSamples)
         {
-            notes.Add("FileMutationReliability con " + fileMutationSamples + " muestras (mínimo "
-                + MinimumFileMutationSamples + "): evidencia insuficiente, no se usa");
+            notes.Add(InsufficientFileMutationEvidencePrefix + fileMutationSamples
+                + InsufficientFileMutationEvidenceMiddle + MinimumFileMutationSamples
+                + InsufficientFileMutationEvidenceSuffix);
             hasFileMutation = false;
         }
 
@@ -72,7 +87,7 @@ public static class QualificationRecommender
             : ModelPolicyCategory.ObserveOnly;
         if (category == ModelPolicyCategory.ObserveOnly)
         {
-            notes.Add("recomendación conservadora: la evidencia de la suite no alcanza el umbral de PatchOnly");
+            notes.Add(ConservativePatchOnlyNote);
         }
 
         // FileMutationReliability solo puede restringir (suelo ObserveOnly) o habilitar un paso más
@@ -82,12 +97,12 @@ public static class QualificationRecommender
             if (fileMutation < FileMutationObserveOnlyThreshold)
             {
                 category = ModelPolicyCategory.ObserveOnly;
-                notes.Add("FileMutationReliability por debajo del umbral: se recomienda ObserveOnly");
+                notes.Add(LowFileMutationReliabilityNote);
             }
             else if (category == ModelPolicyCategory.PatchOnly && fileMutation >= FileMutationScopedCoderThreshold)
             {
                 category = ModelPolicyCategory.ScopedCoder;
-                notes.Add("FileMutationReliability alta: se habilita recomendar ScopedCoder");
+                notes.Add(HighFileMutationReliabilityNote);
             }
         }
 

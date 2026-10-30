@@ -91,5 +91,17 @@ public sealed class QualificationRecommenderTests
         Assert.Equal(first.MutationPolicy.MaxChangedLinesPerTurn, second.MutationPolicy.MaxChangedLinesPerTurn);
         Assert.Equal(first.Notes, second.Notes);
         Assert.Contains(first.Notes, note => note.Contains("FullAgent"));
+        Assert.Contains(QualificationRecommender.NoGeneralFileMutationEvidenceNote, first.Notes);
+        Assert.DoesNotContain(first.Notes, note => note.Contains("suite quick", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Insufficient_mutation_samples_keep_the_existing_raw_counts_in_the_recommendation_note()
+    {
+        var recommendation = QualificationRecommender.Recommend(Traits(fileMutation: 0.9), fileMutationSamples: 2);
+
+        Assert.Contains(QualificationRecommender.InsufficientFileMutationEvidencePrefix + "2"
+            + QualificationRecommender.InsufficientFileMutationEvidenceMiddle + "5"
+            + QualificationRecommender.InsufficientFileMutationEvidenceSuffix, recommendation.Notes);
     }
 }

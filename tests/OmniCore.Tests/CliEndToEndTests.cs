@@ -3822,9 +3822,15 @@ public sealed partial class CliEndToEndTests
         Assert.False(Regex.IsMatch(output, @"(?m)^\s*at [A-Za-z0-9_.+`]+\("), "Se filtró una traza: " + output);
         Assert.DoesNotContain("frames:", output, StringComparison.OrdinalIgnoreCase);
         if (machineReadable) return; // JSON conserva identificadores de eventos, que no son texto localizado.
-        var localizationKey = Regex.Match(output, @"\b[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)*\.[a-z][a-z0-9]*_[a-z0-9_]+\b",
+        var candidates = Regex.Matches(output, @"\b[a-z][a-z0-9]*(?:\.[a-z][a-z0-9]*)*\.[a-z][a-z0-9]*_[a-z0-9_]+\b",
             RegexOptions.IgnoreCase);
-        Assert.False(localizationKey.Success, "Se filtró una clave de localización: " + localizationKey.Value);
+        foreach (Match localizationKey in candidates)
+        {
+            // This exact public tool ID contains an underscore; it is technical data,
+            // not a resource key. Continue checking every remaining candidate.
+            if (localizationKey.Value == "filesystem.apply_patch") continue;
+            Assert.Fail("Se filtró una clave de localización: " + localizationKey.Value);
+        }
     }
 
     /// <summary>A tiny real HTTP server returning deterministic OpenAI-compatible SSE responses.</summary>
