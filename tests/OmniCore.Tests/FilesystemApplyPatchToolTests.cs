@@ -14,6 +14,98 @@ namespace OmniCore.Tests;
 
 public sealed class FilesystemApplyPatchToolTests
 {
+    [Theory]
+    [InlineData(null)]
+    [InlineData("0000000000000000000000000000000000000000000000000000000000000000")]
+    public async System.Threading.Tasks.Task Preview_accepts_native_decoder_optional_token_without_writes(string? token)
+    {
+        using var fixture = new Fixture();
+        fixture.Write("a.txt", "old\n");
+        var request = JsonSerializer.Serialize(new { mode = "preview", previewToken = token,
+            files = new[] { fixture.File("a.txt", "old", "new") } });
+        var tool = new FilesystemApplyPatchTool(new PathBoundaryValidator());
+        Assert.Null(ToolSchemaValidator.Validate(request, tool.Descriptor.InputSchema));
+        var (authorized, context) = fixture.Authorize(tool, request);
+        var result = await tool.ExecuteAsync(authorized, context, CancellationToken.None);
+        Assert.False(result.IsError);
+        Assert.Equal(EffectOutcome.None, result.EffectOutcome);
+        using var preview = JsonDocument.Parse(result.Preview!);
+        Assert.Equal(64, preview.RootElement.GetProperty("previewToken").GetString()!.Length);
+        Assert.Equal("old\n", fixture.Read("a.txt"));
+    }
+
+    [Fact]
+    public void Read_only_preview_reaches_execution_through_the_real_tool_runtime()
+    {
+        using var fixture = new Fixture();
+        fixture.Write("a.txt", "head\nold-a\ntail\n");
+        fixture.Write("b.txt", "head\nold-b\ntail\n");
+        var request = fixture.Request("preview", [fixture.File("a.txt", "old-a", "new-a"),
+            fixture.File("b.txt", "old-b", "new-b")]);
+        var tool = new FilesystemApplyPatchTool(new PathBoundaryValidator());
+        var events = new List<DomainEventPayload>();
+        var runtime = ToolRuntime.For(new FakeCatalog().Add(tool), fixture.Policy(),
+            payload => { events.Add(payload); return VoidBox.Instance; });
+        var result = runtime.Run(fixture.Call(tool, request),
+            new ToolPreparationContext(fixture.Workspace, DateTimeOffset.UtcNow),
+            fixture.Context, false, CancellationToken.None);
+        Assert.True(result.Succeeded, result.Summary);
+        Assert.Equal(EffectOutcome.None, result.Effect);
+        using var preview = JsonDocument.Parse(result.Preview!);
+        Assert.Equal(64, preview.RootElement.GetProperty("previewToken").GetString()!.Length);
+        Assert.Single(events.OfType<ToolCallSucceeded>());
+        Assert.Empty(events.OfType<ToolCallFailed>());
+        Assert.Equal("head\nold-a\ntail\n", fixture.Read("a.txt"));
+        Assert.Equal("head\nold-b\ntail\n", fixture.Read("b.txt"));
+    }
+
+    [Fact]
+    public void Preview_exception_does_not_allow_an_unrelated_empty_batch_to_execute()
+    {
+        using var fixture = new Fixture();
+        var tool = new EmptyBatchResolver();
+        var runtime = ToolRuntime.For(new FakeCatalog().Add(tool),
+            ScriptedPermissionPolicy.WithTool("empty.batch", PermissionDecision.Allow), _ => VoidBox.Instance);
+        var result = runtime.Run(new ValidatedToolCall(ToolCallId.New(), tool.Descriptor.Id, "empty-batch", "{}"),
+            new ToolPreparationContext(fixture.Workspace, DateTimeOffset.UtcNow), fixture.Context, false, CancellationToken.None);
+        Assert.False(result.Succeeded);
+        Assert.Equal(0, tool.ExecutionCount);
+    }
+
+    private sealed class EmptyBatchResolver : ITool, IEffectiveToolAuthorizationIntents
+    {
+        public int ExecutionCount { get; private set; }
+        public ToolDescriptor Descriptor { get; } = new(new ToolId("empty.batch"), "empty batch fixture",
+            new InputSchema("{\"type\":\"object\"}"), [], true, false, ToolRisk.Low, ComponentSource.Core(), ToolProtection.None);
+        public ToolPreparation Prepare(ValidatedToolCall call, ToolPreparationContext context) => new Prepared(
+            new ToolIntent(call.ToolCallId, call.ToolId, call.NormalizedArgumentsJson, EffectClass.None,
+                ResourceClaims.Empty(), ToolRisk.Low, null));
+        public IReadOnlyList<ToolIntent> ResolveEffectiveAuthorizationIntents(ToolIntent intent,
+            ToolPreparationContext preparation, ToolExecutionContext execution, CancellationToken cancellationToken) => [];
+        public System.Threading.Tasks.Task<ToolResult> ExecuteAsync(AuthorizedToolIntent intent,
+            ToolExecutionContext context, CancellationToken cancellationToken)
+        {
+            ExecutionCount++;
+            return System.Threading.Tasks.Task.FromResult(ToolResult.Ok("unexpected execution", null, 0, false, EffectOutcome.None));
+        }
+    }
+
+    [Theory]
+    [InlineData("apply", "null")]
+    [InlineData("preview", "true")]
+    [InlineData("preview", "\"invalid\"")]
+    public void Nullable_preview_schema_never_authorizes_apply_without_a_real_token(string mode, string tokenJson)
+    {
+        using var fixture = new Fixture();
+        fixture.Write("a.txt", "old\n");
+        var files = JsonSerializer.Serialize(new[] { fixture.File("a.txt", "old", "new") });
+        var request = "{\"mode\":\"" + mode + "\",\"previewToken\":" + tokenJson + ",\"files\":" + files + "}";
+        var tool = new FilesystemApplyPatchTool(new PathBoundaryValidator());
+        Assert.IsType<PreparationRejected>(tool.Prepare(fixture.Call(tool, request),
+            new ToolPreparationContext(fixture.Workspace, DateTimeOffset.UtcNow)));
+        Assert.Equal("old\n", fixture.Read("a.txt"));
+    }
+
     [Fact]
     public async System.Threading.Tasks.Task Preview_returns_deterministic_multi_file_diff_and_token_without_writes()
     {

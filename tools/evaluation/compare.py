@@ -49,6 +49,8 @@ def validate(document):
 
 def compare(left, right):
     left, right = validate(left), validate(right)
+    if left.get('measurementPolicy') != right.get('measurementPolicy'):
+        raise ValueError('measurement policy mismatch')
     if left['runtime'] == right['runtime']:
         raise ValueError('comparison requires distinct harnesses')
     if left['benchmarkIdentity'] != right['benchmarkIdentity']:
@@ -67,6 +69,7 @@ def compare(left, right):
     model_verified = bool(left.get('modelIdentity')) and left.get('modelIdentity') == right.get('modelIdentity')
     live = left['measurementSource'] == right['measurementSource'] == 'live'
     return {'schema': 'omnicore.regression-comparison.v1', 'benchmarkIdentity': left['benchmarkIdentity'],
+            'measurementPolicy': left.get('measurementPolicy'),
             'declaredModelIdentityMatches': model_verified, 'bothDeclaredLive': live,
             'comparableByDeclaredIdentity': model_verified and live,
             'provenanceVerified': False,

@@ -1,0 +1,500 @@
+{
+  "schema": "omnicore.regression-measurements.v1",
+  "runtime": "omnicore-cli",
+  "measurementSource": "live",
+  "benchmarkIdentity": {
+    "suiteId": "omnicore-agentic-11",
+    "suiteVersion": "1.1.0",
+    "taskSetHash": "eab7dd4725194c68f1da939d0a1dd609f62bef652345e589e3263f69baec9739",
+    "seed": null,
+    "temperature": null,
+    "samplingParametersSent": false,
+    "reasoningEffort": "medium"
+  },
+  "modelIdentity": {
+    "providerId": "chatgpt-subscription",
+    "modelId": "gpt-6.1-sol",
+    "modelRevision": null,
+    "adapterProfile": "codex",
+    "endpoint": "https://chatgpt.com/backend-api",
+    "protocol": "OpenAIResponses"
+  },
+  "measurementPolicy": {
+    "version": 1,
+    "time": "harness-before-launch-to-exit-including-recovery",
+    "turns": "accepted-user-prompt-cycles-including-children",
+    "tools": "requested-calls-including-rejected-and-owned-children",
+    "tokens": "reported-total-input-including-cache-plus-output-main-and-meta",
+    "context": "peak-reported-request-input-minus-initial-reported-request-input",
+    "frontier": "completed-escalations-under-pinned-single-model-policy",
+    "cost": "observed-subscription-charge-only-not-public-api-list-price",
+    "success": "independent-behavior-preservation-and-scenario-control-oracles"
+  },
+  "provenanceVerified": false,
+  "tasks": [
+    {
+      "id": "repository-exploration",
+      "timeSeconds": 50.421999999991385,
+      "turns": 1,
+      "toolCalls": 7,
+      "tokens": 18185,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 627,
+      "observations": {
+        "inputTokensObserved": 17885,
+        "outputTokensObserved": 300,
+        "peakRequestInputTokensObserved": 3931,
+        "contextGrowthObserved": 627,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-as-a-canonical-count",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "tokensThroughCheckpoint": 18185,
+        "usageCoverageComplete": true,
+        "journalSha256": "21ca952144bbed92ae1319076bd220c55c8d4fdaac4d38047d17981c73ed2644",
+        "events": 87
+      },
+      "control": {
+        "required": "normal",
+        "satisfied": true
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "6fac892e398eddfcbbd378a705618f13e6d0a080f03ca62fa7c2c2c25f239b02",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "df52ac6cefcc6008ad970a51450fdbffe6812b29dd341159be39043b44bc6d5e"
+    },
+    {
+      "id": "simple-bug",
+      "timeSeconds": 39.905999999988126,
+      "turns": 1,
+      "toolCalls": 3,
+      "tokens": 10341,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 201,
+      "observations": {
+        "inputTokensObserved": 10194,
+        "outputTokensObserved": 147,
+        "peakRequestInputTokensObserved": 3497,
+        "contextGrowthObserved": 201,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-as-a-canonical-count",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "tokensThroughCheckpoint": 10341,
+        "usageCoverageComplete": true,
+        "journalSha256": "55adff0b3b97a99342d38d4fe7b173a213a35fe19d7e6e16b8548f73610694d8",
+        "events": 57
+      },
+      "control": {
+        "required": "normal",
+        "satisfied": true
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "6c223b78145132c5c2def3266633957249eeb339b3429caa548a8571bcff15e2",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "18f6a6892d19ec12fd2a42161c4a2690904a46879dc476d9b1542659a38ac9b8"
+    },
+    {
+      "id": "multi-file-bug",
+      "timeSeconds": 45.125,
+      "turns": 1,
+      "toolCalls": 6,
+      "tokens": 19383,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 990,
+      "observations": {
+        "inputTokensObserved": 18777,
+        "outputTokensObserved": 606,
+        "peakRequestInputTokensObserved": 4301,
+        "contextGrowthObserved": 990,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-as-a-canonical-count",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "tokensThroughCheckpoint": 19383,
+        "usageCoverageComplete": true,
+        "journalSha256": "d4ce23c7f005c4f8aae260e74636b9bc27b950862ed5297072f1db942948d690",
+        "events": 85
+      },
+      "control": {
+        "required": "normal",
+        "satisfied": true
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "a4af05104b0d1c1f12d8b79e22a7d017cfa408af1e8fcfbcb056be94698d8126",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "a9a22a2adf9a3df1c37b18d71c8d61bbd0621410ddd88624ff67adf83e85e3ce"
+    },
+    {
+      "id": "build-failure",
+      "timeSeconds": 75.45300000000861,
+      "turns": 2,
+      "toolCalls": 9,
+      "tokens": 35042,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 1097,
+      "observations": {
+        "inputTokensObserved": 34408,
+        "outputTokensObserved": 634,
+        "peakRequestInputTokensObserved": 4404,
+        "contextGrowthObserved": 1097,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-as-a-canonical-count",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "tokensThroughCheckpoint": 35042,
+        "usageCoverageComplete": true,
+        "journalSha256": "d8f6d860bb905c6ba916e5ceb456f0ee925b4b8279b161cff01e09b0ca7e6616",
+        "events": 116
+      },
+      "control": {
+        "required": "normal",
+        "satisfied": true
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "7649b53fed15ac69012ba30b1d8ee0293a89ed71575c7d2ed7571c73d79fe95a",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "98a49ab505b88c145f4f3ddb7a3bfbb4cf4f333bd6ff51e6e977d79b8d29b502"
+    },
+    {
+      "id": "test-failure",
+      "timeSeconds": 39.046999999991385,
+      "turns": 1,
+      "toolCalls": 5,
+      "tokens": 18195,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 534,
+      "observations": {
+        "inputTokensObserved": 17862,
+        "outputTokensObserved": 333,
+        "peakRequestInputTokensObserved": 3842,
+        "contextGrowthObserved": 534,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-as-a-canonical-count",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "tokensThroughCheckpoint": 18195,
+        "usageCoverageComplete": true,
+        "journalSha256": "d87bfd96adaf2f4cdd25dad10b7072588530df8c9548847cd309b8662009e0fb",
+        "events": 75
+      },
+      "control": {
+        "required": "normal",
+        "satisfied": true
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "64b46b62d697e2338f0b39b0f219a7db4002ff97aab9b7f426f044837254b841",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "64064051a85fd91f8f5b0637feee6e84811b244490b9fde873e5b9b38ffd8ae8"
+    },
+    {
+      "id": "refactor",
+      "timeSeconds": 45.375,
+      "turns": 1,
+      "toolCalls": 7,
+      "tokens": 23577,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 1246,
+      "observations": {
+        "inputTokensObserved": 22819,
+        "outputTokensObserved": 758,
+        "peakRequestInputTokensObserved": 4564,
+        "contextGrowthObserved": 1246,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-as-a-canonical-count",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "tokensThroughCheckpoint": 23577,
+        "usageCoverageComplete": true,
+        "journalSha256": "bae0f09bec09a3b33c5f55d747403e2625edb5ce83baf522937534ca144446b2",
+        "events": 95
+      },
+      "control": {
+        "required": "normal",
+        "satisfied": true
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "758db3c431b7dc80cafe907f31f5536b468db520161bcf60ccdb913262b62d2b",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "a3c905cd65032015a07ad763ab2e26a81a9be56ce40c5859131e59ec04db984a"
+    },
+    {
+      "id": "context-heavy",
+      "timeSeconds": 46.375,
+      "turns": 1,
+      "toolCalls": 6,
+      "tokens": 148083,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 564,
+      "observations": {
+        "inputTokensObserved": 147747,
+        "outputTokensObserved": 336,
+        "peakRequestInputTokensObserved": 24910,
+        "contextGrowthObserved": 564,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-as-a-canonical-count",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "tokensThroughCheckpoint": 148083,
+        "usageCoverageComplete": true,
+        "journalSha256": "e21c7a5349cc0a7b2da3a0be6f7dbda8d0979be1a850339ff89a5d521687019c",
+        "events": 84
+      },
+      "control": {
+        "required": "context-pressure",
+        "satisfied": true,
+        "minimumReportedInputTokens": 12000,
+        "observedPeak": 24910
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "4cd53a8a18c472b61007eed54a5c95d9684c43e03544352c29f1a04f2db16e3f",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "d21baab0f6748233ae9751565334835d90158f5196beb3e681b1e06e5d19e0e4"
+    },
+    {
+      "id": "delegated-task",
+      "timeSeconds": 80.53200000000652,
+      "turns": 4,
+      "toolCalls": 5,
+      "tokens": 19397,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 220,
+      "observations": {
+        "inputTokensObserved": 18749,
+        "outputTokensObserved": 648,
+        "peakRequestInputTokensObserved": 3455,
+        "contextGrowthObserved": 220,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-as-a-canonical-count",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "tokensThroughCheckpoint": 19397,
+        "usageCoverageComplete": true,
+        "journalSha256": "e639b1864f1227f5b371a8aa9f7d1e312b41c2560036498c48aaa493541eccbb",
+        "events": 179
+      },
+      "control": {
+        "required": "delegation",
+        "satisfied": true,
+        "verifiedBinding": {
+          "acceptedResults": 3,
+          "ownerExecutionId": "01a18f0d-67e7-7c7c-87c7-7ccee99fe6db",
+          "verifyExecutionId": "01a18f0d-ad22-772b-af41-a5343aea35cc",
+          "sourceTree": "54e818162455b800c299b6e555a34d93692af5e7",
+          "resultLocation": "verified-owned-implementation-tree",
+          "parentWorkspacePublished": false
+        }
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "9444d0af9e9434f9633b4392c3bde822fa988151e54343cef0173f5efaafc4c9",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "d8988bc8a9fa323b26f185985d59c9adf3b1f40611e36cff20e088405170e3d6"
+    },
+    {
+      "id": "permission-denial",
+      "timeSeconds": 33.35899999999674,
+      "turns": 1,
+      "toolCalls": 3,
+      "tokens": 10330,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 180,
+      "observations": {
+        "inputTokensObserved": 10192,
+        "outputTokensObserved": 138,
+        "peakRequestInputTokensObserved": 3484,
+        "contextGrowthObserved": 180,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-as-a-canonical-count",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "tokensThroughCheckpoint": 10330,
+        "usageCoverageComplete": true,
+        "journalSha256": "861e20a136a855dc1fa4725caaeb0a28d336f60b1239c91de6d02ce1d7cb73e9",
+        "events": 52
+      },
+      "control": {
+        "required": "deny-write",
+        "satisfied": true
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "a0c522e32bbb0103c41c4501507b052f7ada205c8f048df3f9a2ef2c37c26098",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "2be49ecfc9ac0cb429ee32a56cc610071c0af6b5d22b65fec24718b6b821f7c7"
+    },
+    {
+      "id": "model-failure",
+      "timeSeconds": 33.405999999988126,
+      "turns": 1,
+      "toolCalls": 3,
+      "tokens": null,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": null,
+      "observations": {
+        "inputTokensObserved": 10194,
+        "outputTokensObserved": 147,
+        "peakRequestInputTokensObserved": 3497,
+        "contextGrowthObserved": 201,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-as-a-canonical-count",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "tokensThroughCheckpoint": null,
+        "usageCoverageComplete": false,
+        "journalSha256": "e5d6dfbd5f86f45770018b5658ff987862dc01c82011c91085cf55e5d38a6a51",
+        "events": 57
+      },
+      "control": {
+        "required": "one-provider-503",
+        "satisfied": true,
+        "faults": {
+          "injected503": 1,
+          "forwardedResponses": 3,
+          "upstream": "https://chatgpt.com/backend-api/codex/responses"
+        },
+        "providerRecovered": true
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "b5bf9b8e23b8621af86e833885cc267f80044b7d99b2f760dfe3b323723928fc",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "3cd2489db218d1e5dc87d181a4427e48ddc0ec5a2d6226883f683b7a3e127b54"
+    },
+    {
+      "id": "resume-interruption",
+      "timeSeconds": 22.389999999984866,
+      "turns": 1,
+      "toolCalls": 4,
+      "tokens": 18410,
+      "frontierEscalations": 0,
+      "costUsd": null,
+      "success": true,
+      "contextGrowthTokens": 556,
+      "observations": {
+        "inputTokensObserved": 18112,
+        "outputTokensObserved": 298,
+        "peakRequestInputTokensObserved": 3883,
+        "contextGrowthObserved": 556,
+        "contextCompactions": 0,
+        "modelEscalations": 0,
+        "artifactsExternalized": null,
+        "externalizationCoverage": "not-exposed-as-a-canonical-count",
+        "modelsRequested": [
+          "gpt-6.1-sol"
+        ],
+        "reasoningRequested": [
+          "medium"
+        ],
+        "tokensThroughCheckpoint": 18410,
+        "usageCoverageComplete": true,
+        "journalSha256": "cb5dc0f1896dfa6a230a3ecac0abf439c37a97b28e50ed5ebc958b06f09468c9",
+        "events": 62
+      },
+      "control": {
+        "required": "interrupt-after-first-write",
+        "satisfied": true,
+        "recovery": {
+          "initial": {
+            "exitCode": 2,
+            "elapsedSeconds": 9.375,
+            "decisions": [],
+            "interrupted": true
+          },
+          "continued": {
+            "exitCode": 0,
+            "elapsedSeconds": 12.844000000011874,
+            "decisions": [],
+            "interrupted": false
+          },
+          "firstFilePreserved": true,
+          "originalSessions": [
+            "01a18f07-05ce-7d82-89b1-eab04546d6d4"
+          ]
+        }
+      },
+      "runtimeExitCode": 0,
+      "sourceResultSha256": "20951d9754220ca858fd709368c5f2e1a3bb9e719f730c495fe4915528ceec26",
+      "oracleEvidenceSha256": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b",
+      "inputEvidenceSha256": "f7e6c9a22c194960d23a41347dbd612fbb1086933709756ff71574ae34a129a5"
+    }
+  ],
+  "caseReceiptReuse": "Each selected receipt must match the exact pinned input and baseline; raw prior versions remain unchanged."
+}

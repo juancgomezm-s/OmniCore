@@ -8,8 +8,9 @@ incorpora la corrección de redirects CDN y el cierre Core: CI candidata y Main
 5/5, paquete firmado, roundtrip público apply/rollback, full real 20/20 e
 instalación personal comprobada. [Acta de entrega](../validation/m10-installed-preview-20261030.md).
 La ampliación de comprobación/descarga al iniciar con decisión inmediata o diferida
-está implementada y probada en una rama local posterior, sin publicación ni nueva
-instalación personal. [Plan y límites](m10-startup-updates-20261030.md).
+está integrada en Main `49bf57e6`, CI 5/5, publicada como rc.3 preview e instalada.
+Descarga automática y aplicación en el próximo inicio verificadas; preferencias
+preservadas y Consolas 16 px/ClearType. [Acta vigente](../validation/m10-startup-installed-20261030.md).
 Complementa
 [arquitectura §24](../architecture/arquitectura.md) y el
 [plan M8–M10](m8-m10-user-localization.md). La instalación npm desde Git ya
@@ -61,15 +62,16 @@ además del digest y rechazar assets que no correspondan a la release/plataforma
 ## Recorrido de usuario
 
 Contratos implementados: `omni update check`, `omni update apply [version]`,
-`omni update rollback` y `omni update status`. La vista de preferencias sólo
-ofrece consulta de metadatos; aplicar y revertir se hacen desde la CLI. No son
-herramientas invocables por el modelo.
+`omni update rollback` y `omni update status`. La TUI ofrece la vista de
+actualizaciones y la decisión de aplicar/reiniciar ahora o en el próximo inicio.
+No son herramientas invocables por el modelo.
 
-La consulta es manual por defecto. Mostrar versión instalada/disponible,
-canal, notas, tamaño, compatibilidad y procedencia antes de descargar/aplicar.
-Abrir preferencias no consulta GitHub ni inicia instalación. Las comprobaciones
-automáticas, si se incorporan, requieren preferencia explícita, intervalo y
-cancelación; ninguna consulta aplica o reinicia por sí sola.
+Tras la ampliación autorizada, consulta y descarga automática al iniciar están
+activas por defecto en instalaciones compatibles, con preferencia para desactivarlas
+y canal Stable por defecto. No se cambia automáticamente a Preview. Mostrar
+versión instalada/disponible, canal, notas, tamaño, compatibilidad y procedencia;
+descargar/verificar no aplica ni reinicia por sí solo. Aplicar requiere decisión
+humana exacta, inmediata o diferida; scripts no reciben prompts bloqueantes.
 
 La descarga usa HTTPS con verificación de certificados, timeouts, límites y
 destinos/redirects restringidos a los endpoints de assets autorizados. Diferenciar

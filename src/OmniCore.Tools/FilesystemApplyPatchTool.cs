@@ -41,8 +41,8 @@ public sealed class FilesystemApplyPatchTool : ITool, IEffectiveToolAuthorizatio
     {
         _boundary = boundary;
         _descriptor = new ToolDescriptor(new ToolId(Id),
-            "Preview or apply a bounded batch of localized edits to existing files. Each file requires its current SHA-256 version token; apply authorizes every target and reconciles the batch after interruption.",
-            new InputSchema("{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"preview\",\"apply\"]},\"previewToken\":{\"type\":\"string\",\"minLength\":64,\"maxLength\":64},\"files\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":64,\"items\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"minLength\":1},\"expectedVersion\":{\"type\":\"string\",\"minLength\":64,\"maxLength\":64},\"hunks\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":32,\"items\":{\"type\":\"object\",\"properties\":{\"oldText\":{\"type\":\"string\",\"minLength\":1},\"newText\":{\"type\":\"string\",\"minLength\":1}},\"required\":[\"oldText\",\"newText\"],\"additionalProperties\":false}}},\"required\":[\"path\",\"expectedVersion\",\"hunks\"],\"additionalProperties\":false}}},\"required\":[\"mode\",\"files\"],\"additionalProperties\":false}"),
+            "Preview or apply a bounded batch of localized edits to existing files. Each file requires its current SHA-256 version token. For preview omit previewToken or pass null; preview never writes. For apply use exactly the token returned by preview; apply authorizes every target and reconciles the batch after interruption.",
+            new InputSchema("{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\",\"enum\":[\"preview\",\"apply\"]},\"previewToken\":{\"type\":[\"string\",\"null\"],\"description\":\"Null or omitted for preview; exact returned previewToken for apply.\",\"minLength\":64,\"maxLength\":64},\"files\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":64,\"items\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"minLength\":1},\"expectedVersion\":{\"type\":\"string\",\"minLength\":64,\"maxLength\":64},\"hunks\":{\"type\":\"array\",\"minItems\":1,\"maxItems\":32,\"items\":{\"type\":\"object\",\"properties\":{\"oldText\":{\"type\":\"string\",\"minLength\":1},\"newText\":{\"type\":\"string\",\"minLength\":1}},\"required\":[\"oldText\",\"newText\"],\"additionalProperties\":false}}},\"required\":[\"path\",\"expectedVersion\",\"hunks\"],\"additionalProperties\":false}}},\"required\":[\"mode\",\"files\"],\"additionalProperties\":false}"),
             ["filesystem", "patch", "batch", "write"], false, true, ToolRisk.High,
             ComponentSource.Core(), ToolProtection.Protected, EffectClass.Reconcilable);
     }
@@ -526,11 +526,17 @@ public sealed class FilesystemApplyPatchTool : ITool, IEffectiveToolAuthorizatio
                 "apply" => ApplyPatchMode.Apply,
                 _ => (ApplyPatchMode?)null,
             };
-            if (mode is null || root.EnumerateObject().Count() != (mode == ApplyPatchMode.Apply ? 3 : 2)) return false;
+            if (mode is null) return false;
+            var hasToken = root.TryGetProperty("previewToken", out var tokenElement);
+            if (root.EnumerateObject().Count() != (hasToken ? 3 : 2)) return false;
+            // Native tool decoders may emit optional properties explicitly. A token on a
+            // read-only preview carries no authority; apply still binds the exact batch.
+            if (mode == ApplyPatchMode.Preview && hasToken && tokenElement.ValueKind != JsonValueKind.Null
+                && (tokenElement.ValueKind != JsonValueKind.String || !IsHash(tokenElement.GetString()!))) return false;
             string? previewToken = null;
             if (mode == ApplyPatchMode.Apply)
             {
-                if (!root.TryGetProperty("previewToken", out var tokenElement)
+                if (!hasToken
                     || tokenElement.ValueKind != JsonValueKind.String || !IsHash(tokenElement.GetString()!)) return false;
                 previewToken = tokenElement.GetString()!.ToLowerInvariant();
             }

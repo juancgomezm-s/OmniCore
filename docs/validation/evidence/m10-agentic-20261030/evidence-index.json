@@ -1,0 +1,112 @@
+{
+  "core/repository-exploration": {
+    "result": "6fac892e398eddfcbbd378a705618f13e6d0a080f03ca62fa7c2c2c25f239b02",
+    "baseline": "789471cfc26e2c15b1e817dcb88d7f272c9b5f92ccea4a8ea6788f810c4e5103",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "core/simple-bug": {
+    "result": "6c223b78145132c5c2def3266633957249eeb339b3429caa548a8571bcff15e2",
+    "baseline": "b74b8b4958140e28776ebdcb51d08eab081cc9388e590dc248f491fa4aba2b73",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "core/multi-file-bug": {
+    "result": "a4af05104b0d1c1f12d8b79e22a7d017cfa408af1e8fcfbcb056be94698d8126",
+    "baseline": "2e1d9b991502fa88932c778ce646a5fa69b978240fabd14fe386b325f97df5bb",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "core/build-failure": {
+    "result": "7649b53fed15ac69012ba30b1d8ee0293a89ed71575c7d2ed7571c73d79fe95a",
+    "baseline": "8f4697c3536500e8bcd346f4e8c193e9eb1d94f2cd90f17ab1ed08f92d81d9af",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "core/test-failure": {
+    "result": "64b46b62d697e2338f0b39b0f219a7db4002ff97aab9b7f426f044837254b841",
+    "baseline": "89f6bb05623cffa673151abb38733ebb2e3294292894c698f6667cbac1cc4470",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "core/refactor": {
+    "result": "758db3c431b7dc80cafe907f31f5536b468db520161bcf60ccdb913262b62d2b",
+    "baseline": "612ea44e890c1797aaecc0302a3676dc2db085f098318cce6addea062d06ca63",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "core/context-heavy": {
+    "result": "4cd53a8a18c472b61007eed54a5c95d9684c43e03544352c29f1a04f2db16e3f",
+    "baseline": "ea5d5eb42ad0db763a1b71385518ac0cf58a94c8a4ca417e48a01b3e7e9cd885",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "core/delegated-task": {
+    "result": "9444d0af9e9434f9633b4392c3bde822fa988151e54343cef0173f5efaafc4c9",
+    "baseline": "b74b8b4958140e28776ebdcb51d08eab081cc9388e590dc248f491fa4aba2b73",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "core/permission-denial": {
+    "result": "a0c522e32bbb0103c41c4501507b052f7ada205c8f048df3f9a2ef2c37c26098",
+    "baseline": "fcce2a5b29cef2f2a3f257382dbd0f99d85b32a327202ae5bce073b8dc081d61",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "core/model-failure": {
+    "result": "b5bf9b8e23b8621af86e833885cc267f80044b7d99b2f760dfe3b323723928fc",
+    "baseline": "b74b8b4958140e28776ebdcb51d08eab081cc9388e590dc248f491fa4aba2b73",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "core/resume-interruption": {
+    "result": "20951d9754220ca858fd709368c5f2e1a3bb9e719f730c495fe4915528ceec26",
+    "baseline": "e1b75f35cd383df481996e9c0ca23b49897c8ced5f3f779e97e8c6d58b10a5ab",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "pi/repository-exploration": {
+    "result": "f648d6bab9b8d5aca944f7634239e6e4229ebe50f4ddb8b2ac6a87e85a0fe4cf",
+    "baseline": "789471cfc26e2c15b1e817dcb88d7f272c9b5f92ccea4a8ea6788f810c4e5103",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "pi/simple-bug": {
+    "result": "b40cddb19fd4872079989b59a8db861e39b08b55659ae66506d808b40c85799d",
+    "baseline": "b74b8b4958140e28776ebdcb51d08eab081cc9388e590dc248f491fa4aba2b73",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "pi/multi-file-bug": {
+    "result": "fdced8e388b413fa1b7951ab98d2de8df973c7ddd4cf6fb0581e8066eedbf000",
+    "baseline": "2e1d9b991502fa88932c778ce646a5fa69b978240fabd14fe386b325f97df5bb",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "pi/build-failure": {
+    "result": "eb803b989f58403f62840884ce74cf7401cc1681797d327e7aa4013a78eca309",
+    "baseline": "8f4697c3536500e8bcd346f4e8c193e9eb1d94f2cd90f17ab1ed08f92d81d9af",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "pi/test-failure": {
+    "result": "28b61ca7cf8152f1d6f77f9bcbda39109223b0251817719541611af08b1c1178",
+    "baseline": "89f6bb05623cffa673151abb38733ebb2e3294292894c698f6667cbac1cc4470",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "pi/refactor": {
+    "result": "e76b38cff9157117ec007f192ce5534660c2f84dd979039a09a3367599b5513e",
+    "baseline": "612ea44e890c1797aaecc0302a3676dc2db085f098318cce6addea062d06ca63",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "pi/context-heavy": {
+    "result": "7ea54ab22d360288fe79dce67396e30c0d4d3c9b5dc6655a0a10eaabba923796",
+    "baseline": "ea5d5eb42ad0db763a1b71385518ac0cf58a94c8a4ca417e48a01b3e7e9cd885",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "pi/delegated-task": {
+    "result": "fa4efc29c88a10d80e3bb11ba7cb91dda7e476e1216e1450548d955030df5f25",
+    "baseline": "b74b8b4958140e28776ebdcb51d08eab081cc9388e590dc248f491fa4aba2b73",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "pi/permission-denial": {
+    "result": "df2b03d815bd724054aa04403fbd34b0478204e1ab11e3b6c97b652289c87010",
+    "baseline": "fcce2a5b29cef2f2a3f257382dbd0f99d85b32a327202ae5bce073b8dc081d61",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  },
+  "pi/model-failure": {
+    "result": "5c88ac5bfb451d62c29487b0b6dd35bae2977e11e62a6ac5716d74564f4a593f",
+    "baseline": "b74b8b4958140e28776ebdcb51d08eab081cc9388e590dc248f491fa4aba2b73",
+    "finalOracle": "467c5351c9ca9d64611085381f70e8574827935048b8d0c41f6ecdfd7db0b7a3"
+  },
+  "pi/resume-interruption": {
+    "result": "7df8f8dec07b66f72f7f590bf95194aa5ffa3e27a67149b8ac96611551fb81da",
+    "baseline": "e1b75f35cd383df481996e9c0ca23b49897c8ced5f3f779e97e8c6d58b10a5ab",
+    "finalOracle": "46932c736ade311d1290210cd66ad584fa914165df3f09d72094d068d247913b"
+  }
+}

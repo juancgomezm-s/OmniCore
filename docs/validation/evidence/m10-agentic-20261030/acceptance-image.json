@@ -1,0 +1,33 @@
+{
+  "sourceHead": "6c90d4ee",
+  "coreImage": {
+    "OmniCore.Abstractions.dll": "d8d02626dd583821f387fedaf8ef00a77e7da4256467ef67052517c538fe014c",
+    "OmniCore.Client.dll": "bc2e5f12b49c4c0eae5525c88d13fe8e7115037bdfe128b85640c415be8d1dab",
+    "OmniCore.Context.dll": "fee69f2ac9c873e44b9e333c441cd143da1b89b4ba2d5a7cb265638c28c391cd",
+    "OmniCore.Domain.dll": "376e2b8875bf7eb1ccbce3f2bd1fd7389711c4410e5ef5861685c8a1622eac21",
+    "OmniCore.Engine.dll": "4f00d0a84add63bf3a471d062d4d472442b8a96a59cc3c232f58d60d2473b22c",
+    "OmniCore.Execution.dll": "17afe9ae2529be996e6cdf3803f7be183c6e9acbbbd596fddfef5de6d1a17218",
+    "OmniCore.Extensions.dll": "3bf56c128cc8af177472e620ccca3bd800334942f6c91fe6c679c76006379684",
+    "OmniCore.Host.dll": "336354fb69a9dee915ea8ce497ed2107998eb451a614e60b3211545237c9b6f1",
+    "OmniCore.Infrastructure.dll": "a268780f891735ee672155e2862a625ff26acb5d221c2bb0eade11885cd314cc",
+    "OmniCore.Memory.dll": "1004ec0e5546ec2da745be2dcacff974adb7261a752f08ceb5ce3f8f0ec3b364",
+    "OmniCore.Models.dll": "430e44b6f2c9e7624d8abf13f7307b7642a26bfb71edf6060793591bf10ec53a",
+    "OmniCore.Protocol.dll": "e0bd0db499cada02154d451f5a97aa0f4403b390be13c0fd7217839126f1b2a0",
+    "OmniCore.Qualification.dll": "30e078a84d6347d19d49092336ae821991c63806dd664dc9dc2a3d63e90ea66c",
+    "OmniCore.Sandbox.dll": "1baf2b88bfd7dea63d932ffd3aa73014db0de41653487ee43b6bc61620d54da3",
+    "OmniCore.Security.dll": "1d0c839ef009267ddc0992ae442a1f21d66dcd3fdc525220e59f99e3d4069a98",
+    "OmniCore.Tools.dll": "134fb6930dd2a1ff6a8782922ef383e812246b1dabd742ba350f479329c75fe3"
+  },
+  "harnessFiles": {
+    "agentic_suite.py": "c21996ff7553edd14becfa1897e697c726872b0d62cd3f1bea8ff2c4965dd06b",
+    "compare.py": "bcba4a21064ea9e7758da51717793ac65c6102ccdbeef7e2d5d815d8d8d5e9c3",
+    "core_pty.py": "d45777a733c7647872ed3358a5a881d519a76724bf2faa56a30bbbfa979637a9",
+    "fault_proxy.py": "16b92cae06d97a9895f49ae61acdda1838e871cbcfbe56d3dfff9bdc27e5e252",
+    "measure.py": "b06345d079fb2e8c98607c55ed6d1ae80e58ea328827ee70d9bbe6ce87c234f9",
+    "pi_guard.mjs": "ee3fe4277e2621f2a5ce6b112cade94ee7fb030818898024d9f0e1f6d5d113a5",
+    "pi_rpc_probe.mjs": "0eefed18358bbbc270118d888eac6a2b9d43fec9582db68868beed745ba82d25",
+    "README.md": "2b4eb723e334eb10080a219f57807f2575b6fc8fe70b767dda6bf893ae4268f4",
+    "run_agentic.py": "fe1f057d45b7785a6be4faf73dd21b9c504b170ea070020f3232ae494de5dbc0"
+  },
+  "coreCliSha256": "5e74c650608b97bef95473d9c7fcf5606aa69ff683e663e695934c3271459e15"
+}

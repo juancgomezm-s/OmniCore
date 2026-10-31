@@ -1,4 +1,10 @@
-# M10: actualización al iniciar (incremento local)
+# M10: actualización al iniciar
+
+**Entrega vigente:** integrada en Main `49bf57e6`, CI 5/5, publicada como rc.3
+preview e instalada. Descarga pública automática y aplicación en el próximo
+inicio verificadas. [Acta y límites](../validation/m10-startup-installed-20261030.md).
+El alcance local y la rc.2 descritos a continuación son el checkpoint de recepción;
+la publicación posterior fue autorizada expresamente por Juan.
 
 Recepción 2026-10-30 del encargo explícito de Juan, entregado por la coordinación
 «Encargar actualización automática a M10» (`01a18dea-3324-7614-98fd-a3930f25e012`).
@@ -96,4 +102,6 @@ conservando mascota y panel compacto y cambiando Consolas a 16 px con ClearType
 con trabajo concurrente queda intacta. La release incorpora el foco de
 `ReleaseStartupUpdatesTests` en su control previo. La instalación espera CI verde
 y paquete firmado del mismo commit; no se cambia el canal de usuario en silencio.
-El resultado y los recibos se conservan en `artifacts/m10-startup-publication-20261030`.
+Resultado completado: Main `49bf57e6`, CI 5/5, rc.3 preview publicada e instalación
+verificada. Recibos en `artifacts/m10-startup-publication-20261030` y copia durable
+indicada en el acta vigente superior.
