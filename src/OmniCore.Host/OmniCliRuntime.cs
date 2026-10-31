@@ -3127,6 +3127,9 @@ public sealed partial class OmniCliRuntime : IDisposable
         NativeToolActionRequest? nativeToolAction = null, Action<string>? humanShellOutput = null,
         NativeWeakSandboxActionContinuation? nativeWeakActionContinuation = null)
     {
+        using var desktopCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cancellationToken = desktopCancellation.Token;
+        var desktopInvocationInput = prompt;
         SessionId? processSessionToStop = null;
         RunId? processRunToStop = null;
         if (turnBoost is null && turnBoostId is not null)
@@ -3851,17 +3854,17 @@ public sealed partial class OmniCliRuntime : IDisposable
                     return 1;
                 }
             }
+            using var mcpStdio = new McpStrongStdioTransport(McpSandboxLauncherFactoryForTests?.Invoke()
+                ?? OmniHost.CreateProcessSandboxLauncher(SystemProcessRuntime.Instance()));
+            using var mcpHttp = new McpStreamableHttpTransport();
             if (delegation is null)
             {
                 try
                 {
                     var mcpStore = new McpServerStore(paths, workspaceRoot,
                         new WorkspaceTrustStore(paths).IsTrusted(workspaceRoot));
-                    var mcpLauncher = McpSandboxLauncherFactoryForTests?.Invoke()
-                        ?? OmniHost.CreateProcessSandboxLauncher(SystemProcessRuntime.Instance());
-                    var stdio = new McpStrongStdioTransport(mcpLauncher);
-                    var http = new McpStreamableHttpTransport();
-                    foreach (var mcpTool in mcpStore.DiscoverTools(stdio, http, cancellationToken))
+                    foreach (var mcpTool in mcpStore.DiscoverTools(mcpStdio, mcpHttp, cancellationToken,
+                        diagnostic => writeLine(Text(Localized("cli.runtime.mcp.compose_failed", ("diagnostic", ExternalDiagnostic(diagnostic)))))))
                         hostTools.RegisterMcpTool(mcpTool);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
@@ -3948,7 +3951,12 @@ public sealed partial class OmniCliRuntime : IDisposable
                         ? externalProjectIdentity : null,
                     externalTrustStore.IsTrusted)
                 : [];
-            var skillActivationContext = SkillActivationContext.FromInput(prompt, workingState, workspaceRoot);
+            var desktopHumanInput = delegation is null && workflowStage is null ? desktopInvocationInput : "";
+            if (desktopHumanInput.Length == 0 && delegation is null && workflowStage is null && inputAlreadyPersisted)
+                desktopHumanInput = DesktopSkillDemand.ReadHumanText(server.AcquireStore().ReadFrom(sessionId, 1)
+                    .Where(evt => evt.RunId == runId).Select(server.AcquireCodecs().Decode)
+                    .OfType<UserInputReceived>().LastOrDefault()?.InputPartsJson);
+            var skillActivationContext = SkillActivationContext.FromInput(desktopHumanInput, workingState, workspaceRoot);
             IReadOnlyList<DiscoveredSkill> DiscoverSkills() => delegation is null
                 ? SkillManifestLoader.ResolvePrecedence(skillSourceCatalog.DiscoverWithExtensions(workspaceRoot,
                     paths.DataDirectory, workspaceData, sessionId, workspaceConfig.Trusted,
@@ -3982,6 +3990,17 @@ public sealed partial class OmniCliRuntime : IDisposable
                 scopedMemoryContributorFactory: () => delegation is null
                     ? [new ScopedMemoryContextContributor(new ScopedMemoryStore(paths.DataDirectory),
                         () => ScopedMemoryAccess.Allowed(paths, workspaceRoot))] : []);
+            var desktopGate = new DesktopSkillGate(sessionId, skillStore,
+                Path.Combine(AppContext.BaseDirectory, "skills", "desktop-control"));
+            using var desktopTool = new DesktopControlTool(desktopGate, () => desktopCancellation.Cancel(), locale);
+            using var automaticDesktopScope = delegation is null && workflowStage is null
+                ? new AutomaticDesktopSkillScope(sessionId, skillStore,
+                    payload => new EventStream(server.AcquireStore(), server.AcquireCodecs(), sessionId)
+                        .Append(payload, DurabilityClass.Barrier),
+                    () => !desktopCancellation.IsCancellationRequested && AutomaticDesktopSkillScope.HasOpenTurn(server.AcquireStore().ReadFrom(sessionId, 1)
+                        .Where(evt => evt.RunId == runId).Select(server.AcquireCodecs().Decode).ToArray(), laneId),
+                    () => { desktopGate.Select([]); hostTools.ComposeDesktopTool(desktopTool, false); })
+                : null;
             void RefreshSkillComposition()
             {
                 if (delegation is not null)
@@ -3995,6 +4014,8 @@ public sealed partial class OmniCliRuntime : IDisposable
                     skillCompletionValidators = delegatedSnapshot.Validators;
                     activeSkillFingerprints = delegatedSnapshot.Fingerprints;
                     materializer = delegatedSnapshot.Materializer;
+                    desktopGate.Select([]);
+                    hostTools.ComposeDesktopTool(desktopTool, false);
                     return;
                 }
                 var composition = skillComposition.Refresh();
@@ -4003,6 +4024,8 @@ public sealed partial class OmniCliRuntime : IDisposable
                 skillCompletionValidators = composition.Validators;
                 activeSkillFingerprints = composition.Fingerprints;
                 materializer = composition.Materializer;
+                desktopGate.Select(workflowStage is null ? loadedProjectSkills : []);
+                hostTools.ComposeDesktopTool(desktopTool, desktopGate.Selected);
             }
             RefreshSkillComposition();
             if (delegation is null && skillCandidates.Count > 0)

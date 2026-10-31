@@ -97,6 +97,13 @@ public sealed class FakeCatalog
 
     public bool Contains(ToolId id) => _tools.TryGetValue(id, out var _) != false;
 
+    /// <summary>Host composition may withdraw a skill-bound instance at a settled turn boundary.</summary>
+    internal void Withdraw(ITool tool)
+    {
+        if (_tools.TryGetValue(tool.Descriptor.Id, out var current) && ReferenceEquals(current, tool))
+            _tools.Remove(tool.Descriptor.Id);
+    }
+
     /// <summary>Registered tools for Host composition; callers cannot mutate the catalog through this view.</summary>
     public IReadOnlyList<ITool> RegisteredTools() => _tools.Values.ToArray();
 

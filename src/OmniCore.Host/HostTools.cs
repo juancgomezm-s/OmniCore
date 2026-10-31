@@ -326,6 +326,12 @@ public sealed class HostTools
         _catalog.Add(tool);
     }
 
+    internal void ComposeDesktopTool(DesktopControlTool tool, bool selected)
+    {
+        if (!selected) _catalog.Withdraw(tool);
+        else if (!_catalog.Contains(tool.Descriptor.Id)) _catalog.Add(tool);
+    }
+
     internal void RegisterMemoryProposeTool(ITool tool)
     {
         ArgumentNullException.ThrowIfNull(tool);

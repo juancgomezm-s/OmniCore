@@ -135,7 +135,8 @@ public sealed record SkillActivationContext(IReadOnlyList<string> RelativePaths,
         string? framework = null;
         foreach (var known in new[] { "aspnetcore", "asp.net", "blazor", "react", "angular", "node", "dotnet" })
             if (text.Contains(known, StringComparison.OrdinalIgnoreCase)) { framework = known; break; }
-        string? taskType = text.Contains("build failure", StringComparison.OrdinalIgnoreCase)
+        string? taskType = DesktopSkillDemand.Matches(objective) ? DesktopSkillDemand.TaskType
+            : text.Contains("build failure", StringComparison.OrdinalIgnoreCase)
             || text.Contains("build failed", StringComparison.OrdinalIgnoreCase)
             || text.Contains("compilation failed", StringComparison.OrdinalIgnoreCase)
             ? "build-failure"

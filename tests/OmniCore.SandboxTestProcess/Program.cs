@@ -344,16 +344,17 @@ if (args.Length == 1 && args[0] == "stdin-eof")
     return input.Length == 0 ? 0 : 29;
 }
 
-if (args.Length == 1 && args[0] is "mcp" or "mcp-error" or "mcp-stall")
+if (args.Length == 1 && args[0] is "mcp" or "mcp-error" or "mcp-stall" or "mcp-legacy" or "mcp-legacy-silent")
 {
-    var line = Console.ReadLine();
-    if (line is null) return 27;
+    var sequence = 0;
+    while (await Console.In.ReadLineAsync() is { } line)
+    {
     using var request = System.Text.Json.JsonDocument.Parse(line);
     var root = request.RootElement;
-    if (root.GetProperty("jsonrpc").GetString() != "2.0"
-        || root.GetProperty("id").GetInt64() != 1
-        || root.GetProperty("params").GetProperty("_meta")
-            .GetProperty("io.modelcontextprotocol/protocolVersion").GetString() != "2026-07-28") return 28;
+    if (root.GetProperty("jsonrpc").GetString() != "2.0") return 28;
+    if (!root.TryGetProperty("id", out var requestId)) continue;
+    var id = requestId.GetInt64();
+    sequence++;
     if (args[0] == "mcp-stall")
     {
         await Task.Delay(TimeSpan.FromMinutes(5));
@@ -361,14 +362,28 @@ if (args.Length == 1 && args[0] is "mcp" or "mcp-error" or "mcp-stall")
     }
     if (args[0] == "mcp-error")
     {
-        Console.WriteLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32603,\"message\":\"fixture error\"}}");
-        return 0;
+        Console.WriteLine("{\"jsonrpc\":\"2.0\",\"id\":"+id+",\"error\":{\"code\":-32022,\"message\":\"fixture version error\",\"data\":{\"supported\":[\"1900-01-01\"]}}}");
+        await Console.Out.FlushAsync();
+        continue;
     }
     var method = root.GetProperty("method").GetString();
+    if (args[0] == "mcp-legacy-silent" && method == "server/discover")
+    { await Task.Delay(TimeSpan.FromMinutes(5)); return 0; }
+    if (args[0] == "mcp-legacy" && method == "server/discover")
+    {
+        Console.WriteLine("{\"jsonrpc\":\"2.0\",\"id\":"+id+",\"error\":{\"code\":-32602,\"message\":\"fixture expects initialize\"}}");
+        await Console.Out.FlushAsync();continue;
+    }
     var result = method == "server/discover"
-        ? "{\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{}}"
-        : "{\"tools\":[{\"name\":\"fixture.lookup\",\"inputSchema\":{\"type\":\"object\"}}]}";
-    Console.WriteLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":" + result + "}");
+        ? "{\"resultType\":\"complete\",\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{}}"
+        : method == "initialize" ? "{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{\"tools\":{}}}"
+        : method == "tools/call" ? "{\"resultType\":\"complete\",\"content\":[{\"type\":\"text\",\"text\":\"sequence="+sequence+";pid="+Environment.ProcessId+"\"}]}"
+        : "{\"resultType\":\"complete\",\"tools\":[{\"name\":\"fixture.lookup\",\"inputSchema\":{\"type\":\"object\"}}]}";
+    Console.Error.WriteLine("fixture diagnostic");
+    Console.WriteLine("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progress\":1}}");
+    Console.WriteLine("{\"jsonrpc\":\"2.0\",\"id\":"+id+",\"result\":" + result + "}");
+    await Console.Out.FlushAsync();
+    }
     return 0;
 }
 

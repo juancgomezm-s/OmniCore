@@ -205,6 +205,23 @@ La evidencia de cierre M5 documenta **2995 casos: 2991 correctos, 0 fallos y 4 o
 
 Disponibilidad y cuotas dependen de la cuenta y del proveedor en el momento de la consulta. No hay una lista universal de modelos garantizados para todos los usuarios.
 
+## Control de ventanas en Windows
+
+La skill `desktop-control` se carga automáticamente al pedir una prueba o control
+de una ventana y libera su selección automática al terminar. Captura WGC/PrintWindow,
+UI Automation, teclado y ratón usan el núcleo Rust incluido con OmniCore. La cortina
+morada y el botón Cancelar/Escape indican actividad y detienen el turno; la skill
+conserva los permisos existentes. Las capturas contienen sólo la ventana elegida.
+
+Los paquetes Windows ya incluyen el ejecutable. Para compilar desde fuentes se
+requieren Rust estable (CI: 1.99.1), MSVC y Windows SDK: ejecuta
+`./native/desktop-control/build.ps1` antes de publicar con .NET. `npm run install:cli`
+y la preparación de releases Windows lo construyen y verifican automáticamente.
+[Arquitectura](docs/adr/0064-skill-gated-native-desktop.md) y
+[validación de integración](docs/validation/desktop-main-integration-20261030.md).
+El consumidor independiente **OmniDesktop Control** para Claude se distribuye como
+otra aplicación MCP; no se instala ni se registra desde OmniCore.
+
 ## Primeros pasos
 
 ### Requisitos

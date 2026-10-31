@@ -502,3 +502,9 @@ audit.jsonl
 
 # Estado local de otras herramientas de agentes
 .pi/
+
+# Native Rust build outputs; source and lockfiles remain versioned.
+/native/**/target/
+/native/**/__pycache__/
+/native/**/results/
+/native/**/captures/

@@ -59,6 +59,8 @@ public sealed record SandboxLaunchSpec(
     public bool LessPrivilegedAppContainer { get; init; }
     /// <summary>Use cmd.exe's native /c quoting rules for a Host-created shell.exec invocation.</summary>
     public bool WindowsShellCommandLine { get; init; }
+    /// <summary>Host-owned isolation identity for independent long-lived processes sharing a cwd. Does not grant resources.</summary>
+    public string? IsolationKey { get; init; }
 }
 
 /// <summary>Reports which strengths the current Sandbox implementation can provide.</summary>

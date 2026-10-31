@@ -91,6 +91,8 @@ public sealed class ModelCapabilityBoundary : INativeUserActionIntentBoundary
             { "process.read", ModelToolCapability.GeneralProcess },
             { "process.send_input", ModelToolCapability.GeneralProcess },
             { "process.stop", ModelToolCapability.GeneralProcess },
+            // Desktop access crosses workspace boundaries; require the general process ceiling.
+            { "desktop.control", ModelToolCapability.GeneralProcess },
             { "shell.exec", ModelToolCapability.Shell },
             { "user.ask", ModelToolCapability.PlanProposal },
             { "memory.propose", ModelToolCapability.PlanProposal },

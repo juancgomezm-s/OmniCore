@@ -80,3 +80,4 @@ Cada ADR registra una decisión que precisa o modifica `docs/spec/OmniCore-v1.md
 | [0061](0061-plataforma-de-extensiones.md) | Plataforma de extensiones, paquetes aislados y vistas | Implementación incremental |
 | [0062](0062-companion-pet.md) | Mascota local, incubación y presentación portable | Implementada en OmniCore |
 | [0063](0063-github-release-updates.md) | Canal de actualizaciones GitHub y aplicación recuperable | Consulta, preparación y rollback implementados; aceptación real pendiente |
+| [0064](0064-skill-gated-native-desktop.md) | Escritorio nativo Rust disponible mediante skill | Integración y validación local; sin publicación |

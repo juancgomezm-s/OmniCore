@@ -18,7 +18,7 @@ internal static class McpWire
     public const string MetadataClientInfo = "io.modelcontextprotocol/clientInfo";
     public const int MaximumPayloadBytes = 1_048_576;
 
-    public static string Request(long id, string method, string? parametersJson = null)
+    public static string Request(long id, string method, string? parametersJson = null, string version = Version)
     {
         using var document = JsonDocument.Parse(parametersJson ?? "{}");
         using var stream = new MemoryStream();
@@ -26,13 +26,21 @@ internal static class McpWire
         {
             writer.WriteStartObject(); writer.WriteString("jsonrpc", "2.0"); writer.WriteNumber("id", id);
             writer.WriteString("method", method); writer.WritePropertyName("params"); writer.WriteStartObject();
-            foreach (var property in document.RootElement.EnumerateObject()) property.WriteTo(writer);
+            foreach (var property in document.RootElement.EnumerateObject())
+                if (property.Name != "_meta") property.WriteTo(writer);
+            if (version == Version)
+            {
             writer.WritePropertyName("_meta"); writer.WriteStartObject();
-            writer.WriteString(MetadataVersion, Version);
+            if (document.RootElement.TryGetProperty("_meta", out var supplied) && supplied.ValueKind == JsonValueKind.Object)
+                foreach (var property in supplied.EnumerateObject())
+                    if (!property.Name.StartsWith("io.modelcontextprotocol/", StringComparison.Ordinal)) property.WriteTo(writer);
+            writer.WriteString(MetadataVersion, version);
             writer.WritePropertyName(MetadataClientInfo); writer.WriteStartObject();
             writer.WriteString("name", "OmniCore"); writer.WriteString("version", "1.0"); writer.WriteEndObject();
             writer.WritePropertyName(MetadataCapabilities); writer.WriteStartObject(); writer.WriteEndObject();
-            writer.WriteEndObject(); writer.WriteEndObject(); writer.WriteEndObject();
+            writer.WriteEndObject();
+            }
+            writer.WriteEndObject(); writer.WriteEndObject();
         }
         return Encoding.UTF8.GetString(stream.ToArray());
     }
@@ -46,11 +54,17 @@ internal static class McpWire
             || version.GetString() != "2.0" || !root.TryGetProperty("id", out var id)
             || id.ValueKind != JsonValueKind.Number || id.GetInt64() != expectedId)
             throw new InvalidDataException("MCP response did not match the request.");
-        if (root.TryGetProperty("error", out _)) throw new InvalidDataException("MCP server returned an error.");
+        if (root.TryGetProperty("error", out var error)) throw McpRpcException.From(error);
         if (!root.TryGetProperty("result", out var result) || result.ValueKind != JsonValueKind.Object)
             throw new InvalidDataException("MCP response has no object result.");
+        if (result.TryGetProperty("resultType", out var kind)
+            && (kind.ValueKind != JsonValueKind.String || kind.GetString() != "complete"))
+            throw new McpUnsupportedResultException(kind.ValueKind == JsonValueKind.String ? kind.GetString()! : "invalid");
         return result.Clone();
     }
+
+    internal static string Response(JsonElement result) => "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":" + result.GetRawText() + "}";
+    internal static string Quote(string value) => "\"" + JsonEncodedText.Encode(value).ToString() + "\"";
 }
 
 internal sealed record McpServerDefinition(string Id, string Transport, string? Command, string[] Args,
@@ -61,6 +75,10 @@ internal sealed record McpServerDefinition(string Id, string Transport, string? 
     public string? AuthRef { get; init; }
     public string TrustGeneration { get; init; } = "";
     public bool HonorReadOnlyHint { get; init; }
+    public int RequestTimeoutSeconds { get; init; } = 30;
+    public int StartupTimeoutSeconds { get; init; } = 10;
+    public string ConnectionKey => EffectiveIdentity + "\n" + Id + "\n" + Command + "\n" + WorkingDirectory
+        + "\n" + Endpoint + "\n" + AuthRef + "\n[" + string.Join(",", Args.Select(McpWire.Quote)) + "]";
     public string EffectiveIdentity => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
         Identity + "\ntrust-generation:" + TrustGeneration))).ToLowerInvariant();
 
@@ -89,21 +107,23 @@ internal sealed record McpServerDefinition(string Id, string Transport, string? 
             throw new InvalidDataException("stdio requires command and forbids endpoint.");
         if (transport == "http")
         {
-            if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) || uri.UserInfo.Length != 0
-                || uri.Scheme is not ("https" or "http") || uri.Fragment.Length != 0 || uri.Query.Length != 0)
-                throw new InvalidDataException("MCP endpoint must be an absolute HTTPS URL without embedded credentials, query, or fragment.");
-            if (uri.Scheme == "http")
-            {
-                if (!IPAddress.TryParse(uri.Host, out var ip) || !IPAddress.IsLoopback(ip))
-                    throw new InvalidDataException("Remote MCP endpoints require HTTPS; cleartext HTTP is limited to loopback fixtures.");
-            }
-            if (!hosts.Contains(uri.IsDefaultPort ? uri.Host : uri.Host + ":" + uri.Port, StringComparer.OrdinalIgnoreCase))
+            var uri = McpEndpoint.Validate(endpoint);
+            if (!hosts.Contains(uri.Authority, StringComparer.OrdinalIgnoreCase))
                 throw new InvalidDataException("The MCP endpoint host must appear in allowedHosts.");
         }
         if (scope == "project" && !workspaceTrusted) scope = "project-untrusted-workspace";
         var identity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json.GetRawText()))).ToLowerInvariant();
         return new McpServerDefinition(id, transport, command, args, working, endpoint, hosts, userTrusted,
-            scope, identity) { Web = ParseWeb(json), AuthRef = authRef, HonorReadOnlyHint = honorReadOnlyHint };
+            scope, identity) { Web = ParseWeb(json), AuthRef = authRef, HonorReadOnlyHint = honorReadOnlyHint,
+                RequestTimeoutSeconds = Timeout("requestTimeoutSeconds", 30), StartupTimeoutSeconds = Timeout("startupTimeoutSeconds", 10) };
+
+        int Timeout(string name, int fallback)
+        {
+            if (!json.TryGetProperty(name, out var value)) return fallback;
+            if (!value.TryGetInt32(out var seconds) || seconds < 1 || seconds > 300)
+                throw new InvalidDataException("MCP timeout must be an integer in 1..300 seconds.");
+            return seconds;
+        }
 
         string Required(string name) => json.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
             && !string.IsNullOrWhiteSpace(value.GetString()) ? value.GetString()! : throw new InvalidDataException("MCP entry is missing " + name + ".");
@@ -160,59 +180,82 @@ internal sealed record McpWebConnector(string? SearchTool, string? FetchTool, st
 internal interface IMcpRequestTransport
 {
     Task<string> SendAsync(McpServerDefinition server, string method, string parametersJson, CancellationToken cancellationToken);
+    void ConfigureTool(McpServerDefinition server, string name, JsonElement schema) { }
 }
 
 /// <summary>Runs local MCP requests in Strong without ambient network or filesystem access.</summary>
-internal sealed class McpStrongStdioTransport(ISandboxProcessLauncher launcher) : IMcpRequestTransport
+internal sealed class McpStrongStdioTransport(ISandboxProcessLauncher launcher) : IMcpRequestTransport, IDisposable
 {
-    public async Task<string> SendAsync(McpServerDefinition server, string method, string parametersJson, CancellationToken token)
-    {
-        if (server.Transport != "stdio" || server.Command is null) throw new InvalidOperationException("MCP transport mismatch.");
-        var executable = Path.GetFullPath(server.Command);
-        var cwd = Path.GetFullPath(server.WorkingDirectory ?? Path.GetDirectoryName(executable)!);
-        var request = McpWire.Request(1, method, parametersJson);
-        var spec = new SandboxLaunchSpec(SandboxStrength.Strong, executable, server.Args, cwd,
-            new Dictionary<string, string>(StringComparer.Ordinal), [], new SandboxNetworkPolicy(SandboxNetworkMode.Deny, []),
-            TimeSpan.FromSeconds(15), request + "\n");
-        await using var process = await launcher.StartAsync(spec, token).ConfigureAwait(false);
-        SandboxProcessOutput output;
-        try { output = await process.WaitForExitAsync(token).ConfigureAwait(false); }
-        catch (OperationCanceledException)
-        {
-            await process.TerminateAsync(CancellationToken.None).ConfigureAwait(false);
-            throw;
-        }
-        if (output.TimedOut) throw new TimeoutException("MCP server timed out.");
-        var line = string.Join("\n", output.Chunks.Where(chunk => chunk.Stream == SandboxOutputStream.StandardOutput).Select(chunk => chunk.Text))
-            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
-        if (output.ExitCode != 0 || line is null || Encoding.UTF8.GetByteCount(line) > McpWire.MaximumPayloadBytes)
-            throw new InvalidDataException("MCP server did not return a bounded response.");
-        _ = McpWire.Result(line, 1);
-        return line;
-    }
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, McpStdioConnection> _connections = new();
+    public Task<string> SendAsync(McpServerDefinition server, string method, string parametersJson, CancellationToken token) =>
+        _connections.GetOrAdd(server.ConnectionKey, _ => new McpStdioConnection(server, launcher))
+            .SendAsync(method, parametersJson, token);
+    public void Dispose()
+    { foreach (var connection in _connections.Values) connection.Dispose(); _connections.Clear(); }
 }
 
 /// <summary>Stateless HTTP MCP 2026 binding. Redirects are rejected and bodies are byte-bounded.</summary>
 internal sealed class McpStreamableHttpTransport(HttpMessageHandler? handler = null,
-    ICredentialStore? credentials = null) : IMcpRequestTransport
+    ICredentialStore? credentials = null) : IMcpRequestTransport, IDisposable
 {
     private readonly ICredentialStore _credentials = credentials ?? OmniHost.CreateUserCredentialStore(OmniHost.CreatePlatformPaths());
+    private readonly HttpClient _client = new(handler ?? new HttpClientHandler { AllowAutoRedirect = false }, disposeHandler: handler is null)
+        { Timeout = Timeout.InfiniteTimeSpan };
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, McpProtocolConnection> _connections = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _sessions = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, McpServerDefinition> _sessionServers = new();
 
-    public async Task<string> SendAsync(McpServerDefinition server, string method, string parametersJson, CancellationToken token)
+    private McpProtocolConnection Connection(McpServerDefinition server) => _connections.GetOrAdd(server.ConnectionKey,
+        _ => new McpProtocolConnection((method, args, version, token) => RawAsync(server, method, args, version, token)));
+    public Task<string> SendAsync(McpServerDefinition server, string method, string parametersJson, CancellationToken token) =>
+        Connection(server).SendAsync(method, parametersJson, token);
+    public void ConfigureTool(McpServerDefinition server, string name, JsonElement schema) => Connection(server).ConfigureTool(name, schema);
+    public void Dispose()
+    {
+        foreach (var item in _sessionServers)
+        {
+            if (!_sessions.TryGetValue(item.Key, out var session)) continue;
+            try
+            {
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                using var request = new HttpRequestMessage(HttpMethod.Delete, item.Value.Endpoint);
+                request.Headers.Add("Mcp-Session-Id", session);
+                request.Headers.Add("MCP-Protocol-Version", "2025-11-25");
+                if (item.Value.AuthRef is { } auth)
+                {
+                    var secret = _credentials.Load(auth, deadline.Token);
+                    if (string.IsNullOrEmpty(secret)) continue;
+                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secret);
+                }
+                using var response = _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).GetAwaiter().GetResult();
+            }
+            catch (Exception error) when (error is HttpRequestException or IOException or OperationCanceledException or ObjectDisposedException or UnauthorizedAccessException) { }
+        }
+        _client.Dispose(); _connections.Clear(); _sessions.Clear(); _sessionServers.Clear();
+    }
+
+    private async Task<string> RawAsync(McpServerDefinition server, string method, string parametersJson, string version, CancellationToken token)
     {
         if (server.Transport != "http" || !Uri.TryCreate(server.Endpoint, UriKind.Absolute, out var endpoint))
             throw new InvalidOperationException("MCP transport mismatch.");
-        using var client = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false }, disposeHandler: handler is null)
-            { Timeout = Timeout.InfiniteTimeSpan };
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
-        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        deadline.CancelAfter(TimeSpan.FromSeconds(method is "server/discover" or "initialize" ? server.StartupTimeoutSeconds : server.RequestTimeoutSeconds));
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
-        var body = McpWire.Request(1, method, parametersJson);
+        var body = McpWire.Request(1, method, parametersJson, version);
+        if (method.StartsWith("notifications/", StringComparison.Ordinal))
+        {
+            using var notification = JsonDocument.Parse(body);
+            body = "{\"jsonrpc\":\"2.0\",\"method\":" + McpWire.Quote(method)
+                + ",\"params\":" + notification.RootElement.GetProperty("params").GetRawText() + "}";
+        }
         request.Content = new StringContent(body, Encoding.UTF8, "application/json");
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
-        request.Headers.Add("MCP-Protocol-Version", McpWire.Version);
+        request.Headers.Add("MCP-Protocol-Version", version);
         request.Headers.Add("Mcp-Method", method);
+        var sessionKey = server.ConnectionKey;
+        if (version != McpWire.Version && _sessions.TryGetValue(sessionKey, out var session))
+            request.Headers.Add("Mcp-Session-Id", session);
         if (server.AuthRef is { } authRef)
         {
             var secret = _credentials.Load(authRef, token);
@@ -221,13 +264,23 @@ internal sealed class McpStreamableHttpTransport(HttpMessageHandler? handler = n
         }
         if (method == "tools/call" && JsonDocument.Parse(parametersJson).RootElement.TryGetProperty("name", out var name))
             request.Headers.Add("Mcp-Name", SafeHeader(name.GetString() ?? ""));
+        if (method == "tools/call")
+            foreach (var header in Connection(server).Headers(parametersJson)) request.Headers.Add(header.Key, SafeHeader(header.Value));
         HttpResponseMessage response;
-        try { response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false); }
+        try { response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false); }
         catch (OperationCanceledException) when (!token.IsCancellationRequested) { throw new TimeoutException("MCP HTTP request timed out."); }
         using (response)
         {
             if ((int)response.StatusCode is >= 300 and < 400) throw new InvalidDataException("MCP redirects are not followed.");
-            response.EnsureSuccessStatusCode();
+            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden) response.EnsureSuccessStatusCode();
+            if (method.StartsWith("notifications/", StringComparison.Ordinal) && response.StatusCode == HttpStatusCode.Accepted) return "{}";
+            if (version != McpWire.Version && method == "initialize" && response.Headers.TryGetValues("Mcp-Session-Id", out var values))
+            {
+                var assigned = values.Single();
+                if (assigned.Length is 0 or > 256 || assigned.Any(ch => ch is < '!' or > '~')) throw new InvalidDataException("Invalid MCP session id.");
+                _sessions[sessionKey] = assigned;
+                _sessionServers[sessionKey] = server;
+            }
             string text;
             if (response.Content.Headers.ContentType?.MediaType == "text/event-stream")
             {
@@ -243,6 +296,15 @@ internal sealed class McpStreamableHttpTransport(HttpMessageHandler? handler = n
                 catch (OperationCanceledException) when (!token.IsCancellationRequested)
                 { throw new TimeoutException("MCP HTTP response timed out."); }
                 text = Encoding.UTF8.GetString(bytes);
+            }
+            // Modern errors use HTTP 400/404. Preserve their JSON-RPC body for dialect negotiation.
+            if (!response.IsSuccessStatusCode)
+            {
+                try { _ = McpWire.Result(text, 1); }
+                catch (McpRpcException) { throw; }
+                catch (JsonException) { }
+                catch (InvalidDataException) { }
+                response.EnsureSuccessStatusCode();
             }
             _ = McpWire.Result(text, 1);
             return text;
@@ -464,17 +526,26 @@ internal sealed class McpTool : ITool
         try
         {
             var result = await CallAsync(_remoteName, intent.Intent.NormalizedArgumentsJson, cancellationToken).ConfigureAwait(false);
+            var failed = result.TryGetProperty("isError", out var isError) && isError.ValueKind == JsonValueKind.True;
+            // The ordinary image-artifact path already performs modality checks, durable
+            // publication and provider materialization. Do not send base64 as model text.
+            var materialized = McpImageResult.Materialize(result, failed ? null : context.Artifacts);
             var annotated = "{\"provenance\":{\"kind\":\"Mcp\",\"serverId\":" + Quote(_server.Id)
                 + ",\"trust\":" + Quote(_server.Trust.ToString()) + ",\"tool\":" + Quote(_remoteName)
-                + "},\"externalData\":" + result.GetRawText() + "}";
+                + "},\"externalData\":" + materialized.Json + "}";
             var safe = new RedactionPolicy().Redact(annotated);
-            if (result.TryGetProperty("isError", out var isError) && isError.ValueKind == JsonValueKind.True)
+            if (failed)
                 return new ToolResult("MCP server reported a tool error.", safe, null, safe.Length, false,
                     _effectful ? EffectOutcome.Unknown : EffectOutcome.None, isError: true, ToolErrorCode.ToolFailure);
-            return new ToolResult("MCP tool completed.", safe, null, safe.Length, false,
+            return new ToolResult("MCP tool completed.", safe, materialized.Artifact, safe.Length, false,
                 _effectful ? EffectOutcome.Applied : EffectOutcome.None);
         }
         catch (OperationCanceledException) { throw; }
+        catch (McpUnsupportedResultException)
+        {
+            return new ToolResult("MCP requires an interactive continuation that this client does not advertise or support.", null, null, 0, false,
+                _effectful ? EffectOutcome.Unknown : EffectOutcome.None, isError: true, ToolErrorCode.ToolFailure);
+        }
         catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException
             or HttpRequestException or TimeoutException or InvalidOperationException or UnauthorizedAccessException)
         {
@@ -701,6 +772,7 @@ internal sealed class McpWebTool : ITool
 /// <summary>Reads configuration and consent without launching processes or opening network connections.</summary>
 internal sealed class McpServerStore(IPlatformPaths paths, string workspaceRoot, bool workspaceTrusted)
 {
+    private Action<string>? _discoveryDiagnostic;
     private readonly string _userFile = Path.Combine(paths.ConfigDirectory, "mcp", "servers.json");
     private readonly string _projectFile = Path.Combine(Path.GetFullPath(workspaceRoot), ".omnicore", "mcp.servers.json");
     private readonly string _userTrustFile = Path.Combine(paths.DataDirectory, "mcp", "trusted-remote.tsv");
@@ -712,6 +784,8 @@ internal sealed class McpServerStore(IPlatformPaths paths, string workspaceRoot,
         var entries = new List<McpServerDefinition>();
         Add(_userFile, "user");
         if (File.Exists(_projectFile)) Add(_projectFile, "project");
+        foreach (var group in entries.GroupBy(entry => entry.Id, StringComparer.Ordinal).Where(group => group.Count() != 1))
+            _discoveryDiagnostic?.Invoke(group.Key + ": ambiguous server identity excluded.");
         return entries.GroupBy(entry => entry.Id, StringComparer.Ordinal).Where(group => group.Count() == 1)
             .Select(group => group.Single()).OrderBy(entry => entry.Scope, StringComparer.Ordinal)
             .ThenBy(entry => entry.Id, StringComparer.Ordinal).ToArray();
@@ -724,7 +798,10 @@ internal sealed class McpServerStore(IPlatformPaths paths, string workspaceRoot,
                 throw new InvalidDataException("MCP server configuration must be an array of at most 64 entries.");
             foreach (var item in json.RootElement.EnumerateArray())
             {
-                var server = McpServerDefinition.Parse(item, scope, workspaceTrusted);
+                McpServerDefinition server;
+                try { server = McpServerDefinition.Parse(item, scope, workspaceTrusted); }
+                catch (Exception failure) when (failure is InvalidDataException or InvalidOperationException or ArgumentException or FormatException)
+                { _discoveryDiagnostic?.Invoke(scope + ": invalid server configuration excluded."); continue; }
                 if (scope == "project")
                 {
                     var projectMarker = TrustMarker(_projectConsentFile, server);
@@ -759,6 +836,7 @@ internal sealed class McpServerStore(IPlatformPaths paths, string workspaceRoot,
             return "{" + Field("id", server.Id) + "," + Field("transport", server.Transport) + ","
                 + Field("scope", server.Scope) + "," + Field("trust", server.Trust.ToString()) + ","
                 + Field("identity", server.Identity) + "," + Field("endpoint", displayEndpoint ?? "") + ","
+                + Field("connectivity", "NotProbed") + ","
                 + Field("state", server.Scope == "project-untrusted-workspace" ? "WorkspaceTrustRequired"
                     : server.Scope == "project-unconsented" ? "ConsentRequired"
                     : server.Trust == TrustLevel.Untrusted ? "Untrusted" : "Ready") + "}";
@@ -828,11 +906,9 @@ internal sealed class McpServerStore(IPlatformPaths paths, string workspaceRoot,
     public void AddHttp(string id, string endpoint)
     {
         ValidateId(id);
-        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) || uri.Scheme != "https"
-            || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
-            throw new InvalidOperationException("Remote MCP endpoints must use HTTPS and contain no embedded credentials, query or fragment.");
+        var uri = McpEndpoint.Validate(endpoint);
         if (List().Any(server => server.Id == id)) throw new InvalidOperationException("MCP server id is already configured.");
-        var host = uri.IsDefaultPort ? uri.Host : uri.Host + ":" + uri.Port;
+        var host = uri.Authority;
         AppendUserEntry(writer =>
         {
             writer.WriteStartObject(); writer.WriteString("id", id); writer.WriteString("transport", "http");
@@ -884,13 +960,17 @@ internal sealed class McpServerStore(IPlatformPaths paths, string workspaceRoot,
     }
 
     public IReadOnlyList<ITool> DiscoverTools(IMcpRequestTransport stdio, IMcpRequestTransport http,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, Action<string>? reportDiagnostic = null)
     {
+        _discoveryDiagnostic = reportDiagnostic;
         var tools = new List<ITool>();
         foreach (var server in List().Where(item => item.Scope != "project-unconsented"
             && item.Trust is TrustLevel.Trusted or TrustLevel.Project))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var serverTools = new List<ITool>();
+            try
+            {
             var transport = server.Transport == "stdio" ? stdio : http;
             var discovered = transport.SendAsync(server, "server/discover", "{}", cancellationToken)
                 .GetAwaiter().GetResult();
@@ -898,19 +978,36 @@ internal sealed class McpServerStore(IPlatformPaths paths, string workspaceRoot,
             if (!discoveryResult.TryGetProperty("supportedVersions", out var versions)
                 || versions.ValueKind != JsonValueKind.Array
                 || !versions.EnumerateArray().Any(version => version.ValueKind == JsonValueKind.String
-                    && version.GetString() == McpWire.Version))
-                throw new InvalidDataException("MCP server does not advertise the pinned protocol revision.");
-            var listed = transport.SendAsync(server, "tools/list", "{}", cancellationToken).GetAwaiter().GetResult();
-            var result = McpWire.Result(listed, 1);
-            if (!result.TryGetProperty("tools", out var items) || items.ValueKind != JsonValueKind.Array) continue;
-            foreach (var item in items.EnumerateArray().Take(64))
+                    && McpProtocolConnection.SupportedVersions.Contains(version.GetString(), StringComparer.Ordinal)))
+                throw new InvalidDataException("MCP server has no supported protocol revision.");
+            var cursors = new HashSet<string>(StringComparer.Ordinal);
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            string? cursor = null;
+            var pages = 0;
+            var count = 0;
+            do
             {
-                if (!item.TryGetProperty("name", out var nameElement) || nameElement.ValueKind != JsonValueKind.String) continue;
+            if (++pages > 16) throw new InvalidDataException("MCP catalog exceeds its page limit.");
+            var arguments = cursor is null ? "{}" : "{\"cursor\":" + McpWire.Quote(cursor) + "}";
+            var listed = transport.SendAsync(server, "tools/list", arguments, cancellationToken).GetAwaiter().GetResult();
+            var result = McpWire.Result(listed, 1);
+            if (!result.TryGetProperty("tools", out var items) || items.ValueKind != JsonValueKind.Array)
+                throw new InvalidDataException("MCP catalog has no tools array.");
+            foreach (var item in items.EnumerateArray())
+            {
+                if (++count > 256) throw new InvalidDataException("MCP catalog exceeds its 256-tool limit.");
+                if (!item.TryGetProperty("name", out var nameElement) || nameElement.ValueKind != JsonValueKind.String)
+                { reportDiagnostic?.Invoke(server.Id + ": invalid tool name."); continue; }
                 var name = nameElement.GetString()!;
-                if (!System.Text.RegularExpressions.Regex.IsMatch(name, "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")) continue;
+                if (!System.Text.RegularExpressions.Regex.IsMatch(name, "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$") || !names.Add(name))
+                { reportDiagnostic?.Invoke(server.Id + ": invalid or duplicate tool name."); continue; }
                 var description = item.TryGetProperty("description", out var desc) && desc.ValueKind == JsonValueKind.String
                     ? desc.GetString()![..Math.Min(1024, desc.GetString()!.Length)] : name;
-                if (!item.TryGetProperty("inputSchema", out var schema) || schema.ValueKind != JsonValueKind.Object) continue;
+                if (!item.TryGetProperty("inputSchema", out var schema) || schema.ValueKind != JsonValueKind.Object)
+                { reportDiagnostic?.Invoke(server.Id + ": invalid input schema."); continue; }
+                try { transport.ConfigureTool(server, name, schema); }
+                catch (InvalidDataException)
+                { reportDiagnostic?.Invoke(server.Id + ": rejected invalid MCP header schema."); continue; }
                 var readOnly = server.Trust == TrustLevel.Trusted && item.TryGetProperty("annotations", out var annotations)
                     && annotations.ValueKind == JsonValueKind.Object
                     && annotations.TryGetProperty("readOnlyHint", out var hint) && hint.ValueKind == JsonValueKind.True;
@@ -919,12 +1016,29 @@ internal sealed class McpServerStore(IPlatformPaths paths, string workspaceRoot,
                         && current.Trust == server.Trust));
                 var mappedToWeb = server.Web is { } configuration
                     && (configuration.SearchTool == name || configuration.FetchTool == name);
-                if (!mappedToWeb) tools.Add(bridge);
+                if (!mappedToWeb) serverTools.Add(bridge);
                 if (server.Web is { } web)
                 {
-                    if (web.SearchTool == name) tools.Add(new McpWebTool(bridge, web, search: true));
-                    if (web.FetchTool == name) tools.Add(new McpWebTool(bridge, web, search: false));
+                    if (web.SearchTool == name) serverTools.Add(new McpWebTool(bridge, web, search: true));
+                    if (web.FetchTool == name) serverTools.Add(new McpWebTool(bridge, web, search: false));
                 }
+            }
+            cursor = null;
+            if (result.TryGetProperty("nextCursor", out var next) && next.ValueKind != JsonValueKind.Null)
+            {
+                if (next.ValueKind != JsonValueKind.String) throw new InvalidDataException("MCP cursor must be a string.");
+                cursor = next.GetString();
+            }
+            if (cursor is not null && (cursor.Length > 4096 || !cursors.Add(cursor)))
+                throw new InvalidDataException("MCP catalog repeated or exceeded its cursor limit.");
+            } while (cursor is not null);
+            tools.AddRange(serverTools);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception failure) when (failure is IOException or InvalidDataException or JsonException or HttpRequestException
+                or InvalidOperationException or UnauthorizedAccessException or NotSupportedException or TimeoutException or ArgumentException)
+            {
+                reportDiagnostic?.Invoke(server.Id + ": discovery failed (" + failure.GetType().Name + "); other servers remain available.");
             }
         }
         return tools;

@@ -295,6 +295,10 @@ public sealed class ScriptedPermissionPolicy : IPermissionPolicy, IGrantablePerm
         // Superficies con semántica fija conocida (tools Core y simulación de M1).
         switch (toolName)
         {
+            case "desktop.control":
+                // Native desktop interaction has external effects and privacy exposure even
+                // when it only observes. Skill selection never changes this permission class.
+                return PermissionResource.ExternalOrUnknownProcess;
             case "shell.exec":
                 if (intent.Claims.Process is { Isolation: ProcessIsolation.PrivateProcessWorkspace,
                     NetworkRequired: false } && intent.Claims.Writes.Count is > 0 and <= 64

@@ -1,0 +1,12 @@
+id: desktop-control
+version: 0.4.0
+displayName: Pruebas y control de ventanas Windows
+sealed: true
+modelInvocable: true
+budgetTokens: 2048
+activation:
+  explicit: true
+  taskTypes: [desktop-interaction]
+tools: [desktop.control]
+contributions:
+  contributors: [SKILL.md]

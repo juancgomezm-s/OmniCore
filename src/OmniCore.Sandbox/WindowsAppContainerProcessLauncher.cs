@@ -203,7 +203,7 @@ public sealed class WindowsAppContainerProcessLauncher : ISandboxProcessLauncher
             .Select(path => ResolveExistingPhysicalPath(path.Path))
             .OrderBy(path => path.Length)
             .FirstOrDefault() ?? workingDirectory;
-        var profileName = GetProfileName(workspacePath);
+        var profileName = GetProfileName(workspacePath, launch.IsolationKey);
         if (QuarantinedProfiles.TryGetValue(profileName, out var quarantineReason))
             throw new IOException("The AppContainer profile is quarantined after an ACL cleanup failure: " + quarantineReason);
         var profileLease = ProfileLeases.GetOrAdd(profileName,
@@ -336,12 +336,18 @@ public sealed class WindowsAppContainerProcessLauncher : ISandboxProcessLauncher
     }
 
     /// <summary>Stable profile identity: SHA-256 of the normalized, case-folded workspace path.</summary>
-    public static string GetProfileName(string workspacePath)
+    public static string GetProfileName(string workspacePath) => GetProfileName(workspacePath, null);
+
+    /// <summary>Scoped identity for Host-owned persistent transports sharing a physical workspace.</summary>
+    public static string GetProfileName(string workspacePath, string? isolationKey)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(workspacePath);
         var canonical = Path.GetFullPath(workspacePath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
             .ToLowerInvariant();
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+        if (isolationKey is not null && (isolationKey.Length is 0 or > 128 || isolationKey.Any(char.IsControl)))
+            throw new ArgumentException("Invalid sandbox isolation identity.", nameof(isolationKey));
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical
+            + (isolationKey is null ? "" : "\n" + isolationKey)))).ToLowerInvariant();
         // Keep the profile name within the documented AppContainer profile-name limit.
         return "OmniCore-" + hash[..40];
     }

@@ -103,6 +103,9 @@ if ($ghLicenseSha256 -cne '8999137010582da29456c10e0a628bf3fa7ead05ab3ae5f424ad2
     throw 'The pinned GitHub CLI license digest did not match.'
 }
 
+& (Join-Path $root 'native/desktop-control/build.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Native desktop build failed.' }
+
 & dotnet publish (Join-Path $root 'src/OmniCore.Cli/OmniCore.Cli.csproj') `
     --configuration Release --framework net10.0 --runtime win-x64 `
     --output $dotnetOutput --property:UseAppHost=false --no-self-contained `
@@ -110,6 +113,11 @@ if ($ghLicenseSha256 -cne '8999137010582da29456c10e0a628bf3fa7ead05ab3ae5f424ad2
     "--property:InformationalVersion=$Version" --property:IncludeSourceRevisionInInformationalVersion=false
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $dotnetOutput 'omni.dll') -PathType Leaf)) {
     throw 'The framework-dependent Windows x64 CLI publish failed.'
+}
+$nativePin = (Get-Content -LiteralPath (Join-Path $root 'native/desktop-control/desktop.sha256') -Raw).Trim()
+$nativeFile = Join-Path $dotnetOutput 'native/omnicore-desktop.exe'
+if (-not (Test-Path -LiteralPath $nativeFile -PathType Leaf) -or (Get-FileHash -LiteralPath $nativeFile -Algorithm SHA256).Hash.ToLowerInvariant() -cne $nativePin) {
+    throw 'The Windows release is missing its pinned desktop component.'
 }
 $verifierDirectory = Join-Path $dotnetOutput 'verifier'
 New-Item -ItemType Directory -Path $verifierDirectory -Force | Out-Null

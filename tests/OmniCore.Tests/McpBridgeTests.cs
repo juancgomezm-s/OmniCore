@@ -317,7 +317,7 @@ public sealed class McpBridgeTests
         try
         {
             var helper = Path.Combine(AppContext.BaseDirectory, "OmniCore.SandboxTestProcess.exe");
-            var transport = new McpStrongStdioTransport(new WindowsAppContainerProcessLauncher());
+            using var transport = new McpStrongStdioTransport(new WindowsAppContainerProcessLauncher());
             var server = new McpServerDefinition("stdio-fixture", "stdio", helper, ["mcp"], root, null,
                 [], false, "user", "fixture-hash");
             var response = await transport.SendAsync(server, "server/discover", "{}", CancellationToken.None);
@@ -325,7 +325,7 @@ public sealed class McpBridgeTests
             Assert.Contains("2026-07-28", result.GetProperty("supportedVersions").GetRawText());
 
             var failing = server with { Args = ["mcp-error"] };
-            await Assert.ThrowsAsync<InvalidDataException>(() => transport.SendAsync(failing,
+            await Assert.ThrowsAsync<McpRpcException>(() => transport.SendAsync(failing,
                 "tools/list", "{}", CancellationToken.None));
 
             var stalled = server with { Args = ["mcp-stall"] };

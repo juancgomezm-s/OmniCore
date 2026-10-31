@@ -53,6 +53,18 @@ try {
   process.exit(1);
 }
 
+// Build the fixed Windows component before .NET embeds its current digest.
+// Source builds require Rust/MSVC; prebuilt release installs contain this binary.
+if (process.platform === 'win32') {
+  const native = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+    path.join(root, 'native', 'desktop-control', 'build.ps1')],
+    { cwd: root, stdio: 'inherit', windowsHide: true });
+  if (native.error || native.status !== 0) {
+    process.stderr.write('No se pudo compilar el componente de escritorio. Revisa Rust, MSVC y Windows SDK.\n');
+    process.exit(native.status ?? 1);
+  }
+}
+
 fs.rmSync(output, { recursive: true, force: true });
 
 const result = spawnSync('dotnet', [
@@ -86,3 +98,5 @@ if (!fs.existsSync(path.join(output, 'omni.dll'))) {
   process.stderr.write(`dotnet publish terminó sin generar ${path.join(output, 'omni.dll')}.\n`);
   process.exit(1);
 }
+
+require('./native-desktop').verifyPublishedDesktop(root, output);

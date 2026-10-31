@@ -51,6 +51,16 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
+      - name: Build and test the Windows Rust desktop engine
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RUSTUP_TOOLCHAIN: '1.99.1'
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
+          ./native/desktop-control/build.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Native desktop verification failed.' }
       - run: dotnet restore OmniCore.slnx
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
@@ -111,6 +121,13 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
+      - name: Set up Rust for the Windows source package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain installation failed.' }
+          "RUSTUP_TOOLCHAIN=1.99.1" >> $env:GITHUB_ENV
       - name: Install, exercise and update the npm application
         shell: bash
         run: |

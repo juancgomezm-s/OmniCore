@@ -17,6 +17,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="..\..\skills\desktop-control\**\*"
+             Link="skills\desktop-control\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\native\desktop-control\target\release\omnicore-desktop.exe"
+             Condition="Exists('..\..\native\desktop-control\target\release\omnicore-desktop.exe')"
+             Link="native\omnicore-desktop.exe" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\native\desktop-control\licenses\**\*"
+             Link="licenses\desktop\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\skills\visual-explainer\**\*"
              Exclude="..\..\skills\visual-explainer\**\__pycache__\**;..\..\skills\visual-explainer\**\*.pyc"
              Link="skills\visual-explainer\%(RecursiveDir)%(Filename)%(Extension)"
@@ -36,5 +45,11 @@
     <Content Include="..\..\docs\third-party\SkiaSharp-LICENSE.txt"
              Link="licenses/SkiaSharp-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <Target Name="RequireNativeDesktopForWindowsPublish" BeforeTargets="Publish"
+          Condition="'$(OS)' == 'Windows_NT' and ('$(RuntimeIdentifier)' == '' or '$(RuntimeIdentifier)' == 'win-x64')">
+    <Error Condition="!Exists('$(MSBuildProjectDirectory)/../../native/desktop-control/target/release/omnicore-desktop.exe')"
+           Text="Build native/desktop-control/build.ps1 before publishing the Windows CLI." />
+  </Target>
 
 </Project>
