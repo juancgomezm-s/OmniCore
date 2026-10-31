@@ -57,7 +57,7 @@ internal sealed class DesktopControlTool(DesktopSkillGate gate, Action? cancelDe
     private volatile bool _disposed;
     internal bool HasStarted => _process is not null;
     public ToolDescriptor Descriptor { get; } = new(new ToolId(Id),
-        "Observe or control a Windows application using the active desktop-control skill. Read that skill before calling.",
+        "Use OmniDesktop Control to observe or control a Windows application through the active desktop-control skill. Read that skill before calling.",
         new InputSchema(Schema), ["desktop", "native", "skill"], false, false, ToolRisk.High,
         ComponentSource.Core(), ToolProtection.None, EffectClass.NonIdempotent);
 

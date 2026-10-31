@@ -1,6 +1,6 @@
 id: desktop-control
-version: 0.4.0
-displayName: Pruebas y control de ventanas Windows
+version: 0.4.1
+displayName: OmniDesktop Control
 sealed: true
 modelInvocable: true
 budgetTokens: 2048

@@ -3,9 +3,9 @@ name: desktop-control
 description: Test and operate a Windows application or window using screenshots, accessibility, keyboard and mouse when the user requests desktop interaction.
 ---
 
-# Desktop control
+# OmniDesktop Control
 
-Use `desktop.control` for desktop tasks. The Host loads this skill automatically
+Use OmniDesktop Control (`desktop.control`) for desktop tasks. The Host loads this skill automatically
 for relevant human requests and unloads its automatic activation at the end of a
 settled turn; a pending permission retains it for resumption. Do not ask the user
 to run skill commands. Permission and model/mode ceilings still apply. Never

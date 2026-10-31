@@ -1,4 +1,4 @@
-# Componente de escritorio de OmniCore
+# OmniDesktop Control para OmniCore
 
 Adaptador de OmniCore para Windows x64 sobre `../desktop-engine`. Captura con WGC o GDI/PrintWindow,
 accesibilidad mediante Microsoft UI Automation y entrada con SendInput. No utiliza

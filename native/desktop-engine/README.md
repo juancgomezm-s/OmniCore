@@ -1,4 +1,4 @@
-# Desktop Engine 0.4.0
+# Desktop Engine 0.4.1
 
 Núcleo Rust compartido para observar y operar ventanas Windows. Fuente canónica:
 `OmniCore/native/desktop-engine`. Captura WGC/PrintWindow, reducción PNG,
@@ -32,3 +32,5 @@ la DLL del directorio System32 y no modifica registro, sistema o configuración.
 
 Validación: `cargo test --locked`, `cargo clippy --locked --all-targets -- -D warnings`.
 Los verificadores GUI operan únicamente sobre ventanas de prueba propias.
+
+Nombre comercial de los componentes: **OmniDesktop Control**. Los adaptadores para OmniCore y Claude conservan sus protocolos e identidades de permisos por separado.

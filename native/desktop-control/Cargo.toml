@@ -1,11 +1,11 @@
 [package]
 name = "omnicore-desktop"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 license = "MIT"
 
 [dependencies]
-desktop-engine = { path = "../desktop-engine", version = "=0.4.0" }
+desktop-engine = { path = "../desktop-engine", version = "=0.4.1" }
 
 [profile.release]
 lto = true

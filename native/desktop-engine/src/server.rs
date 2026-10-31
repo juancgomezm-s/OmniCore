@@ -423,7 +423,7 @@ impl Server {
         crate::indicator::check()?;
         match method {
             "capabilities" => Ok(
-                json!({"protocol":"ndjson-v2-independent","implementation":"rust","input_enabled":self.allow_input,"observation_ttl_seconds":self.ttl,"capture_backend":"wgc","capture_backends":["wgc","printwindow"],"engine_version":env!("CARGO_PKG_VERSION"),"capture_scope":"window-only","activity_indicator":"purple-curtain","cancellation":["button","Escape"],"accessibility_backend":"Microsoft UI Automation","input_backend":"SendInput","methods":["list_windows","get_window","activate_window","get_window_state","click","scroll","drag","type_text","press_key","invoke","set_value"]}),
+                json!({"protocol":"ndjson-v2-independent","implementation":"rust","product":"OmniDesktop Control","input_enabled":self.allow_input,"observation_ttl_seconds":self.ttl,"capture_backend":"wgc","capture_backends":["wgc","printwindow"],"engine_version":env!("CARGO_PKG_VERSION"),"capture_scope":"window-only","activity_indicator":"purple-curtain","cancellation":["button","Escape"],"accessibility_backend":"Microsoft UI Automation","input_backend":"SendInput","methods":["list_windows","get_window","activate_window","get_window_state","click","scroll","drag","type_text","press_key","invoke","set_value"]}),
             ),
             "list_windows" => {
                 let hidden = boolean(p, "include_hidden", false)?;

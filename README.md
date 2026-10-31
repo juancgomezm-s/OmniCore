@@ -205,7 +205,7 @@ La evidencia de cierre M5 documenta **2995 casos: 2991 correctos, 0 fallos y 4 o
 
 Disponibilidad y cuotas dependen de la cuenta y del proveedor en el momento de la consulta. No hay una lista universal de modelos garantizados para todos los usuarios.
 
-## Control de ventanas en Windows
+## OmniDesktop Control en Windows
 
 La skill `desktop-control` se carga automáticamente al pedir una prueba o control
 de una ventana y libera su selección automática al terminar. Captura WGC/PrintWindow,

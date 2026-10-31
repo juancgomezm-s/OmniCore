@@ -202,25 +202,25 @@ struct Texts {
 fn texts(locale: &str) -> Texts {
     match locale.split(['-', '_']).next().unwrap_or("es") {
         "en" => Texts {
-            active: "OmniCore is using your computer",
+            active: "OmniDesktop Control is using your computer",
             cancel: "Cancel (Esc)",
             select: "Capture is limited to the selected window",
             window: "Window only",
         },
         "fr" => Texts {
-            active: "OmniCore utilise votre ordinateur",
+            active: "OmniDesktop Control utilise votre ordinateur",
             cancel: "Annuler (Échap)",
             select: "Capture limitée à la fenêtre sélectionnée",
             window: "Fenêtre uniquement",
         },
         "it" => Texts {
-            active: "OmniCore sta usando il computer",
+            active: "OmniDesktop Control sta usando il computer",
             cancel: "Annulla (Esc)",
             select: "Acquisizione limitata alla finestra selezionata",
             window: "Solo finestra",
         },
         _ => Texts {
-            active: "OmniCore está usando el equipo",
+            active: "OmniDesktop Control está usando el equipo",
             cancel: "Cancelar (Esc)",
             select: "Captura limitada a la ventana seleccionada",
             window: "Sólo ventana",
@@ -477,7 +477,7 @@ impl Indicator {
             let curtain = CreateWindowExW(
                 0x80000 | 0x20 | 0x8000000 | 0x80 | 0x8,
                 name.as_ptr(),
-                wide("OmniCore · Purple activity curtain").as_ptr(),
+                wide("OmniDesktop Control · Activity curtain").as_ptr(),
                 0x80000000,
                 GetSystemMetrics(76),
                 GetSystemMetrics(77),
@@ -491,7 +491,7 @@ impl Indicator {
             let banner = CreateWindowExW(
                 0x8000000 | 0x80 | 0x8,
                 name.as_ptr(),
-                wide("OmniCore · Desktop activity").as_ptr(),
+                wide("OmniDesktop Control · OmniCore").as_ptr(),
                 0x80000000,
                 (GetSystemMetrics(0) - WIDTH) / 2,
                 24,
@@ -651,7 +651,7 @@ mod tests {
     fn labels_available_in_supported_languages() {
         for locale in ["es", "en", "fr", "it"] {
             let labels = texts(locale);
-            assert!(!labels.active.is_empty());
+            assert!(labels.active.starts_with("OmniDesktop Control"));
             assert!(!labels.cancel.is_empty());
         }
     }
