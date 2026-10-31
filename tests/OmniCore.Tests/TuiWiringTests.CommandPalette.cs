@@ -37,8 +37,12 @@ public sealed partial class TuiWiringTests
         fx.Read(() =>
         {
             var list = Descendants(fx.App.Overlay!).OfType<ListView>().Single(view => view.Id == "palette-list");
-            Assert.Equal(1, list.Source!.Count);
+            // Fuzzy matches may grow with the localized command catalog. The exact
+            // action must remain selected first and dispatch through its existing route.
+            Assert.NotEmpty(list.Source!.ToList());
             Assert.Contains("F3", list.Source.ToList()[0]!.ToString());
+            Assert.Contains("model.select", Descendants(fx.App.Overlay!)
+                .Single(view => view.Id == "palette-details").Text);
             Assert.Empty(recorded.Commands);
             Assert.Equal("borrador sin enviar", fx.App.Composer!.Text);
             Assert.True(Descendants(fx.App.Overlay!).Single(view => view.Id == "palette-search").HasFocus);

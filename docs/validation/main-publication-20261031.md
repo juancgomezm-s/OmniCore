@@ -57,6 +57,14 @@ El foco conjunto de apertura/salida/densidad pasa 20/20, sin fallos ni omisiones
 y el build Release queda sin advertencias/errores. La CI vuelve a comprobar los
 paquetes self-contained y AOT desde el árbol corregido.
 
+La pasada completa Linux posterior ejecutó 6.302 casos y detectó una aserción
+cerrada de la paleta francesa: esperaba exactamente una coincidencia para
+`model.select`. El contrato de búsqueda es difuso y el catálogo ampliado puede
+producir otras filas. Se comprueba que la primera/seleccionada sea `model.select`,
+que conserve F3 y que Enter use el selector existente, con borrador intacto y cero
+comandos enviados. No se filtran coincidencias ni se cambia la búsqueda de producto.
+La regresión local de paleta pasa 19/19, sin fallos ni omisiones.
+
 ## CI, release, instalación y poda
 
 El resultado final de CI, SHA de Main, versión preview, hashes de assets e
