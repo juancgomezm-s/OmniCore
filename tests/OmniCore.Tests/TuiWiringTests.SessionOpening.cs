@@ -13,6 +13,28 @@ namespace OmniCore.Tests;
 public sealed partial class TuiWiringTests
 {
     [Theory]
+    [InlineData("/exit")]
+    [InlineData("/salir")]
+    public void SessionOpening_explicit_exit_after_cancel_needs_no_conversation(string command) => RunTuiTest(fx =>
+    {
+        var host = new RouteResumeTurnHost();
+        var current = fx.Server.LastSessionId()!;
+        var before = fx.Server.AcquireStore().CurrentSequence(current);
+        fx.StartTui(turnHost: host, selectConversationOnOpen: true);
+        fx.Wait(() => fx.App.Overlay?.Id == "conversation-selector", "opening choice visible");
+        KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "cancel without selecting");
+        fx.Invoke(() => fx.App.Composer!.SetFocus());
+        Type(fx, command);
+        fx.InjectKey(new Key(KeyCode.Enter));
+        Assert.True(fx.Loop.Join(10000), "explicit exit must not require a Session selection");
+        Assert.Null(fx.LoopError);
+        Assert.Equal(0, host.ExecuteCount);
+        Assert.True(fx.App.ConversationSelectionPending);
+        Assert.Equal(current, fx.Server.LastSessionId());
+        Assert.Equal(before, fx.Server.AcquireStore().CurrentSequence(current));
+    });
+
+    [Theory]
     [InlineData(120, 40)]
     [InlineData(80, 25)]
     public void SessionOpening_requires_choice_shows_title_and_date_then_explicitly_continues(int columns, int rows) => RunTuiTest(fx =>

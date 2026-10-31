@@ -9,3 +9,5 @@ Si la recuperación conserva un Turn abierto, continuar la Session ya selecciona
 ## Verificación local
 
 `TuiWiringTests.SessionOpening.cs` cubre la elección inicial en 120×40 y 80×25, títulos/fechas, cancelación por Escape/botón, borrador no enviado, dos Sessions en una carpeta, búsqueda y reapertura, y Turn durable pendiente. `SessionOpeningWorkspaceRuntimeTests` abre dos Hosts con directorios aislados, recupera dos Sessions al volver a la primera carpeta y comprueba una segunda reapertura tras retomar la otra Session. Las pruebas de ciclo durable (`ConversationLifecycleTests`) y navegación (`WorkspaceNavigationRuntimeTests`, `TuiWiringTests.WorkspaceNavigation`) complementan la regresión. La ejecución final, sus resultados y límites están registrados en [el acta del incremento](sessions-initialize-skills-20261030.md).
+
+La salida explícita `/exit` o `/salir` sigue disponible después de cancelar la elección: cierra la TUI sin crear/retomar una Session ni enviar input. La espera de elección bloquea las acciones de conversación, no la salida local.

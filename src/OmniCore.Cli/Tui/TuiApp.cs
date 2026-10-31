@@ -818,7 +818,8 @@ public sealed partial class TuiApp
             .Read().CommandAliases);
         // Whitespace is grammar for commands, but remains literal in a conversation prompt.
         var input = HumanCommandAliases.NormalizeSlashSyntax(aliases.NormalizeSlashHead(rawInput.Trim()));
-        if (_conversationSelectionPending)
+        // Exiting is a client action and needs no conversation or Host authority.
+        if (_conversationSelectionPending && input != "/exit")
         {
             if (input is "/new" or "/sessions" or "/resume-session" || input.StartsWith("/resume-session ", StringComparison.Ordinal))
                 HandleConversationSlash(input);
@@ -1324,7 +1325,8 @@ public sealed partial class TuiApp
 
     private void RunClientAction(ClientActionInvocation action)
     {
-        if (_conversationSelectionPending) { ShowConversations(); return; }
+        if (_conversationSelectionPending && action.ActionId != ClientActionIds.AppExit)
+        { ShowConversations(); return; }
         if (!action.Origin.StartsWith("KeyBinding:", StringComparison.Ordinal) && action.Origin != "Palette") _composer!.Text = "";
         if (OpenClientView(action)) return;
         // La TUI lleva su propio Turn: cancelar o interrumpir detiene primero ese Turn (misma ruta que antes).

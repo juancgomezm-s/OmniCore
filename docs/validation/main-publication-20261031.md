@@ -45,6 +45,18 @@ CI/release recompilan Rust. Estas pruebas no certifican aplicaciones/DPI arbitra
 ni una inferencia comercial nueva. El test de selección de sesiones usa el driver
 real con fixtures; no se atribuye aceptación visual humana a ese resultado.
 
+## Corrección detectada por la CI publicada
+
+El primer smoke Linux llegó a la TUI self-contained, pero `/exit` volvió a abrir
+el selector después de cancelarlo. El guard de selección bloqueaba también la
+acción local de salida. Se permite exclusivamente `app.exit` y su texto normalizado
+`/exit` (incluido `/salir`) sin conversación; los mensajes y las otras acciones
+siguen requiriendo elección. El smoke original no se modifica ni se rebaja.
+Dos casos nuevos verifican salida sin modelo, cambios de Session ni eventos nuevos.
+El foco conjunto de apertura/salida/densidad pasa 20/20, sin fallos ni omisiones,
+y el build Release queda sin advertencias/errores. La CI vuelve a comprobar los
+paquetes self-contained y AOT desde el árbol corregido.
+
 ## CI, release, instalación y poda
 
 El resultado final de CI, SHA de Main, versión preview, hashes de assets e
