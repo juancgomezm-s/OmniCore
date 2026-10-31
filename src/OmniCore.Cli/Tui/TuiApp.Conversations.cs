@@ -10,6 +10,9 @@ namespace OmniCore.Cli;
 public sealed partial class TuiApp
 {
     private readonly Dictionary<string, (string Text, TuiAttachmentReference[] Attachments)> _conversationDrafts = new();
+    private bool _conversationSelectionPending;
+    private bool _showOpeningSelector;
+    internal bool ConversationSelectionPending => _conversationSelectionPending;
 
     private bool HandleConversationSlash(string input)
     {
@@ -79,21 +82,30 @@ public sealed partial class TuiApp
     private bool ChangeConversation(string command, string? session = null, Label? errorLabel = null)
     {
         if (HasActiveModelWork) { ShowMessage(_localization.Resolve("shell.conversation.busy")); return false; }
-        var ack = ConversationCommand(command, session);
+        // Explicitly continuing the recovered selection is a presentation choice. It must
+        // also work when recovery preserved an unfinished Turn, without mutating it.
+        var current = ConversationJson.Decode(_client.Query("conversations", CancellationToken.None)?.Json ?? "{}")
+            ?.Conversations.FirstOrDefault(row => row.Current)?.Id;
+        var continuingRecovered = _conversationSelectionPending && command == "conversation.resume" && session == current;
+        var ack = continuingRecovered ? new CommandAck(Ids.NewV7(), "ok", null) : ConversationCommand(command, session);
         if (ack.Status != "ok")
         {
             var message = _localization.ResolveWire(ack.Error ?? "conversation.failed");
             if (errorLabel is not null) errorLabel.Text = message; else ShowMessage(message);
             return false;
         }
-        _conversationDrafts[_cursorSession ?? ""] = (_composer?.Text ?? "", _pendingAttachments.ToArray());
+        var openingDraft = _conversationSelectionPending ? _composer?.Text ?? "" : "";
+        if (!_conversationSelectionPending)
+            _conversationDrafts[_cursorSession ?? ""] = (_composer?.Text ?? "", _pendingAttachments.ToArray());
+        _conversationSelectionPending = false;
+        _showOpeningSelector = false;
         _lastSequence = 0; _observedModel = null; _turnUsage = null; _turnStatus = null;
         _activeInteraction = null; _pendingQuotaResume = null; _pendingEscalationResume = null;
         _state = RefreshState();
         _pendingAttachments.Clear();
         if (_conversationDrafts.TryGetValue(_cursorSession ?? "", out var draft))
         { _composer!.Text = draft.Text; _pendingAttachments.AddRange(draft.Attachments); }
-        else _composer!.Text = "";
+        else _composer!.Text = openingDraft;
         _renderedConversation = null; _followConversationEnd = true; RenderAttachmentChips(); RenderState();
         return true;
     }
@@ -105,12 +117,13 @@ public sealed partial class TuiApp
         ConversationRow[] rows;
         try { rows = ConversationJson.Decode(_client.Query("conversations", CancellationToken.None)?.Json ?? "{}")?.Conversations.ToArray() ?? []; }
         catch (System.Text.Json.JsonException) { ShowMessage(_localization.Resolve("conversation.failed")); return; }
-        var frame = OverlayFrame(_localization.Resolve("shell.conversation.title"), _window.Frame.Height - 3);
+        var frame = OverlayFrame(_localization.Resolve(_conversationSelectionPending
+            ? "shell.conversation.open_title" : "shell.conversation.title"), _window.Frame.Height - 3);
         frame.Id = "conversation-selector";
         var search = new TextField { Id = "conversation-search", X = 4, Y = 2, Width = Dim.Fill(4), Height = 1 };
         var searchLabel = new Label { X = 4, Y = 1, Text = Pref("search"), CanFocus = false };
         var list = new ListView { Id = "conversation-list", X = 4, Y = 4, Width = Dim.Fill(4), Height = Dim.Fill(7), ShowMarks = false };
-        var notice = MenuIndent.Help("", Pos.AnchorEnd(6), 2, "conversation-notice");
+        var notice = MenuIndent.Help("", Pos.AnchorEnd(6), 1, "conversation-notice");
         var filtered = rows;
         void Update()
         {
@@ -133,9 +146,15 @@ public sealed partial class TuiApp
         open.Accepted += (_, _) => Open();
         var create = new Button { Id = "conversation-new", X = 24, Y = Pos.AnchorEnd(3), Text = _localization.Resolve("shell.conversation.new") };
         create.Accepted += (_, _) => { if (ChangeConversation("conversation.new", errorLabel: notice)) { CloseOverlay(); _composer!.SetFocus(); } };
+        var current = rows.FirstOrDefault(row => row.Current);
+        var continueLast = new Button { Id = "conversation-continue-last", X = 4, Y = Pos.AnchorEnd(5),
+            Text = _localization.Resolve("shell.conversation.continue_last"), Visible = _conversationSelectionPending, Enabled = current is not null };
+        continueLast.Accepted += (_, _) =>
+        { if (current is not null && ChangeConversation("conversation.resume", current.Id, notice)) { CloseOverlay(); _composer!.SetFocus(); } };
         var close = new Button { Id = "conversation-close", X = Pos.AnchorEnd(14), Y = Pos.AnchorEnd(3), Text = Pref("close") };
         close.Accepted += (_, _) => CloseOverlay();
-        frame.Add(searchLabel, search, list, notice, open, create, close); Update(); ApplyTheme(frame);
-        _overlay = frame; _window.Add(frame); list.SetFocus();
+        frame.Add(searchLabel, search, list, notice, open, create, continueLast, close); Update(); ApplyTheme(frame);
+        _overlay = frame; _window.Add(frame);
+        if (_conversationSelectionPending) create.SetFocus(); else list.SetFocus();
     }
 }

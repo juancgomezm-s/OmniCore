@@ -39,6 +39,7 @@ public interface ITuiTurnHost
     Task<string> CompanionChatAsync(IReadOnlyList<CompanionChatMessage> messages, string? focusNotice, CancellationToken token) => CompanionChatAsync(messages, token);
     /// <summary>Checks writer admission before the renderer clears a human draft; never submits input.</summary>
     bool TryAcquireSessionWriter() => true;
+    ProjectInitializationPlan InitializeProject(CancellationToken cancellationToken = default) => throw new NotSupportedException("project.initialize.unavailable");
     bool SessionSecurityRecoveryBlocked => false;
     UsageSnapshot? CurrentUsage() => null;
     Task<int> ExecuteAsync(string input, Action<string> diagnostics, CancellationToken cancellationToken);
@@ -118,6 +119,7 @@ public sealed class TuiTurnHost : ITuiTurnHost
         _runtime.CompanionChatAsync(messages, token, focusNotice);
     private readonly OmniCliRuntime _runtime;
     public bool TryAcquireSessionWriter() => _runtime.TryAcquireSessionWriter();
+    public ProjectInitializationPlan InitializeProject(CancellationToken cancellationToken = default) => _runtime.InitializeProject(cancellationToken);
     public bool SessionSecurityRecoveryBlocked => _runtime.SessionSecurityRecoveryBlocked;
     public UsageSnapshot? CurrentUsage() => _runtime.CurrentUsage();
     public TuiAttachmentReference ImportAttachment(byte[] bytes, string fileName) => new(_runtime.ImportTuiAttachment(bytes, fileName));

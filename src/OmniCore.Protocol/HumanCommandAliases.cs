@@ -11,6 +11,7 @@ public static class HumanCommandAliases
 
     public static IReadOnlyList<Entry> Entries { get; } = Array.AsReadOnly(new[]
     {
+        new Entry("initialize", "inicializar", "initialiser", "inizializza"),
         new Entry("help", "ayuda", "aide", "aiuto"),
         new Entry("exit", "salir", "quitter", "esci"),
         new Entry("new", "nuevo", "nouveau", "nuovo"),

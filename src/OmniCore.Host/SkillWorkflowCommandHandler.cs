@@ -80,23 +80,34 @@ internal static class SessionSkillWorkflowCommands
 {
     public static void Refresh(CommandRegistry registry, SessionId? session, string? workspaceRoot,
         string userDataDirectory, string? workspaceDataDirectory, bool workspaceTrusted,
-        IEnumerable<(DiscoveredExtension Extension, IReadOnlySet<string> Capabilities)>? extensionPackages = null)
+        IEnumerable<(DiscoveredExtension Extension, IReadOnlySet<string> Capabilities)>? extensionPackages = null,
+        IReadOnlyList<DiscoveredSkill>? allCandidates = null)
     {
         registry.RemoveSource(SourceKind.Skill);
-        if (session is not { } sessionId) return;
-        var store = new SessionSkillActivationStore(workspaceDataDirectory ?? userDataDirectory);
         var catalog = new SkillSourceCatalog();
-        var discovered = extensionPackages is null
-            ? catalog.Discover(workspaceRoot, userDataDirectory, workspaceDataDirectory, sessionId, workspaceTrusted)
+        var discovered = allCandidates ?? (extensionPackages is null
+            ? catalog.Discover(workspaceRoot, userDataDirectory, workspaceDataDirectory, session, workspaceTrusted)
             : catalog.DiscoverWithExtensions(workspaceRoot, userDataDirectory, workspaceDataDirectory,
-                sessionId, workspaceTrusted, extensionPackages);
-        var active = new SkillActivationResolver().LoadCandidates(discovered, sessionId, store);
-        foreach (var skill in active)
-        foreach (var resource in skill.Resources ?? [])
+                session, workspaceTrusted, extensionPackages));
+        if (session is { } sessionId)
         {
-            if (resource.Kind != SkillResourceKind.Workflow) continue;
-            try { registry.Register(new SkillWorkflowCommandHandler(skill, resource)); }
-            catch (InvalidOperationException) { /* A conflict stays unavailable; it never wins by order. */ }
+            var store = new SessionSkillActivationStore(workspaceDataDirectory ?? userDataDirectory);
+            IReadOnlyList<LoadedSkill> active = [];
+            try { active = new SkillActivationResolver().LoadCandidates(discovered, sessionId, store); }
+            catch (InvalidDataException)
+            {
+                // Stale activations cannot expose workflows. Keep fresh metadata commands available
+                // so a human can explicitly revalidate the changed package on the next Turn.
+            }
+            foreach (var skill in active)
+            foreach (var resource in skill.Resources ?? [])
+            {
+                if (resource.Kind != SkillResourceKind.Workflow) continue;
+                try { registry.Register(new SkillWorkflowCommandHandler(skill, resource)); }
+                catch (InvalidOperationException) { /* A conflict stays unavailable; it never wins by order. */ }
+            }
         }
+        // Existing workflow names retain ownership before optional invocation aliases are admitted.
+        SkillInvocationCommands.Register(registry, discovered);
     }
 }

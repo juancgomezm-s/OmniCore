@@ -132,6 +132,7 @@ public sealed partial class CliApp
                 allowDeferredPermission: !Console.IsInputRedirected && !Console.IsOutputRedirected);
         }
 
+        if (HumanCommandAliases.CanonicalName(command.TrimStart('/')) == "initialize") return RunInitialize(args);
         if (command == "update") return RunUpdateAsync(args);
         if (command is "pet" or "/pet")
         {
@@ -1410,6 +1411,7 @@ public sealed partial class CliApp
         Console.WriteLine();
         Console.WriteLine(Loc().Resolve("cli.usage.heading"));
         Console.WriteLine(Loc().Resolve("cli.usage.tui"));
+        Console.WriteLine("  omni " + HumanCommandAliases.DisplayName("initialize", Loc().Locale) + "  " + Loc().Resolve("command.initialize"));
         Console.WriteLine(Loc().Resolve("cli.usage.sim"));
         Console.WriteLine(Loc().Resolve("cli.usage.act"));
         Console.WriteLine(Loc().Resolve("cli.usage.ask"));

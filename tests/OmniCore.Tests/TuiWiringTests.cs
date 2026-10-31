@@ -3285,6 +3285,8 @@ public sealed partial class TuiWiringTests
             fx.Server.ConfigureWorkspaceRoot(fx.Workspace);
         var hostPaths = new DefaultPlatformPaths(Path.Combine(fx.Root, "host-data"), Path.Combine(fx.Root, "host-config"));
         fx.Server.ConfigurePlatformPaths(() => hostPaths);
+        fx.Server.ConfigureExternalAgentDiscovery(() => fx.Workspace,
+            () => new ExternalAgentDiscoveryCatalog(Path.Combine(fx.Root, "isolated-agents"), _ => null));
         fx.Server.ConfigureSidebarPaths(hostPaths);
         // Stable ordinary-pet fixtures; guest tests opt into a controlled lottery explicitly.
         fx.Server.CompanionService.GuestSelector = (_, _, _) => null;
@@ -3363,7 +3365,8 @@ public sealed partial class TuiWiringTests
             ITuiLocalEngineSupervisor? localEngineSupervisor = null,
             IPolicyPreferencesFacade? policyPreferences = null, ISecurityPreferencesFacade? securityPreferences = null,
             IDiagnosticsPreferencesFacade? diagnosticsPreferences = null,
-            IModelCatalogPreferencesHost? modelCatalogPreferences = null, string? keyBindingsConfigDirectory = null)
+            IModelCatalogPreferencesHost? modelCatalogPreferences = null, string? keyBindingsConfigDirectory = null,
+            bool selectConversationOnOpen = false)
         {
             if (initialColumns.HasValue != initialRows.HasValue)
                 throw new ArgumentException("Initial screen columns and rows must be provided together.");
@@ -3388,7 +3391,8 @@ public sealed partial class TuiWiringTests
                     policyPreferences: policyPreferences ?? PolicyPreferencesHost.Create(Root, Path.Combine(Root, "prefs-data"), Path.Combine(Root, "prefs-config")),
                     securityPreferences: securityPreferences ?? SecurityPreferencesHost.Create(Root, Path.Combine(Root, "prefs-data"), Path.Combine(Root, "prefs-config")),
                     diagnosticsPreferences: diagnosticsPreferences ?? DiagnosticsPreferencesHost.Create(Root, Path.Combine(Root, "prefs-data"), Path.Combine(Root, "prefs-config")),
-                    keyBindingsConfigDirectory: keyBindingsConfigDirectory ?? Path.Combine(Root, "keyboard-config"));
+                    keyBindingsConfigDirectory: keyBindingsConfigDirectory ?? Path.Combine(Root, "keyboard-config"),
+                    selectConversationOnOpen: selectConversationOnOpen);
                 App.SetModelCatalogPreferencesHost(modelCatalogPreferences ?? ModelCatalogPreferencesHost.Create(
                     Path.Combine(Root, "fixture-model-catalog"), Workspace, Path.Combine(Root, "fixture-model-catalog-data")));
                 App.CompanionInteractiveOverride = true; // The controlled DOTNET surface emulates an interactive UTF-8 terminal.

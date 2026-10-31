@@ -13,6 +13,14 @@ Consolas 16 px/ClearType y terminal actual conservados. M9 `2f79a411` integrado;
 no se reabre su trabajo. OmniCoder permanece en solo lectura y su aceptación
 propia no se certifica desde Core.
 
+**Consolidación funcional (2026-10-30 local / 2026-10-31 UTC):** OmniDesktop
+Control ya integra motor Rust 0.4.1, skill automática, captura/UIA/entrada e indicador
+cancelable en Main (`d0122c6c`, `a1dcebe6`). Se recupera el avance local de selección
+de conversación, `inicializar` y comandos/menciones de skills preservando el checkout
+original mediante snapshot. README actualizado a funciones efectivas. La publicación,
+CI, poda e instalación se registran en [el acta de consolidación](docs/validation/main-publication-20261031.md); no se modifica
+el consumidor independiente de escritorio ni OmniCoder.
+
 **Directiva vigente M9/M10 (2026-10-23):** leer primero
 [M9-M10-UI-OWNERSHIP](docs/plans/m8-m10-user-localization.md#directiva-m9-m10-ui-ownership--un-producto-interfaz-preservada-2026-10-23).
 OmniCore es el núcleo del mismo producto, no una integración administrada por el usuario.

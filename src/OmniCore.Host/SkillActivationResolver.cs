@@ -18,7 +18,8 @@ public sealed class SkillActivationResolver
     }
 
     public IReadOnlyList<LoadedSkill> LoadCandidates(IEnumerable<DiscoveredSkill> candidates, SessionId session,
-        SessionSkillActivationStore store, bool workspaceTrusted = true, SkillSelectionLimits? limits = null)
+        SessionSkillActivationStore store, bool workspaceTrusted = true, SkillSelectionLimits? limits = null,
+        IReadOnlySet<SkillActivationIdentity>? replacing = null)
     {
         ArgumentNullException.ThrowIfNull(candidates);
         ArgumentNullException.ThrowIfNull(store);
@@ -28,6 +29,7 @@ public sealed class SkillActivationResolver
         var selectedCandidates = new List<DiscoveredSkill>();
         foreach (var (identity, hash) in active.OrderBy(pair => pair.Key))
         {
+            if (replacing?.Contains(identity) == true) continue;
             var matches = resolved.Where(skill => skill.Scope == identity.Scope
                 && string.Equals(skill.Manifest.Id, identity.Id, StringComparison.Ordinal)
                 && skill.State is not (SkillLifecycleState.Conflict or SkillLifecycleState.Released)).ToArray();

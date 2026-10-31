@@ -1,12 +1,14 @@
 # OmniCore
 
-### Runtime local-first para agentes de IA, modelos y repositorios bajo control explícito.
+### Agentes de IA para conversar, programar y operar ventanas con permisos explícitos.
+
+[![CI de Main](https://github.com/juancgomezm-s/OmniCore/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/juancgomezm-s/OmniCore/actions/workflows/ci.yml)
 
 OmniCore es un runtime **local-first en C#/.NET 10** para trabajar sobre repositorios con modelos locales o de frontera. Su primer cliente es el CLI `omni`; Protocol y Client también están preparados para consumidores como OmniCoder.
 
-La meta es una conversación que conserva contexto, puede inspeccionar y modificar código dentro de permisos explícitos y entrega resultados respaldados por evidencia. Cambiar el modelo no debería exigir cambiar la tarea ni el motor.
+Permite conversar con un modelo, explorar un proyecto, planificar cambios, editar varios archivos, ejecutar validaciones y retomar el trabajo después de una interrupción. En Windows incluye OmniDesktop Control para observar y operar una ventana elegida. La conversación conserva su historial, contexto y evidencia al cambiar de modelo.
 
-[Primeros pasos](#primeros-pasos) · [Experiencia objetivo](#experiencia-objetivo) · [Panel lateral](#panel-lateral-de-sesión) · [Simplicidad y contexto](#simplicidad-y-contexto) · [Estado actual](#estado-actual) · [Roadmap](#roadmap-hacia-v1) · [Documentación](#documentación)
+[Primeros pasos](#primeros-pasos) · [Funciones disponibles](#funciones-disponibles) · [Panel lateral](#panel-lateral-de-sesión) · [Simplicidad y contexto](#simplicidad-y-contexto) · [Estado actual](#estado-actual) · [Roadmap](#roadmap-hacia-v1) · [Documentación](#documentación)
 
 ![Renderizado real de la TUI de OmniCore en una conversación de prueba, con respuesta y código.](docs/images/tui-conversation.png)
 
@@ -16,28 +18,116 @@ La meta es una conversación que conserva contexto, puede inspeccionar y modific
 
 *Captura exportada del driver real de Terminal.Gui (120 × 35 celdas), también con datos de prueba y sin conexión a proveedores.*
 
-## Experiencia objetivo
+## Funciones disponibles
 
-Una interfaz para consultar, planificar, implementar y verificar sin perder el contexto de la conversación ni delegar autoridad al modelo.
+### Empezar un proyecto y retomar una conversación
 
-| Objetivo | Garantía del producto |
-|---|---|
-| **Conversación útil** | Respuestas en el chat, código legible, tablas Markdown, referencias y resultados de herramientas. Las consultas explicativas no requieren crear archivos ni agentes hijos. |
-| **Edición eficiente** | Campo multilínea adaptable, cursor visible, ayuda de comandos y navegación al último mensaje sin forzar el desplazamiento mientras se consulta el historial. |
-| **Elección de modelos** | Selector de modelo y administración separada del catálogo, la visibilidad, los perfiles y las políticas. No se sustituyen modelos de forma que amplíe silenciosamente el gasto o los permisos. |
-| **Actividad comprensible** | Estados distintos para espera, razonamiento, respuesta, herramientas y aprobación; los indicadores se retiran al completar, cancelar, fallar o cambiar de sesión. |
-| **Contexto y consumo claros** | Contexto actual separado del consumo acumulado; fuente y fecha; valores reportados, estimados o no disponibles identificados. |
-| **Trabajo comprobable** | Plan y evidencias inspeccionables: una afirmación del modelo no equivale a un test ejecutado ni a una integración verificada. |
-| **Continuidad** | Sesiones persistidas, recuperación tras interrupciones y artifacts verificables, sin duplicar efectos al reanudar. |
+Ejecuta `omni` en la carpeta del proyecto. La TUI pide elegir **Nueva conversación**,
+**Retomar existente** o **Continuar la última**. Una carpeta puede contener varias
+conversaciones; `F6` permite buscarlas por título o ID. Cancelar conserva el borrador
+sin enviar un mensaje. El historial y los permisos permanecen asociados a su Session.
 
-El lenguaje visual previsto combina superficies oscuras, acentos cian y violeta, selección clara y paneles sin marcos pesados. La conversación ocupa el área principal; los detalles aparecen cuando son necesarios.
+`omni inicializar` desde la terminal o `/inicializar` en la TUI reúne instrucciones,
+README, manifiestos y memorias Markdown locales para generar el bloque gestionado de
+`agents.md`. Puedes revisar las fuentes y sus hashes; se conserva el texto manual.
+Repetirlo sin cambios no reescribe el archivo. El descubrimiento es local y acotado,
+excluye secretos y enlaces y no consume un modelo.
+[Inicialización](docs/project-initialization.md) · [Conversaciones](docs/validation/session-opening-20261030.md).
+
+### Elegir modelo y controlar cómo trabaja
+
+`F3` abre el selector y `F4` los ajustes. OpenRouter presenta los modelos agrupados,
+prioriza los gratuitos y resume contexto y costo de entrada/salida por millón de
+tokens. La administración del catálogo permite decidir cuáles aparecen al elegir.
+Puedes usar modelos locales, tu suscripción ChatGPT o proveedores API configurados.
+Disponibilidad, capacidades y cuotas dependen de cada ruta y cuenta.
+
+- `F1` o `/modo`: elegir PLAN, ACT u ORQ.
+- `Ctrl+F1` o `/permiso`: revisar el nivel de ejecución permitido.
+- `/esfuerzo` (`/effort`): elegir un esfuerzo compatible con el modelo.
+- `/pensamiento` (`/think`): ajustar la presentación del razonamiento disponible.
+
+Esfuerzo, visibilidad del razonamiento y permisos son controles independientes.
+Cambiar de modelo conserva la conversación; una selección incompatible se valida
+antes de invocar al proveedor. El costo y la cuota desconocidos se muestran como
+tales, sin convertirlos en cero ni en un cargo estimado de suscripción.
+
+### Explorar, editar y comprobar código
+
+El agente puede buscar texto, leer archivos por páginas y proponer cambios en el
+workspace autorizado. El parche múltiple prepara un preview con versiones de cada
+archivo y aplica sólo el conjunto autorizado. Los gates ejecutan comandos de
+validación configurados y registran su resultado; una respuesta del modelo no
+sustituye un test ejecutado.
+
+`/undo` permite revisar y confirmar una compensación de efectos registrados. Verifica
+versiones y cambios posteriores antes de restaurar. La navegación de código y los
+diagnósticos mediante LSP usan un servidor que el usuario configura; no se instala
+un servidor de lenguaje automáticamente.
+
+ORQ ofrece workflows Explore → Implement → Verify, hijos con tareas acotadas,
+worktrees propios, seguimiento, cancelación y aceptación de resultados. Publicar un
+resultado al workspace padre es una acción controlada distinta de devolverlo.
+El panel permite inspeccionar capacidad, esperas, herramientas, evidencias y cambios.
+
+### Mantener contexto y memoria
+
+La conversación puede resumir historial antiguo, conservar checkpoints y recuperar
+el trabajo sin repetir automáticamente un efecto incierto. El panel distingue el
+contexto de la última solicitud del consumo acumulado de la sesión.
+
+`/memory session|project|workspace|global` administra memorias por alcance: consultar,
+proponer, revisar candidatos, promover, rechazar y olvidar. La memoria global exige
+confirmación; una memoria no concede permisos ni sustituye una instrucción humana.
+Los detalles de procedencia permiten saber de dónde llegó una contribución.
+
+### Usar skills, extensiones y MCP
+
+Las skills descubiertas aparecen en ayuda y autocompletado incluso antes de abrir
+una conversación. `/skill-<id>` y las menciones humanas inequívocas permiten
+seleccionarlas; las colisiones se muestran para elegir la identidad correcta.
+Se admiten fuentes integradas, del usuario, proyecto, workspace y Session, además
+de formatos portables compatibles. La activación respeta confianza, consentimiento
+y límites; no ejecuta scripts ni hooks por el simple descubrimiento.
+[Invocación y rutas](docs/skills-human-invocation.md).
+
+Los conectores MCP y las extensiones aportan herramientas mediante el mismo control
+de permisos y límites del Host. El panel de sesión muestra conectores en uso.
+OmniDesktop Control está integrado como componente nativo de Core; su uso no exige
+registrar un MCP externo. [Control de escritorio](#omnidesktop-control-en-windows).
+
+### Trabajar desde el teclado y conservar la interfaz
+
+`Ctrl+P` abre la paleta global. Los keybindings configurables, la búsqueda y los
+comandos ejecutan las mismas acciones del cliente. `F2` muestra el panel lateral;
+`/compacto guardar` conserva su densidad compacta. La mascota y sus preferencias
+persisten entre actualizaciones.
+
+`omni` abre en la terminal actual. Windows Terminal puede usar **Consolas 16 px
+lógicos (12 pt), ClearType** y el panel compacto; la aplicación respeta el perfil
+de la terminal. Abrir otra pestaña/ventana requiere una elección explícita.
+La interfaz propia dispone de español, inglés, francés e italiano.
+
+### Actualizar y verificar la entrega
+
+En Windows x64, las actualizaciones de GitHub Releases verifican paquete, manifest,
+SHA-256 y attestations. Puedes revisar la oferta, aplicar al salir o en el próximo
+inicio y revertir a un respaldo verificado. Se conservan configuración, historial,
+memorias y mascota. Main sigue siendo el canal de desarrollo; las releases preview
+conservan su canal y no se promueven silenciosamente a estable.
+
+La cualificación quick/full, la calibración y la batería agentic tienen resultados
+separados. La [batería de once escenarios](docs/validation/m10-agentic-20261030.md)
+registró **Core 11/11 y Pi 10/11** con la misma entrada y modelo declarado: Pi fue
+más rápido en esa muestra; Core se recuperó del 503 provocado. Es una muestra por
+caso, no una clasificación estadística ni una factura de suscripción.
 
 ### Un mismo núcleo, distintos clientes
 
 - **TUI:** conversación interactiva en terminal, panel lateral, selección de modelos, comandos y aprobaciones.
 - **Plain:** salida legible para terminales sencillos y flujos no interactivos.
 - **JSON/NDJSON:** eventos y outcomes estructurados para automatización.
-- **OmniCoder:** consumidor de Protocol y Client. Host separado, transporte y reconexión completos pertenecen al roadmap; no se presentan como producto final ya entregado.
+- **OmniCoder:** consumidor de Protocol y Client. Host separado, stdio, leases, receipts y reconexión construidos en M9 Core; la aceptación de cada consumidor se documenta por separado.
 
 Los clientes dibujan la experiencia. El Core decide estado, permisos, budgets y evidencia. Credenciales y consultas autenticadas no pertenecen al renderer.
 
@@ -45,7 +135,10 @@ Los clientes dibujan la experiencia. El Core decide estado, permisos, budgets y 
 
 `/compacto` permite probar un panel lateral con menos espacios internos; `/compacto guardar` conserva la elección y `/compacto cancelar` la revierte. El chat principal conserva su diseño.
 
-En Windows, el lanzador npm abre `omni` y `omni tui` en un perfil propio de Windows Terminal con ClearType cuando está disponible. Para usar la ventana actual, ejecuta `omni --current-terminal` o define `OMNICORE_CURRENT_TERMINAL=1`. Los comandos de texto, la salida redirigida y SSH conservan el terminal actual. No se modifican los demás perfiles. [Detalles y respaldo](docs/validation/companion-density-cleartype-20261028.md).
+En Windows, `omni` y `omni tui` permanecen en la terminal actual. El perfil
+OmniCore de Windows Terminal permite Consolas 16 px lógicos y ClearType; no es
+necesario abrir otra ventana para iniciar. Los perfiles ajenos se conservan.
+[Preferencias y respaldo](docs/validation/m10-startup-installed-20261030.md).
 
 El panel reúne el estado del trabajo junto a la conversación. Su propósito es permitir
 entender qué está ejecutándose, qué contexto recibió el modelo y qué resultados están
@@ -58,7 +151,7 @@ son datos deterministas de prueba; los estados sin medición se muestran explíc
 
 | Área | Información y acciones disponibles |
 |---|---|
-| **Sesión** | Título, modelo, modo y estado del Run activo. |
+| **Sesión** | Título, modelo, modo, conectores MCP en uso y estado del Run activo. |
 | **Plan** | Jerarquía de tareas, revisión, estado y progreso; navegar entre elementos no ejecuta una tarea. |
 | **Contexto** | Snapshot de la última solicitud, categorías, conteo y procedencia. Se distingue de los tokens acumulados de la sesión. |
 | **Consumo** | Tokens y costo registrados, con valores medidos, estimados o desconocidos identificados. Las cuotas aparecen cuando el proveedor las informa. |
@@ -74,16 +167,14 @@ En **General → Panel lateral y widgets** se configuran visibilidad, tamaño y
 prioridad; las preferencias indican su alcance y origen. El foco y la selección
 se conservan durante cambios de tamaño.
 
-El panel se amplía conforme se conectan funciones del núcleo: los futuros controles de
-memoria entre sesiones, búsqueda e integraciones tendrán acciones sobre los mismos
-servicios del Host. Se documentarán como disponibles cuando sus recorridos estén
-implementados y verificados.
+Memoria multiscoped, búsqueda y acciones de integración utilizan los mismos
+servicios del Host. El panel presenta su estado y evidencia sin ampliar permisos.
 
 ## Cómo funciona
 
 ![Arquitectura: clientes, commands y eventos, runtime, proveedores, herramientas autorizadas, journal, artifacts y telemetría separada.](docs/images/runtime-map.png)
 
-*Mapa de responsabilidades, no declaración de que scheduler, joins o transporte externo estén terminados.*
+*Mapa de responsabilidades. Scheduler, joins y transporte externo tienen su evidencia de M6/M9; cada consumidor conserva su aceptación propia.*
 
 Una solicitud se convierte en un **Turn** dentro de una Session y un **Run**. El modelo recibe una proyección acotada del contexto y puede responder o solicitar herramientas. Cada herramienta pasa por validación, preparación y autorización antes de producir efectos. El estado relevante se registra para inspeccionarlo y reconstruirlo.
 
@@ -176,20 +267,23 @@ funciones declaradas no significan que haya sólo 11 operaciones accesibles por 
 
 ## Estado actual
 
-Resumen documental al **29 de octubre de 2026**. La [arquitectura §24](docs/architecture/arquitectura.md) y las evidencias enlazadas son la fuente de verdad; este README no sustituye la aceptación de cada hito.
+Resumen documental al **30 de octubre de 2026** (fecha local de la integración). La [arquitectura §24](docs/architecture/arquitectura.md) y las evidencias enlazadas son la fuente de verdad; este README no sustituye la aceptación de cada hito.
 
 | Hito | Estado | Evidencia y alcance |
 |---|---|---|
 | **M1 · Runtime y planning** | Cerrado en Windows/Linux | Dominio, journal, permisos, simulación y reconciliación determinista; [aceptación Linux](docs/validation/linux-milestones-closure-20261014.md). |
 | **M2 · Explorer** | Código completo; aceptación pospuesta | Contexto y turnos persistidos. Juan pospuso la prueba real local porque la GPU está ocupada; [estado vigente M1–M8](docs/validation/m1-m8-closure-20261029.md). |
-| **M3 · Mutaciones y procesos** | Código completo; aceptación pospuesta | Prueba real local pospuesta por Juan. Strong Linux y credenciales nativas construidos y validados localmente; candidata pendiente de revisión y CI. [Alcance y evidencia](docs/validation/m1-m8-closure-20261029.md). |
+| **M3 · Mutaciones y procesos** | Código completo; aceptación pospuesta | Prueba real local pospuesta por Juan. Strong Linux y credenciales nativas construidos; cada revisión conserva su validación de CI y sus límites de aceptación real. [Alcance y evidencia](docs/validation/m1-m8-closure-20261029.md). |
 | **M4 · Contexto y TUI v0** | Cerrado en Windows/Linux | [200 turnos, recuperación en otro proceso y TUI en PTY](docs/validation/m4-closure-20261005.md); [aceptación Linux](docs/validation/linux-milestones-closure-20261014.md). No acredita reinicio físico de Windows. |
 | **M5 · Modelos y cualificación** | Cerrado en Windows | [Quick real de ChatGPT por suscripción y Qwen local](docs/validation/m5-closure-20261007.md). Una recomendación no modifica automáticamente la política. |
 | **M5.5 · Fronteras pre-M6** | Cerrado en Windows/Linux | [Acta integral](docs/validation/m55-closure-20261007.md): continuidad protegida, cotas y autoridad, atribución, fingerprint, preimágenes y contratos. [Aceptación Linux](docs/validation/linux-milestones-closure-20261014.md). |
 | **M6 · Multiagente** | Cerrado en Windows/Linux | [Acta integral](docs/validation/m6-integration-20261008.md): Explore/Implement/Verify, scheduler, budgets, joins/FanOut, supervisión/mailbox e inspector. [Revisión de cableado](docs/validation/m6-wiring-audit-20261009.md) y [aceptación Linux](docs/validation/linux-milestones-closure-20261014.md). |
 | **M7 · Aislamiento** | Cerrado en Windows/Linux | [Acta y alcance](docs/validation/m7-isolation-20261010.md): integración autorizada y recuperación, lanes aisladas, Implement→Verify, undo y retención; [aceptación Linux](docs/validation/linux-milestones-closure-20261014.md). |
 | **M8 · Extensibilidad** | Cerrado en Windows | A–H integrados; aceptación manual de Juan el 29-10-2026, incluido el funcionamiento de OpenRouter y su catálogo de modelos. [Aceptación y alcance](docs/validation/m8-windows-user-acceptance-20261029.md). La deuda Linux permanece separada. |
-| **M9–M10** | Ver plan vigente | El cierre M1–M8 no acredita estos hitos. [Bloques construidos, pendientes y aceptación](docs/plans/m8-m10-user-localization.md). |
+| **M9 · Host y protocolo** | Core aceptado e integrado | Host separado, stdio, leases, recuperación, worktrees y seguridad por Session. [Auditoría final](docs/validation/m9-final-audit-20261029.md). |
+| **M10 · CLI v1** | Aceptación funcional Core cerrada | Teclado/paleta, memoria multiscoped, undo, LSP, parche múltiple, calibración y updater. Batería real Core 11/11, Pi 10/11; [evidencia](docs/validation/m10-agentic-20261030.md). |
+| **OmniDesktop Control** | Integrado en Main, Windows x64 | Motor Rust compartido, selección automática por skill, captura/UIA/entrada y cancelación. [Alcance](docs/validation/desktop-main-integration-20261030.md). |
+| **Sesiones, inicialización y skills** | Construidos e integrados en este corte | Elección explícita de conversación, agents.md gestionado e invocaciones humanas; [contratos funcionales](docs/project-initialization.md) y [skills](docs/skills-human-invocation.md). |
 
 La evidencia de cierre M5 documenta **2995 casos: 2991 correctos, 0 fallos y 4 omitidos por permisos de symlink**. Es un resultado fechado, no un contador actualizado automáticamente aquí. Las pruebas con fixtures se distinguen de llamadas autenticadas reales.
 
@@ -226,16 +320,18 @@ otra aplicación MCP; no se instala ni se registra desde OmniCore.
 
 ### Requisitos
 
-Se requiere el **SDK de .NET 10** y Git. Protocol, Client y Sandbox también tienen como destino .NET 8 para OmniCoder. La TUI utiliza Terminal.Gui sobre el SDK oficial de .NET.
+Para compilar se requiere el **SDK de .NET 10**, Git y Node.js 24 para el SDK de extensiones. Protocol, Client y Sandbox también tienen como destino .NET 8. En Windows, construir el componente desktop requiere Rust estable, MSVC y Windows SDK; los paquetes precompilados ya incluyen ese componente. La ejecución del paquete npm usa Node.js 20+ y el runtime .NET 10.
 
 ### Compilación y pruebas
 
 ```powershell
 git clone https://github.com/juancgomezm-s/OmniCore.git
 cd OmniCore
-dotnet build OmniCore.slnx
 npm ci --prefix sdk/extensions --ignore-scripts
 npm test --prefix sdk/extensions
+# Windows, para incluir el desktop nativo:
+# .\native\desktop-control\build.ps1
+dotnet build OmniCore.slnx
 dotnet test --solution OmniCore.slnx
 ```
 
@@ -281,7 +377,7 @@ Landlock, y credenciales mediante `libsecret-1-0` y un Secret Service desbloquea
 (por ejemplo `gnome-keyring`). Al construir desde fuente necesita también un
 compilador C, incluido en `build-essential`. Sin esos componentes, las operaciones
 que los requieren fallan explícitamente. La [validación y los límites de esta
-candidata](docs/validation/m1-m8-closure-20261029.md) están pendientes de revisión y CI.
+candidata](docs/validation/m1-m8-closure-20261029.md) se acreditan por revisión; consulta también la CI de Main enlazada arriba.
 
 ```bash
 git clone https://github.com/juancgomezm-s/OmniCore.git
@@ -448,6 +544,8 @@ dotnet run --project src/OmniCore.Cli -- tui
 |---|---|
 | `Enter` / `Shift+Enter` | Enviar / salto de línea |
 | `/` | Ayuda de comandos |
+| `F1` / `Ctrl+F1` | Modo / permisos de ejecución |
+| `Ctrl+P` | Paleta global de comandos |
 | `F2` / `F3` / `F4` | Panel lateral / elegir modelo / ajustes |
 | `F6` | Buscar y retomar conversaciones del espacio de trabajo |
 | `↑` / `↓` en el selector | Navegación vertical y circular |
@@ -677,7 +775,7 @@ La cualificación quick se ejecuta con `model qualify <modelo> --suite quick`; `
 
 ![Roadmap: M5, M5.5 y M6 cerrados en Windows; próximas etapas de aislamiento, extensiones, Host separado y v1.](docs/images/roadmap.svg)
 
-*Orden previsto, no calendario ni porcentaje de avance. Cada hito exige su propia evidencia.*
+*Referencia de la secuencia de construcción; el estado vigente y la evidencia están en la tabla superior. La revisión Git ampliada de la TUI y la consolidación vectorial conservan su planificación posterior.*
 
 | Etapa | Lo que se pretende entregar |
 |---|---|
@@ -687,7 +785,7 @@ La cualificación quick se ejecuta con `model qualify <modelo> --suite quick`; `
 | **M7 · Aislamiento** | Worktrees, integración y undo de efectos atribuibles al runtime, respetando cambios posteriores del usuario. |
 | **M8 · Extensiones** | MCP, hooks, skills y memoria de sesión sin ampliar autoridad. |
 | **M9 · Host y protocolo** | Host separado, stdio, cliente net8, lease entre procesos y reconexión por secuencia sin pérdida ni duplicación. |
-| **M10 · Madurez v1** | CLI pulido, memoria Project/Workspace/Global, búsqueda, keybindings, cualificación full, calibración e integración de OmniCoder. |
+| **M10 · Madurez v1** | Entrega funcional Core aceptada: memoria multiscoped, búsqueda, keybindings/paleta, undo, LSP, parche múltiple, full/calibración y actualización recuperable. La aceptación del consumidor OmniCoder conserva su alcance propio. |
 
 El producto final debe responder consultas directas sin herramientas, realizar ediciones controladas con pruebas y ofrecer flujos multiagente cuando aporten valor. La metodología multiagente no se aplica a todas las conversaciones.
 

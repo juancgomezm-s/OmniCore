@@ -141,9 +141,12 @@ public sealed partial class TuiApp
         ITuiLocalEngineHost? localEngines = null, Action<string>? localeChanged = null,
         ITuiClaudeAccountHost? claudeAccounts = null, ITuiLocalEngineSupervisor? localEngineSupervisor = null,
         IPolicyPreferencesFacade? policyPreferences = null, ISecurityPreferencesFacade? securityPreferences = null,
-        IDiagnosticsPreferencesFacade? diagnosticsPreferences = null, string? keyBindingsConfigDirectory = null)
+        IDiagnosticsPreferencesFacade? diagnosticsPreferences = null, string? keyBindingsConfigDirectory = null,
+        bool selectConversationOnOpen = false)
     {
         _client = client;
+        _conversationSelectionPending = selectConversationOnOpen;
+        _showOpeningSelector = selectConversationOnOpen;
         _localeSelection = localeSelection;
         _localeChanged = localeChanged;
         _locale = UiLocaleCodes.NormalizeOrDefault(localeSelection?.Locale ?? locale);
@@ -204,7 +207,8 @@ public sealed partial class TuiApp
         Action<WorkspaceAlternative>? alternativeRequested = null, Action<string>? workspaceRequested = null)
     {
         var app = new TuiApp(client, locale, turnHost: turnHost, localeSelection: localeSelection,
-            localeChanged: localeChanged, claudeAccounts: claudeAccounts, localEngineSupervisor: localEngineSupervisor);
+            localeChanged: localeChanged, claudeAccounts: claudeAccounts, localEngineSupervisor: localEngineSupervisor,
+            selectConversationOnOpen: true);
         using var application = Application.Create();
         // Native Windows input avoids VT escape-sequence mouse/keyboard ambiguity.
         // Preserve explicit driver configuration and the platform default on Unix.
@@ -315,6 +319,9 @@ public sealed partial class TuiApp
     internal bool PollOnce()
     {
         while (_uiActions.TryDequeue(out var action)) action();
+        if (_showOpeningSelector && _window is not null && _overlay is null)
+        { _showOpeningSelector = false; ShowConversations(); }
+        if (_conversationSelectionPending) return true;
         ReflowPreferencesIfNeeded();
         PollEvents();
         ReflowCompanionHub();
@@ -383,7 +390,7 @@ public sealed partial class TuiApp
     internal void OnApplicationKeyDown(object? sender, Key key)
     {
         PrioritizeInput();
-        if (HandleKeyBinding(key)) return;
+        if (!_conversationSelectionPending && HandleKeyBinding(key)) return;
         // Esc es la tecla Command.Quit POR DEFECTO en Terminal.Gui 2.6 (Application.DefaultKeyBindings):
         // si no se marca Handled tras consumirla, el framework además cierra toda la aplicación
         // (un Esc para cerrar un overlay mataría la TUI entera). F2/F3 igual: consumidas aquí.
@@ -647,7 +654,7 @@ public sealed partial class TuiApp
                 var names = ReadStringArray(commandCatalogJson, "commands")
                     .Concat(new[] { "act", "context", "tools", "plan", "mode", "runmode", "ultracode", "reasoning", "effort", "think", "permission", "permissions",
                         "cancel", "interrupt", "preferences", "model", "models", "sidebar", "agents", "delegate", "agent", "join", "fanout", "animation", "images",
-                        "new", "sessions", "resume-session", "rename-session", "clear", "compact", "compacto", "density", "keybindings", "palette" })
+                        "initialize", "new", "sessions", "resume-session", "rename-session", "clear", "compact", "compacto", "density", "keybindings", "palette" })
                     .Concat(ClientCommandRegistry.Default.Commands.Select(command => command.Name))
                     .Where(name => !TuiMenuCommands.IsMenuOwned(name, aliases));
                 _slashAutocompleteNames = aliases.CompletionNames(names)
@@ -709,6 +716,7 @@ public sealed partial class TuiApp
 
     private string CommandDescription(string command) => HumanCommandAliases.NormalizeSlashHead(command) switch
     {
+        "/initialize" => _localization.Resolve("command.initialize"),
         "/new" => _localization.Resolve("shell.conversation.new"),
         "/sessions" => _localization.Resolve("shell.conversation.title"),
         "/resume-session" => _localization.Resolve("shell.conversation.resume"),
@@ -810,6 +818,14 @@ public sealed partial class TuiApp
             .Read().CommandAliases);
         // Whitespace is grammar for commands, but remains literal in a conversation prompt.
         var input = HumanCommandAliases.NormalizeSlashSyntax(aliases.NormalizeSlashHead(rawInput.Trim()));
+        if (_conversationSelectionPending)
+        {
+            if (input is "/new" or "/sessions" or "/resume-session" || input.StartsWith("/resume-session ", StringComparison.Ordinal))
+                HandleConversationSlash(input);
+            else ShowConversations();
+            return;
+        }
+        if (HandleInitializationSlash(input)) return;
         if (HandleDensitySlash(input)) return;
         if (HandleConversationSlash(input)) return;
         if (HandleKeyBindingsSlash(input)) return;
@@ -1308,6 +1324,7 @@ public sealed partial class TuiApp
 
     private void RunClientAction(ClientActionInvocation action)
     {
+        if (_conversationSelectionPending) { ShowConversations(); return; }
         if (!action.Origin.StartsWith("KeyBinding:", StringComparison.Ordinal) && action.Origin != "Palette") _composer!.Text = "";
         if (OpenClientView(action)) return;
         // La TUI lleva su propio Turn: cancelar o interrumpir detiene primero ese Turn (misma ruta que antes).
@@ -1505,6 +1522,7 @@ public sealed partial class TuiApp
         string? delegationId = null, WorkflowRequestDto? workflow = null, string? workflowCommandId = null,
         string? extensionToolName = null, IReadOnlyList<TuiAttachmentReference>? attachments = null)
     {
+        if (_conversationSelectionPending) { ShowConversations(); return false; }
         if (_turnHost is null) return false;
         if (delegationId is not null) return StartDelegationTurn(delegationId);
         if (_turnBusy) { ShowMessage(_localization.Resolve("shell.a_turn_is_already_processing_wait_or_use_cancel")); return false; }
@@ -1631,6 +1649,7 @@ public sealed partial class TuiApp
 
     private void PollEvents()
     {
+        if (_conversationSelectionPending) { RenderState(); return; }
         var identity = _client.Query("sessionIdentity", CancellationToken.None);
         if (identity is not null && JsonObj.Parse(identity.Json).TryGetValue("sessionId", out var session)
             && session != _cursorSession)
@@ -1664,6 +1683,7 @@ public sealed partial class TuiApp
 
     private ClientState RefreshState()
     {
+        if (_conversationSelectionPending) return ClientState.Empty();
         if (_client.Query("sessionIdentity", CancellationToken.None) is { } identity)
             JsonObj.Parse(identity.Json).TryGetValue("sessionId", out _cursorSession);
         var state = ClientState.Empty();

@@ -30,7 +30,7 @@ public sealed partial class TuiApp
     private bool TryHandleWorkspaceNavigation(string command)
     {
         if (!WorkspaceNavigationCommand.TryParse(command, out var destination)) return false;
-        if (_turnBusy || _activeInteraction is not null || _overlay is not null || _pendingAttachments.Count > 0)
+        if (HasActiveModelWork || _activeInteraction is not null || _overlay is not null || _pendingAttachments.Count > 0)
         { ShowMessage(WorkspaceNavigationResources.Text(_locale, "busy")); return true; }
         if (destination.Length == 0)
         { ShowMessage(Environment.CurrentDirectory); return true; }

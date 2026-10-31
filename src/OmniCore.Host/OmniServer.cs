@@ -1656,7 +1656,9 @@ public sealed partial class OmniServer : IOmniClient, ITrustedUserActionClient
         SessionSkillWorkflowCommands.Refresh(_commandService.Registry, _lastSessionId, _workspaceRoot,
             paths.DataDirectory, _workspaceRoot is null ? null : OmniHost.WorkspaceDataDirectory(paths, _workspaceRoot),
             trusted, ProjectExtensionPackageCatalog.Ready(_workspaceRoot ?? Directory.GetCurrentDirectory(),
-                paths, trusted));
+                paths, trusted), allCandidates: DiscoverAllSkillSources(paths,
+                    _workspaceRoot is null ? null : OmniHost.WorkspaceDataDirectory(paths, _workspaceRoot),
+                    _lastSessionId, trusted, CancellationToken.None));
     }
 
     public RunReasoningSelectionState? CurrentRunReasoningSelection()

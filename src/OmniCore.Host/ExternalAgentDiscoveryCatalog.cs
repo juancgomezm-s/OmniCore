@@ -155,7 +155,18 @@ public sealed class ExternalAgentDiscoveryCatalog
         {
             token.ThrowIfCancellationRequested();
             var agentsOverride = Path.Combine(directory, "AGENTS.override.md");
-            var agents = Path.Combine(directory, "AGENTS.md");
+            // Match the initializer's filename on case-sensitive filesystems as well.
+            // Conflicting case variants never win by directory enumeration order.
+            var variants = trusted ? Directory.EnumerateFiles(directory)
+                .Where(path => Path.GetFileName(path).Equals("agents.md", StringComparison.OrdinalIgnoreCase))
+                .Take(2).ToArray() : [];
+            var agents = variants.Length == 1 ? variants[0] : Path.Combine(directory, "AGENTS.md");
+            if (variants.Length > 1)
+            {
+                output.Add(new(ExternalAgentSourceKind.Instruction, "Codex", "Project",
+                    SafeDisplayPath(agents), "", "inactive", "Ambiguous case variants of agents.md; resolve the conflict before loading."));
+                continue;
+            }
             if (trusted && HasNonEmptyText(agentsOverride)) AddDocument(agentsOverride, "Codex", "Project", true, output, token,
                 "override replaces AGENTS.md at this directory");
             else AddDocument(agents, "Codex", "Project", trusted, output, token, null);

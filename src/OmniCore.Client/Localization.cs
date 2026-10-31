@@ -101,6 +101,8 @@ public sealed class Localization
             return new(qualificationText, Locale, Locale, false);
         if (UndoResources.TryTranslate(Locale, key, out var undoText))
             return new(undoText, Locale, Locale, false);
+        if (ProjectEntryResources.TryTranslate(Locale, key, out var entryText))
+            return new(entryText, Locale, Locale, false);
         if (AgentInspectorResources.TryTranslate(Locale, key, out var inspectorText))
             return new(inspectorText, Locale, Locale, false);
         if (ConversationSearchResources.TryTranslate(Locale, key, out var searchText))

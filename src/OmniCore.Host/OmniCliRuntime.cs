@@ -1070,7 +1070,12 @@ public sealed partial class OmniCliRuntime : IDisposable
         int exitCode;
         try
         {
-            exitCode = await RunTurnAsync("", runIsAct, diagnostics, cancellationToken, conversationOnly: true,
+            var invocationText = !isChoiceContinuation && !isQuestionnaireContinuation
+                ? ReadSkillInvocationText(server.AcquireStore().ReadFrom(session, admitted.FirstSequence ?? long.MaxValue)
+                    .Where(evt => evt.Sequence <= admitted.LastSequence && evt.RunId == run)
+                    .Select(server.AcquireCodecs().Decode).OfType<UserInputReceived>()
+                    .LastOrDefault()?.InputPartsJson) : "";
+            exitCode = await RunTurnAsync(invocationText, runIsAct, diagnostics, cancellationToken, conversationOnly: true,
                 inputAlreadyPersisted: true, expectedSession: session, expectedRun: run,
                 delegationId: choiceDelegationId,
                 persistedContinuation: isChoiceContinuation ? admitted : null,
@@ -3127,9 +3132,9 @@ public sealed partial class OmniCliRuntime : IDisposable
         NativeToolActionRequest? nativeToolAction = null, Action<string>? humanShellOutput = null,
         NativeWeakSandboxActionContinuation? nativeWeakActionContinuation = null)
     {
+        var humanSkillInput = prompt;
         using var desktopCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cancellationToken = desktopCancellation.Token;
-        var desktopInvocationInput = prompt;
         SessionId? processSessionToStop = null;
         RunId? processRunToStop = null;
         if (turnBoost is null && turnBoostId is not null)
@@ -3951,7 +3956,7 @@ public sealed partial class OmniCliRuntime : IDisposable
                         ? externalProjectIdentity : null,
                     externalTrustStore.IsTrusted)
                 : [];
-            var desktopHumanInput = delegation is null && workflowStage is null ? desktopInvocationInput : "";
+            var desktopHumanInput = delegation is null && workflowStage is null ? humanSkillInput : "";
             if (desktopHumanInput.Length == 0 && delegation is null && workflowStage is null && inputAlreadyPersisted)
                 desktopHumanInput = DesktopSkillDemand.ReadHumanText(server.AcquireStore().ReadFrom(sessionId, 1)
                     .Where(evt => evt.RunId == runId).Select(server.AcquireCodecs().Decode)
@@ -4027,6 +4032,14 @@ public sealed partial class OmniCliRuntime : IDisposable
                 desktopGate.Select(workflowStage is null ? loadedProjectSkills : []);
                 hostTools.ComposeDesktopTool(desktopTool, desktopGate.Selected);
             }
+            if (delegation is null && routingResume is null && openTurn is null
+                && nativeToolAction is null && nativeWeakActionContinuation is null
+                && nativeChildPermissionContinuation is null && weakSandboxContinuation is null
+                && persistedContinuation is null && humanSkillInput.Length > 0)
+                SkillHumanInvocationActivation.Activate(humanSkillInput, DiscoverSkills(), sessionId, skillStore,
+                    skillLimits, workspaceConfig.Trusted, payload => new EventStream(server.AcquireStore(),
+                        server.AcquireCodecs(), sessionId).Append(payload, DurabilityClass.Barrier),
+                    server.SkillInvocationOccupiedNames());
             RefreshSkillComposition();
             if (delegation is null && skillCandidates.Count > 0)
                 hostTools.RegisterSkillLoadTool(new SkillLoadTool(sessionId,

@@ -3656,6 +3656,8 @@ public sealed partial class CliEndToEndTests
         var priorLocale = Environment.GetEnvironmentVariable("OMNI_LOCALE");
         var priorModel = Environment.GetEnvironmentVariable("OMNI_MODEL");
         var priorBaseUrl = Environment.GetEnvironmentVariable("OMNI_BASE_URL");
+        var priorAgentSources = new[] { "OMNICORE_AGENT_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "OPENCODE_CONFIG_DIR", "XDG_CONFIG_HOME" }
+            .ToDictionary(name => name, Environment.GetEnvironmentVariable, StringComparer.Ordinal);
         OmniCliRuntime? previousRuntime = null;
         var completed = false;
         try
@@ -3666,6 +3668,8 @@ public sealed partial class CliEndToEndTests
             Environment.SetEnvironmentVariable("OMNI_LOCALE", null);
             Environment.SetEnvironmentVariable("OMNI_MODEL", null);
             Environment.SetEnvironmentVariable("OMNI_BASE_URL", null);
+            foreach (var name in priorAgentSources.Keys)
+                Environment.SetEnvironmentVariable(name, Path.Combine(root, "isolated-agents", name));
             await using var provider = new ScriptedHttpProvider();
             File.WriteAllText(Path.Combine(config, "providers.yaml"), string.Join(Environment.NewLine,
                 "providers:", "  scripted:", "    family: OpenAiChatCompatible", "    baseUrl: " + provider.BaseUrl,
@@ -3686,6 +3690,7 @@ public sealed partial class CliEndToEndTests
             Environment.SetEnvironmentVariable("OMNI_LOCALE", priorLocale);
             Environment.SetEnvironmentVariable("OMNI_MODEL", priorModel);
             Environment.SetEnvironmentVariable("OMNI_BASE_URL", priorBaseUrl);
+            foreach (var pair in priorAgentSources) Environment.SetEnvironmentVariable(pair.Key, pair.Value);
             if (previousRuntime is not null) CliApp.UseRuntimeForTests(previousRuntime).Dispose();
             Environment.CurrentDirectory = previousDirectory;
             if (preserveOnFailure && !completed)
