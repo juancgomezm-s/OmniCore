@@ -65,6 +65,12 @@ que conserve F3 y que Enter use el selector existente, con borrador intacto y ce
 comandos enviados. No se filtran coincidencias ni se cambia la búsqueda de producto.
 La regresión local de paleta pasa 19/19, sin fallos ni omisiones.
 
+La instalación npm Windows posterior alcanzó el límite de 15 minutos tras compilar
+el componente Rust y publicar el CLI, sin registrar un test fallido. Este job
+ejercita dos instalaciones desde fuentes; se amplía sólo su límite Windows a 30
+minutos. Linux conserva 15 minutos y todos los pasos, smoke y comprobaciones
+siguen habilitados. La CI final debe aceptar también ese recorrido completo.
+
 ## CI, release, instalación y poda
 
 El resultado final de CI, SHA de Main, versión preview, hashes de assets e
