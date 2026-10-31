@@ -8,7 +8,7 @@ OmniCore es un runtime **local-first en C#/.NET 10** para trabajar sobre reposit
 
 Permite conversar con un modelo, explorar un proyecto, planificar cambios, editar varios archivos, ejecutar validaciones y retomar el trabajo después de una interrupción. En Windows incluye OmniDesktop Control para observar y operar una ventana elegida. La conversación conserva su historial, contexto y evidencia al cambiar de modelo.
 
-[Primeros pasos](#primeros-pasos) · [Funciones disponibles](#funciones-disponibles) · [Panel lateral](#panel-lateral-de-sesión) · [Simplicidad y contexto](#simplicidad-y-contexto) · [Estado actual](#estado-actual) · [Roadmap](#roadmap-hacia-v1) · [Documentación](#documentación)
+[Primeros pasos](#primeros-pasos) · [Funciones disponibles](#funciones-disponibles) · [Panel lateral](#panel-lateral-de-sesión) · [Simplicidad y contexto](#simplicidad-y-contexto) · [Compatibilidad y validación](#compatibilidad-y-validación) · [Documentación](#documentación)
 
 ![Renderizado real de la TUI de OmniCore en una conversación de prueba, con respuesta y código.](docs/images/tui-conversation.png)
 
@@ -127,7 +127,7 @@ caso, no una clasificación estadística ni una factura de suscripción.
 - **TUI:** conversación interactiva en terminal, panel lateral, selección de modelos, comandos y aprobaciones.
 - **Plain:** salida legible para terminales sencillos y flujos no interactivos.
 - **JSON/NDJSON:** eventos y outcomes estructurados para automatización.
-- **OmniCoder:** consumidor de Protocol y Client. Host separado, stdio, leases, receipts y reconexión construidos en M9 Core; la aceptación de cada consumidor se documenta por separado.
+- **OmniCoder:** consumidor de Protocol y Client, con Host separado, stdio, leases, receipts y reconexión; la aceptación de cada consumidor se documenta por separado.
 
 Los clientes dibujan la experiencia. El Core decide estado, permisos, budgets y evidencia. Credenciales y consultas autenticadas no pertenecen al renderer.
 
@@ -174,7 +174,7 @@ servicios del Host. El panel presenta su estado y evidencia sin ampliar permisos
 
 ![Arquitectura: clientes, commands y eventos, runtime, proveedores, herramientas autorizadas, journal, artifacts y telemetría separada.](docs/images/runtime-map.png)
 
-*Mapa de responsabilidades. Scheduler, joins y transporte externo tienen su evidencia de M6/M9; cada consumidor conserva su aceptación propia.*
+*Mapa de responsabilidades entre clientes, runtime, proveedores y herramientas; cada consumidor conserva su aceptación propia.*
 
 Una solicitud se convierte en un **Turn** dentro de una Session y un **Run**. El modelo recibe una proyección acotada del contexto y puede responder o solicitar herramientas. Cada herramienta pasa por validación, preparación y autorización antes de producir efectos. El estado relevante se registra para inspeccionarlo y reconstruirlo.
 
@@ -182,7 +182,7 @@ Una solicitud se convierte en un **Turn** dentro de una Session y un **Run**. El
 |---|---|
 | **Session / Run** | La sesión identifica la conversación; el Run conserva el trabajo activo hasta superar sus gates. |
 | **Turn / ModelStep** | Una intención lógica puede necesitar varias llamadas al modelo. Suspender por una aprobación no debe perder pasos, contexto ni consumo. |
-| **Task / Lane / AgentExecution** | Trabajo, camino de ejecución e instancia concreta. Scheduler M6 con lectores paralelos y escritoras serializadas en un Host compartido. |
+| **Task / Lane / AgentExecution** | Trabajo, camino de ejecución e instancia concreta. Scheduler con lectores paralelos y escritoras serializadas en un Host compartido. |
 | **ModelRoute / AgentProfile** | Cómo acceder al modelo y qué capacidades/política efectiva aplicar, sin permisos inventados por el modelo. |
 | **Journal / Artifacts** | Eventos canónicos append-only para el estado; contenido inmutable identificado por hash para respuestas, contexto y evidencias. |
 | **Completion Gates** | Condiciones verificables: «el modelo terminó» y «el trabajo está validado» son cosas diferentes. |
@@ -265,37 +265,23 @@ funciones declaradas no significan que haya sólo 11 operaciones accesibles por 
 · [Método, versiones, hashes y reproducción](docs/validation/initial-context-20261013.md)
 · [Datos de las nueve capturas](docs/validation/assets/initial-context-20261013.json).
 
-## Estado actual
+## Compatibilidad y validación
 
-Resumen documental al **30 de octubre de 2026** (fecha local de la integración). La [arquitectura §24](docs/architecture/arquitectura.md) y las evidencias enlazadas son la fuente de verdad; este README no sustituye la aceptación de cada hito.
-
-| Hito | Estado | Evidencia y alcance |
-|---|---|---|
-| **M1 · Runtime y planning** | Cerrado en Windows/Linux | Dominio, journal, permisos, simulación y reconciliación determinista; [aceptación Linux](docs/validation/linux-milestones-closure-20261014.md). |
-| **M2 · Explorer** | Código completo; aceptación pospuesta | Contexto y turnos persistidos. Juan pospuso la prueba real local porque la GPU está ocupada; [estado vigente M1–M8](docs/validation/m1-m8-closure-20261029.md). |
-| **M3 · Mutaciones y procesos** | Código completo; aceptación pospuesta | Prueba real local pospuesta por Juan. Strong Linux y credenciales nativas construidos; cada revisión conserva su validación de CI y sus límites de aceptación real. [Alcance y evidencia](docs/validation/m1-m8-closure-20261029.md). |
-| **M4 · Contexto y TUI v0** | Cerrado en Windows/Linux | [200 turnos, recuperación en otro proceso y TUI en PTY](docs/validation/m4-closure-20261005.md); [aceptación Linux](docs/validation/linux-milestones-closure-20261014.md). No acredita reinicio físico de Windows. |
-| **M5 · Modelos y cualificación** | Cerrado en Windows | [Quick real de ChatGPT por suscripción y Qwen local](docs/validation/m5-closure-20261007.md). Una recomendación no modifica automáticamente la política. |
-| **M5.5 · Fronteras pre-M6** | Cerrado en Windows/Linux | [Acta integral](docs/validation/m55-closure-20261007.md): continuidad protegida, cotas y autoridad, atribución, fingerprint, preimágenes y contratos. [Aceptación Linux](docs/validation/linux-milestones-closure-20261014.md). |
-| **M6 · Multiagente** | Cerrado en Windows/Linux | [Acta integral](docs/validation/m6-integration-20261008.md): Explore/Implement/Verify, scheduler, budgets, joins/FanOut, supervisión/mailbox e inspector. [Revisión de cableado](docs/validation/m6-wiring-audit-20261009.md) y [aceptación Linux](docs/validation/linux-milestones-closure-20261014.md). |
-| **M7 · Aislamiento** | Cerrado en Windows/Linux | [Acta y alcance](docs/validation/m7-isolation-20261010.md): integración autorizada y recuperación, lanes aisladas, Implement→Verify, undo y retención; [aceptación Linux](docs/validation/linux-milestones-closure-20261014.md). |
-| **M8 · Extensibilidad** | Cerrado en Windows | A–H integrados; aceptación manual de Juan el 29-10-2026, incluido el funcionamiento de OpenRouter y su catálogo de modelos. [Aceptación y alcance](docs/validation/m8-windows-user-acceptance-20261029.md). La deuda Linux permanece separada. |
-| **M9 · Host y protocolo** | Core aceptado e integrado | Host separado, stdio, leases, recuperación, worktrees y seguridad por Session. [Auditoría final](docs/validation/m9-final-audit-20261029.md). |
-| **M10 · CLI v1** | Aceptación funcional Core cerrada | Teclado/paleta, memoria multiscoped, undo, LSP, parche múltiple, calibración y updater. Batería real Core 11/11, Pi 10/11; [evidencia](docs/validation/m10-agentic-20261030.md). |
-| **OmniDesktop Control** | Integrado en Main, Windows x64 | Motor Rust compartido, selección automática por skill, captura/UIA/entrada y cancelación. [Alcance](docs/validation/desktop-main-integration-20261030.md). |
-| **Sesiones, inicialización y skills** | Construidos e integrados en este corte | Elección explícita de conversación, agents.md gestionado e invocaciones humanas; [contratos funcionales](docs/project-initialization.md) y [skills](docs/skills-human-invocation.md). |
-
-La evidencia de cierre M5 documenta **2995 casos: 2991 correctos, 0 fallos y 4 omitidos por permisos de symlink**. Es un resultado fechado, no un contador actualizado automáticamente aquí. Las pruebas con fixtures se distinguen de llamadas autenticadas reales.
+La CI comprueba el runtime y los paquetes en Windows y Linux. OmniDesktop Control
+requiere Windows x64 y una sesión interactiva. Las capacidades disponibles dependen
+del sistema, el proveedor y la configuración; la [documentación de arquitectura](docs/architecture/arquitectura.md)
+y las evidencias enlazadas detallan sus límites. Las pruebas con fixtures se distinguen
+de llamadas autenticadas reales.
 
 ### Modelos y proveedores
 
 | Conexión | Implementación | Validación documentada |
 |---|---|---|
-| **ChatGPT por suscripción** | Login y Responses con perfil Codex | Quick autenticada real de la ruta documentada en M5. |
+| **ChatGPT por suscripción** | Login y Responses con perfil Codex | Quick autenticada real de la ruta documentada. |
 | **Local / llama.cpp** | Chat compatible, configuración y supervisión de host local | Quick real de Qwen en la configuración documentada; no cualifica automáticamente cualquier modelo local. |
-| **OpenAI Responses API** | Adapter nativo | Fixtures; aceptación con API de pago no acreditada en el cierre M5. |
+| **OpenAI Responses API** | Adapter nativo | Fixtures; aceptación con API de pago no acreditada. |
 | **Anthropic Messages** | Adapter nativo y semántica del proveedor | Fixtures; aceptación autenticada de API pendiente. |
-| **OpenRouter** | Conexiones User, catálogo/registro de modelos, adapter compatible y créditos en CLI/TUI | Juan confirmó funcionamiento y catálogo de modelos; [M8 aceptado en Windows](docs/validation/m8-windows-user-acceptance-20261029.md). No se atribuyen nuevas mediciones de créditos a esta aceptación. |
+| **OpenRouter** | Conexiones User, catálogo/registro de modelos, adapter compatible y créditos en CLI/TUI | Funcionamiento y catálogo de modelos [validados en Windows](docs/validation/m8-windows-user-acceptance-20261029.md). No se atribuyen nuevas mediciones de créditos a esta aceptación. |
 
 Disponibilidad y cuotas dependen de la cuenta y del proveedor en el momento de la consulta. No hay una lista universal de modelos garantizados para todos los usuarios.
 
@@ -442,7 +428,7 @@ firmada; stable sólo ofrece versiones estables publicadas y puede no tener ning
 se muestra un comando de recuperación PowerShell que conserva el helper fuera
 del paquete: permite restaurar el respaldo verificado sin red si `omni` deja de
 arrancar. Guarda ese comando; requiere confirmación explícita y rechaza procesos activos. Alcance y evidencia
-en [M10](docs/plans/github-updates.md).
+en la [documentación de actualizaciones](docs/plans/github-updates.md).
 
 **Actualización al iniciar (Windows x64):** el arranque npm de una
 release Windows x64 puede comprobar y descargar en segundo plano. En
@@ -452,11 +438,11 @@ o aplicar **En el próximo inicio**. El reinicio conserva la conversación y
 se aplaza si hay trabajo o borradores pendientes. La terminal actual y el canal
 estable se conservan. [Alcance y pruebas](docs/plans/m10-startup-updates-20261030.md).
 
-M10 incorpora la paleta global (**Ctrl+P**), modo (**F1**, `/modo`), permisos
+La TUI incorpora la paleta global (**Ctrl+P**), modo (**F1**, `/modo`), permisos
 (**Ctrl+F1**, `/permiso`) y `/undo` con revisión previa y confirmación humana.
 `omni model qualify <modelo> --suite full` ejecuta llamadas reales y fixtures de
 código desechables; `omni model calibration <modelo>` consulta evidencia sin llamar
-al proveedor. [Alcance y aceptación de M10 Core](docs/plans/m10-closure-20261030.md).
+al proveedor. [Alcance y validación funcional](docs/plans/m10-closure-20261030.md).
 
 Ejecuta `omni` desde la carpeta del proyecto para abrir la interfaz integrada
 con categorías laterales de preferencias. También está disponible `omni tui`.
@@ -629,7 +615,7 @@ Los permisos del proyecto y las restricciones guardadas siguen aplicándose.
 `filesystem.write` crea archivos nuevos y conserva el reemplazo de existentes cuando
 la política efectiva lo autoriza, con lectura previa y token vigente. Se prefieren
 parches localizados: conservan el archivo original, su codificación y el contenido
-ajeno al cambio. La normalización de write a edición sigue pendiente en M9-L-MUT-01;
+ajeno al cambio. La conversión automática de escrituras a ediciones está pendiente;
 los procesos no pueden ampliar permisos ni evadir presupuestos de mutación.
 [Contrato de edición y recuperación](docs/validation/frontier-file-identity-20261017.md).
 
@@ -771,24 +757,6 @@ pwsh -File tools/test-sqlite-durability.ps1
 
 La cualificación quick se ejecuta con `model qualify <modelo> --suite quick`; `--probe-timeout <segundos>` ajusta el límite por probe. Consulte [las condiciones de reproducción](docs/validation/m5-closure-20261007.md) y [el alcance de Qualified](docs/validation/m5-quick-qualification-scope.md) antes de realizar llamadas reales.
 
-## Roadmap hacia v1
-
-![Roadmap: M5, M5.5 y M6 cerrados en Windows; próximas etapas de aislamiento, extensiones, Host separado y v1.](docs/images/roadmap.svg)
-
-*Referencia de la secuencia de construcción; el estado vigente y la evidencia están en la tabla superior. La revisión Git ampliada de la TUI y la consolidación vectorial conservan su planificación posterior.*
-
-| Etapa | Lo que se pretende entregar |
-|---|---|
-| **M5.5 · Fronteras** | Continuidad sin perder uso ni identidad, rutas autorizadas, atribución precisa, separación de deltas y eventos, contratos congelados. |
-| **M6 · Multiagente** | Explore, Implement y Verify diferenciables; scheduler, capacidad, joins, supervisión y budgets jerárquicos. Lecturas paralelas; escrituras serializadas hasta M7. |
-| **M6/M7 · Validación adaptativa** | Evidencia de integración, validación inmediata y deuda visible. Un test unitario aislado no prueba todo el wiring. |
-| **M7 · Aislamiento** | Worktrees, integración y undo de efectos atribuibles al runtime, respetando cambios posteriores del usuario. |
-| **M8 · Extensiones** | MCP, hooks, skills y memoria de sesión sin ampliar autoridad. |
-| **M9 · Host y protocolo** | Host separado, stdio, cliente net8, lease entre procesos y reconexión por secuencia sin pérdida ni duplicación. |
-| **M10 · Madurez v1** | Entrega funcional Core aceptada: memoria multiscoped, búsqueda, keybindings/paleta, undo, LSP, parche múltiple, full/calibración y actualización recuperable. La aceptación del consumidor OmniCoder conserva su alcance propio. |
-
-El producto final debe responder consultas directas sin herramientas, realizar ediciones controladas con pruebas y ofrecer flujos multiagente cuando aporten valor. La metodología multiagente no se aplica a todas las conversaciones.
-
 ## Garantías de diseño
 
 - **El modelo propone; el runtime autoriza.** No ejecuta herramientas ni se concede permisos.
@@ -798,7 +766,9 @@ El producto final debe responder consultas directas sin herramientas, realizar e
 - **Evidencia honesta.** Ausencia de cuota, precio, resultado o validación se muestra como ausencia.
 - **UI desacoplada.** Terminal.Gui y Spectre.Console sólo en CLI; Protocol y Client sin framework visual.
 
-Son principios de diseño, no una declaración de aceptación total. Entre los elementos pendientes se encuentran la validación en Linux, el sandbox Strong en Linux y el lease de sesión entre procesos previsto para M9. El bloqueo de escritores cooperantes no equivale a una operación compare-and-swap portable frente a cualquier editor externo.
+La disponibilidad de aislamiento y las garantías de persistencia dependen del host;
+la documentación de arquitectura detalla su alcance. El bloqueo de escritores
+cooperantes no equivale a una operación compare-and-swap portable frente a cualquier editor externo.
 
 ## Organización del código
 
@@ -827,7 +797,7 @@ Son principios de diseño, no una declaración de aceptación total. Entre los e
 
 ## Extensiones locales
 
-La ampliación de M8 incorpora paquetes locales con manifiesto versionado,
+Las extensiones usan paquetes locales con manifiesto versionado,
 consentimiento ligado a hashes, administración CLI/TUI y vistas declarativas.
 Los pilotos Filetree, Agent Flow y Time Machine reutilizan archivos/Git, agentes
 y checkpoints de Core; no necesitan Node. El SDK TypeScript permite extensiones
@@ -856,23 +826,24 @@ maqueta ni una prueba de inferencia, y no sustituye la aceptación manual en ter
 
 [Instalación, SDK y ejemplos](sdk/extensions/README.md) ·
 [Contratos e integración futura de clientes](docs/extensions/client-integration.md) ·
-[Plan coordinado M8](docs/plans/extensions-platform.md).
+[Plataforma de extensiones](docs/plans/extensions-platform.md).
 
 ## Documentación
 
 - [Especificación del producto](docs/spec/OmniCore-v1.md).
 - [Decisiones de arquitectura](docs/adr/README.md): los ADR vigentes prevalecen sobre la spec.
-- [Arquitectura, invariantes y roadmap](docs/architecture/arquitectura.md).
-- [Cierre M4: contexto, recuperación y terminal](docs/validation/m4-closure-20261005.md).
-- [Cierre M5: cualificación real](docs/validation/m5-closure-20261007.md).
-- [Plan de aceptación M5.5](docs/validation/m55-closure-plan.md).
-- [Contratos pre-M6](docs/architecture/pre-m6-record-contracts.md).
+- [Arquitectura e invariantes](docs/architecture/arquitectura.md).
+- [Contexto, recuperación y terminal](docs/validation/m4-closure-20261005.md).
+- [Cualificación de modelos](docs/validation/m5-closure-20261007.md).
+- [Continuidad y límites del runtime](docs/validation/m55-closure-plan.md).
+- [Contratos de registros y eventos](docs/architecture/pre-m6-record-contracts.md).
 - [Propuestas de modo y autoridad](docs/architecture/mode-proposals.md).
-- [Cierre e integración de menús y preferencias](docs/validation/preferences-main-closure-20261013.md).
+- [Menús y preferencias](docs/validation/preferences-main-closure-20261013.md).
 - [Respuesta del modelo local y mediciones de rendimiento](docs/validation/local-response-performance-20261022.md).
 - [Recuperación de los 42 archivos](docs/validation/recovered-worktrees-20261007.md).
 
-Las capturas de la TUI provienen de fixtures locales; las ilustraciones de arquitectura y roadmap son diagramas editables, no capturas de validación. [Fuentes y regeneración](docs/images/README.md).
+Las capturas de la TUI provienen de fixtures locales; la ilustración de arquitectura
+es un diagrama editable, no una captura de validación. [Fuentes y regeneración](docs/images/README.md).
 
 ## Licencia
 
