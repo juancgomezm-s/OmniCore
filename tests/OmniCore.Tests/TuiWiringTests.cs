@@ -3379,7 +3379,7 @@ public sealed partial class TuiWiringTests
             IPolicyPreferencesFacade? policyPreferences = null, ISecurityPreferencesFacade? securityPreferences = null,
             IDiagnosticsPreferencesFacade? diagnosticsPreferences = null,
             IModelCatalogPreferencesHost? modelCatalogPreferences = null, string? keyBindingsConfigDirectory = null,
-            bool selectConversationOnOpen = false)
+            bool selectConversationOnOpen = false, IMcpPreferencesFacade? mcpPreferences = null)
         {
             if (initialColumns.HasValue != initialRows.HasValue)
                 throw new ArgumentException("Initial screen columns and rows must be provided together.");
@@ -3405,7 +3405,8 @@ public sealed partial class TuiWiringTests
                     securityPreferences: securityPreferences ?? SecurityPreferencesHost.Create(Root, Path.Combine(Root, "prefs-data"), Path.Combine(Root, "prefs-config")),
                     diagnosticsPreferences: diagnosticsPreferences ?? DiagnosticsPreferencesHost.Create(Root, Path.Combine(Root, "prefs-data"), Path.Combine(Root, "prefs-config")),
                     keyBindingsConfigDirectory: keyBindingsConfigDirectory ?? Path.Combine(Root, "keyboard-config"),
-                    selectConversationOnOpen: selectConversationOnOpen);
+                    selectConversationOnOpen: selectConversationOnOpen,
+                    mcpPreferences: mcpPreferences ?? McpPreferencesHost.Create(Workspace, Path.Combine(Root, "mcp-data"), Path.Combine(Root, "mcp-config")));
                 App.SetModelCatalogPreferencesHost(modelCatalogPreferences ?? ModelCatalogPreferencesHost.Create(
                     Path.Combine(Root, "fixture-model-catalog"), Workspace, Path.Combine(Root, "fixture-model-catalog-data")));
                 App.CompanionInteractiveOverride = true; // The controlled DOTNET surface emulates an interactive UTF-8 terminal.

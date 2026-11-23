@@ -18,6 +18,10 @@ public sealed class ReasoningDisplaySettingsStoreTests
             Assert.False(new ReasoningDisplaySettingsStore(path).Load());
             Assert.True(store.Save(true));
             Assert.True(new ReasoningDisplaySettingsStore(path).Load());
+            Assert.True(store.Save(new ConversationDisplaySettings(true, false)));
+            Assert.Equal(new ConversationDisplaySettings(true, false), new ReasoningDisplaySettingsStore(path).LoadSettings());
+            Assert.True(store.Save(false));
+            Assert.Equal(new ConversationDisplaySettings(false, false), new ReasoningDisplaySettingsStore(path).LoadSettings());
             File.WriteAllText(path, "invalid");
             Assert.True(store.Load());
             Assert.Single(Directory.GetFiles(root));

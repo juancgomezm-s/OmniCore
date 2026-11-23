@@ -1,6 +1,8 @@
 namespace OmniCore.Tests;
 
 using OmniCore.Client;
+using OmniCore.Domain;
+using OmniCore.Engine;
 using OmniCore.Host;
 using Terminal.Gui.Input;
 using Terminal.Gui.Drivers;
@@ -95,7 +97,7 @@ public sealed partial class TuiWiringTests
         Assert.Contains("\"kind\":\"high\"", fx.Server.Query("runReasoningPreference", TestContext.Current.CancellationToken)!.Json);
         Assert.Equal(before, fx.Server.Query("reasoningPreference", TestContext.Current.CancellationToken)?.Json);
         fx.Invoke(() => fx.App.ShowReasoningVisibility());
-        ClickId(fx, "reasoning-hidden");
+        ClickId(fx, "visibility-reasoning");
         ClickId(fx, "reasoning-visibility-apply");
         Assert.False(fx.App.ShowReportedReasoning);
         fx.Invoke(() => fx.App.ShowReasoningPreferences());
@@ -184,37 +186,79 @@ public sealed partial class TuiWiringTests
     });
 
     [Fact]
-    public void Reasoning_visibility_is_a_draft_until_apply_and_does_not_change_effort() => RunTuiTest(fx =>
+    public void F7_collapses_reasoning_and_tools_independently_without_changing_the_session() => RunTuiTest(fx =>
     {
         fx.StartTui(initialColumns: 80, initialRows: 25);
-        var before = fx.Server.Query("reasoningPreference", TestContext.Current.CancellationToken)?.Json;
-        bool HasFocus(string id) => fx.App.Overlay is { } overlay
-            && Descendants(overlay).OfType<Button>().Any(button => button.Id == id && button.HasFocus);
-        void Press(KeyCode key, Func<bool> effect, string message)
+        var cancellation = TestContext.Current.CancellationToken;
+        var before = fx.Server.Query("reasoningPreference", cancellation)?.Json;
+        var session = fx.Server.LastSessionId()!;
+        var store = fx.Server.AcquireStore();
+        var sequenceBefore = store.CurrentSequence(session);
+        string Transcript() => fx.Read(() => fx.App.Conversation!.Text);
+        void OpenVisibility() => KeyWithEffect(fx, KeyCode.F7, () => fx.App.Overlay?.Id == "reasoning-visibility", "F7 opens visibility");
+        bool Focused(string id) => fx.Read(() => Descendants(fx.App.Overlay!).Single(view => view.Id == id).HasFocus);
+        void Apply()
         {
-            fx.InjectKey(new Key(key));
-            fx.Wait(effect, message);
+            ClickId(fx, "reasoning-visibility-apply");
+            fx.Wait(() => fx.App.Overlay is null, "apply closes visibility");
         }
-        void OpenAndSelectHide()
-        {
-            fx.Invoke(() => fx.App.ShowReasoningVisibility());
-            fx.Wait(() => HasFocus("reasoning-visible"), "the saved Show choice is focused");
-            Press(KeyCode.CursorDown, () => HasFocus("reasoning-hidden"), "Down focuses Hide");
-            Press(KeyCode.Enter, () => HasFocus("reasoning-visibility-apply"), "Enter on Hide focuses Apply");
-            Assert.True(fx.App.ShowReportedReasoning);
-        }
-        OpenAndSelectHide();
-        Press(KeyCode.Esc, () => fx.App.Overlay is null, "Esc cancels the draft");
+        OpenVisibility();
+        fx.InjectKey(new Key(KeyCode.Enter));
         Assert.True(fx.App.ShowReportedReasoning);
-        OpenAndSelectHide();
-        Press(KeyCode.Enter, () => fx.App.Overlay is null && fx.App.Composer!.HasFocus, "Enter on Apply saves and returns to the composer");
-        Assert.False(fx.App.ShowReportedReasoning);
-        Assert.Equal(before, fx.Server.Query("reasoningPreference", TestContext.Current.CancellationToken)?.Json);
-        fx.Invoke(() => fx.App.ShowReasoningVisibility());
-        fx.Wait(() => HasFocus("reasoning-hidden"), "reopening focuses the saved Hide choice");
-        Press(KeyCode.CursorUp, () => HasFocus("reasoning-visible"), "Up focuses Show");
-        Press(KeyCode.Tab, () => HasFocus("reasoning-hidden"), "Tab moves to the next choice");
-        Press(KeyCode.Enter, () => HasFocus("reasoning-visibility-apply"), "the selected choice can be confirmed again");
+        KeyWithEffect(fx, KeyCode.CursorDown, () => Focused("visibility-tools"), "down moves between switches");
+        fx.InjectKey(new Key(KeyCode.Enter));
+        KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay is null, "Escape discards both changes");
+        Assert.True(fx.App.ShowReportedReasoning);
+        Assert.Equal(sequenceBefore, store.CurrentSequence(session));
+
+        OpenVisibility();
+        ClickId(fx, "visibility-reasoning");
+        ClickId(fx, "visibility-tools");
+        Apply();
+        Assert.Equal(sequenceBefore, store.CurrentSequence(session));
+
+        var run = fx.Server.LastRunId()!;
+        var root = fx.Decoded<RunCreated>().Last().RootTask;
+        var lane = fx.Decoded<LaneCreated>().Single(created => created.TaskId == root).LaneId;
+        var stream = new EventStream(store, fx.Server.AcquireCodecs(), session);
+        var turn = TurnId.New();
+        using (ExecutionScope.Begin(new(run, root, lane)))
+        {
+            var reasoning = fx.Artifacts.PutText("""
+                {"visibleContent":{"version":1,"blocks":[{"kind":"reasoning","visibility":"Full","text":"razonamiento de prueba\nsegunda línea"}]}}
+                """, "application/json", ArtifactKind.ModelResponse, Sensitivity.Sensitive);
+            stream.Append(new ModelStepCompleted(turn, 0, new(1, 2, 0, 0, 0), StopReason.ToolUse, reasoning, "2026-11-09", null));
+            stream.Append(new ToolCallRequested(ToolCallId.New(), "fixture", "fixture.tool", "{}"));
+            var answer = fx.Artifacts.PutText("respuesta visible de prueba", "text/plain", ArtifactKind.ModelResponse, Sensitivity.Normal);
+            stream.Append(new AssistantMessageRecorded(run, lane, turn, answer));
+        }
+        fx.Invoke(() => fx.App.PollOnce());
+        fx.Wait(() => Transcript().Contains("respuesta visible de prueba"), "new transcript blocks arrive while hidden");
+        Assert.Single(Transcript().Split('\n'), line => line.Contains("Razonamiento oculto"));
+        Assert.Single(Transcript().Split('\n'), line => line.Contains("Herramienta oculta"));
+        Assert.DoesNotContain("razonamiento de prueba", Transcript());
+        Assert.DoesNotContain("fixture.tool", Transcript());
+        var sequence = store.CurrentSequence(session);
+
+        OpenConversationSearch(fx);
+        SearchConversation(fx, "razonamiento de prueba");
+        Assert.Empty(fx.Read(() => Descendants(fx.App.Overlay!).OfType<ListView>().Single().Source!.ToList()));
+        SearchConversation(fx, "respuesta visible de prueba");
+        KeyWithEffect(fx, KeyCode.Enter, () => fx.App.Overlay is null && fx.App.Conversation!.HasFocus, "search jumps past both markers");
+        fx.Read(() => Assert.Contains("respuesta visible de prueba",
+            string.Concat(fx.App.Conversation!.GetAllLines()[fx.App.Conversation.CurrentRow + 1].Select(cell => cell.Grapheme))));
+
+        OpenVisibility();
+        ClickId(fx, "visibility-tools");
+        Apply();
+        Assert.Contains("fixture.tool", Transcript());
+        Assert.Contains("Razonamiento oculto", Transcript());
+        OpenVisibility();
+        ClickId(fx, "visibility-reasoning");
+        Apply();
+        Assert.Contains("razonamiento de prueba", Transcript());
+        Assert.Equal(sequence, store.CurrentSequence(session));
+        Assert.Equal(before, fx.Server.Query("reasoningPreference", cancellation)?.Json);
     });
 
     [Fact]

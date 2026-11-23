@@ -30,7 +30,7 @@ public sealed record TuiClaudeLoginOutcome(bool Success, string? ErrorKey = null
 /// Presents only the OAuth identity declared by a User-scope Anthropic provider. Status inspection
 /// is local; it deliberately does not call the auth provider's token-refresh path.
 /// </summary>
-public sealed class TuiClaudeAccountHost : ITuiClaudeAccountHost
+public sealed partial class TuiClaudeAccountHost : ITuiClaudeAccountHost, ITuiClaudeAccountConfigurationHost
 {
     private readonly IPlatformPaths _paths;
     private readonly Func<string, OmniHost.ClaudeOAuthSession?> _sessionFactory;

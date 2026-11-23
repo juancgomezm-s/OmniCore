@@ -143,7 +143,7 @@ public sealed partial class TuiApp
         ITuiClaudeAccountHost? claudeAccounts = null, ITuiLocalEngineSupervisor? localEngineSupervisor = null,
         IPolicyPreferencesFacade? policyPreferences = null, ISecurityPreferencesFacade? securityPreferences = null,
         IDiagnosticsPreferencesFacade? diagnosticsPreferences = null, string? keyBindingsConfigDirectory = null,
-        bool selectConversationOnOpen = false)
+        bool selectConversationOnOpen = false, IMcpPreferencesFacade? mcpPreferences = null)
     {
         _client = client;
         _conversationSelectionPending = selectConversationOnOpen;
@@ -163,12 +163,13 @@ public sealed partial class TuiApp
         _policyPreferencesOverride = policyPreferences;
         _securityPreferencesOverride = securityPreferences;
         _diagnosticsPreferencesOverride = diagnosticsPreferences;
+        _mcpPreferencesOverride = mcpPreferences;
         _localEngines = localEngines ?? new TuiLocalEngineHost(supervisor: localEngineSupervisor);
         _claudeAccounts = claudeAccounts ?? TuiClaudeAccountHost.Create();
         _animationStore = new(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath());
         _themeStore = new(Path.ChangeExtension(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath(), ".theme"));
         _reasoningDisplayStore = new(Path.ChangeExtension(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath(), ".reasoning"));
-        ShowReportedReasoning = _reasoningDisplayStore.Load();
+        _conversationDisplay = _reasoningDisplayStore.LoadSettings();
         _densityStore = new(Path.ChangeExtension(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath(), ".sidebar-density"));
         _modelDisplayNames = new(Path.ChangeExtension(animationSettingsPath ?? TuiPresentationPaths.AnimationSettingsPath(), ".model-names"));
         _compactDensity = _densityStore.Read();
@@ -188,15 +189,7 @@ public sealed partial class TuiApp
         var state = app._state;
         var header = state.Header.WorkingDirectory.Length == 0 ? Environment.CurrentDirectory
             : state.Header.WorkingDirectory;
-        var conversation = string.Join(Environment.NewLine, state.Conversation.Blocks.Select(block => block.Role switch
-        {
-            ConversationRole.User => "◉ " + block.Text,
-            ConversationRole.Assistant => "◆ " + block.Text,
-            ConversationRole.Reasoning => "◇ " + block.Text,
-            ConversationRole.Tool => "● " + (block.ToolName ?? "tool") + " · " + block.Text,
-            ConversationRole.Interaction => "! " + block.Text,
-            _ => "○ " + block.Text,
-        }));
+        var conversation = string.Join(Environment.NewLine, state.Conversation.Blocks.Select(app.ConversationBlockText));
         var status = StatusLinePresentation.From(state.StatusLine, app._locale);
         return "OmniCore · TUI (sim)" + Environment.NewLine + header + Environment.NewLine
             + (conversation.Length == 0 ? app._localization.Resolve("shell.empty")
@@ -406,6 +399,7 @@ public sealed partial class TuiApp
         else if (code == "Esc" && HandleSessionPreferencesEscape()) { _lastEscapeAt = null; key.Handled = true; }
         else if (code == "Esc" && HandleModelCatalogPreferencesEscape()) { _lastEscapeAt = null; key.Handled = true; }
         else if (code == "Esc" && HandleOperationalPreferencesEscape()) { _lastEscapeAt = null; key.Handled = true; }
+        else if (code == "Esc" && HandleMcpPreferencesEscape()) { _lastEscapeAt = null; key.Handled = true; }
         else if (code == "Esc" && _preferencesReturnToCategory) { _lastEscapeAt = null; ReturnFromPreferencesSubpage(); key.Handled = true; }
         else if (code == "Esc" && _preferencesCenterActive) { _lastEscapeAt = null; HandlePreferencesEscape(); key.Handled = true; }
         else if (code == "Esc" && _overlay is not null) { _lastEscapeAt = null; CloseOverlay(); key.Handled = true; }
@@ -1803,7 +1797,7 @@ public sealed partial class TuiApp
         // Reflow may shorten a row; reset before replacement, then restore the reader below.
         _conversation.InsertionPoint = System.Drawing.Point.Empty;
         _conversation.LoadStyled(ConversationPresentation.RenderCards(displayedBlocks, _locale, codeWidth,
-            compactExamples: !_showMarkdownExamples), codeWidth, noColor);
+            compactExamples: !_showMarkdownExamples, isCollapsed: IsConversationBlockCollapsed), codeWidth, noColor);
         _lastConversationViewportSize = _conversation.Viewport.Size;
         if (follow) _conversation.MoveEnd();
         else
@@ -1834,20 +1828,36 @@ public sealed partial class TuiApp
         return true;
     }
 
-    private IReadOnlyList<ConversationBlock> DisplayedConversationBlocks() => ShowReportedReasoning
-        ? _state.Conversation.Blocks : _state.Conversation.Blocks.Where(block => block.Role != ConversationRole.Reasoning).ToArray();
+    private bool IsConversationBlockCollapsed(ConversationBlock block) => block.Role switch
+    {
+        ConversationRole.Reasoning => !_conversationDisplay.ShowReasoning,
+        ConversationRole.Tool => !_conversationDisplay.ShowTools,
+        _ => false,
+    };
 
-    private string ConversationText() => DisplayedConversationBlocks().Count == 0
+    private IReadOnlyList<ConversationBlock> DisplayedConversationBlocks()
+    {
+        var blocks = _state.Conversation.Blocks;
+        if (_conversationDisplay.ShowReasoning && _conversationDisplay.ShowTools) return blocks;
+        return blocks.Select(block => IsConversationBlockCollapsed(block)
+            ? new ConversationBlock(block.Id, block.Role, "", null) : block).ToArray();
+    }
+
+    private string ConversationText() => _state.Conversation.Blocks.Count == 0
         ? _localization.Resolve("shell.welcome")
-        : string.Join("\n\n", DisplayedConversationBlocks().Select(block => block.Role switch
+        : string.Join("\n\n", _state.Conversation.Blocks.Select(ConversationBlockText));
+
+    private string ConversationBlockText(ConversationBlock block) => IsConversationBlockCollapsed(block)
+        ? "┃  " + ConversationPresentation.CollapsedLabel(block.Role, _locale)
+        : block.Role switch
     {
         ConversationRole.User => "◉ " + block.Text,
         ConversationRole.Assistant => "◆ " + block.Text,
-            ConversationRole.Reasoning => "◇ " + block.Text,
+        ConversationRole.Reasoning => "◇ " + block.Text,
         ConversationRole.Tool => "● " + (block.ToolName ?? "tool") + " · " + block.Text,
         ConversationRole.Interaction => "! " + block.Text,
         _ => "○ " + block.Text,
-    }));
+    };
 
     private string HeaderText()
     {
@@ -2263,7 +2273,7 @@ public sealed partial class TuiApp
         else if (view.Id == "preferences-panel") surface = PreferencesSurface;
         else if (view.Id == "preferences-categories") surface = MenuSurface;
         else if (view.Id is "preferences-search" or "commands-filter") surface = "#102331";
-        else if (view is TextField || view.Id is "local-engine-arguments" or "companion-settings-memory-text") surface = "#293E51";
+        else if (view is TextField || view.Id is "local-engine-arguments" or "mcp-arguments" or "companion-settings-memory-text") surface = "#293E51";
         else if (view.Id == "preferences-accent") surface = noColor ? "#061822" : "#67D4D0";
         else if (view.Id == "omni-menu-action") surface = "#293E51";
         else if (view.Id == "omni-model-palette" || view.Id == "omni-palette-search" || view.Id == "omni-palette-action") surface = "#061822";
@@ -3314,6 +3324,7 @@ public sealed partial class TuiApp
         _preferencesCategoryPage = false;
         _preferencesReturnToCategory = false;
         _animationPreview = null;
+        _mcpEscape = null;
         ClearProviderApiKey();
         CancelProviderConnectionOperation();
         var catalog = _catalogCancellation; _catalogCancellation = null;
@@ -3464,11 +3475,9 @@ public sealed partial class TuiApp
         }
         if (action.ActionId == ClientActionIds.McpInspect && bare)
         {
-            var context = new ClientContext(_client, _localization, CliApp.PermissionsListing);
-            var result = new ClientActionHandler().ExecuteAsync(action, context, CancellationToken.None)
-                .AsTask().GetAwaiter().GetResult();
+            CloseOverlay();
             _viewFromChat = true;
-            ShowPreferenceText(_localization.Resolve("client.command.mcp"), result.Text);
+            ShowMcpPreferences();
             return true;
         }
         if (action.ActionId == ClientActionIds.HelpShow)

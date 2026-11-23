@@ -242,7 +242,7 @@ public sealed partial class TuiApp
         // The extra controls remain available in full help and the command palette.
         return text + " · " + Shortcut("mode.open") + " /" + HumanCommandAliases.DisplayName("mode", _locale)
             + " · " + Shortcut("permissions.open") + " /" + HumanCommandAliases.DisplayName("permission", _locale)
-            + " · /" + HumanCommandAliases.DisplayName("effort", _locale) + " · /think";
+            + " · /" + HumanCommandAliases.DisplayName("effort", _locale) + " · " + Shortcut("think.open") + " /think";
     }
 
     private string KeyBindingsReport()

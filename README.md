@@ -156,6 +156,9 @@ y límites; no ejecuta scripts ni hooks por el simple descubrimiento.
 
 Los conectores MCP y las extensiones aportan herramientas mediante el mismo control
 de permisos y límites del Host. El panel de sesión muestra conectores en uso.
+Configura conexiones locales y HTTP desde **Ajustes → Extensiones y habilidades →
+Servidores MCP** o `/mcp`: añadir, editar, credenciales, autorización y eliminación.
+[Configuración de servidores MCP](docs/mcp-configuration.md).
 OmniDesktop Control está integrado como componente nativo de Core; su uso no exige
 registrar un MCP externo. [Control de escritorio](#omnidesktop-control-en-windows).
 
@@ -589,6 +592,12 @@ dotnet run --project src/OmniCore.Cli -- tui --sim
 Configure proveedores y modelos en el directorio **del usuario**, tomando [docs/examples](docs/examples) como referencia. No almacene credenciales en el repositorio. Las reglas de conexión y almacenamiento se documentan en [los ADR](docs/adr/README.md), especialmente en ADR-0011.
 
 En la TUI, **F4 → Cuentas y conexiones → Anthropic…** abre directamente su formulario para guardar la clave, probar la conexión, descubrir modelos y desconectar. El Host conserva la credencial en su almacén protegido; si se guarda sin verificar, el estado se muestra como desconocido. Las fechas anteriores se identifican como históricas cuando la conexión actual no está validada. El acceso a la cuenta ChatGPT también se administra desde el menú de configuración.
+
+En **F4 → Cuentas y conexiones → Cuenta Claude**, **Configurar e iniciar sesión**
+permite dar de alta una conexión OAuth desde una instalación vacía. Revisa la
+plantilla, guarda y completa la autenticación en el navegador. **Configurar cuenta**
+permite cambiar sus opciones sin iniciar sesión; Enter y Tab recorren el formulario.
+[Configuración de la cuenta Claude](docs/claude-account-configuration.md).
 
 **Descubrir modelos** también actualiza los controles de razonamiento que anuncia
 Anthropic para esa conexión. En **F3** o `/esfuerzo`, un modelo puede ofrecer

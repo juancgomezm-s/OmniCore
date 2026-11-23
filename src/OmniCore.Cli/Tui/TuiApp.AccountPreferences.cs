@@ -29,17 +29,16 @@ public sealed partial class TuiApp
             return;
         }
 
-        var frameHeight = Math.Clamp(_window.Frame.Height - 4, 18, 30);
+        var frameHeight = Math.Min(rows.Count == 0 ? 20 : 30, Math.Max(1, _window.Viewport.Height - 2));
         var frame = OverlayFrame(AccountUi("title.claude"), frameHeight);
         frame.Id = "claude-account-preferences";
-        var listHeight = Math.Max(4, frameHeight - 16);
-        var detailY = 5 + listHeight;
+        var listHeight = rows.Count == 0 ? 0 : Math.Max(2, frameHeight - 22);
+        var detailY = rows.Count == 0 ? 4 : 5 + listHeight;
         var statusY = detailY + 4;
-        var actionsY = frameHeight - 5;
-        frame.Add(new Label { Id = "claude-account-source-description", X = MenuIndent.Information, Y = 2, Width = Dim.Fill(3), Height = 1,
+        frame.Add(new Label { Id = "claude-account-source-description", X = MenuIndent.Information, Y = 1, Width = Dim.Fill(3), Height = 2,
             Text = AccountUi("account.configSource") });
         var list = new ListView { Id = "claude-account-list", X = 2, Y = 4,
-            Width = Dim.Fill(4), Height = listHeight, CanFocus = rows.Count > 0, ShowMarks = false };
+            Width = Dim.Fill(4), Height = listHeight, Visible = rows.Count > 0, CanFocus = rows.Count > 0, ShowMarks = false };
         list.SetSource(new ObservableCollection<string>(rows.Select(ClaudeAccountRowText)));
         var selectedIndex = selectedProviderId is null ? -1 : rows.ToList()
             .FindIndex(row => string.Equals(row.ProviderId, selectedProviderId, StringComparison.Ordinal));
@@ -49,39 +48,53 @@ public sealed partial class TuiApp
             Width = Dim.Fill(4), Height = 4, ReadOnly = true, WordWrap = true, ScrollBars = true };
         #pragma warning restore CS0618
         var status = new Label { Id = "claude-account-status", X = 2, Y = statusY,
-            Width = Dim.Fill(4), Height = 1, Text = notice ?? "" };
-        var login = new Button { Id = "claude-account-login", X = 2, Y = actionsY,
+            Width = Dim.Fill(4), Height = 2, Text = notice ?? "" };
+        var configure = new CompactRowButton { Id = "claude-account-configure", X = 2, Y = Pos.AnchorEnd(8), Height = 1,
+            NoPadding = true, TextAlignment = Alignment.Start, Text = ClaudeSetupText("configure"),
+            Enabled = _claudeAccounts is ITuiClaudeAccountConfigurationHost };
+        var login = new CompactRowButton { Id = "claude-account-login", X = 2, Y = Pos.AnchorEnd(6), Height = 1,
+            NoPadding = true, TextAlignment = Alignment.Start,
             Text = AccountUi("action.login") };
-        var logout = new Button { Id = "claude-account-logout", X = Pos.Right(login) + 2, Y = actionsY,
+        var logout = new CompactRowButton { Id = "claude-account-logout", X = 2, Y = Pos.AnchorEnd(4), Height = 1,
+            NoPadding = true, TextAlignment = Alignment.Start,
             Text = AccountUi("action.logout") };
-        var back = new Button { Id = "claude-account-back", X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2),
+        var back = new CompactRowButton { Id = "claude-account-back", X = 2, Y = Pos.AnchorEnd(2), Height = 1,
+            NoPadding = true, TextAlignment = Alignment.Start,
             Text = AccountUi("action.back") };
         TuiClaudeAccountRow? Selected() => list.SelectedItem is int index && index >= 0 && index < rows.Count
             ? rows[index] : null;
         void Sync()
         {
             var row = Selected();
-            login.Enabled = row?.CanLogin == true;
+            login.Enabled = row?.CanLogin == true || rows.Count == 0 && _claudeAccounts is ITuiClaudeAccountConfigurationHost;
+            login.Text = rows.Count == 0 ? ClaudeSetupText("configure_login") : AccountUi("action.login");
             logout.Enabled = row?.CanLogout == true;
-            detail.Text = row is null ? AccountUi("status.noRows") : ClaudeAccountDetail(row);
+            detail.Text = row is null ? ClaudeSetupText("empty") : ClaudeAccountDetail(row);
             if (row?.UnavailableReasonKey is { } reason)
                 status.Text = _localization.ResolveWire(reason);
         }
         list.ValueChanged += (_, _) => Sync();
-        login.Accepted += (_, _) => { if (Selected() is { CanLogin: true } row) StartClaudeLogin(row.ProviderId); };
+        login.Accepted += (_, _) =>
+        {
+            if (Selected() is { CanLogin: true } row) StartClaudeLogin(row.ProviderId);
+            else if (rows.Count == 0) ShowClaudeAccountConfiguration(null, signInAfterSave: true);
+        };
+        configure.Accepted += (_, _) => ShowClaudeAccountConfiguration(Selected()?.ProviderId, signInAfterSave: false);
         logout.Accepted += (_, _) => { if (Selected() is { CanLogout: true } row) ConfirmClaudeLogout(row.ProviderId); };
         back.Accepted += (_, _) => { _returnToClaudeAccounts = false; CloseOverlay(); ShowPreferences("accounts_connections", categoryPage: true); };
         EnterNavigation.Focus(() => login.Enabled ? login : logout.Enabled ? logout : back, list, detail);
-        frame.Add(list, detail, status, login, logout, back);
+        EnterNavigation.TraverseTabs(list, detail, configure, login, logout, back);
+        frame.Add(list, detail, status, configure, login, logout, back);
         ApplyTheme(frame); _overlay = frame; _window.Add(frame); _preferencesReturnToCategory = true;
         Sync();
-        if (rows.Count > 0) list.SetFocus(); else back.SetFocus();
+        if (rows.Count > 0) list.SetFocus(); else if (login.Enabled) login.SetFocus(); else back.SetFocus();
     }
 
     private string ClaudeAccountRowText(TuiClaudeAccountRow row)
     {
         var state = row.UnavailableReasonKey is not null ? "status.unavailable"
-            : row.Dead ? "status.dead" : row.Expired ? "status.expired" : row.SignedIn ? "status.connected" : "status.notConfigured";
+            : row.Dead ? "status.dead" : row.Expired ? "status.expired" : row.SignedIn ? "status.connected"
+            : row.Configured ? "status.disconnected" : "status.notConfigured";
         return row.ProviderId + " · " + AccountUi(state);
     }
 
@@ -130,8 +143,14 @@ public sealed partial class TuiApp
                 {
                     _claudeLoginCancellation = null;
                     _returnToClaudeAccounts = false;
+                    var notice = ClaudeLoginResultNotice(result);
+                    if (result.Success)
+                    {
+                        try { _policies.ReloadModels(); }
+                        catch (Exception) { notice += "\n" + ClaudeSetupText("unavailable"); }
+                    }
                     CloseOverlay();
-                    ShowClaudeAccounts(ClaudeLoginResultNotice(result), providerId);
+                    ShowClaudeAccounts(notice, providerId);
                 });
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { }

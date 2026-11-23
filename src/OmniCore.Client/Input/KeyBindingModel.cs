@@ -139,6 +139,7 @@ public static class KeyBindingDefaults
         new("F3", new(KeyBindingTargetKind.Action, "model.select"), "!overlayOpen"),
         new("F4", new(KeyBindingTargetKind.Action, "preferences.open")),
         new("F5", new(KeyBindingTargetKind.Action, "companion.chat.open"), "!overlayOpen && !awaitingPermission"),
+        new("F7", new(KeyBindingTargetKind.Action, "think.open"), "!overlayOpen && !awaitingPermission"),
         new("Ctrl+P", new(KeyBindingTargetKind.Action, "palette.open"), "!overlayOpen && !awaitingPermission"),
         new("Ctrl+F", new(KeyBindingTargetKind.Action, "session.search"), "!overlayOpen && !awaitingPermission") });
 }

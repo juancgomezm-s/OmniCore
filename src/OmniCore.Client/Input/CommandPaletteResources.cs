@@ -28,7 +28,7 @@ public static class CommandPaletteResources
         ["action.mode.open"] = ["Cambiar modo · /modo", "Change mode · /mode", "Changer de mode · /mode", "Cambia modalità · /modalità"],
         ["action.permissions.open"] = ["Permisos de ejecución · /permiso", "Execution permissions · /permissions", "Autorisations · /autorisations", "Permessi di esecuzione · /permessi"],
         ["action.reasoning.open"] = ["Esfuerzo del modelo · /esfuerzo", "Model effort · /effort", "Effort du modèle · /effort", "Sforzo del modello · /sforzo"],
-        ["action.think.open"] = ["Mostrar razonamiento · /think", "Reasoning display · /think", "Affichage du raisonnement · /think", "Visualizzazione ragionamento · /think"],
+        ["action.think.open"] = ["Visibilidad de la conversación · /think", "Conversation visibility · /think", "Visibilité de la conversation · /think", "Visibilità della conversazione · /think"],
         ["action.updates.open"] = ["Comprobar actualizaciones", "Check for updates", "Rechercher des mises à jour", "Controlla aggiornamenti"],
         ["action.session.search"] = ["Buscar en esta conversación", "Search this conversation", "Rechercher dans cette conversation", "Cerca in questa conversazione"],
         ["action.agent.inspect"] = ["Inspeccionar agentes y validación", "Inspect agents and validation", "Inspecter les agents et la validation", "Ispeziona agenti e validazione"],

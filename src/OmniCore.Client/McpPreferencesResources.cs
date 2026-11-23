@@ -1,0 +1,49 @@
+namespace OmniCore.Client;
+
+public static class McpPreferencesResources
+{
+    private static readonly Dictionary<string, string[]> Rows = new(StringComparer.Ordinal)
+    {
+        ["title"] = ["Servidores MCP", "MCP servers", "Serveurs MCP", "Server MCP"],
+        ["intro"] = ["Configura conexiones locales (stdio) o remotas (HTTP). Guardar no inicia ni conecta servidores. Se usarán en el siguiente turno.", "Configure local (stdio) or remote (HTTP) connections. Saving does not start or connect servers. Changes apply on the next turn.", "Configurez des connexions locales (stdio) ou distantes (HTTP). Enregistrer ne démarre ni ne connecte les serveurs. Application au prochain tour.", "Configura connessioni locali (stdio) o remote (HTTP). Il salvataggio non avvia né connette server. Le modifiche valgono dal prossimo turno."],
+        ["empty"] = ["No hay servidores. Elige Añadir para configurar el primero.", "No servers. Choose Add to configure the first one.", "Aucun serveur. Choisissez Ajouter pour configurer le premier.", "Nessun server. Scegli Aggiungi per configurare il primo."],
+        ["add"] = ["Añadir servidor…", "Add server…", "Ajouter un serveur…", "Aggiungi server…"],
+        ["edit"] = ["Editar configuración…", "Edit configuration…", "Modifier la configuration…", "Modifica configurazione…"],
+        ["remove"] = ["Quitar servidor…", "Remove server…", "Supprimer le serveur…", "Rimuovi server…"],
+        ["trust"] = ["Autorizar conexión…", "Authorize connection…", "Autoriser la connexion…", "Autorizza connessione…"],
+        ["revoke"] = ["Revocar autorización…", "Revoke authorization…", "Révoquer l’autorisation…", "Revoca autorizzazione…"],
+        ["credential"] = ["Configurar credencial…", "Set credential…", "Configurer un identifiant…", "Configura credenziale…"],
+        ["credential_set"] = ["Cambiar credencial guardada…", "Change saved credential…", "Changer l’identifiant enregistré…", "Cambia credenziale salvata…"],
+        ["back"] = ["Volver", "Back", "Retour", "Indietro"],
+        ["cancel"] = ["Cancelar", "Cancel", "Annuler", "Annulla"],
+        ["save"] = ["Guardar", "Save", "Enregistrer", "Salva"],
+        ["confirm"] = ["Confirmar", "Confirm", "Confirmer", "Conferma"],
+        ["id"] = ["Identificador (letras, números, punto, guion)", "Identifier (letters, digits, dot, hyphen)", "Identifiant (lettres, chiffres, point, tiret)", "Identificatore (lettere, numeri, punto, trattino)"],
+        ["transport"] = ["Transporte (Espacio o ←→ para cambiar)", "Transport (Space or ←→ to change)", "Transport (Espace ou ←→ pour changer)", "Trasporto (Spazio o ←→ per cambiare)"],
+        ["stdio"] = ["Local · stdio", "Local · stdio", "Local · stdio", "Locale · stdio"],
+        ["http"] = ["Remoto · HTTP", "Remote · HTTP", "Distant · HTTP", "Remoto · HTTP"],
+        ["command"] = ["Ejecutable (ruta absoluta, sin argumentos)", "Executable (absolute path, no arguments)", "Exécutable (chemin absolu, sans arguments)", "Eseguibile (percorso assoluto, senza argomenti)"],
+        ["arguments"] = ["Argumentos: uno por línea; Shift+Enter inserta una línea", "Arguments: one per line; Shift+Enter inserts a line", "Arguments : un par ligne ; Maj+Entrée insère une ligne", "Argomenti: uno per riga; Maiusc+Invio inserisce una riga"],
+        ["directory"] = ["Directorio de trabajo (opcional, ruta absoluta)", "Working directory (optional, absolute path)", "Répertoire de travail (facultatif, chemin absolu)", "Directory di lavoro (opzionale, percorso assoluto)"],
+        ["endpoint"] = ["URL del servidor (HTTPS o HTTP en IP de loopback)", "Server URL (HTTPS or HTTP on loopback IP)", "URL du serveur (HTTPS ou HTTP sur IP de bouclage)", "URL del server (HTTPS o HTTP su IP loopback)"],
+        ["navigation"] = ["Enter avanza al siguiente campo · Tab / Shift+Tab recorren · Esc cancela. Los argumentos son literales, no comandos de shell.", "Enter moves to the next field · Tab / Shift+Tab navigate · Esc cancels. Arguments are literal, not shell commands.", "Entrée passe au champ suivant · Tab / Maj+Tab naviguent · Échap annule. Les arguments sont littéraux, pas des commandes shell.", "Invio passa al campo successivo · Tab / Maiusc+Tab navigano · Esc annulla. Gli argomenti sono letterali, non comandi shell."],
+        ["user"] = ["Usuario", "User", "Utilisateur", "Utente"],
+        ["project"] = ["Proyecto · sólo lectura", "Project · read only", "Projet · lecture seule", "Progetto · sola lettura"],
+        ["authorized"] = ["Autorizado", "Authorized", "Autorisé", "Autorizzato"],
+        ["pending"] = ["Pendiente de autorización", "Authorization required", "Autorisation requise", "Autorizzazione richiesta"],
+        ["secret"] = ["Token Bearer (se guarda en el almacén seguro del sistema)", "Bearer token (saved in the system credential store)", "Jeton Bearer (enregistré dans le coffre système)", "Token Bearer (salvato nell’archivio sicuro del sistema)"],
+        ["saved"] = ["Configuración guardada. Se aplicará en el siguiente turno; HTTP requiere autorización explícita.", "Configuration saved. Applies on the next turn; HTTP requires explicit authorization.", "Configuration enregistrée. Application au prochain tour ; HTTP nécessite une autorisation explicite.", "Configurazione salvata. Vale dal prossimo turno; HTTP richiede autorizzazione esplicita."],
+        ["removed"] = ["Servidor quitado de la configuración de usuario.", "Server removed from user configuration.", "Serveur supprimé de la configuration utilisateur.", "Server rimosso dalla configurazione utente."],
+        ["trust_help"] = ["La autorización permite descubrir herramientas al iniciar el siguiente turno. No concede permisos de ejecución: cada herramienta conserva sus controles. Revisa el destino indicado antes de confirmar.", "Authorization allows tool discovery on the next turn. It does not grant execution permissions: each tool retains its checks. Review the destination before confirming.", "L’autorisation permet de découvrir les outils au prochain tour. Elle n’accorde pas de droits d’exécution : chaque outil conserve ses contrôles. Vérifiez la destination avant de confirmer.", "L’autorizzazione consente la scoperta degli strumenti al prossimo turno. Non concede permessi di esecuzione: ogni strumento mantiene i controlli. Verifica la destinazione prima di confermare."],
+        ["remove_help"] = ["Se quitará este servidor de la configuración de usuario. Las sesiones y el programa del servidor se conservan.", "This server will be removed from user configuration. Sessions and the server program are preserved.", "Ce serveur sera supprimé de la configuration utilisateur. Les sessions et le programme serveur sont conservés.", "Il server sarà rimosso dalla configurazione utente. Le sessioni e il programma server vengono conservati."],
+        ["stale"] = ["La configuración cambió en otra ventana. Vuelve a abrir esta pantalla para actualizarla; no se sobrescribió nada.", "Configuration changed in another window. Reopen this page to refresh; nothing was overwritten.", "La configuration a changé ailleurs. Rouvrez cette page pour l’actualiser ; rien n’a été écrasé.", "La configurazione è cambiata altrove. Riapri questa schermata per aggiornarla; nulla è stato sovrascritto."],
+        ["duplicate"] = ["Ese identificador ya está configurado. Elige otro.", "That identifier is already configured. Choose another.", "Cet identifiant existe déjà. Choisissez-en un autre.", "L’identificatore è già configurato. Scegline un altro."],
+        ["invalid"] = ["Revisa el identificador y los campos. Máximo 64 argumentos de 4096 caracteres. HTTP exige HTTPS (o IP loopback), sin credenciales ni parámetros en la URL.", "Check the identifier and fields. At most 64 arguments of 4096 characters. HTTP requires HTTPS (or loopback IP), without credentials or query parameters in the URL.", "Vérifiez l’identifiant et les champs. Maximum 64 arguments de 4096 caractères. HTTP exige HTTPS (ou IP de bouclage), sans identifiants ni paramètres dans l’URL.", "Verifica identificatore e campi. Massimo 64 argomenti di 4096 caratteri. HTTP richiede HTTPS (o IP loopback), senza credenziali né parametri nell’URL."],
+        ["executable"] = ["Indica la ruta absoluta del ejecutable, por ejemplo node.exe, sin argumentos ni comillas externas.", "Enter the absolute executable path, for example node.exe, without arguments or surrounding quotes.", "Indiquez le chemin absolu de l’exécutable, par exemple node.exe, sans arguments ni guillemets externes.", "Indica il percorso assoluto dell’eseguibile, per esempio node.exe, senza argomenti né virgolette esterne."],
+        ["user_only"] = ["Sólo puedes editar y quitar servidores de usuario aquí. La configuración del proyecto se conserva en .omnicore/mcp.servers.json.", "Only user servers can be edited and removed here. Project configuration stays in .omnicore/mcp.servers.json.", "Seuls les serveurs utilisateur sont modifiables ici. La configuration du projet reste dans .omnicore/mcp.servers.json.", "Qui puoi modificare e rimuovere solo server utente. La configurazione di progetto resta in .omnicore/mcp.servers.json."],
+        ["failed"] = ["No se pudo completar la operación. Comprueba el archivo de configuración y el acceso al almacén de credenciales.", "The operation could not be completed. Check the configuration file and credential store access.", "Impossible de terminer l’opération. Vérifiez le fichier de configuration et l’accès au coffre d’identifiants.", "Impossibile completare l’operazione. Verifica il file di configurazione e l’accesso all’archivio credenziali."],
+    };
+
+    public static string Get(string locale, string key) => Rows.TryGetValue(key, out var values)
+        ? values[locale switch { "en" => 1, "fr" => 2, "it" => 3, _ => 0 }] : key;
+}

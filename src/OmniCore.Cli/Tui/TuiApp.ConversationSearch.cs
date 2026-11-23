@@ -72,7 +72,8 @@ public sealed partial class TuiApp
             _followConversationEnd = false; PausePetForReading(); RenderConversation();
             var width = Math.Max(1, _conversation.Viewport.Width - 1);
             var row = hit.BlockIndex == 0 ? 0 : ConversationPresentation.RenderCards(current.Take(hit.BlockIndex).ToArray(),
-                _locale, width, compactExamples: !_showMarkdownExamples).Count + 1;
+                _locale, width, compactExamples: !_showMarkdownExamples, isCollapsed: IsConversationBlockCollapsed).Count
+                + (IsConversationBlockCollapsed(current[hit.BlockIndex - 1]) ? 0 : 1);
             _conversation.SetFocus();
             _conversation.InsertionPoint = new Point(0, row);
             _conversation.ScrollTo(new Point(0, row));

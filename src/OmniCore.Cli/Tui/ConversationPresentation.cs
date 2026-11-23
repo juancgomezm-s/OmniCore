@@ -18,13 +18,19 @@ internal static class ConversationPresentation
     private static string ReasoningLabel(string locale) => locale switch
     { "en" => "Reasoning shared by the model", "fr" => "Raisonnement partagé par le modèle", "it" => "Ragionamento condiviso dal modello", _ => "Razonamiento compartido por el modelo" };
 
+    internal static string CollapsedLabel(ConversationRole role, string locale) => ExecutionControlsResources.Get(locale,
+        role == ConversationRole.Reasoning ? "reasoning_collapsed" : "tool_collapsed");
+
     internal static IReadOnlyList<IReadOnlyList<ConversationSpan>> RenderCards(IReadOnlyList<ConversationBlock> blocks, string locale, int width,
-        bool compactExamples = false)
+        bool compactExamples = false, Func<ConversationBlock, bool>? isCollapsed = null)
     {
         var result = new List<IReadOnlyList<ConversationSpan>>();
+        var previousCollapsed = false;
         foreach (var block in blocks)
         {
-            if (result.Count > 0) result.Add(Array.Empty<ConversationSpan>());
+            var collapsed = isCollapsed?.Invoke(block) == true;
+            if (result.Count > 0 && !previousCollapsed && !collapsed) result.Add(Array.Empty<ConversationSpan>());
+            previousCollapsed = collapsed;
             var accent = block.Role switch
             {
                 ConversationRole.User => ConversationStyle.UserAccent,
@@ -32,6 +38,14 @@ internal static class ConversationPresentation
                 ConversationRole.Tool => ConversationStyle.ToolAccent,
                 _ => ConversationStyle.NoticeAccent
             };
+            if (collapsed)
+            {
+                const string marker = "┃  ";
+                var label = CollapsedLabel(block.Role, locale);
+                result.Add([new(marker[..Math.Clamp(width, 0, marker.Length)], accent),
+                    new(label[..Math.Clamp(width - marker.Length, 0, label.Length)], ConversationStyle.Muted)]);
+                continue;
+            }
             var icon = block.Role switch { ConversationRole.User => "◉", ConversationRole.Assistant => "◈", ConversationRole.Tool => "⚙", _ => "·" };
             var rows = Render(new[] { block }, locale, Math.Max(1, width - 3), compactExamples);
             for (var index = 0; index < rows.Count; index++)

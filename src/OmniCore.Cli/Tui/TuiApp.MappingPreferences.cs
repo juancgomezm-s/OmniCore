@@ -86,6 +86,7 @@ public sealed partial class TuiApp
 
     private void ShowServiceInspection(string query)
     {
+        if (query == "mcp") { CloseOverlay(); ShowMcpPreferences(); return; }
         string text;
         try
         {

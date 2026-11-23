@@ -865,6 +865,12 @@ internal sealed class McpServerStore(IPlatformPaths paths, string workspaceRoot,
 
     public void Trust(string id, bool trusted)
     {
+        using var lease = ConfigurationWriteLease.Acquire(_userFile);
+        TrustUnderWriteLease(id, trusted);
+    }
+
+    internal void TrustUnderWriteLease(string id, bool trusted)
+    {
         var server = List().SingleOrDefault(item => item.Id == id)
             ?? throw new InvalidOperationException("MCP server was not found or id is ambiguous.");
         if (server.Scope == "project-untrusted-workspace" || server.Scope == "project-unconsented" && !workspaceTrusted)
@@ -887,6 +893,7 @@ internal sealed class McpServerStore(IPlatformPaths paths, string workspaceRoot,
 
     public void AddStdio(string id, string executable, IReadOnlyList<string> args)
     {
+        using var lease = ConfigurationWriteLease.Acquire(_userFile);
         ValidateId(id);
         ArgumentException.ThrowIfNullOrWhiteSpace(executable);
         ArgumentNullException.ThrowIfNull(args);
@@ -905,6 +912,7 @@ internal sealed class McpServerStore(IPlatformPaths paths, string workspaceRoot,
 
     public void AddHttp(string id, string endpoint)
     {
+        using var lease = ConfigurationWriteLease.Acquire(_userFile);
         ValidateId(id);
         var uri = McpEndpoint.Validate(endpoint);
         if (List().Any(server => server.Id == id)) throw new InvalidOperationException("MCP server id is already configured.");
@@ -920,6 +928,7 @@ internal sealed class McpServerStore(IPlatformPaths paths, string workspaceRoot,
 
     public void SetCredentialReference(string id, string reference)
     {
+        using var lease = ConfigurationWriteLease.Acquire(_userFile);
         var matches = UserEntries().Where(entry => entry.TryGetProperty("id", out var value)
             && value.GetString() == id).ToArray();
         if (matches.Length != 1) throw new InvalidOperationException("Only one configured User MCP server accepts credentials.");

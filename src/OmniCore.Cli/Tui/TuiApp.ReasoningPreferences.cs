@@ -15,7 +15,8 @@ using Terminal.Gui.Views;
 public sealed partial class TuiApp
 {
     private readonly ReasoningDisplaySettingsStore _reasoningDisplayStore;
-    internal bool ShowReportedReasoning { get; private set; } = true;
+    private ConversationDisplaySettings _conversationDisplay;
+    internal bool ShowReportedReasoning => _conversationDisplay.ShowReasoning;
 
     private string ReadControlQuery(string name)
     {
@@ -86,37 +87,39 @@ public sealed partial class TuiApp
     {
         if (_window is null || _overlay is not null) return;
         var frame = ControlFrame(ControlText("visibility"), "reasoning-visibility");
-        var draft = ShowReportedReasoning;
-        frame.Add(new Label { X = 2, Y = 1, Width = Dim.Fill(2), Height = 5, Text = ControlText("visibility_help") },
-            new Label { X = 2, Y = 13, Width = Dim.Fill(2), Height = 2, Text = ControlText("visibility_scope") });
-        var show = new Button { Id = "reasoning-visible", X = 2, Y = 7, Width = Dim.Fill(2), TextAlignment = Alignment.Start };
-        var hide = new Button { Id = "reasoning-hidden", X = 2, Y = 9, Width = Dim.Fill(2), TextAlignment = Alignment.Start };
+        var draft = _conversationDisplay;
+        frame.Add(new Label { X = 2, Y = 1, Width = Dim.Fill(2), Height = 3, Text = ControlText("visibility_help") },
+            new Label { X = 2, Y = 9, Width = Dim.Fill(2), Height = 2, Text = ControlText("visibility_scope") });
+        var reasoning = new Button { Id = "visibility-reasoning", X = 2, Y = 4, Width = Dim.Fill(2), TextAlignment = Alignment.Start };
+        var tools = new Button { Id = "visibility-tools", X = 2, Y = 6, Width = Dim.Fill(2), TextAlignment = Alignment.Start };
         var apply = new Button { Id = "reasoning-visibility-apply", X = Pos.AnchorEnd(18), Y = Pos.AnchorEnd(2), Text = ControlText("apply") };
-        void Sync() { show.Text = (draft ? "● " : "○ ") + ControlText("visible"); hide.Text = (!draft ? "● " : "○ ") + ControlText("hidden"); }
-        void Choose(bool visible) { draft = visible; Sync(); apply.SetFocus(); }
-        show.Accepted += (_, args) => { args.Handled = true; Choose(true); };
-        hide.Accepted += (_, args) => { args.Handled = true; Choose(false); };
-        foreach (var choice in new[] { show, hide })
-            choice.KeyDown += (_, key) =>
-            {
-                if (key.Handled || key.KeyCode is not (KeyCode.CursorUp or KeyCode.CursorDown)) return;
-                key.Handled = true;
-                (key.KeyCode == KeyCode.CursorUp ? show : hide).SetFocus();
-            };
-        apply.Accepted += (_, _) => SetReasoningVisibility(draft);
-        Sync(); frame.Add(show, hide, apply);
+        string SwitchText(string label, bool visible) => (visible ? "[─●] " : "[●─] ") + ControlText(label)
+            + " · " + ControlText(visible ? "visibility_on" : "visibility_off");
+        void Sync()
+        {
+            reasoning.Text = SwitchText("visibility_reasoning", draft.ShowReasoning);
+            tools.Text = SwitchText("visibility_tools", draft.ShowTools);
+        }
+        reasoning.Accepted += (_, args) =>
+        { args.Handled = true; draft = draft with { ShowReasoning = !draft.ShowReasoning }; Sync(); };
+        tools.Accepted += (_, args) =>
+        { args.Handled = true; draft = draft with { ShowTools = !draft.ShowTools }; Sync(); };
+        apply.Accepted += (_, args) => { args.Handled = true; SetConversationVisibility(draft); };
+        Sync(); frame.Add(reasoning, tools, apply);
         var back = ControlBack(frame);
-        EnterNavigation.TraverseTabs(show, hide, apply, back);
-        OpenControlFrame(frame, draft ? show : hide);
+        EnterNavigation.TraverseTabs(reasoning, tools, apply, back);
+        OpenControlFrame(frame, reasoning);
     }
 
-    internal void SetReasoningVisibility(bool show)
+    internal void SetReasoningVisibility(bool show) => SetConversationVisibility(_conversationDisplay with { ShowReasoning = show });
+
+    private void SetConversationVisibility(ConversationDisplaySettings settings)
     {
-        if (!_reasoningDisplayStore.Save(show))
+        if (!_reasoningDisplayStore.Save(settings))
         {
             CloseOverlay(); ShowMessage(_localization.Resolve("shell.could_not_save_unchanged")); return;
         }
-        ShowReportedReasoning = show;
+        _conversationDisplay = settings;
         _renderedConversation = null;
         CloseOverlay(); RenderState();
     }
