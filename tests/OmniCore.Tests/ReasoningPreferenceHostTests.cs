@@ -24,6 +24,7 @@ public sealed class ReasoningPreferenceHostTests
         {
             var server = new OmniServer(new InMemoryEventStore(), EventCodecs.Create(), new InMemoryAuditSink(),
                 userSpendReader: new UserWorkspaceSpendReader(data, workspace));
+            server.ConfigureWorkspaceRoot(workspace);
 
             var setPayload = Payload(JsonObj.Field("cmd", "reasoning.default.set"), JsonObj.Field("kind", "high"),
                 JsonObj.Field("expectedRevision", "0"));
@@ -33,8 +34,9 @@ public sealed class ReasoningPreferenceHostTests
                 Assert.Equal(new UserReasoningPreference(false, null, 0), emptyPreference.Read());
 
             Assert.Equal("ok", server.SendUserAction(Command(setPayload), TestContext.Current.CancellationToken).Status);
-            Assert.Equal("ok", server.Send(Command(Payload(JsonObj.Field("cmd", "session.input"),
-                JsonObj.Field("text", "captured reasoning default"))), TestContext.Current.CancellationToken).Status);
+            var started = server.Send(Command(Payload(JsonObj.Field("cmd", "session.input"),
+                JsonObj.Field("text", "captured reasoning default"))), TestContext.Current.CancellationToken);
+            Assert.True(started.Status == "ok", started.Error);
             var session = Assert.IsType<SessionId>(server.LastSessionId());
             var run = Assert.IsType<RunId>(server.LastRunId());
             var created = RunProjection.Replay(session, run, EventCodecs.Create(),

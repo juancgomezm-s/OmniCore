@@ -24,7 +24,7 @@ repositorio, Git, el SDK de .NET ni Rust. Actualmente la entrega publicada es pr
 **npm — alternativa si ya tienes Node.js 20+ con npm y el runtime .NET 10 x64:**
 
 ```powershell
-npm.cmd install --global --ignore-scripts https://github.com/juancgomezm-s/OmniCore/releases/download/v0.1.1-rc.25/omnicore-cli-0.1.1-rc.25-win-x64.tgz
+npm.cmd install --global --ignore-scripts https://github.com/juancgomezm-s/OmniCore/releases/download/v0.1.1-rc.26/omnicore-cli-0.1.1-rc.26-win-x64.tgz
 ```
 
 Después puedes abrir la aplicación con **`omni.cmd`**, en la misma terminal.
@@ -32,7 +32,7 @@ El instalador PowerShell verifica hashes y firmas de las dependencias, las
 attestations del paquete de OmniCore y guarda la carpeta del comando en el `PATH`
 del usuario para los siguientes inicios. La alternativa npm usa el archivo de una
 versión concreta y requiere las dependencias instaladas. Para elegir una versión o un destino en PowerShell, añade
-`-Version 0.1.1-rc.25` o `-Prefix 'C:\Mis aplicaciones\OmniCore'` al primer comando.
+`-Version 0.1.1-rc.26` o `-Prefix 'C:\Mis aplicaciones\OmniCore'` al primer comando.
 El canal estable se selecciona con `-Channel Stable` cuando haya una release estable publicada.
 
 **Para actualizar, sólo ejecuta:**

@@ -16,12 +16,106 @@ namespace OmniCore.Tests;
 public sealed class ExplorerVisibleResponseIntegrationTests
 {
     [Theory]
-    [InlineData("empty", "cli.runtime.turn.no_final_answer")]
+    [InlineData("pending")]
+    [InlineData("completed")]
+    [InlineData("published")]
+    [InlineData("reasoning")]
+    [InlineData("tools")]
+    [InlineData("exhausted")]
+    [InlineData("empty")]
+    [InlineData("whitespace-final")]
+    public void Resume_preserves_the_final_pass_and_never_regenerates_a_completed_final(string scenario)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "omni-final-resume-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var store = new SqliteEventStore(Path.Combine(root, "journal.db"));
+        try
+        {
+            var codecs = EventCodecs.Create();
+            var artifacts = new FileArtifactStore(root);
+            var session = SessionId.New();
+            var run = TestRun.Open(store, session, mode: RunMode.Plan);
+            var catalog = new FakeCatalog();
+            var executor = ScriptedToolExecutor.WithWorkspace(catalog,
+                new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), root);
+            var requests = new List<ModelRequest>();
+            var pause = scenario == "pending";
+            ExplorerTurn Create() => new((request, _) =>
+            {
+                requests.Add(request);
+                if (requests.Count == 1 || scenario == "reasoning")
+                    return CompanionToolsTests.Response([new ReasoningBlock("private fixture", ReasoningVisibility.Full, null)]);
+                if (scenario == "tools") return CompanionToolsTests.Response([
+                    new ToolCallBlock(ToolCallId.New(), "unwanted", "filesystem.list", "{}")]);
+                if (scenario == "exhausted") return CompanionToolsTests.Response([]) with { StopReason = StopReason.MaxOutputTokens };
+                if (scenario == "empty") return CompanionToolsTests.Response([]);
+                if (scenario == "whitespace-final") return CompanionToolsTests.Response([new TextBlock(" \n ")]);
+                return CompanionToolsTests.Response([new TextBlock("Recovered answer")]);
+            }, executor, catalog, new ContextMaterializer(new FakeTokenCounter(), []),
+                new ExecutionFingerprint("fixture", "h", "t", "c", "o", "M10"),
+                new ModelSelection(new ModelIdValue("scripted"), 8192, ToolMode.Direct, null),
+                store, codecs, artifacts, new InMemoryAuditSink(), new RedactionPolicy(), billingMode: BillingMode.Local,
+                maxModelStepsPerTurn: 4,
+                quotaAdmission: (_, _, _, _, step) => pause && step == 1 ? InteractionId.New() : null);
+            var original = Create().Ask("Question", "system", session, run.RunId, run.RootLane, "", TestContext.Current.CancellationToken);
+            if (pause) Assert.Equal(StopReason.InputRequired, original.StopReason);
+            else
+            {
+                // Simulate a crash after the completed step (or after publication),
+                // only in this disposable journal. No provider effects are replayed.
+                var events = store.ReadFrom(session, 1);
+                var cutoff = scenario == "published"
+                    ? events.Last(evt => codecs.Decode(evt) is AssistantMessageRecorded).Sequence
+                    : events.Last(evt => codecs.Decode(evt) is ModelStepCompleted).Sequence;
+                using var command = store.Connection.CreateCommand();
+                command.CommandText = "DELETE FROM events WHERE seq > $cutoff";
+                var parameter = command.CreateParameter(); parameter.ParameterName = "$cutoff"; parameter.Value = cutoff;
+                command.Parameters.Add(parameter); command.ExecuteNonQuery();
+            }
+            pause = false;
+            var resumed = Create().Ask("", "system", session, run.RunId, run.RootLane, "", TestContext.Current.CancellationToken);
+            Assert.Equal(2, requests.Count);
+            Assert.True(requests[1].FinalAnswerOnly);
+            Assert.Empty(requests[1].Tools);
+            Assert.Null(requests[1].Continuation);
+            var finalEvents = store.ReadFrom(session, 1).Select(codecs.Decode).ToArray();
+            Assert.Equal(2, finalEvents.OfType<ModelStepStarted>().Count());
+            Assert.Single(finalEvents.OfType<ModelStepStarted>(), step => step.FinalAnswerOnly);
+            Assert.Empty(finalEvents.OfType<ToolCallRequested>());
+            if (scenario is "pending" or "completed" or "published")
+            {
+                Assert.Equal("Recovered answer", resumed.FinalText);
+                Assert.Single(finalEvents.OfType<AssistantMessageRecorded>());
+                Assert.Single(finalEvents.OfType<TurnCompleted>());
+            }
+            else
+            {
+                Assert.Null(resumed.FinalText);
+                Assert.Equal(original.FailureDiagnostic, resumed.FailureDiagnostic);
+                Assert.Single(finalEvents.OfType<TurnAbandoned>());
+                Assert.Empty(finalEvents.OfType<TurnCompleted>());
+            }
+        }
+        finally
+        {
+            var connection = (SqliteConnection)store.Connection;
+            store.Close(); SqliteConnection.ClearPool(connection); connection.Dispose();
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Theory]
+    [InlineData("empty", "cli.runtime.turn.reasoning_only")]
+    [InlineData("whitespace", "cli.runtime.turn.empty_response")]
+    [InlineData("no-content", "cli.runtime.turn.empty_response")]
+    [InlineData("exhausted", "cli.runtime.turn.output_exhausted_without_answer")]
+    [InlineData("truncated-tool", "cli.runtime.turn.output_exhausted_without_answer")]
     [InlineData("step-limit", "cli.runtime.turn.step_limit_without_answer")]
     [InlineData("recover", null)]
     [InlineData("llama", null)]
     [InlineData("reserved", null)]
-    [InlineData("unwanted-tool", "cli.runtime.turn.no_final_answer")]
+    [InlineData("unwanted-tool", "cli.runtime.turn.tools_in_final_answer")]
+    [InlineData("ignores-final", "cli.runtime.turn.reasoning_only")]
     public void Local_harness_distinguishes_missing_answer_and_step_limit_and_finalizes_without_tools(string scenario, string? diagnostic)
     {
         var root = Path.Combine(Path.GetTempPath(), "omni-final-answer-" + Guid.NewGuid().ToString("N"));
@@ -37,13 +131,17 @@ public sealed class ExplorerVisibleResponseIntegrationTests
             var executor = ScriptedToolExecutor.WithWorkspace(catalog,
                 new ScriptedPermissionPolicy(new Dictionary<string, PermissionDecision>()), root);
             var requests = new List<ModelRequest>();
-            var first = scenario is "step-limit" or "reserved"
+            var first = scenario is "step-limit" or "reserved" or "truncated-tool"
                 ? CompanionToolsTests.Response([new ToolCallBlock(ToolCallId.New(), "read-fixture", "filesystem.list", "{\"path\":\".\"}")])
                 : CompanionToolsTests.Response([new ReasoningBlock("private draft only", ReasoningVisibility.Full, null)]);
             var last = scenario == "unwanted-tool"
                 ? CompanionToolsTests.Response([new ToolCallBlock(ToolCallId.New(), "unwanted", "filesystem.list", "{\"path\":\".\"}")])
                 : CompanionToolsTests.Response([new TextBlock("Respuesta visible")]);
-            var allowsFinalPass = scenario is "recover" or "llama" or "reserved" or "unwanted-tool";
+            if (scenario == "whitespace") first = first with { Content = [new TextBlock(" \n\t")] };
+            if (scenario == "no-content") first = first with { Content = [] };
+            if (scenario is "exhausted" or "truncated-tool") first = first with { StopReason = StopReason.MaxOutputTokens };
+            if (scenario == "ignores-final") last = first;
+            var allowsFinalPass = scenario is "recover" or "llama" or "reserved" or "unwanted-tool" or "ignores-final";
             using var handler = new ReasoningOnlyUntilFinalHandler();
             var provider = new OpenAiChatCompatibleProvider(new ProviderDescriptor("fixture",
                 ProviderFamily.OpenAiChatCompatible, "http://127.0.0.1:9999/v1", AuthConfig.None(), false, false, true)
@@ -81,11 +179,12 @@ public sealed class ExplorerVisibleResponseIntegrationTests
             }
             else
             {
-                Assert.Equal(StopReason.Error, result.StopReason);
+                Assert.Equal(scenario is "exhausted" or "truncated-tool" ? StopReason.MaxOutputTokens : StopReason.Error, result.StopReason);
                 Assert.Null(result.FinalText);
                 Assert.Equal(diagnostic, result.FailureDiagnostic);
                 Assert.Equal(diagnostic, Assert.Single(events.OfType<TurnAbandoned>()).Reason);
                 Assert.Empty(events.OfType<TurnCompleted>());
+                if (scenario == "truncated-tool") Assert.Empty(events.OfType<ToolCallRequested>());
             }
         }
         finally

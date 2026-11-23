@@ -208,6 +208,7 @@ public sealed class EventCodecs : IEventCodecRegistry
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.started"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.started"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.started"), 3))
+            .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.started"), 4))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.completed"), 1))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.completed"), 2))
             .WithUpcaster(new IdentityUpcaster(EventType.Of("model_step.completed"), 3))
@@ -950,7 +951,7 @@ public sealed class Typed
         Of(EventType.Of("model.completed"), EventJsonContext.Default.ModelCompleted);
 
     public static CodecPair ModelStepStarted() =>
-        Of(EventType.Of("model_step.started"), EventJsonContext.Default.ModelStepStarted, currentVersion: 4);
+        Of(EventType.Of("model_step.started"), EventJsonContext.Default.ModelStepStarted, currentVersion: 5);
 
     public static CodecPair ModelStepCompleted() =>
         Of(EventType.Of("model_step.completed"), EventJsonContext.Default.ModelStepCompleted, currentVersion: 5);

@@ -43,12 +43,13 @@ public sealed class ExplorerTurnAuditMetadataTests
                 store, codecs, new FileArtifactStore(Path.Combine(root, "blobs")), audit,
                 new RedactionPolicy());
             var result = turn.Ask("respond", "system", session, run.RunId, run.RootLane, "", CancellationToken.None);
-            Assert.Equal(StopReason.EndTurn, result.StopReason);
-            Assert.Equal(output, result.FinalText);
+            var expectedStop = output.Length == 0 ? StopReason.Error : StopReason.EndTurn;
+            Assert.Equal(expectedStop, result.StopReason);
+            Assert.Equal(output.Length == 0 ? null : output, result.FinalText);
             var spend = Assert.Single(audit.Records(), record => record.EventName == "turn.spend");
             Assert.Equal(run.RunId, spend.Run);
             Assert.Equal(session, spend.Session);
-            Assert.Equal("EndTurn", spend.Details["stop"]);
+            Assert.Equal(expectedStop.ToString(), spend.Details["stop"]);
             Assert.Equal("2", spend.Details["inputTokens"]);
             Assert.Equal("1", spend.Details["outputTokens"]);
             Assert.All(audit.Records(), record => Assert.All(record.Details, pair =>

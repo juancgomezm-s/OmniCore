@@ -90,8 +90,9 @@ public record ModelStepStarted(TurnId TurnId, int StepIndex, string ModelId, lon
     ArtifactRef? ContextSnapshotRef, long? ModelContextCapacity = null, RouteId? RouteId = null,
     ReasoningResolution? ReasoningResolution = null) : DomainEventPayload
 {
+    public bool FinalAnswerOnly { get; init; }
     public EventType Type() => EventType.Of("model_step.started");
-    public int SchemaVersion() => 4;
+    public int SchemaVersion() => 5;
 }
 
 /// <summary>Uso confirmado de una invocación, durable aunque el Turn luego quede suspendido.</summary>

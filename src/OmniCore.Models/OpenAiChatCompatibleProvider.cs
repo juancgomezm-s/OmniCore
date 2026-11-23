@@ -100,7 +100,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
                 && _detectedLlamaCpp is null)
                 _detectedLlamaCpp = await DetectLlamaCppAsync(cancellationToken).ConfigureAwait(false);
             (response, http) = await SendWithRetryAsync(BuildBody(request), cancellationToken).ConfigureAwait(false);
-            if (_options.LimitAutomaticLocalReasoning && _descriptor.BillingMode == BillingMode.Local
+            if (_descriptor.BillingMode == BillingMode.Local
                 && _descriptor.Profile is null && AdvertisesLlamaCpp(response, ChatCompletionsUrl))
                 _detectedLlamaCpp = true;
         }
@@ -172,7 +172,9 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
         var usageFields = TokenUsageFields.None;
         var stop = StopReason.EndTurn;
         var sawChunk = false;
+        var sawChoice = false;
         var sawTerminal = false;
+        var sawFinishReason = false;
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         using var reader = new StreamReader(stream, Encoding.UTF8, true, 1024, leaveOpen: true);
         var data = new StringBuilder();
@@ -198,6 +200,10 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
                 }
                 foreach (var choice in chunk.Choices ?? [])
                 {
+                    // This adapter requests one completion. Never merge another
+                    // choice's text, tool calls or finish reason into choice zero.
+                    if (choice.Index != 0) continue;
+                    sawChoice = true;
                     if (choice.Delta is not null)
                     {
                         if (!string.IsNullOrEmpty(choice.Delta.Content))
@@ -228,7 +234,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
                             if (!IsReasoningAlias(key, value)) opaqueFields[key] = value.Clone();
                     }
                     if (!string.IsNullOrEmpty(choice.FinishReason))
-                    { sawTerminal = true; stop = MapFinishReason(choice.FinishReason); }
+                    { sawTerminal = true; sawFinishReason = true; stop = MapFinishReason(choice.FinishReason); }
                 }
                 continue;
             }
@@ -238,8 +244,12 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
                 data.Append(line.AsSpan(5).TrimStart());
             }
         }
-        if (!sawChunk) throw new ModelProviderException("ProviderUnavailable", "El servidor cerró el stream antes de enviar eventos.");
+        if (!sawChunk || !sawChoice) throw new ModelProviderException("ProviderUnavailable", "El servidor cerró el stream sin enviar una respuesta.");
         if (!sawTerminal) throw new ModelProviderException("ProviderUnavailable", "El servidor interrumpió la respuesta antes de indicar que había terminado.");
+        if (tools.Count > 0 && !sawFinishReason)
+            throw new ModelProviderException("ProviderUnavailable", "Tool call stream ended without finish_reason.");
+        if (stop == StopReason.ToolUse && tools.Count == 0)
+            throw new ModelProviderException("ProviderError", "Tool finish_reason without a tool call.");
         var content = new List<ContentBlock>();
         if (reasoningField is not null)
         {
@@ -568,7 +578,7 @@ public sealed class OpenAiChatCompatibleProvider : IModelProvider, IModelRequest
         "length" => StopReason.MaxOutputTokens,
         "content_filter" => StopReason.ContentFilter,
         "stop" or null => StopReason.EndTurn,
-        _ => StopReason.EndTurn,
+        _ => throw new ModelProviderException("ProviderError", "Unsupported provider finish_reason."),
     };
 
     private static string Role(MessageRole role) => role switch
@@ -693,7 +703,7 @@ internal sealed class ChatChunk
     public List<ChatChunkChoice>? Choices { get; set; }
     public ChatUsage? Usage { get; set; }
 }
-internal sealed class ChatChunkChoice { public ChatDelta? Delta { get; set; } [JsonPropertyName("finish_reason")] public string? FinishReason { get; set; } }
+internal sealed class ChatChunkChoice { public int Index { get; set; } public ChatDelta? Delta { get; set; } [JsonPropertyName("finish_reason")] public string? FinishReason { get; set; } }
 internal sealed class ChatDelta
 {
     public string? Content { get; set; }

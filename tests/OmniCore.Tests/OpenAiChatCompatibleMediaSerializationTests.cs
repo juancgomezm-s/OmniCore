@@ -9,6 +9,73 @@ using OmniCore.Models;
 
 public sealed class OpenAiChatCompatibleMediaSerializationTests
 {
+    [Fact]
+    public void Final_pass_can_use_dialect_advertised_by_the_generation_response_without_metadata_probe()
+    {
+        using var handler = new CaptureHandler(server: "ik_llama.cpp");
+        var descriptor = new ProviderDescriptor("fixture", ProviderFamily.OpenAiChatCompatible,
+            "http://127.0.0.1:9999/v1", AuthConfig.None(), false, false, true) { BillingMode = BillingMode.Local };
+        var provider = new OpenAiChatCompatibleProvider(descriptor, new NoSecrets(), () => new HttpClient(handler, false));
+        var model = new ModelSelection(new ModelIdValue("fixture"), 4096, ToolMode.Direct, null);
+        provider.Complete(new ModelRequest(model, [], null, [], ToolChoice.None(), null, null, null, null),
+            TestContext.Current.CancellationToken);
+        Assert.True(provider.UsesLlamaCppDialect);
+        provider.Complete(new ModelRequest(model, [], null, [], ToolChoice.None(), null, null, null, null)
+            { FinalAnswerOnly = true }, TestContext.Current.CancellationToken);
+        using var body = JsonDocument.Parse(handler.Body!);
+        Assert.False(body.RootElement.GetProperty("chat_template_kwargs").GetProperty("enable_thinking").GetBoolean());
+        Assert.Equal(0, handler.MetadataQueries);
+        Assert.Equal(2, handler.GenerationRequests);
+    }
+
+    [Theory]
+    [InlineData("partial-text")]
+    [InlineData("partial-tools")]
+    [InlineData("usage-only")]
+    [InlineData("unknown-stop")]
+    [InlineData("missing-tools")]
+    [InlineData("other-choice-stop")]
+    public async System.Threading.Tasks.Task Incomplete_or_unknown_completion_never_emits_a_completed_response(string scenario)
+    {
+        var payload = scenario switch
+        {
+            "partial-text" => "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+            "partial-tools" => "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"function\":{\"name\":\"fixture\",\"arguments\":\"{\"}}]}}]}\n\ndata: [DONE]\n\n",
+            "usage-only" => "data: {\"choices\":[],\"usage\":{\"completion_tokens\":3}}\n\ndata: [DONE]\n\n",
+            "unknown-stop" => "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"backend_error\"}]}\n\n",
+            "missing-tools" => "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n",
+            _ => "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}},{\"index\":1,\"delta\":{\"content\":\"other\"},\"finish_reason\":\"stop\"}]}\n\n",
+        };
+        using var handler = new CaptureHandler(payload);
+        var provider = new OpenAiChatCompatibleProvider(new ProviderDescriptor("fixture", ProviderFamily.OpenAiChatCompatible,
+            "https://fixture.invalid/v1", AuthConfig.None(), false, false, true), new NoSecrets(), () => new HttpClient(handler, false));
+        var request = new ModelRequest(new ModelSelection(new ModelIdValue("fixture"), 4096, ToolMode.Direct, null),
+            [], null, [], ToolChoice.None(), null, null, null, null);
+        var events = new List<ModelStreamEvent>();
+        await Assert.ThrowsAsync<ModelProviderException>(async () =>
+        {
+            await foreach (var item in provider.StreamAsync(request, TestContext.Current.CancellationToken)) events.Add(item);
+        });
+        Assert.Empty(events.OfType<ResponseCompleted>());
+        Assert.Empty(events.OfType<BlockCompleted>().Select(item => item.Block).OfType<ToolCallBlock>());
+        Assert.Equal(1, handler.GenerationRequests);
+    }
+
+    [Fact]
+    public void Stream_uses_only_choice_zero_and_preserves_trailing_usage()
+    {
+        const string payload = "data: {\"choices\":[{\"index\":1,\"delta\":{\"content\":\"wrong\"},\"finish_reason\":\"length\"},{\"index\":0,\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}\n\n"
+            + "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n";
+        using var handler = new CaptureHandler(payload);
+        var provider = new OpenAiChatCompatibleProvider(new ProviderDescriptor("fixture", ProviderFamily.OpenAiChatCompatible,
+            "https://fixture.invalid/v1", AuthConfig.None(), false, false, true), new NoSecrets(), () => new HttpClient(handler, false));
+        var response = provider.Complete(new ModelRequest(new ModelSelection(new ModelIdValue("fixture"), 4096, ToolMode.Direct, null),
+            [], null, [], ToolChoice.None(), null, null, null, null), TestContext.Current.CancellationToken);
+        Assert.Equal("answer", Assert.Single(response.Content.OfType<TextBlock>()).Text);
+        Assert.Equal(StopReason.EndTurn, response.StopReason);
+        Assert.Equal(2, response.Usage.Output);
+    }
+
     [Theory]
     [InlineData("tools")]
     [InlineData("auto-choice")]
@@ -289,6 +356,7 @@ public sealed class OpenAiChatCompatibleMediaSerializationTests
     {
         public string? Body { get; private set; }
         public int MetadataQueries { get; private set; }
+        public int GenerationRequests { get; private set; }
         private readonly string _response;
         private readonly string? _server;
         public CaptureHandler(string? response = null, string? server = null)
@@ -308,11 +376,15 @@ public sealed class OpenAiChatCompatibleMediaSerializationTests
                 return metadata;
             }
             Body = await request.Content!.ReadAsStringAsync(cancellationToken);
-            return new HttpResponseMessage(HttpStatusCode.OK)
+            GenerationRequests++;
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
             {
+                RequestMessage = request,
                 Content = new StringContent(_response,
                     Encoding.UTF8, "text/event-stream"),
             };
+            if (_server is not null) response.Headers.Server.ParseAdd(_server);
+            return response;
         }
     }
 }

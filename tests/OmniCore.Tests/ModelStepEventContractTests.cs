@@ -7,9 +7,26 @@ using OmniCore.Infrastructure;
 
 namespace OmniCore.Tests;
 
-/// <summary>Contracts of started v4 and completed v5, including legacy journals, without a provider.</summary>
+/// <summary>Contracts of started/completed v5, including legacy journals, without a provider.</summary>
 public sealed class ModelStepEventContractTests
 {
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    public void Legacy_starts_without_final_answer_marker_keep_the_default(int version)
+    {
+        var codecs = EventCodecs.Create();
+        var envelope = Envelope(new ModelStepStarted(TurnId.New(), 0, "legacy", 4096,
+            "Direct", null, null, null), codecs);
+        var json = JsonNode.Parse(envelope.PayloadJson)!.AsObject();
+        json.Remove("FinalAnswerOnly");
+        var legacy = DomainEvent.Create(envelope.SessionId, envelope.Type, version, null, null, null,
+            null, null, null, null, null, [], json.ToJsonString());
+        Assert.False(Assert.IsType<ModelStepStarted>(codecs.Decode(legacy)).FinalAnswerOnly);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -21,7 +38,8 @@ public sealed class ModelStepEventContractTests
         var response = optionalNulls ? null : Reference(ArtifactKind.ModelResponse);
         var started = new ModelStepStarted(turn, 7, "contract-model", 4_294_967_296L,
             "Grammar", optionalNulls ? null : "Enabled", optionalNulls ? null : 4096, context,
-            optionalNulls ? null : 16000, optionalNulls ? null : new RouteId("provider/route"));
+            optionalNulls ? null : 16000, optionalNulls ? null : new RouteId("provider/route"))
+            { FinalAnswerOnly = !optionalNulls };
         var completed = new ModelStepCompleted(turn, 7,
             new TokenUsage(4_294_967_297L, 53, 17, 29, 41), StopReason.MaxOutputTokens,
             response, "2026-10-04", optionalNulls ? null : 0.1234567890123456789012345678m,
@@ -31,7 +49,7 @@ public sealed class ModelStepEventContractTests
         Assert.Equal("model_step.completed", completed.Type().Value());
         foreach (var payload in new DomainEventPayload[] { started, completed })
         {
-            var expectedVersion = payload is ModelStepStarted ? 4 : 5;
+            var expectedVersion = 5;
             Assert.Equal(expectedVersion, payload.SchemaVersion());
             Assert.Equal(expectedVersion, codecs.CurrentVersion(payload.Type()));
             var restored = codecs.Decode(Envelope(payload, codecs));

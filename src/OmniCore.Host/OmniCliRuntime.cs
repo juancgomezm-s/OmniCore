@@ -328,7 +328,9 @@ public sealed partial class OmniCliRuntime : IDisposable
 
     internal void ReportTurnFailureDiagnostic(ExplorerTurn.TurnResult result, Action<string> writeLine)
     {
-        if (result.FailureDiagnostic is "cli.runtime.turn.no_final_answer" or "cli.runtime.turn.step_limit_without_answer")
+        if (result.FailureDiagnostic is "cli.runtime.turn.no_final_answer" or "cli.runtime.turn.step_limit_without_answer"
+            or "cli.runtime.turn.reasoning_only" or "cli.runtime.turn.empty_response"
+            or "cli.runtime.turn.tools_in_final_answer" or "cli.runtime.turn.output_exhausted_without_answer")
             writeLine(Text(LocalizedText.Of(result.FailureDiagnostic)));
         else if (!string.IsNullOrWhiteSpace(result.FailureDiagnostic))
             writeLine(ExternalDiagnostic(RedactSensitive(result.FailureDiagnostic)));

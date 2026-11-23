@@ -249,6 +249,56 @@ public sealed class ExplorerTurn
         return max + 1;
     }
 
+    private sealed record LocalAnswerCheckpoint(bool Pending = false, bool Attempted = false,
+        bool Completed = false, string? Text = null, StopReason Stop = StopReason.EndTurn,
+        string? Diagnostic = null, string? PublishedArtifact = null);
+
+    private LocalAnswerCheckpoint ReadLocalAnswerCheckpoint(EventStream stream, RunId runId, LaneId laneId, TurnId turnId)
+    {
+        var events = stream.EventsSince(1).Where(evt => evt.RunId == runId && evt.LaneId == laneId)
+            .Select(_codecs.Decode).ToArray();
+        var starts = events.OfType<ModelStepStarted>().Where(step => step.TurnId == turnId).ToArray();
+        var attempted = starts.Any(step => step.FinalAnswerOnly);
+        var last = events.OfType<ModelStepCompleted>().Where(step => step.TurnId == turnId)
+            .OrderBy(step => step.StepIndex).LastOrDefault();
+        var origin = last is null ? null : starts.SingleOrDefault(step => step.StepIndex == last.StepIndex);
+        if (last is null || origin is null || last.ResponseArtifact is not { } artifact
+            || starts.Any(step => step.StepIndex > last.StepIndex)
+            || !Equals(origin.RouteId, _selection.RouteId) || origin.ModelId != _selection.Model.ToString())
+            return new(Attempted: attempted);
+        if (artifact.Kind != ArtifactKind.ModelResponse || !_artifacts.Verify(artifact.Hash, artifact.Size))
+            throw new InvalidDataException("Final answer checkpoint is invalid.");
+        using var document = System.Text.Json.JsonDocument.Parse(_artifacts.GetText(artifact.Hash)!);
+        var hasVisible = document.RootElement.TryGetProperty("visibleContent", out var visible);
+        if (hasVisible && visible.GetProperty("version").GetInt32() != 1)
+            throw new InvalidDataException("Final answer checkpoint is invalid.");
+        if (hasVisible && visible.GetProperty("routeIdentityHash").GetString() != _selection.RouteIdentityHash)
+            return new(Attempted: attempted);
+        var blocks = hasVisible ? visible.GetProperty("blocks").EnumerateArray().ToArray()
+            : Array.Empty<System.Text.Json.JsonElement>();
+        // A completely empty response has no visibleContent envelope. The rooted
+        // response and completed step still prove that generation already occurred.
+        var text = hasVisible ? string.Concat(blocks.Where(block => block.GetProperty("kind").GetString() == "text")
+            .Select(block => block.GetProperty("text").GetString())) : document.RootElement.GetProperty("response").GetString();
+        var tools = blocks.Any(block => block.GetProperty("kind").GetString() == "tool-call");
+        var images = blocks.Any(block => block.GetProperty("kind").GetString() == "image");
+        var reasoning = blocks.Any(block => block.GetProperty("kind").GetString() == "reasoning");
+        if (images) return new(Attempted: attempted);
+        if (origin.FinalAnswerOnly)
+        {
+            var stop = tools ? StopReason.EndTurn : last.StopReason;
+            var answer = tools || string.IsNullOrWhiteSpace(text) ? null : text;
+            var published = events.OfType<ModelCompleted>().LastOrDefault(item => item.TurnId == turnId)?.ResponseArtifact;
+            if (published is not null && !_artifacts.Verify(published.Hash, published.Size))
+                throw new InvalidDataException("Published final answer checkpoint is invalid.");
+            return new(Attempted: true, Completed: true, Text: answer, Stop: stop,
+                Diagnostic: answer is null ? LocalAnswerCompletion.MissingAnswerDiagnostic(reasoning, tools, stop) : null,
+                PublishedArtifact: published?.Hash.ToString());
+        }
+        return new(Pending: !attempted && !tools && string.IsNullOrWhiteSpace(text)
+            && last.StopReason is StopReason.EndTurn or StopReason.MaxOutputTokens, Attempted: attempted);
+    }
+
     private int ReadTurnToolCallCount(EventStream stream, TurnId turnId)
     {
         var ids = new HashSet<ToolCallId>();
@@ -1839,12 +1889,36 @@ public sealed class ExplorerTurn
             var providerEndedTurn = false;
             var finalizeNext = false;
             var finalizationAttempted = false;
+            string? missingAnswerDiagnostic = null;
+            var recoveredFinalAnswer = false;
+            string? recoveredFinalArtifact = null;
+            if (isResume && _finalizeLocalAnswers && !recoveredImageCompletion)
+            {
+                var closing = ReadLocalAnswerCheckpoint(stream, runId, laneId, turnId);
+                finalizationAttempted = closing.Attempted;
+                finalizeNext = closing.Pending;
+                if (closing.Completed)
+                {
+                    var completionHooks = DispatchLifecycle(LifecyclePoint.BeforeCompletion);
+                    if (completionHooks.Denied || !ResolvePendingLifecycleValidations())
+                        throw new LifecycleHookWithheldException("lifecycle.hook.completion_withheld");
+                    recoveredFinalAnswer = true;
+                    recoveredFinalArtifact = closing.PublishedArtifact;
+                    finalText = closing.Text;
+                    stop = closing.Stop;
+                    providerEndedTurn = true;
+                    missingAnswerDiagnostic = closing.Diagnostic;
+                    if (finalText is not null) finalResponseParts.Add(("text", finalText, -1));
+                    steps = nextModelStepIndex;
+                    usage = turnUsage;
+                }
+            }
             var recoveredStepCount = 0;
             string? recoveredResponseArtifactId = null;
             var finalResponseAlreadyPublished = false;
             recoveredStepCount = recoveredImageSteps;
-            finalResponseAlreadyPublished = recoveredImagePublished;
-            recoveredResponseArtifactId = recoveredImageArtifactId;
+            finalResponseAlreadyPublished = recoveredImagePublished || recoveredFinalArtifact is not null;
+            recoveredResponseArtifactId = recoveredFinalArtifact ?? recoveredImageArtifactId;
             if (recoveredImageCompletion)
             {
                 // ModelStepCompleted already owns the provider result and its CAS snapshot. Finish
@@ -1854,11 +1928,11 @@ public sealed class ExplorerTurn
                 usage = turnUsage;
             }
             // Replay is scoped to the same durable invocation destination, never to a session's last model.
-            ProviderState? continuation = isResume && !recoveredImageCompletion
+            ProviderState? continuation = isResume && !recoveredImageCompletion && !recoveredFinalAnswer && !finalizeNext
                 ? ReadProviderContinuation(stream, runId, laneId, turnId) : null;
             // These ceilings are per durable Turn, not per user.ask/resume invocation. Replay
             // admissions already written for this Turn before allowing another model/tool step.
-            for (var step = nextModelStepIndex; !recoveredImageCompletion && step < EffectiveMaxModelSteps(); step++)
+            for (var step = nextModelStepIndex; !recoveredImageCompletion && !recoveredFinalAnswer && step < EffectiveMaxModelSteps(); step++)
             {
                 var modelHooks = step == nextModelStepIndex ? initialModelHooks : DispatchLifecycle(LifecyclePoint.BeforeModel);
                 if (modelHooks.Denied || lifecycleDeniedTurn || !ResolvePendingLifecycleValidations())
@@ -1958,7 +2032,7 @@ public sealed class ExplorerTurn
                                 _selection.ContextBudget, _selection.ToolMode.ToString(),
                                 _selection.Reasoning?.Kind, _selection.Reasoning?.BudgetTokens,
                                 PersistContextSnapshot(materialized, _selection.ContextBudget), _modelContextCapacity,
-                                _selection.RouteId, reasoningResolution);
+                                _selection.RouteId, reasoningResolution) { FinalAnswerOnly = answerOnly };
                             var stepEvents = SteeringQueue.ApplicationEvents(steering, runId, laneId, turnId, stepIndex).ToList();
                             stepEvents.Add(stepStart);
                             stream.AppendBatch(stepEvents, DurabilityClass.Barrier);
@@ -2168,6 +2242,9 @@ public sealed class ExplorerTurn
                 // usage/state, but cannot publish tool effects or a new approval request.
                 cancellationToken.ThrowIfCancellationRequested();
                 finalText = VisibleAnswerText(resolved.Content);
+                missingAnswerDiagnostic = finalText is null
+                    ? LocalAnswerCompletion.MissingAnswerDiagnostic(resolved.Content.OfType<ReasoningBlock>()
+                        .Any(block => !string.IsNullOrWhiteSpace(block.VisibleText)), false, resolved.StopReason) : null;
                 var generatedImageBlocks = resolved.Content.OfType<ImageBlock>().ToArray();
                 var toolBlocks = new List<ToolCallBlock>();
                 foreach (ContentBlock block in resolved.Content)
@@ -2185,6 +2262,7 @@ public sealed class ExplorerTurn
                     finalText = null;
                     stop = StopReason.EndTurn;
                     providerEndedTurn = true;
+                    missingAnswerDiagnostic = LocalAnswerCompletion.MissingAnswerDiagnostic(false, true, stop);
                     break;
                 }
                 if (_finalizeLocalAnswers && !dedicatedImageRoute && !finalizationAttempted
@@ -2611,12 +2689,18 @@ public sealed class ExplorerTurn
                 }
             }
 
-            if (finalText is null && finalImages.Count == 0 && stop == StopReason.EndTurn)
+            if (finalText is null && finalImages.Count == 0 && stop is StopReason.EndTurn or StopReason.MaxOutputTokens)
             {
-                var reason = providerEndedTurn ? "cli.runtime.turn.no_final_answer" : "cli.runtime.turn.step_limit_without_answer";
+                var reason = stop == StopReason.MaxOutputTokens ? "cli.runtime.turn.output_exhausted_without_answer"
+                    : providerEndedTurn ? missingAnswerDiagnostic ?? "cli.runtime.turn.no_final_answer"
+                    : "cli.runtime.turn.step_limit_without_answer";
                 AppendTerminalTurn(stream, sessionId, runId, laneId, turnId,
                     new TurnAbandoned(turnId, reason));
-                return new TurnResult(null, StopReason.Error, steps, usage, allToolCalls.ToArray(), null)
+                var failureStop = stop == StopReason.MaxOutputTokens ? stop : StopReason.Error;
+                AuditSpend(sessionId, runId, laneId, turnId, failureStop, turnUsage,
+                    ReadTurnModelStepCost(stream, turnId), usageAvailable: !invalidUsageObserved);
+                AuditPolicy(sessionId, runId, turnId, failureStop);
+                return new TurnResult(null, failureStop, steps, usage, allToolCalls.ToArray(), null)
                     { TurnId = turnId, FailureDiagnostic = reason };
             }
 
@@ -3060,7 +3144,8 @@ public sealed class ExplorerTurn
     private string? VisibleAnswerText(IReadOnlyList<ContentBlock> content)
     {
         var blocks = content.OfType<TextBlock>().ToArray();
-        return blocks.Length == 0 ? null : string.Concat(blocks.Select(block => block.Text));
+        var text = string.Concat(blocks.Select(block => block.Text));
+        return string.IsNullOrWhiteSpace(text) ? null : text;
     }
 
     private static string QuestionnaireArgumentDigest(string argumentsJson)

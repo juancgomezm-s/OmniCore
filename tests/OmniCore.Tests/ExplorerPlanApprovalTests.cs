@@ -111,9 +111,10 @@ public sealed class ExplorerPlanApprovalTests
     {
         var server = OmniHost.CreateInMemoryServer();
         var objective = "explain repository";
-        Assert.Equal("ok", server.Send(WireEnvelope.Command(Ids.NewV7(), "{"
+        var started = server.Send(WireEnvelope.Command(Ids.NewV7(), "{"
             + JsonObj.Field("cmd", "explore.start") + ","
-            + JsonObj.Field("objective", objective) + "}"), CancellationToken.None).Status);
+            + JsonObj.Field("objective", objective) + "}"), CancellationToken.None);
+        Assert.True(started.Status == "ok", started.Error);
         var tools = OmniHost.CreateExplorerTools();
         var executor = ScriptedToolExecutor.WithCoreTools(tools.Catalog(),
             ScriptedPermissionPolicy.WithTool("plan.propose", PermissionDecision.Allow)
