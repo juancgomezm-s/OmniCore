@@ -53,7 +53,7 @@ public sealed partial class TuiWiringTests
             ["tools_security"] = [("preferences-tools-open", "tools-list"), ("preferences-tool-mappings-open", "mapping-source"), ("preferences-permissions-open", "security-preferences")],
             ["context_sessions"] = [("preferences-context-open", "session-preferences-list"), ("preferences-memory-open", "session-preferences-list")],
             ["extensions_skills"] = [("preferences-extensions-open", "session-preferences-list"), ("preferences-skills-open", "session-preferences-list"),
-                ("preferences-hooks-open", "preferences-inspection"), ("preferences-mcp-open", "preferences-inspection"),
+                ("preferences-hooks-open", "preferences-inspection"), ("preferences-mcp-open", "mcp-servers"),
                 ("preferences-aliases-open", "mapping-source"), ("preferences-commands-open", "commands-list")],
             ["diagnostics_data"] = [("preferences-diagnostics-open", "diagnostics-summary"), ("preferences-help-open", "preferences-inspection")],
         };
@@ -205,12 +205,13 @@ public sealed partial class TuiWiringTests
     public void A_failed_menu_read_keeps_an_error_page_and_returns_to_its_category(string category, string action, string query) => RunTuiTest(fx =>
     {
         var client = new MenuFaultClient(fx.Server, query);
-        fx.StartTui(client: client);
+        var mcp = new McpFaultPreferences();
+        fx.StartTui(client: client, mcpPreferences: query == "mcp" ? mcp : null);
         KeyWithEffect(fx, KeyCode.F4, () => fx.App.Overlay is not null, "preferences open");
         ChoosePreferenceCategory(fx, category); ClickId(fx, action);
         Assert.NotNull(fx.App.Overlay);
         Assert.DoesNotContain("IOException", OverlayText(fx.App.Overlay));
-        Assert.Equal(1, client.Failures);
+        Assert.Equal(1, query == "mcp" ? mcp.Reads : client.Failures);
         KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay?.Id == "preferences-center"
             && Descendants(fx.App.Overlay).Any(view => view.Id == action), "failed read returns to its category");
         Assert.Equal(0, client.Sends);
@@ -227,5 +228,15 @@ public sealed partial class TuiWiringTests
             if (name != query) return inner.Query(name, token);
             Failures++; throw new IOException("Menu read fixture failure");
         }
+    }
+
+    private sealed class McpFaultPreferences : IMcpPreferencesFacade
+    {
+        public int Reads;
+        public McpPreferencesSnapshot Read() { Reads++; throw new IOException("MCP preferences fixture read failure"); }
+        public McpPreferencesSnapshot Save(string revision, string? existingId, McpConfigurationDraft draft) => throw new NotSupportedException();
+        public McpPreferencesSnapshot Remove(string revision, string id) => throw new NotSupportedException();
+        public McpPreferencesSnapshot SetTrust(string revision, string id, bool trusted) => throw new NotSupportedException();
+        public McpPreferencesSnapshot SetCredential(string revision, string id, string secret) => throw new NotSupportedException();
     }
 }
