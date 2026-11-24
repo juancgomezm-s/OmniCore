@@ -50,5 +50,7 @@ No se usaron cuentas ni servidores reales del usuario, API de pago o GPU.
 Los modelos de prueba son identificadores de fixtures, no una lista de acceso
 afirmada para la suscripción del usuario. No se certifica inferencia real, Linux,
 macOS ni suite completa con este foco. No se ejecutó GitHub Actions ni release.
-La publicación permanece pendiente de autorización tras el rechazo automático
-del intento anterior de publicar Main/tag/release; este documento no la autoriza.
+En el cierre de esta revisión la publicación estaba pendiente de autorización
+tras el rechazo automático del intento anterior. Juan autorizó después revisar y
+publicar; la [rc.28 publicada y verificada](publication-rc28-20261124.md) incorpora
+esta corrección y la de nombres MCP. No se reescribe el origen del paquete.
