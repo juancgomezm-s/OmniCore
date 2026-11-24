@@ -72,6 +72,7 @@ internal sealed record McpServerDefinition(string Id, string Transport, string? 
     string Scope, string Identity)
 {
     public McpWebConnector? Web { get; init; }
+    public string? DisplayName { get; init; }
     public string? AuthRef { get; init; }
     public string TrustGeneration { get; init; } = "";
     public bool HonorReadOnlyHint { get; init; }
@@ -88,6 +89,8 @@ internal sealed record McpServerDefinition(string Id, string Transport, string? 
         var id = Required("id");
         if (!System.Text.RegularExpressions.Regex.IsMatch(id, "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"))
             throw new InvalidDataException("MCP server id is invalid.");
+        var displayName = Optional("displayName");
+        if (displayName is not null) displayName = McpServerNames.Validate(displayName);
         var transport = Required("transport").ToLowerInvariant();
         if (transport is not ("stdio" or "http")) throw new InvalidDataException("MCP transport must be stdio or http.");
         var command = Optional("command");
@@ -114,7 +117,7 @@ internal sealed record McpServerDefinition(string Id, string Transport, string? 
         if (scope == "project" && !workspaceTrusted) scope = "project-untrusted-workspace";
         var identity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json.GetRawText()))).ToLowerInvariant();
         return new McpServerDefinition(id, transport, command, args, working, endpoint, hosts, userTrusted,
-            scope, identity) { Web = ParseWeb(json), AuthRef = authRef, HonorReadOnlyHint = honorReadOnlyHint,
+            scope, identity) { DisplayName = displayName, Web = ParseWeb(json), AuthRef = authRef, HonorReadOnlyHint = honorReadOnlyHint,
                 RequestTimeoutSeconds = Timeout("requestTimeoutSeconds", 30), StartupTimeoutSeconds = Timeout("startupTimeoutSeconds", 10) };
 
         int Timeout(string name, int fallback)

@@ -10,9 +10,15 @@ Otro Enter confirma el guardado. Tab y Shift+Tab recorren los controles visibles
 Esc vuelve sin guardar. En Argumentos, Shift+Enter inserta una línea y Tab sale
 del editor.
 
+El **Nombre del servidor** admite espacios, por ejemplo `RAG local`. Debajo se
+muestra el identificador técnico generado, `rag-local`, usado por las herramientas.
+Cambiar el nombre de una conexión existente conserva su identificador y las
+referencias de sus herramientas. Las configuraciones anteriores conservan sus IDs.
+Si un campo no es válido, el aviso identifica el campo y el foco vuelve a él.
+
 ## Conexión local: stdio
 
-Elige un identificador único y el transporte **Local · stdio**. Indica la ruta
+Elige un nombre y el transporte **Local · stdio**. Indica la ruta
 absoluta del ejecutable y sus argumentos, uno por línea. Por ejemplo, para un
 servidor JavaScript ya instalado, el ejecutable es la ruta de `node.exe` y el
 primer argumento es la ruta del archivo del servidor. El directorio de trabajo

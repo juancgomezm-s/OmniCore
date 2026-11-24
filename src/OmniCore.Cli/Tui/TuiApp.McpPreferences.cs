@@ -55,7 +55,8 @@ public sealed partial class TuiApp
         var frame = McpFrame(McpText("title"), "mcp-preferences", 38);
         var list = new ListView { Id = "mcp-servers", X = 2, Y = 4, Width = Dim.Fill(4),
             Height = Dim.Func(_ => Math.Max(2, frame.Viewport.Height - 22)), ShowMarks = false };
-        list.SetSource(new ObservableCollection<string>(snapshot.Servers.Select(server => server.Id + " · " + server.Transport
+        list.SetSource(new ObservableCollection<string>(snapshot.Servers.Select(server => server.DisplayName
+            + (server.DisplayName == server.Id ? "" : " · " + server.Id) + " · " + server.Transport
             + " · " + McpText(server.Scope == "user" ? "user" : "project") + " · " + McpText(server.Trusted ? "authorized" : "pending"))));
         if (snapshot.Servers.Count > 0) list.SelectedItem = 0;
         var note = new Label { Id = "mcp-notice", X = 2, Y = Pos.Bottom(list), Width = Dim.Fill(4), Height = 2,
@@ -97,7 +98,7 @@ public sealed partial class TuiApp
     {
         CloseOverlay();
         var transport = existing?.Transport ?? "stdio";
-        var frame = McpFrame(McpText("title") + " › " + (existing?.Id ?? McpText("add")), "mcp-editor", 36);
+        var frame = McpFrame(McpText("title") + " › " + (existing?.DisplayName ?? McpText("add")), "mcp-editor", 36);
         var panel = new View { Id = "mcp-editor-fields", X = 2, Y = 1, Width = Dim.Fill(2), Height = Dim.Fill(8),
             ViewportSettings = ViewportSettingsFlags.HasVerticalScrollBar };
         var y = 0;
@@ -108,9 +109,18 @@ public sealed partial class TuiApp
             var field = new TextField { Id = "mcp-" + key, X = 0, Y = y++, Width = Dim.Fill(2), Text = value ?? "" };
             panel.Add(field); return field;
         }
-        var id = Field("id", existing?.Id); id.ReadOnly = existing is not null; id.CanFocus = existing is null;
+        var name = Field("name", existing?.DisplayName);
+        var id = Field("id", existing?.Id); id.ReadOnly = true; id.CanFocus = false;
+        name.TextChanged += (_, _) =>
+        {
+            if (existing is not null) return;
+            try { id.Text = McpServerNames.CreateId(name.Text.ToString()); }
+            catch (ArgumentException) { id.Text = ""; }
+        };
         Caption("transport");
         var mode = McpButton("mcp-transport", "", y++); mode.X = 0; panel.Add(mode);
+        var commonRows = y;
+        var transportSpecificStart = panel.SubViews.Count;
         var endpoint = Field("endpoint", existing?.Endpoint);
         var command = Field("command", existing?.Command);
         Caption("arguments");
@@ -124,8 +134,8 @@ public sealed partial class TuiApp
         void Reflow()
         {
             mode.Text = McpText(transport) + "  ‹ ›";
-            var row = 4;
-            foreach (var field in panel.SubViews.Skip(4))
+            var row = commonRows;
+            foreach (var field in panel.SubViews.Skip(transportSpecificStart))
             {
                 var http = field.Id == "mcp-endpoint" || field is Label && field.Text.ToString() == McpText("endpoint");
                 field.Visible = http == (transport == "http");
@@ -155,16 +165,31 @@ public sealed partial class TuiApp
         {
             try
             {
-                var draft = new McpConfigurationDraft(id.Text.ToString().Trim(), transport, command.Text.ToString().Trim(),
-                    DecodeLocalArguments(arguments.Text.ToString()).ToArray(), directory.Text.ToString().Trim(), endpoint.Text.ToString().Trim());
+                var displayName = McpServerNames.Validate(name.Text.ToString());
+                var draft = new McpConfigurationDraft(existing?.Id ?? McpServerNames.CreateId(displayName), transport, command.Text.ToString().Trim(),
+                    DecodeLocalArguments(arguments.Text.ToString()).ToArray(), directory.Text.ToString().Trim(), endpoint.Text.ToString().Trim())
+                    { DisplayName = displayName };
                 host.Save(snapshot.Revision, existing?.Id, draft);
                 CloseOverlay(); ShowMcpPreferences(McpText("saved"));
             }
-            catch (Exception error) { notice.Text = McpError(error); }
+            catch (Exception error)
+            {
+                notice.Text = McpError(error);
+                var field = error.Message switch
+                {
+                    "mcpPreferences.name_invalid" or "mcpPreferences.identifier_invalid" or "mcpPreferences.duplicate" => (View)name,
+                    "mcpPreferences.endpoint_invalid" => endpoint,
+                    "mcpPreferences.executable" => command,
+                    "mcpPreferences.arguments_invalid" => arguments,
+                    "mcpPreferences.directory_invalid" => directory,
+                    _ => null,
+                };
+                field?.SetFocus();
+            }
         };
-        EnterNavigation.TraverseForm([id, mode, endpoint, command, arguments, directory], save, cancel);
+        EnterNavigation.TraverseForm([name, mode, endpoint, command, arguments, directory], save, cancel);
         frame.Add(panel, notice, save, cancel); Reflow();
-        OpenMcpFrame(frame, existing is null ? id : mode, Return);
+        OpenMcpFrame(frame, name, Return);
     }
 
     private void ShowMcpConfirmation(IMcpPreferencesFacade host, McpPreferencesSnapshot snapshot, McpConfigurationRow server, bool remove)
@@ -176,7 +201,7 @@ public sealed partial class TuiApp
             + (server.WorkingDirectory.Length == 0 ? "" : "\n" + McpText("directory") + ": " + server.WorkingDirectory);
         var note = new TextView { Id = "mcp-confirm-details", X = 2, Y = 2, Width = Dim.Fill(4), Height = Dim.Fill(7),
             ReadOnly = true, WordWrap = true, ScrollBars = true, TabKeyAddsTab = false,
-            Text = server.Id + " · " + McpText(server.Scope == "user" ? "user" : "project") + "\n" + target
+            Text = server.DisplayName + " · " + server.Id + " · " + McpText(server.Scope == "user" ? "user" : "project") + "\n" + target
                 + "\n\n" + McpText(remove ? "remove_help" : "trust_help") };
         var cancel = McpButton("mcp-confirm-cancel", McpText("cancel"), Pos.AnchorEnd(4));
         var confirm = McpButton("mcp-confirm-apply", McpText("confirm"), Pos.AnchorEnd(2));

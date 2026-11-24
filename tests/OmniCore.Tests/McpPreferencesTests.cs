@@ -19,6 +19,38 @@ public sealed class McpPreferencesTests : IDisposable
 
     private McpConfigurationDraft Http(string id = "remote") => new(id, "http", "", [], "", "https://fixture.invalid/mcp");
 
+    [Theory]
+    [InlineData("RAG local", "rag-local")]
+    [InlineData("RÁG de la compañía", "rag-de-la-compania")]
+    [InlineData("  Equipo - local  ", "equipo-local")]
+    public void Human_names_generate_valid_ids_and_persist_separately(string name, string id)
+    {
+        Assert.Equal(id, McpServerNames.CreateId(name));
+        var saved = _host.Save(_host.Read().Revision, null,
+            Http(id) with { Endpoint = "http://127.0.0.1:18081/mcp", DisplayName = name });
+        var row = Assert.Single(saved.Servers);
+        Assert.Equal(id, row.Id); Assert.Equal(name.Trim(), row.DisplayName);
+        Assert.Equal("http://127.0.0.1:18081/mcp", row.Endpoint);
+        Assert.Equal(name.Trim(), Assert.Single(new McpPreferencesHost(_paths, _root).Read().Servers).DisplayName);
+        var renamed = _host.Save(saved.Revision, id, Http(id) with { DisplayName = "Otro nombre" });
+        Assert.Equal(id, Assert.Single(renamed.Servers).Id);
+        Assert.Equal("Otro nombre", Assert.Single(renamed.Servers).DisplayName);
+    }
+
+    [Fact]
+    public void Legacy_ids_remain_unchanged_and_long_or_non_latin_names_have_bounded_distinct_namespaces()
+    {
+        var saved = _host.Save(_host.Read().Revision, null, Http("Existing.ID"));
+        Assert.Equal("Existing.ID", Assert.Single(saved.Servers).DisplayName);
+        Assert.Equal("Existing.ID", Assert.Single(saved.Servers).Id);
+        var longName = new string('x', 120);
+        Assert.Equal(64, McpServerNames.CreateId(longName).Length);
+        Assert.NotEqual(McpServerNames.CreateId(longName), McpServerNames.CreateId(longName + "y"));
+        Assert.Matches("^[a-z0-9-]{1,64}$", McpServerNames.CreateId("知识库"));
+        Assert.Throws<ArgumentException>(() => McpServerNames.CreateId("\n"));
+        Assert.Throws<ArgumentException>(() => _host.Save(saved.Revision, "Existing.ID", Http("Existing.ID") with { DisplayName = "" }));
+    }
+
     [Fact]
     public void Saved_configuration_feeds_the_runtime_catalog_only_after_explicit_remote_authorization()
     {
@@ -113,7 +145,8 @@ public sealed class McpPreferencesTests : IDisposable
     {
         var saved = _host.Save(_host.Read().Revision, null, Http());
         var bytes = File.ReadAllBytes(FilePath);
-        Assert.Throws<InvalidDataException>(() => _host.Save(saved.Revision, "remote", Http() with { Endpoint = endpoint }));
+        Assert.Equal("mcpPreferences.endpoint_invalid", Assert.Throws<ArgumentException>(() =>
+            _host.Save(saved.Revision, "remote", Http() with { Endpoint = endpoint })).Message);
         Assert.Equal(bytes, File.ReadAllBytes(FilePath));
     }
 

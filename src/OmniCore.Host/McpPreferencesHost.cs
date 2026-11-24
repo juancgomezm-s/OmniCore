@@ -8,10 +8,16 @@ using OmniCore.Abstractions;
 using OmniCore.Infrastructure;
 
 public sealed record McpConfigurationRow(string Id, string Transport, string Scope, string Identity,
-    string Command, string[] Arguments, string WorkingDirectory, string Endpoint, bool Trusted, bool HasCredential);
+    string Command, string[] Arguments, string WorkingDirectory, string Endpoint, bool Trusted, bool HasCredential)
+{
+    public string DisplayName { get; init; } = Id;
+}
 public sealed record McpPreferencesSnapshot(string Revision, IReadOnlyList<McpConfigurationRow> Servers);
 public sealed record McpConfigurationDraft(string Id, string Transport, string Command, string[] Arguments,
-    string WorkingDirectory, string Endpoint);
+    string WorkingDirectory, string Endpoint)
+{
+    public string? DisplayName { get; init; }
+}
 
 /// <summary>Explicit human configuration operations. Reading/saving never probes or launches a server.</summary>
 public interface IMcpPreferencesFacade
@@ -39,7 +45,8 @@ public sealed class McpPreferencesHost(IPlatformPaths paths, string workspaceRoo
         var revision = Revision();
         var rows = Store.List().Select(server => new McpConfigurationRow(server.Id, server.Transport, server.Scope,
             server.Identity, server.Command ?? "", server.Args, server.WorkingDirectory ?? "", server.Endpoint ?? "",
-            server.Trust != OmniCore.Domain.TrustLevel.Untrusted, server.AuthRef is not null)).ToArray();
+            server.Trust != OmniCore.Domain.TrustLevel.Untrusted, server.AuthRef is not null)
+            { DisplayName = server.DisplayName ?? server.Id }).ToArray();
         if (revision != Revision()) throw new InvalidOperationException("mcpPreferences.stale");
         return new(revision, rows);
     }
@@ -51,12 +58,16 @@ public sealed class McpPreferencesHost(IPlatformPaths paths, string workspaceRoo
         var entries = Entries();
         var index = existingId is null ? -1 : UserIndex(entries, existingId);
         if (existingId is not null && draft.Id != existingId) throw new ArgumentException("mcpPreferences.invalid");
-        if (draft.Arguments.Length > 64 || draft.Arguments.Any(arg => arg is null || arg.Length > 4096))
-            throw new ArgumentException("mcpPreferences.invalid");
+        if (!System.Text.RegularExpressions.Regex.IsMatch(draft.Id, "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"))
+            throw new ArgumentException("mcpPreferences.identifier_invalid");
+        var displayName = draft.DisplayName is null ? null : McpServerNames.Validate(draft.DisplayName);
+        if (draft.Transport == "stdio" && (draft.Arguments.Length > 64 || draft.Arguments.Any(arg => arg is null || arg.Length > 4096)))
+            throw new ArgumentException("mcpPreferences.arguments_invalid");
         if (Store.List().Any(server => server.Id == draft.Id && server.Id != existingId))
             throw new ArgumentException("mcpPreferences.duplicate");
         var entry = index < 0 ? new JsonObject() : (JsonObject)entries[index]!.DeepClone();
         entry["id"] = draft.Id; entry["transport"] = draft.Transport;
+        if (displayName is not null) entry["displayName"] = displayName;
         // Preserve advanced settings and credential references when editing the same transport.
         var changedTransport = index >= 0 && entries[index]!["transport"]!.GetValue<string>() != draft.Transport;
         if (changedTransport) { entry.Remove("authRef"); entry.Remove("web"); }
@@ -69,13 +80,15 @@ public sealed class McpPreferencesHost(IPlatformPaths paths, string workspaceRoo
             if (string.IsNullOrWhiteSpace(draft.WorkingDirectory)) entry.Remove("workingDirectory");
             else
             {
-                if (!Path.IsPathFullyQualified(draft.WorkingDirectory)) throw new ArgumentException("mcpPreferences.invalid");
+                if (!Path.IsPathFullyQualified(draft.WorkingDirectory)) throw new ArgumentException("mcpPreferences.directory_invalid");
                 entry["workingDirectory"] = Path.GetFullPath(draft.WorkingDirectory);
             }
         }
         else if (draft.Transport == "http")
         {
-            var endpoint = McpEndpoint.Validate(draft.Endpoint);
+            Uri endpoint;
+            try { endpoint = McpEndpoint.Validate(draft.Endpoint); }
+            catch (InvalidDataException) { throw new ArgumentException("mcpPreferences.endpoint_invalid"); }
             entry.Remove("command"); entry.Remove("args"); entry.Remove("workingDirectory");
             entry["endpoint"] = endpoint.AbsoluteUri;
             // An edit cannot silently retain authority to another destination.

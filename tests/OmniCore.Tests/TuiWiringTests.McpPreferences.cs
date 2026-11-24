@@ -10,6 +10,45 @@ namespace OmniCore.Tests;
 
 public sealed partial class TuiWiringTests
 {
+    [Theory]
+    [InlineData("es")]
+    [InlineData("en")]
+    [InlineData("fr")]
+    [InlineData("it")]
+    public void Mcp_RAG_local_name_and_loopback_URL_save_and_validation_focuses_the_invalid_field(string locale) => RunTuiTest(fx =>
+    {
+        var host = McpPreferencesHost.Create(fx.Workspace, Path.Combine(fx.Root, "rag-name-data"));
+        fx.StartTui(mcpPreferences: host, initialColumns: 80, initialRows: 25,
+            localeSelection: new LocaleSelection(locale, LocaleSelectionSource.CommandLine));
+        fx.Invoke(() => fx.App.ShowMcpPreferences()); ClickId(fx, "mcp-add");
+        fx.Invoke(() => EnterControl(fx, "mcp-name").Text = "RAG local");
+        Assert.Equal("rag-local", EnterControl(fx, "mcp-id").Text.ToString());
+        Assert.False(EnterControl(fx, "mcp-id").CanFocus);
+        EnterOnce(fx, () => EnterControl(fx, "mcp-transport").HasFocus, "Enter salta el ID generado");
+        fx.InjectKey(new Key(KeyCode.Space));
+        fx.Wait(() => EnterControl(fx, "mcp-endpoint").Visible, "transporte HTTP");
+        EnterOnce(fx, () => EnterControl(fx, "mcp-endpoint").HasFocus, "Enter lleva a URL");
+        fx.Invoke(() => EnterControl(fx, "mcp-endpoint").Text = "http://external.invalid/mcp");
+        EnterOnce(fx, () => EnterControl(fx, "mcp-save").HasFocus, "Enter enfoca Guardar");
+        EnterOnce(fx, () => EnterControl(fx, "mcp-endpoint").HasFocus, "URL inválida devuelve foco al campo exacto");
+        Assert.Equal(McpPreferencesResources.Get(locale, "endpoint_invalid"), EnterControl(fx, "mcp-editor-notice").Text.ToString());
+        Assert.Empty(host.Read().Servers);
+        fx.Invoke(() => EnterControl(fx, "mcp-endpoint").Text = "http://127.0.0.1:18081/mcp");
+        ExportPreferenceFrame(fx, 80, 25, "rag-name-" + locale, "rag-local");
+        EnterOnce(fx, () => EnterControl(fx, "mcp-save").HasFocus, "corregir URL permite guardar");
+        EnterOnce(fx, () => fx.App.Overlay?.Id == "mcp-preferences", "nombre con espacios se guarda");
+        var server = Assert.Single(host.Read().Servers);
+        Assert.Equal("RAG local", server.DisplayName); Assert.Equal("rag-local", server.Id);
+        Assert.Equal("http://127.0.0.1:18081/mcp", server.Endpoint);
+        Assert.Contains("RAG local", ((ListView)EnterControl(fx, "mcp-servers")).Source!.ToList().Cast<object>().Single().ToString());
+        ClickId(fx, "mcp-edit");
+        fx.Invoke(() => EnterControl(fx, "mcp-name").Text = "RAG de la empresa");
+        Assert.Equal("rag-local", EnterControl(fx, "mcp-id").Text.ToString());
+        ClickId(fx, "mcp-save");
+        Assert.Equal("RAG de la empresa", Assert.Single(host.Read().Servers).DisplayName);
+        Assert.Equal("rag-local", Assert.Single(host.Read().Servers).Id);
+    });
+
     [Fact]
     public void Mcp_credentials_are_masked_explicitly_saved_and_never_stored_in_the_json_configuration() => RunTuiTest(fx =>
     {
@@ -71,8 +110,8 @@ public sealed partial class TuiWiringTests
         Assert.True(fx.Read(() => EnterControl(fx, "mcp-back").Frame.Bottom <= fx.App.Overlay!.Viewport.Height));
         ExportPreferenceFrame(fx, columns, rows, "mcp-empty", "Añadir servidor");
         EnterOnce(fx, () => fx.App.Overlay?.Id == "mcp-editor", "Enter en Añadir abre editor");
-        Assert.True(EnterControl(fx, "mcp-id").HasFocus);
-        fx.Invoke(() => EnterControl(fx, "mcp-id").Text = "fixture-remote");
+        Assert.True(EnterControl(fx, "mcp-name").HasFocus);
+        fx.Invoke(() => EnterControl(fx, "mcp-name").Text = "fixture-remote");
         EnterOnce(fx, () => EnterControl(fx, "mcp-transport").HasFocus, "Enter avanza a transporte sin guardar");
         fx.InjectKey(new Key(KeyCode.Space));
         fx.Wait(() => EnterControl(fx, "mcp-endpoint").Visible, "Espacio cambia a HTTP");
@@ -109,7 +148,7 @@ public sealed partial class TuiWiringTests
         ClickId(fx, "mcp-add");
         fx.Invoke(() =>
         {
-            EnterControl(fx, "mcp-id").Text = "fixture-local";
+            EnterControl(fx, "mcp-name").Text = "fixture-local";
             EnterControl(fx, "mcp-command").Text = Path.Combine(fx.Root, "unlaunched.exe");
             EnterControl(fx, "mcp-arguments").Text = "--path\na path with spaces";
             EnterControl(fx, "mcp-arguments").SetFocus();

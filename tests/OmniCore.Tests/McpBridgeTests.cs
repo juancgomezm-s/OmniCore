@@ -33,12 +33,14 @@ public sealed class McpBridgeTests
         try
         {
             var paths = new DefaultPlatformPaths(Path.Combine(root, "data"));
-            var config = Path.Combine(paths.ConfigDirectory, "mcp", "servers.json");
-            Directory.CreateDirectory(Path.GetDirectoryName(config)!);
-            File.WriteAllText(config, "[{\"id\":\"local-fixture\",\"transport\":\"http\",\"endpoint\":\"http://127.0.0.1:"
-                + port + "/mcp\",\"allowedHosts\":[\"127.0.0.1:" + port + "\"]}]");
+            var preferences = new McpPreferencesHost(paths, root);
+            const string displayName = "Local fixture";
+            preferences.Save(preferences.Read().Revision, null,
+                new(McpServerNames.CreateId(displayName), "http", "", [], "", $"http://127.0.0.1:{port}/mcp")
+                    { DisplayName = displayName });
             var store = new McpServerStore(paths, root, workspaceTrusted: false);
             Assert.Equal(TrustLevel.Untrusted, Assert.Single(store.List()).Trust);
+            Assert.Equal(displayName, Assert.Single(store.List()).DisplayName);
             store.Trust("local-fixture", trusted: true);
             Assert.Equal(TrustLevel.Trusted, Assert.Single(store.List()).Trust);
 
