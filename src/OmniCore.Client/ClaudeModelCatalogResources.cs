@@ -1,0 +1,23 @@
+namespace OmniCore.Client;
+
+public static class ClaudeModelCatalogResources
+{
+    private static readonly IReadOnlyDictionary<string, string[]> Rows = new Dictionary<string, string[]>
+    {
+        ["refresh"] = ["Actualizar modelos", "Refresh models", "Actualiser les modèles", "Aggiorna modelli"],
+        ["progress"] = ["Consultando los modelos de tu cuenta Claude… Esc cancela.", "Fetching models for your Claude account… Esc cancels.", "Chargement des modèles de votre compte Claude… Échap annule.", "Caricamento dei modelli del tuo account Claude… Esc annulla."],
+        ["ready"] = ["Catálogo Claude: {0} modelos. Revisa F3 o Modelos visibles.", "Claude catalog: {0} models. Check F3 or Visible models.", "Catalogue Claude : {0} modèles. Consultez F3 ou Modèles visibles.", "Catalogo Claude: {0} modelli. Vedi F3 o Modelli visibili."],
+        ["empty"] = ["La cuenta no devolvió modelos. Puedes volver a Actualizar modelos.", "The account returned no models. You can refresh models again.", "Le compte n’a renvoyé aucun modèle. Vous pouvez réessayer l’actualisation.", "L’account non ha restituito modelli. Puoi aggiornarli di nuovo."],
+        ["partial"] = ["Catálogo parcial.", "Partial catalog.", "Catalogue partiel.", "Catalogo parziale."],
+        ["invalid"] = ["Claude rechazó el acceso al catálogo con esta cuenta (401/403). Revisa la autorización y vuelve a iniciar sesión.", "Claude rejected catalog access for this account (401/403). Check authorization and sign in again.", "Claude a refusé l’accès au catalogue de ce compte (401/403). Vérifiez l’autorisation et reconnectez-vous.", "Claude ha rifiutato l’accesso al catalogo per questo account (401/403). Verifica l’autorizzazione e accedi di nuovo."],
+        ["notConfigured"] = ["Configura e inicia sesión en esta cuenta antes de actualizar sus modelos.", "Configure and sign in to this account before refreshing its models.", "Configurez ce compte et connectez-vous avant d’actualiser ses modèles.", "Configura questo account e accedi prima di aggiornare i modelli."],
+        ["unreachable"] = ["No se pudo consultar el catálogo Claude: red o tiempo de espera. Reintenta Actualizar modelos.", "Could not fetch the Claude catalog: network or timeout. Retry Refresh models.", "Catalogue Claude inaccessible : réseau ou délai dépassé. Réessayez l’actualisation.", "Impossibile caricare il catalogo Claude: rete o timeout. Riprova Aggiorna modelli."],
+        ["rateLimited"] = ["Claude limitó las solicitudes al catálogo. Reintenta más tarde.", "Claude rate-limited catalog requests. Retry later.", "Claude a limité les requêtes au catalogue. Réessayez plus tard.", "Claude ha limitato le richieste al catalogo. Riprova più tardi."],
+        ["changed"] = ["La cuenta o conexión cambió. Reabre esta pantalla y actualiza los modelos.", "The account or connection changed. Reopen this page and refresh models.", "Le compte ou la connexion a changé. Rouvrez cette page et actualisez les modèles.", "L’account o la connessione è cambiato. Riapri la pagina e aggiorna i modelli."],
+        ["catalogInvalid"] = ["El catálogo Claude no tiene un formato válido o cambió la conexión. Se conservó el catálogo anterior.", "The Claude catalog is invalid or the connection changed. The previous catalog was preserved.", "Le catalogue Claude est invalide ou la connexion a changé. Le catalogue précédent est conservé.", "Il catalogo Claude non è valido o la connessione è cambiata. Il catalogo precedente è conservato."],
+        ["modelConflict"] = ["Un identificador de modelo ya pertenece a otra conexión. Revisa Modelos y perfiles; no se sobrescribió el catálogo.", "A model ID already belongs to another connection. Check Models and profiles; the catalog was not overwritten.", "Un identifiant de modèle appartient déjà à une autre connexion. Vérifiez Modèles et profils ; le catalogue n’a pas été écrasé.", "Un ID modello appartiene già a un’altra connessione. Verifica Modelli e profili; il catalogo non è stato sovrascritto."],
+        ["failed"] = ["No se pudieron registrar los modelos Claude. Se conservó el catálogo anterior; reintenta Actualizar modelos.", "Could not register Claude models. The previous catalog was preserved; retry Refresh models.", "Impossible d’enregistrer les modèles Claude. Le catalogue précédent est conservé ; réessayez l’actualisation.", "Impossibile registrare i modelli Claude. Il catalogo precedente è conservato; riprova Aggiorna modelli."],
+    };
+    public static string Get(string locale, string key) => Rows.TryGetValue(key, out var values)
+        ? values[locale switch { "en" => 1, "fr" => 2, "it" => 3, _ => 0 }] : Get(locale, "failed");
+}

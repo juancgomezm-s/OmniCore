@@ -117,6 +117,7 @@ public sealed partial class TuiClaudeAccountHost : ITuiClaudeAccountHost, ITuiCl
         cancellationToken.ThrowIfCancellationRequested();
         var session = _sessionFactory(providerId);
         if (session is null) throw new InvalidOperationException("claude.account.identityUnavailable");
+        using var lease = ProviderConfigurationLease.Acquire(_paths.ConfigDirectory);
         session.Auth.SignOut(cancellationToken);
     }
 

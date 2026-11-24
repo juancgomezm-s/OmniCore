@@ -17,6 +17,7 @@ public sealed partial class TuiApp
     internal Task? ClaudeLoginTask => _claudeLoginTask;
 
     private string AccountUi(string key) => _localization.Resolve("accounts.ui." + key);
+    private string ClaudeCatalogText(string key) => ClaudeModelCatalogResources.Get(_locale, key);
 
     private void ShowClaudeAccounts(string? notice = null, string? selectedProviderId = null)
     {
@@ -47,11 +48,17 @@ public sealed partial class TuiApp
         var detail = new TextView { Id = "claude-account-detail", X = 2, Y = detailY,
             Width = Dim.Fill(4), Height = 4, ReadOnly = true, WordWrap = true, ScrollBars = true };
         #pragma warning restore CS0618
-        var status = new Label { Id = "claude-account-status", X = 2, Y = statusY,
-            Width = Dim.Fill(4), Height = 2, Text = notice ?? "" };
+#pragma warning disable CS0618 // Long catalog errors remain readable without overlapping the action column.
+        var status = new TextView { Id = "claude-account-status", X = 2, Y = statusY,
+            Width = Dim.Fill(4), Height = 2, ReadOnly = true, WordWrap = true, ScrollBars = true,
+            CanFocus = !string.IsNullOrEmpty(notice), Text = notice ?? "" };
+#pragma warning restore CS0618
         var configure = new CompactRowButton { Id = "claude-account-configure", X = 2, Y = Pos.AnchorEnd(8), Height = 1,
             NoPadding = true, TextAlignment = Alignment.Start, Text = ClaudeSetupText("configure"),
             Enabled = _claudeAccounts is ITuiClaudeAccountConfigurationHost };
+        var discover = new CompactRowButton { Id = "claude-account-discover", X = 2, Y = Pos.AnchorEnd(10), Height = 1,
+            NoPadding = true, TextAlignment = Alignment.Start, Text = ClaudeCatalogText("refresh"),
+            Visible = rows.Count > 0 };
         var login = new CompactRowButton { Id = "claude-account-login", X = 2, Y = Pos.AnchorEnd(6), Height = 1,
             NoPadding = true, TextAlignment = Alignment.Start,
             Text = AccountUi("action.login") };
@@ -69,9 +76,12 @@ public sealed partial class TuiApp
             login.Enabled = row?.CanLogin == true || rows.Count == 0 && _claudeAccounts is ITuiClaudeAccountConfigurationHost;
             login.Text = rows.Count == 0 ? ClaudeSetupText("configure_login") : AccountUi("action.login");
             logout.Enabled = row?.CanLogout == true;
+            discover.Enabled = row is { Configured: true, SignedIn: true, Dead: false }
+                && _claudeAccounts is ITuiClaudeModelCatalogHost;
             detail.Text = row is null ? ClaudeSetupText("empty") : ClaudeAccountDetail(row);
             if (row?.UnavailableReasonKey is { } reason)
                 status.Text = _localization.ResolveWire(reason);
+            status.CanFocus = status.Text.Length > 0;
         }
         list.ValueChanged += (_, _) => Sync();
         login.Accepted += (_, _) =>
@@ -80,11 +90,12 @@ public sealed partial class TuiApp
             else if (rows.Count == 0) ShowClaudeAccountConfiguration(null, signInAfterSave: true);
         };
         configure.Accepted += (_, _) => ShowClaudeAccountConfiguration(Selected()?.ProviderId, signInAfterSave: false);
+        discover.Accepted += (_, _) => { if (Selected() is { } row && discover.Enabled) StartClaudeAccountOperation(row.ProviderId, login: false); };
         logout.Accepted += (_, _) => { if (Selected() is { CanLogout: true } row) ConfirmClaudeLogout(row.ProviderId); };
         back.Accepted += (_, _) => { _returnToClaudeAccounts = false; CloseOverlay(); ShowPreferences("accounts_connections", categoryPage: true); };
-        EnterNavigation.Focus(() => login.Enabled ? login : logout.Enabled ? logout : back, list, detail);
-        EnterNavigation.TraverseTabs(list, detail, configure, login, logout, back);
-        frame.Add(list, detail, status, configure, login, logout, back);
+        EnterNavigation.Focus(() => discover.Enabled ? discover : login.Enabled ? login : logout.Enabled ? logout : back, list, detail, status);
+        EnterNavigation.TraverseTabs(list, detail, status, discover, configure, login, logout, back);
+        frame.Add(list, detail, status, discover, configure, login, logout, back);
         ApplyTheme(frame); _overlay = frame; _window.Add(frame); _preferencesReturnToCategory = true;
         Sync();
         if (rows.Count > 0) list.SetFocus(); else if (login.Enabled) login.SetFocus(); else back.SetFocus();
@@ -108,7 +119,9 @@ public sealed partial class TuiApp
         return string.Join(Environment.NewLine, values);
     }
 
-    private void StartClaudeLogin(string providerId)
+    private void StartClaudeLogin(string providerId) => StartClaudeAccountOperation(providerId, login: true);
+
+    private void StartClaudeAccountOperation(string providerId, bool login)
     {
         if (_window is null || _overlay is null || _claudeLoginCancellation is not null) return;
         CloseOverlay();
@@ -117,11 +130,11 @@ public sealed partial class TuiApp
         _claudeLoginCancellation = cancellation;
         var frame = OverlayFrame(AccountUi("title.claude"), Math.Clamp(_window.Frame.Height - 4, 18, 30));
         frame.Id = "claude-login-preferences";
-        frame.Add(MenuIndent.Help(AccountUi("help.loginProgress"), 2, 2, "claude-login-help"));
+        frame.Add(MenuIndent.Help(login ? AccountUi("help.loginProgress") : ClaudeCatalogText("progress"), 2, 2, "claude-login-help"));
 #pragma warning disable CS0618 // Pinned Terminal.Gui TextView remains the existing scrollable read-only presenter.
         var progress = new TextView { Id = "claude-account-progress", X = 2, Y = 5,
             Width = Dim.Fill(4), Height = Dim.Fill(4), ReadOnly = true, WordWrap = true,
-            Text = AccountUi("claude.phase.preparing") };
+            Text = login ? AccountUi("claude.phase.preparing") : ClaudeCatalogText("progress") };
 #pragma warning restore CS0618
         var cancel = new Button { Id = "claude-account-cancel", X = Pos.AnchorEnd(12), Y = Pos.AnchorEnd(2),
             Text = AccountUi("action.cancel") };
@@ -137,14 +150,23 @@ public sealed partial class TuiApp
         {
             try
             {
-                var result = await _claudeAccounts.LoginAsync(providerId,
-                    value => Update(() => progress.Text = ClaudeLoginProgress(value)), token).ConfigureAwait(false);
+                var result = login ? await _claudeAccounts.LoginAsync(providerId,
+                    value => Update(() => progress.Text = ClaudeLoginProgress(value)), token).ConfigureAwait(false) : new TuiClaudeLoginOutcome(true);
+                TuiClaudeModelCatalogOutcome? catalog = null;
+                if (result.Success && _claudeAccounts is ITuiClaudeModelCatalogHost models)
+                {
+                    token.ThrowIfCancellationRequested();
+                    Update(() => progress.Text = ClaudeCatalogText("progress"));
+                    catalog = await models.DiscoverModelsAsync(providerId, token).ConfigureAwait(false);
+                }
                 Update(() =>
                 {
                     _claudeLoginCancellation = null;
                     _returnToClaudeAccounts = false;
-                    var notice = ClaudeLoginResultNotice(result);
-                    if (result.Success)
+                    var notice = login ? ClaudeLoginResultNotice(result) : "";
+                    if (catalog is not null)
+                        notice += (notice.Length > 0 ? "\n" : "") + ClaudeCatalogNotice(catalog);
+                    if (result.Success && (catalog is null || catalog.Success))
                     {
                         try { _policies.ReloadModels(); }
                         catch (Exception) { notice += "\n" + ClaudeSetupText("unavailable"); }
@@ -161,12 +183,18 @@ public sealed partial class TuiApp
                     _claudeLoginCancellation = null;
                     _returnToClaudeAccounts = false;
                     CloseOverlay();
-                    ShowClaudeAccounts(AccountUi("claude.phase.failed"), providerId);
+                    ShowClaudeAccounts(login ? AccountUi("claude.phase.failed") : ClaudeCatalogText("failed"), providerId);
                 });
             }
             finally { cancellation.Dispose(); }
         });
     }
+
+    private string ClaudeCatalogNotice(TuiClaudeModelCatalogOutcome outcome) => !outcome.Success
+        ? ClaudeCatalogText(outcome.ErrorKey ?? "failed")
+        : outcome.AvailableModels == 0 ? ClaudeCatalogText("empty")
+        : string.Format(System.Globalization.CultureInfo.CurrentCulture, ClaudeCatalogText("ready"), outcome.AvailableModels)
+            + (outcome.Truncated ? " " + ClaudeCatalogText("partial") : "");
 
     private string ClaudeLoginProgress(TuiClaudeLoginProgress progress) => progress.Phase switch
     {

@@ -466,7 +466,8 @@ public sealed partial class TuiWiringTests
     {
         var frame = (FrameView)overlay;
         var controls = Descendants(overlay).Where(view => view.Id is "claude-account-list" or "claude-account-detail"
-            or "claude-account-status" or "claude-account-login" or "claude-account-logout" or "claude-account-back").ToArray();
+            or "claude-account-status" or "claude-account-discover" or "claude-account-configure"
+            or "claude-account-login" or "claude-account-logout" or "claude-account-back").Where(view => view.Visible).ToArray();
         foreach (var view in controls)
         {
             Assert.True(view.Frame.X >= 0 && view.Frame.Y >= 0 && view.Frame.Right <= frame.Viewport.Width

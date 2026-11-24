@@ -10,6 +10,28 @@ configurada, el foco comienza en **Configurar e iniciar sesión**.
 3. **Guardar e iniciar sesión** valida y guarda la conexión en la configuración
    del usuario y comienza el login OAuth existente. Completa la autenticación en
    el navegador; la pantalla muestra el progreso y después el resultado.
+4. Al completar el login, OmniCore consulta el catálogo de esa cuenta y registra
+   los modelos devueltos. F3 y **Modelos visibles** se actualizan en la misma TUI.
+
+Si la cuenta ya está conectada pero faltan sus modelos, selecciónala y pulsa
+**Actualizar modelos**. No hace falta cerrar ni volver a iniciar sesión. Enter
+desde la lista enfoca esta acción cuando está disponible; otro Enter la ejecuta.
+Abrir la pantalla de cuentas sólo consulta el estado local: no inicia la descarga.
+
+El catálogo usa el Bearer OAuth de esa conexión, renovándolo antes de la consulta
+si corresponde. No usa claves API ni prueba otro proveedor. Se consultan las
+páginas de `/v1/models` con límites de tamaño, páginas y tiempo de espera. Sólo
+se registran identificadores devueltos por el servidor; no se suponen modelos,
+permisos de acceso ni niveles de esfuerzo. Los modelos existentes, sus límites,
+asociaciones y preferencias de visibilidad se conservan. Un identificador que ya
+pertenece a otra conexión produce un conflicto en lugar de reasignarse.
+
+La autenticación y el catálogo tienen resultados separados: una sesión conectada
+puede informar acceso rechazado, catálogo vacío, red o límite de solicitudes.
+**Actualizar modelos** permite reintentar. Los detalles se pueden recorrer con
+Tab y flechas si exceden el espacio visible. Cancelar no publica el resultado
+tardío de esa descarga; un cierre de sesión o cambio de conexión durante la
+consulta impide registrar su catálogo. No se borran los modelos anteriores.
 
 Para preparar o editar la conexión sin autenticarte, usa **Configurar cuenta** y
 **Guardar configuración**. Si existen conexiones OAuth, selecciona la que quieras

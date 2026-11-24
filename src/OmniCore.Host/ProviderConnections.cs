@@ -245,9 +245,29 @@ public sealed class AnthropicModelCatalog
     public AnthropicModelCatalog(Func<HttpClient>? httpFactory = null) =>
         _httpFactory = httpFactory ?? AnthropicConnectionValidator.CreateHttpClient;
 
-    public async Task<(IReadOnlyList<AvailableAnthropicModel> Models, bool Truncated,
+    public Task<(IReadOnlyList<AvailableAnthropicModel> Models, bool Truncated,
         IReadOnlyList<RateLimitWindow> Quota)> ListAsync(string apiKey, string baseUrl,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) => ListCoreAsync(baseUrl, request =>
+        {
+            request.Headers.TryAddWithoutValidation("x-api-key", apiKey);
+            request.Headers.TryAddWithoutValidation("User-Agent", AnthropicConnectionValidator.UserAgent());
+        }, cancellationToken);
+
+    /// <summary>Uses the account's effective bearer and declared identity, never an API key.</summary>
+    public Task<(IReadOnlyList<AvailableAnthropicModel> Models, bool Truncated,
+        IReadOnlyList<RateLimitWindow> Quota)> ListOAuthAsync(ClaudeOAuthBearer bearer, string baseUrl,
+        string userAgent, CancellationToken cancellationToken) => ListCoreAsync(baseUrl, request =>
+        {
+            request.Headers.Authorization = new("Bearer", bearer.AccessToken);
+            request.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20");
+            request.Headers.TryAddWithoutValidation("User-Agent", userAgent);
+            if (!string.IsNullOrEmpty(bearer.AccountUuid))
+                request.Headers.TryAddWithoutValidation("x-account-uuid", bearer.AccountUuid);
+        }, cancellationToken);
+
+    private async Task<(IReadOnlyList<AvailableAnthropicModel> Models, bool Truncated,
+        IReadOnlyList<RateLimitWindow> Quota)> ListCoreAsync(string baseUrl,
+        Action<HttpRequestMessage> authenticate, CancellationToken cancellationToken)
     {
         var models = new List<AvailableAnthropicModel>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -259,11 +279,10 @@ public sealed class AnthropicModelCatalog
             using var request = new HttpRequestMessage(HttpMethod.Get,
                 AnthropicConnectionValidator.EndpointUri(baseUrl, "/v1/models?limit=" + PageSize
                     + (afterId is null ? "" : "&after_id=" + Uri.EscapeDataString(afterId))));
-            request.Headers.TryAddWithoutValidation("x-api-key", apiKey);
+            authenticate(request);
             var official = request.RequestUri is { Scheme: "https", Host: "api.anthropic.com", IsDefaultPort: true };
             request.Headers.TryAddWithoutValidation("anthropic-version",
                 official ? CapabilityCatalogVersion : AnthropicConnectionValidator.ApiVersion);
-            request.Headers.TryAddWithoutValidation("User-Agent", AnthropicConnectionValidator.UserAgent());
             HttpResponseMessage response;
             try
             {
@@ -1078,7 +1097,9 @@ internal static class ProviderConnectionRegistration
     /// como medida). Los modelos ya registrados se preservan intactos.
     /// </summary>
     internal static int RegisterAnthropicModels(string directory, string providerId,
-        IReadOnlyList<AvailableAnthropicModel> catalog, string expectedBaseUrl, bool truncated)
+        IReadOnlyList<AvailableAnthropicModel> catalog, string expectedBaseUrl, bool truncated,
+        AuthKind expectedAuth = AuthKind.ApiKey, string? expectedProviders = null,
+        Action? validateSession = null)
     {
         Directory.CreateDirectory(directory);
         using var lease = ProviderConfigurationLease.Acquire(directory);
@@ -1088,9 +1109,12 @@ internal static class ProviderConnectionRegistration
         var oldProviders = File.Exists(providersPath) ? File.ReadAllText(providersPath) : null;
         var oldModels = File.Exists(modelPath) ? File.ReadAllText(modelPath) : null;
         var loaded = new ConfigLoader().Load(oldProviders, oldModels);
-        if (loaded.Registry.Provider(providerId) is not { Family: ProviderFamily.AnthropicMessages, Auth.Kind: AuthKind.ApiKey } provider
-            || provider.BaseUrl != expectedBaseUrl)
+        if (loaded.Registry.Provider(providerId) is not { Family: ProviderFamily.AnthropicMessages } provider
+            || provider.Auth.Kind != expectedAuth || provider.BaseUrl != expectedBaseUrl)
             throw new ProviderConnectionException("catalogInvalid", "La conexión cambió durante el descubrimiento.");
+        if (expectedProviders is not null && oldProviders != expectedProviders)
+            throw new ProviderConnectionException("changed", "La conexión cambió durante el descubrimiento.");
+        validateSession?.Invoke();
 
         var models = Parse(oldModels
             ?? (oldProviders is null
@@ -1118,7 +1142,9 @@ internal static class ProviderConnectionRegistration
         }
 
         var oldReasoning = Read(reasoningPath);
-        var newReasoning = AnthropicCatalogReasoning.Read(oldReasoning).Refresh(provider, catalog, truncated);
+        // API-key capability snapshots must never be reused for an OAuth route.
+        var newReasoning = expectedAuth == AuthKind.ApiKey
+            ? AnthropicCatalogReasoning.Read(oldReasoning).Refresh(provider, catalog, truncated) : oldReasoning;
         var newModels = added > 0 ? Save(models) : oldModels;
         if (added > 0)
         {
@@ -1127,6 +1153,7 @@ internal static class ProviderConnectionRegistration
         }
         if (Read(providersPath) != oldProviders || Read(modelPath) != oldModels || Read(reasoningPath) != oldReasoning)
             throw new IOException("Configuration changed concurrently.");
+        validateSession?.Invoke();
         try
         {
             if (added > 0) WriteAtomic(modelPath, newModels!);
