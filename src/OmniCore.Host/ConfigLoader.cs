@@ -29,7 +29,7 @@ public sealed class ConfigLoader
         ParseSettings(settingsYaml, diagnostics);
         var providerNodes = ParseRoot(providersYaml, "providers.yaml", "providers", diagnostics,
             new[] { "providers" }, new[] { "kind", "family", "baseUrl", "caCertificate", "profile", "authRef", "auth", "oauth", "host", "managed",
-                "billingMode", "inputPricePerMillionUsd", "outputPricePerMillionUsd" });
+                "billingMode", "inputPricePerMillionUsd", "outputPricePerMillionUsd", "agentSystemPrompt" });
         var modelNodes = ParseRoot(modelsYaml, "models.yaml", "models", diagnostics,
             new[] { "models", "routing" }, new[] { "provider", "context", "recommendedUsableContext", "maxOutput",
                 "parametersBillions", "inputPricePerMillionUsd", "outputPricePerMillionUsd", "aliases", "reasoning", "inputModalities", "outputModalities", "imageGenerationMaxCostUsd" });
@@ -494,6 +494,7 @@ public sealed class ConfigLoader
                 Profile = Scalar(values, "profile"),
                 BillingMode = Scalar(values, "billingMode"),
                 AuthRef = Scalar(values, "authRef"),
+                AgentSystemPrompt = Scalar(values, "agentSystemPrompt"),
                 Host = Scalar(values, "host"),
                 Managed = values.Children.TryGetValue(new YamlScalarNode("managed"), out var managedNode)
                     && managedNode is YamlMappingNode managedMap ? CreateManaged(managedMap) : null,
@@ -709,6 +710,12 @@ public sealed class ConfigLoader
                 if (!valid) AddAtNode(diagnostics, file, path + "." + key,
                     key is "inputPricePerMillionUsd" or "outputPricePerMillionUsd" or "imageGenerationMaxCostUsd"
                         ? "config.outOfRange" : "config.wrongType", pair.Value);
+            }
+            else if (key == "agentSystemPrompt")
+            {
+                if (!IsYamlString(pair.Value)) AddAtNode(diagnostics, file, path + "." + key, "config.wrongType", pair.Value);
+                else if (!AgentSystemPromptConfiguration.IsValid((pair.Value as YamlScalarNode)?.Value))
+                    AddAtNode(diagnostics, file, path + "." + key, "config.outOfRange", pair.Value);
             }
             else if (key is "kind" or "family" or "baseUrl" or "caCertificate" or "profile" or "authRef" or "provider")
             {

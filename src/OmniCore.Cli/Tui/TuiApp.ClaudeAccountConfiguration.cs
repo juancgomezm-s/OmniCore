@@ -1,6 +1,8 @@
+#pragma warning disable CS0618 // Pinned Terminal.Gui multiline editor.
 using OmniCore.Client;
 using OmniCore.Host;
 using Terminal.Gui.Drivers;
+using Terminal.Gui.Drawing;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
@@ -43,6 +45,18 @@ public sealed partial class TuiApp
         var baseUrl = Field("base", draft.BaseUrl);
         var client = Field("client", draft.ClientId);
         var agent = Field("agent", draft.UserAgent);
+        var system = new TextView { Id = "claude-setup-system", X = 0, Y = y, Width = Dim.Fill(2), Height = 5,
+            BorderStyle = LineStyle.Single, Multiline = true, TabKeyAddsTab = false, WordWrap = true,
+            Title = ClaudeSetupText("system"), Text = draft.AgentSystemPrompt };
+        panel.Add(system); y += 5;
+        panel.Add(new Label { X = 2, Y = y, Width = Dim.Fill(4), Height = 4,
+            Text = ClaudeSetupText("system_help"), TextAlignment = Alignment.Start });
+        y += 4;
+        system.KeyDown += (_, key) =>
+        {
+            if (key.Handled || key.KeyCode != (KeyCode.Enter | KeyCode.ShiftMask)) return;
+            key.Handled = true; system.InsertText("\n");
+        };
         var scopes = Field("scopes", string.Join(" ", draft.Scopes));
         var authorize = Field("authorize", draft.AuthorizeUrl);
         var token = Field("token", draft.TokenUrl);
@@ -76,14 +90,19 @@ public sealed partial class TuiApp
                 var next = new ClaudeAccountConfigurationDraft(id.Text.ToString().Trim(), baseUrl.Text.ToString().Trim(),
                     client.Text.ToString().Trim(), agent.Text.ToString().Trim(),
                     scopes.Text.ToString().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries),
-                    authorize.Text.ToString().Trim(), token.Text.ToString().Trim(), profile.Text.ToString().Trim(), roles.Text.ToString().Trim());
+                    authorize.Text.ToString().Trim(), token.Text.ToString().Trim(), profile.Text.ToString().Trim(), roles.Text.ToString().Trim())
+                    { AgentSystemPrompt = system.Text.ToString().ReplaceLineEndings("\n") };
                 host.SaveConfiguration(snapshot.Revision, providerId, next, CancellationToken.None);
                 if (signInAfterSave) StartClaudeLogin(next.ProviderId);
                 else { _returnToClaudeAccounts = false; CloseOverlay(); ShowClaudeAccounts(ClaudeSetupText("saved"), next.ProviderId); }
             }
-            catch (Exception error) { status.Text = ClaudeSetupError(error); }
+            catch (Exception error)
+            {
+                status.Text = ClaudeSetupError(error);
+                if (error.Message == "claudeSetup.system_invalid") system.SetFocus();
+            }
         };
-        EnterNavigation.TraverseForm([id, advanced, baseUrl, client, agent, scopes, authorize, token, profile, roles], save, cancel);
+        EnterNavigation.TraverseForm([id, advanced, baseUrl, client, agent, system, scopes, authorize, token, profile, roles], save, cancel);
         frame.Add(new Label { X = 2, Y = 1, Width = Dim.Fill(4), Height = 3, Text = ClaudeSetupText("intro"), TextAlignment = Alignment.Start },
             panel, status, save, cancel);
         ShowAdvanced();

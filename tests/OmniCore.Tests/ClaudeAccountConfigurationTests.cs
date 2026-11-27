@@ -8,6 +8,49 @@ namespace OmniCore.Tests;
 
 public sealed class ClaudeAccountConfigurationTests : IDisposable
 {
+    [Fact]
+    public void Agent_system_message_round_trips_exactly_and_empty_restores_the_default_without_changing_OAuth()
+    {
+        const string message = "Use a concise teaching role.\nRespond in Spanish; preserve accents: explicación.\nKeep {version} literal here.";
+        var setup = _host.ReadConfiguration(null, _token);
+        _host.SaveConfiguration(setup.Revision, null, setup.Draft with { AgentSystemPrompt = message }, _token);
+        var saved = _host.ReadConfiguration("anthropic", _token);
+        Assert.Equal(message, saved.Draft.AgentSystemPrompt);
+        Assert.Equal(setup.Draft.ClientId, saved.Draft.ClientId);
+        Assert.Equal(setup.Draft.UserAgent, saved.Draft.UserAgent);
+        Assert.Equal(setup.Draft.Scopes, saved.Draft.Scopes);
+        var loaded = OmniHost.LoadUserConfiguration(_paths);
+        Assert.Equal(message, loaded.Providers!.Providers!["anthropic"].AgentSystemPrompt);
+        var identity = OmniHost.CreateClaudeOAuthSession(_paths, "anthropic")!.Identity;
+        Assert.Equal(setup.Draft.UserAgent, identity.UserAgentTemplate);
+        _host.SaveConfiguration(saved.Revision, "anthropic", saved.Draft with { AgentSystemPrompt = "" }, _token);
+        Assert.Equal("", _host.ReadConfiguration("anthropic", _token).Draft.AgentSystemPrompt);
+        Assert.DoesNotContain("agentSystemPrompt", File.ReadAllText(Path.Combine(_paths.ConfigDirectory, "providers.yaml")));
+    }
+
+    [Theory]
+    [InlineData(8193, false)]
+    [InlineData(32, true)]
+    public void Invalid_agent_system_message_is_rejected_without_writing_configuration(int length, bool control)
+    {
+        var setup = _host.ReadConfiguration(null, _token);
+        var prompt = control ? "bad\0control" : new string('x', length);
+        var error = Assert.Throws<ArgumentException>(() => _host.SaveConfiguration(setup.Revision, null,
+            setup.Draft with { AgentSystemPrompt = prompt }, _token));
+        Assert.Equal("claudeSetup.system_invalid", error.Message);
+        Assert.False(File.Exists(Path.Combine(_paths.ConfigDirectory, "providers.yaml")));
+    }
+
+    [Theory]
+    [InlineData("[one, two]")]
+    [InlineData("{text: bad}")]
+    [InlineData("42")]
+    public void Agent_system_message_YAML_rejects_non_text_values(string value)
+    {
+        Assert.Throws<ConfigValidationException>(() => new ConfigLoader().Load(
+            "providers:\n  fixture:\n    family: AnthropicMessages\n    baseUrl: https://fixture.invalid\n    auth: none\n    agentSystemPrompt: " + value + "\n", null));
+    }
+
     private readonly string _root = Path.Combine(Path.GetTempPath(), "omni-claude-setup-" + Guid.NewGuid().ToString("N"));
     private readonly DefaultPlatformPaths _paths;
     private readonly TuiClaudeAccountHost _host;

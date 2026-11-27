@@ -3604,7 +3604,9 @@ public sealed class ExplorerTurn
             {
                 if (item.Content.Length > 0)
                 {
-                    parts.Add("- " + item.Content.Replace("\n", " "));
+                    // System instructions may contain user-authored paragraphs, lists or
+                    // code blocks. Preserve their line structure instead of flattening it.
+                    parts.Add("- " + (item.Kind == ContextItemKind.System ? item.Content : item.Content.Replace("\n", " ")));
                 }
             }
         }

@@ -8,7 +8,10 @@ using YamlDotNet.Core.Events;
 using YamlDotNet.RepresentationModel;
 
 public sealed record ClaudeAccountConfigurationDraft(string ProviderId, string BaseUrl, string ClientId,
-    string UserAgent, string[] Scopes, string AuthorizeUrl, string TokenUrl, string ProfileUrl, string RolesUrl);
+    string UserAgent, string[] Scopes, string AuthorizeUrl, string TokenUrl, string ProfileUrl, string RolesUrl)
+{
+    public string AgentSystemPrompt { get; init; } = "";
+}
 public sealed record ClaudeAccountConfigurationSnapshot(string Revision, ClaudeAccountConfigurationDraft Draft);
 
 /// <summary>Explicit configuration only. It never authenticates, reads tokens or sends a request.</summary>
@@ -47,12 +50,15 @@ public sealed partial class TuiClaudeAccountHost
         }
         var oauth = provider.OAuth!;
         return new(ConfigurationRevision(files), new(id, provider.BaseUrl!, oauth.ClientId!, oauth.UserAgent!,
-            oauth.Scopes!.ToArray(), oauth.AuthorizeUrl!, oauth.TokenUrl!, oauth.ProfileUrl ?? "", oauth.RolesUrl ?? ""));
+            oauth.Scopes!.ToArray(), oauth.AuthorizeUrl!, oauth.TokenUrl!, oauth.ProfileUrl ?? "", oauth.RolesUrl ?? "")
+            { AgentSystemPrompt = provider.AgentSystemPrompt ?? "" });
     }
 
     public void SaveConfiguration(string revision, string? existingProviderId, ClaudeAccountConfigurationDraft draft, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
+        if (!AgentSystemPromptConfiguration.IsValid(draft.AgentSystemPrompt))
+            throw new ArgumentException("claudeSetup.system_invalid");
         using var lease = ProviderConfigurationLease.Acquire(_paths.ConfigDirectory);
         var files = ConfigurationFiles();
         if (revision != ConfigurationRevision(files)) throw new InvalidOperationException("claudeSetup.changed");
@@ -76,6 +82,8 @@ public sealed partial class TuiClaudeAccountHost
         static void Put(YamlMappingNode map, string name, string value) =>
             map.Children[new YamlScalarNode(name)] = new YamlScalarNode(value) { Style = ScalarStyle.DoubleQuoted };
         Put(entry, "family", "AnthropicMessages"); Put(entry, "baseUrl", draft.BaseUrl);
+        if (string.IsNullOrWhiteSpace(draft.AgentSystemPrompt)) entry.Children.Remove(new YamlScalarNode("agentSystemPrompt"));
+        else Put(entry, "agentSystemPrompt", draft.AgentSystemPrompt);
         if (existingProviderId is null) Put(entry, "billingMode", "IncludedQuota");
         var oauth = entry.Children.TryGetValue(new YamlScalarNode("oauth"), out var existingOAuth)
             ? (YamlMappingNode)existingOAuth : new YamlMappingNode();

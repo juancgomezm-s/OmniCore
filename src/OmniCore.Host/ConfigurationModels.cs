@@ -17,6 +17,7 @@ public sealed class ProviderFileYaml
     public string? Profile { get; set; }
     public string? BillingMode { get; set; }
     public string? AuthRef { get; set; }
+    public string? AgentSystemPrompt { get; set; }
 
     /// <summary><c>attach</c> (servidor ya levantado) o <c>managed</c> (lo lanza OmniCore), ADR-0011 §4.</summary>
     public string? Host { get; set; }

@@ -74,7 +74,7 @@ public sealed partial class TuiWiringTests
         fx.InjectKey(new Key(KeyCode.Space));
         fx.Wait(() => EnterControl(fx, "claude-setup-client").Visible, "Espacio despliega campos de conexión");
         EnterOnce(fx, () => EnterControl(fx, "claude-setup-base").HasFocus, "Enter lleva al primer campo avanzado");
-        foreach (var id in new[] { "client", "agent", "scopes", "authorize", "token", "profile", "roles" })
+        foreach (var id in new[] { "client", "agent", "system", "scopes", "authorize", "token", "profile", "roles" })
             EnterOnce(fx, () => EnterControl(fx, "claude-setup-" + id).HasFocus, "Enter avanza hasta " + id);
         EnterOnce(fx, () => EnterControl(fx, "claude-setup-save").HasFocus, "Enter al final enfoca Guardar");
         KeyWithEffect(fx, KeyCode.Esc, () => fx.App.Overlay?.Id == "claude-account-preferences", "Esc regresa a cuenta");
